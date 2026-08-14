@@ -113,6 +113,12 @@ function kindForStatus(status: number): ApiErrorKind {
   if (status === 403) return "forbidden";
   if (status === 404) return "not_found";
   if (status === 409) return "conflict";
+  // Gateway-level failures mean the request never reached the orchestrator.
+  // The dev proxy emits 502 when the upstream is down (see vite.config.ts);
+  // a production reverse proxy emits 502/503/504 for the same reason. These
+  // are "the backend is not reachable", which is a different fact — and a
+  // different screen — from "the backend errored".
+  if (status === 502 || status === 503 || status === 504) return "offline";
   if (status >= 500) return "server_error";
   return "bad_request";
 }

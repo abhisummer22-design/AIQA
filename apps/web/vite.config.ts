@@ -40,6 +40,25 @@ export default defineConfig(() => {
           changeOrigin: true,
           ws: true,
           rewrite: (p) => p.replace(/^\/api/, ''),
+          configure: (proxy) => {
+            // Without this, an unreachable orchestrator surfaces to the
+            // browser as a generic 500, which the UI would report as
+            // "the orchestrator returned an internal error" — a materially
+            // different (and wrong) statement from "the orchestrator is not
+            // running". 502 Bad Gateway is the accurate code for "this proxy
+            // could not reach upstream", and the API client maps it to the
+            // offline state.
+            proxy.on('error', (_err, _req, res) => {
+              const response = res as unknown as {
+                writeHead?: (code: number, headers: Record<string, string>) => void;
+                end?: (body: string) => void;
+              };
+              if (typeof response.writeHead === 'function' && typeof response.end === 'function') {
+                response.writeHead(502, { 'Content-Type': 'text/plain' });
+                response.end('orchestrator unreachable');
+              }
+            });
+          },
         },
       },
     },
