@@ -1,0 +1,6 @@
+{
+  "name": "AIQA Dashboard",
+  "description": "Enterprise-grade AI Quality Assurance & Testing Operations Control Center with interactive multi-role RBAC live testing simulation, Google Workspace integration (Gmail test alerts, Google Sheets test matrix sync, Google Calendar QA scheduling), real-time test execution, AI model routing, risk & flakiness analytics, automated bug drafting, and governance policies.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

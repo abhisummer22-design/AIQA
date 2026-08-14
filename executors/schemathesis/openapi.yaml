@@ -1,0 +1,18 @@
+openapi: 3.0.3
+info:
+  title: AIQA Orchestrator (subset)
+  version: "1.0"
+servers:
+  - url: http://localhost:8080
+paths:
+  /health:
+    get:
+      operationId: health
+      responses:
+        "200":
+          description: OK
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: ok

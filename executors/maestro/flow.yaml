@@ -1,0 +1,10 @@
+# Sample flow in real Maestro (mobile.dev) syntax. There is no actual AIQA
+# mobile app to point this at yet, and no Android/iOS tooling in this dev
+# environment to run it against — see services/orchestrator's MaestroExecutor
+# and executors/maestro/README.md for what "real" means here.
+appId: com.example.aiqa.demo
+---
+- launchApp
+- assertVisible: "Welcome"
+- tapOn: "Get Started"
+- assertVisible: "Home"

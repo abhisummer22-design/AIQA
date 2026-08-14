@@ -1,0 +1,58 @@
+version: "3.9"
+
+# SRD §1 Architecture: Postgres+pgvector system of record, Redis task
+# coordination, S3-compatible object storage. Not yet wired into the
+# orchestrator (which runs in-memory in this slice) — this is here so the
+# persistence layer has somewhere to run when that work starts.
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: aiqa
+      POSTGRES_PASSWORD: aiqa
+      POSTGRES_DB: aiqa
+    ports:
+      - "5432:5432"
+    volumes:
+      - aiqa_postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aiqa -d aiqa"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: aiqa
+      MINIO_ROOT_PASSWORD: aiqa12345
+    ports:
+      - "9000:9000" # S3 API
+      - "9001:9001" # console
+    volumes:
+      - aiqa_minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  aiqa_postgres_data:
+  aiqa_minio_data:

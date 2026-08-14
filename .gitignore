@@ -1,0 +1,37 @@
+# Rust
+services/orchestrator/target/
+
+# Node / Next.js
+apps/web/node_modules/
+apps/web/.next/
+apps/web/out/
+apps/web/.env*.local
+
+# Python
+services/workers/__pycache__/
+services/workers/**/__pycache__/
+services/workers/.venv/
+*.pyc
+executors/pytest/__pycache__/
+executors/pytest/.pytest_cache/
+executors/schemathesis/.hypothesis/
+executors/schemathesis/.schemathesis/
+
+# Executors (npx-installed, test-run output)
+executors/*/node_modules/
+executors/playwright/test-results/
+
+# Infra
+infra/.env
+
+# Runtime data: the orchestrator's SQLite store and locally-captured evidence
+# blobs (see services/orchestrator/src/store.rs and evidence.rs) — generated
+# at runtime, not source.
+infra/data/*.sqlite3
+infra/data/*.sqlite3-*
+infra/data/evidence/*
+!infra/data/evidence/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db
