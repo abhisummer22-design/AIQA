@@ -1,464 +1,264 @@
-import React, { useState, useEffect, useCallback } from "react";
-import { Sidebar } from "./components/layout/Sidebar";
-import { TopHeader } from "./components/layout/TopHeader";
-import { SystemHealthBanner } from "./components/system/SystemHealthBanner";
-import { KpiCards } from "./components/dashboard/KpiCards";
-import { LiveTestExecution } from "./components/dashboard/LiveTestExecution";
-import { ChartsSection } from "./components/dashboard/ChartsSection";
-import { RiskAnalytics } from "./components/dashboard/RiskAnalytics";
-import { FlakyTests } from "./components/dashboard/FlakyTests";
-import { FailureIntelligence } from "./components/dashboard/FailureIntelligence";
-import { BugIntelligence } from "./components/dashboard/BugIntelligence";
-import { ModelRouterStatus } from "./components/dashboard/ModelRouterStatus";
-import { OllamaStatus } from "./components/dashboard/OllamaStatus";
-import { ExecutionTimeline } from "./components/dashboard/ExecutionTimeline";
-import { GovernanceStatus } from "./components/dashboard/GovernanceStatus";
-import { AuditLogPreview } from "./components/dashboard/AuditLogPreview";
+/**
+ * AIQA web shell.
+ *
+ * Every view reachable from here either renders data the Rust orchestrator
+ * actually returned, or states plainly that the backend capability does not
+ * exist. There is no fallback dataset anywhere in this app.
+ *
+ * Navigation is split accordingly:
+ *   "Live"          — backed by real orchestrator endpoints
+ *   "Not available" — the UI concept exists in the product design, but no
+ *                     backend capability does; these render NotImplemented
+ *                     rather than sample content.
+ */
 
-// View Routes
-import { AiBrainView } from "./components/views/AiBrainView";
-import { ProjectsView } from "./components/views/ProjectsView";
-import { TestRunsView } from "./components/views/TestRunsView";
-import { TestCasesView } from "./components/views/TestCasesView";
-import { TestCaseGeneratorView } from "./components/views/TestCaseGeneratorView";
-import { ApiTestingView } from "./components/views/ApiTestingView";
-import { MobileTestingView } from "./components/views/MobileTestingView";
-import { RbacTestingView } from "./components/views/RbacTestingView";
-import { WorkspaceView } from "./components/workspace/WorkspaceView";
-import { BugsView } from "./components/views/BugsView";
-import { RiskFlakinessView } from "./components/views/RiskFlakinessView";
-import { PoliciesView } from "./components/views/PoliciesView";
-import { AuditLogsView } from "./components/views/AuditLogsView";
-import { ReportsView } from "./components/views/ReportsView";
-import { SettingsView } from "./components/views/SettingsView";
-
-// Modals
-import { SystemDiagnosticsModal } from "./components/system/SystemDiagnosticsModal";
-import { AlertCenter } from "./components/system/AlertCenter";
-import { GlobalSearchModal } from "./components/layout/GlobalSearchModal";
-import { CreateBugModal } from "./components/modals/CreateBugModal";
-import { TriggerTestModal } from "./components/modals/TriggerTestModal";
-
-// API
+import React, { useState } from "react";
 import {
-  fetchDashboardState,
-  connectSSE,
-  triggerTestRun,
-  toggleQuarantineTest,
-  createBugConfirmed,
-  simulateChaosComponent,
-  dismissAlertItem
-} from "./services/api";
+  Activity,
+  Ban,
+  Bug,
+  Brain,
+  FileSearch,
+  Gauge,
+  KeyRound,
+  ListChecks,
+  ScrollText,
+  Settings as SettingsIcon,
+  ShieldCheck,
+  Smartphone,
+  TestTube2,
+  Users,
+  Workflow,
+} from "lucide-react";
 
-import {
-  DashboardState,
-  ViewType,
-  EnvironmentType,
-  BugCandidate,
-  FailureItem,
-  AlertItem
-} from "./types";
+import { DashboardView } from "./views/DashboardView";
+import { RunsView } from "./views/RunsView";
+import { RunDetailView } from "./views/RunDetailView";
+import { IntelligenceView } from "./views/IntelligenceView";
+import { BugDraftsView } from "./views/BugDraftsView";
+import { AuditLogView } from "./views/AuditLogView";
+import { SettingsView } from "./views/SettingsView";
+import { NotImplementedState } from "./components/common/StateViews";
+import { ConnectionBanner } from "./components/common/ConnectionBanner";
+
+export type ViewId =
+  | "dashboard"
+  | "runs"
+  | "intelligence"
+  | "bug-drafts"
+  | "audit-log"
+  | "settings"
+  | "test-cases"
+  | "test-generator"
+  | "api-testing"
+  | "mobile-testing"
+  | "rbac"
+  | "ai-brain"
+  | "quality-graph"
+  | "policies";
+
+interface NavItem {
+  id: ViewId;
+  label: string;
+  icon: React.ReactNode;
+}
+
+/** Views with a real backend endpoint behind them. */
+const LIVE_NAV: NavItem[] = [
+  { id: "dashboard", label: "Dashboard", icon: <Gauge size={15} /> },
+  { id: "runs", label: "Runs", icon: <Workflow size={15} /> },
+  { id: "intelligence", label: "Intelligence", icon: <Activity size={15} /> },
+  { id: "bug-drafts", label: "Bug Drafts", icon: <Bug size={15} /> },
+  { id: "audit-log", label: "Audit Log", icon: <ScrollText size={15} /> },
+  { id: "settings", label: "Settings", icon: <SettingsIcon size={15} /> },
+];
+
+/**
+ * Views with no backend capability. Kept in the navigation deliberately —
+ * hiding them would make the product's gaps invisible; each one states what
+ * would have to exist for it to work.
+ */
+const UNAVAILABLE_NAV: NavItem[] = [
+  { id: "test-cases", label: "Test Cases", icon: <ListChecks size={15} /> },
+  { id: "test-generator", label: "Test Generator", icon: <TestTube2 size={15} /> },
+  { id: "api-testing", label: "API Testing", icon: <FileSearch size={15} /> },
+  { id: "mobile-testing", label: "Mobile Testing", icon: <Smartphone size={15} /> },
+  { id: "rbac", label: "RBAC", icon: <Users size={15} /> },
+  { id: "ai-brain", label: "AI Brain", icon: <Brain size={15} /> },
+  { id: "quality-graph", label: "Quality Graph", icon: <Workflow size={15} /> },
+  { id: "policies", label: "Policies", icon: <ShieldCheck size={15} /> },
+];
+
+/** What each unavailable view would require from the backend. Written to be
+ *  actionable: these are the real gaps, not marketing copy. */
+const MISSING_CAPABILITY: Record<string, { feature: string; requires: string }> = {
+  "test-cases": {
+    feature: "Test case management",
+    requires: "a test_cases table and CRUD endpoints on the orchestrator — the run plan is currently submitted whole via POST /runs, and there is no persisted test-case catalogue",
+  },
+  "test-generator": {
+    feature: "AI test generation",
+    requires: "an LLM-backed generation endpoint; the orchestrator has no model integration of any kind",
+  },
+  "api-testing": {
+    feature: "API test authoring",
+    requires: "endpoints to manage Newman collections and Schemathesis specs; the executors exist but are only reachable by submitting a run plan",
+  },
+  "mobile-testing": {
+    feature: "Mobile test authoring",
+    requires: "device-pool and Maestro flow management endpoints; the Maestro executor exists but has no management API",
+  },
+  rbac: {
+    feature: "User and role management",
+    requires: "a users table and role-assignment endpoints. The orchestrator authenticates API keys with three fixed roles (viewer/operator/admin) — it has no concept of users, and keys are managed under Settings",
+  },
+  "ai-brain": {
+    feature: "Model routing and AI telemetry",
+    requires: "an inference service plus routing configuration endpoints; no LLM or model router exists in the backend",
+  },
+  "quality-graph": {
+    feature: "Quality graph",
+    requires: "a graph query endpoint. The 0002 migration defines quality-graph tables, but no HTTP route exposes them",
+  },
+  policies: {
+    feature: "Policy administration",
+    requires: "CRUD endpoints for policy rules. policy.rs evaluates rules from environment configuration at run-creation time, but exposes no route to read or edit them",
+  },
+};
 
 export function App() {
-  const [currentView, setCurrentView] = useState<ViewType>("dashboard");
-  const [environment, setEnvironment] = useState<EnvironmentType>("all");
-  const [selectedProject, setSelectedProject] = useState<string>("All Projects");
-  const [state, setState] = useState<DashboardState | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [view, setView] = useState<ViewId>("dashboard");
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
 
-  // Modals & Drawers state
-  const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState(false);
-  const [isAlertsOpen, setIsAlertsOpen] = useState(false);
-  const [isSearchOpen, setIsSearchOpen] = useState(false);
-  const [isTriggerTestOpen, setIsTriggerTestOpen] = useState(false);
-  const [reviewingBugCandidate, setReviewingBugCandidate] = useState<BugCandidate | null>(null);
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
-
-  const showToast = (msg: string) => {
-    setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 3500);
+  const openRun = (runId: string) => {
+    setSelectedRunId(runId);
+    setView("runs");
   };
 
-  // Initial load
-  useEffect(() => {
-    let mounted = true;
-    fetchDashboardState()
-      .then((data) => {
-        if (mounted) {
-          setState(data);
-          setLoading(false);
-        }
-      })
-      .catch((err) => {
-        console.error("Failed to load initial dashboard state:", err);
-        if (mounted) setLoading(false);
-      });
-
-    // Real-time SSE Stream
-    const unsubscribeSSE = connectSSE((data) => {
-      if (mounted) {
-        setState((prev) => (prev ? { ...prev, ...data } : data));
-      }
-    });
-
-    return () => {
-      mounted = false;
-      unsubscribeSSE();
-    };
-  }, []);
-
-  // Handlers
-  const handleTriggerTest = async (payload: {
-    testName: string;
-    project: string;
-    environment: EnvironmentType;
-    executor: string;
-  }) => {
-    try {
-      const res = await triggerTestRun(payload);
-      if (res.success && state) {
-        setState((prev) => {
-          if (!prev) return prev;
-          return {
-            ...prev,
-            liveExecutions: [res.execution, ...prev.liveExecutions]
-          };
-        });
-        showToast(`Triggered: "${payload.testName}" on ${payload.environment}`);
-      }
-    } catch (err) {
-      console.error(err);
-      showToast("Test execution scheduled on background cluster.");
+  const renderView = () => {
+    if (view === "runs" && selectedRunId) {
+      return <RunDetailView runId={selectedRunId} onBack={() => setSelectedRunId(null)} />;
     }
-  };
 
-  const handleToggleQuarantine = async (testId: string) => {
-    try {
-      const res = await toggleQuarantineTest(testId);
-      if (res.success && state) {
-        setState((prev) => {
-          if (!prev) return prev;
-          return {
-            ...prev,
-            flakyTests: prev.flakyTests.map((t) =>
-              t.id === testId ? { ...t, quarantined: res.quarantined } : t
-            )
-          };
-        });
-        showToast(
-          res.quarantined
-            ? `Test quarantined from blocking PRs.`
-            : `Test unquarantined and returned to CI gate.`
+    switch (view) {
+      case "dashboard":
+        return <DashboardView onOpenRun={openRun} onNavigate={setView} />;
+      case "runs":
+        return <RunsView onOpenRun={openRun} />;
+      case "intelligence":
+        return <IntelligenceView />;
+      case "bug-drafts":
+        return <BugDraftsView />;
+      case "audit-log":
+        return <AuditLogView />;
+      case "settings":
+        return <SettingsView />;
+      default: {
+        const gap = MISSING_CAPABILITY[view];
+        return (
+          <div className="mx-auto max-w-3xl pt-10">
+            <NotImplementedState feature={gap.feature} requires={gap.requires} />
+          </div>
         );
       }
-    } catch (err) {
-      console.error(err);
     }
   };
-
-  const handleConfirmCreateBug = async (data: {
-    candidateId: string;
-    title: string;
-    severity: string;
-    priority: string;
-    notes?: string;
-  }) => {
-    try {
-      const res = await createBugConfirmed(data);
-      if (res.success && state) {
-        setState((prev) => {
-          if (!prev) return prev;
-          return {
-            ...prev,
-            bugCandidates: prev.bugCandidates.map((b) =>
-              b.id === data.candidateId ? { ...b, status: "created" } : b
-            ),
-            kpiMetrics: {
-              ...prev.kpiMetrics,
-              openBugs: {
-                ...prev.kpiMetrics.openBugs,
-                total: prev.kpiMetrics.openBugs.total + 1
-              }
-            }
-          };
-        });
-        showToast(`Bug confirmed and synced to Jira/Linear (#BUG-${Math.floor(Math.random() * 800 + 100)})`);
-      }
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const handleSimulateChaos = async (component: string, status: string) => {
-    try {
-      const res = await simulateChaosComponent(component, status);
-      if (res.success && state) {
-        setState((prev) => {
-          if (!prev) return prev;
-          return {
-            ...prev,
-            systemHealth: {
-              ...prev.systemHealth,
-              [component]: status,
-              lastChecked: new Date().toISOString()
-            }
-          };
-        });
-        showToast(`Chaos Simulation: Injected status "${status}" into ${component}`);
-      }
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const handleDismissAlert = async (id: string) => {
-    try {
-      await dismissAlertItem(id);
-      if (state) {
-        setState((prev) => {
-          if (!prev) return prev;
-          return {
-            ...prev,
-            alerts: prev.alerts.filter((a) => a.id !== id)
-          };
-        });
-      }
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  if (loading || !state) {
-    return (
-      <div className="min-h-screen bg-[#070b14] text-slate-100 flex items-center justify-center font-mono text-xs">
-        <div className="flex flex-col items-center gap-3">
-          <div className="w-8 h-8 rounded-full border-2 border-cyan-500 border-t-transparent animate-spin" />
-          <span className="text-cyan-400">Initializing AIQA Real-Time Telemetry Engine...</span>
-        </div>
-      </div>
-    );
-  }
 
   return (
-    <div id="aiqa-dashboard-root" className="min-h-screen bg-[#050505] text-slate-300 flex font-sans">
-      {/* Toast Notification */}
-      {toastMessage && (
-        <div
-          id="system-toast"
-          className="fixed bottom-5 right-5 z-50 px-3.5 py-2 rounded bg-indigo-950 border border-indigo-700 text-indigo-200 text-[11px] font-mono shadow-2xl animate-in slide-in-from-bottom duration-200 flex items-center gap-2"
-        >
-          <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse" />
-          <span>{toastMessage}</span>
+    <div className="flex min-h-screen bg-[#070b14] font-sans text-slate-300">
+      {/* Sidebar */}
+      <aside className="fixed inset-y-0 left-0 flex w-52 flex-col border-r border-slate-800 bg-[#0a0f1a]">
+        <div className="flex h-14 items-center gap-2 border-b border-slate-800 px-4">
+          <div className="flex h-7 w-7 items-center justify-center rounded bg-cyan-500/15 text-cyan-400">
+            <ShieldCheck size={16} />
+          </div>
+          <div className="leading-tight">
+            <div className="text-sm font-bold tracking-tight text-slate-100">AIQA</div>
+            <div className="font-mono text-[9px] uppercase tracking-widest text-slate-500">Orchestrator UI</div>
+          </div>
         </div>
-      )}
 
-      {/* Left Sidebar */}
-      <Sidebar
-        currentView={currentView}
-        onNavigate={setCurrentView}
-        systemHealth={state.systemHealth}
-        onOpenDiagnostics={() => setIsDiagnosticsOpen(true)}
-      />
-
-      {/* Main Content Area */}
-      <div className="flex-1 ml-52 flex flex-col min-w-0 overflow-x-hidden">
-        {/* Top Header */}
-        <TopHeader
-          activeView={currentView}
-          currentView={currentView}
-          onNavigate={setCurrentView}
-          environment={environment}
-          onEnvironmentChange={setEnvironment}
-          selectedProject={selectedProject}
-          onProjectChange={setSelectedProject}
-          systemHealth={state.systemHealth}
-          unreadAlertsCount={state.alerts.length}
-          onOpenAlerts={() => setIsAlertsOpen(true)}
-          onOpenSearch={() => setIsSearchOpen(true)}
-          onTriggerTest={() => setIsTriggerTestOpen(true)}
-          onOpenDiagnostics={() => setIsDiagnosticsOpen(true)}
-        />
-
-        {/* System Health Alert Matrix Banner */}
-        <SystemHealthBanner
-          systemHealth={state.systemHealth}
-          onOpenDiagnostics={() => setIsDiagnosticsOpen(true)}
-        />
-
-        {/* Scrollable View Canvas */}
-        <main className="flex-1 p-3.5 sm:p-4 space-y-4 max-w-[1700px] w-full mx-auto">
-          {currentView === "dashboard" && (
-            <>
-              {/* 1. KPI Cards */}
-              <KpiCards metrics={state.kpiMetrics} onNavigate={setCurrentView} />
-
-              {/* 2. Live Test Execution Panel */}
-              <LiveTestExecution
-                executions={state.liveExecutions}
-                onTriggerNew={() => setIsTriggerTestOpen(true)}
-                onNavigate={setCurrentView}
-              />
-
-              {/* 3. Recharts Trends & Quality Metrics */}
-              <ChartsSection metrics={state.kpiMetrics} />
-
-              {/* 4. Risk & Flakiness Dual Column */}
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
-                <RiskAnalytics metrics={state.kpiMetrics} />
-                <FlakyTests
-                  flakyTests={state.flakyTests}
-                  onToggleQuarantine={handleToggleQuarantine}
-                  onNavigate={setCurrentView}
-                />
-              </div>
-
-              {/* 6. Failure Intelligence & AI Bug Drafting */}
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
-                <FailureIntelligence
-                  failures={state.recentFailures}
-                  onDraftBug={(fail) => {
-                    setReviewingBugCandidate({
-                      id: `cand-${Date.now()}`,
-                      title: `[AI Draft] ${fail.errorMessage.slice(0, 50)}...`,
-                      severity: fail.riskLevel,
-                      confidence: 94,
-                      relatedTest: fail.testName,
-                      relatedService: fail.testName.split(" ")[0] || "Core Service",
-                      evidenceCount: 12,
-                      suggestedPriority: fail.riskLevel === "Critical" ? "P0 - Urgent" : "P1 - Blocker",
-                      description: `Automated triage identified failure pattern: ${fail.errorMessage}. Recommended action: ${fail.suggestedAction}`,
-                      createdAt: "Just now",
-                      status: "pending"
-                    });
-                  }}
-                  onNavigate={setCurrentView}
-                />
-
-                <BugIntelligence
-                  candidates={state.bugCandidates}
-                  onReviewCandidate={(cand) => setReviewingBugCandidate(cand)}
-                  onCreateBug={(cand) => setReviewingBugCandidate(cand)}
-                  onIgnoreCandidate={(id) => {
-                    setState((prev) => {
-                      if (!prev) return prev;
-                      return {
-                        ...prev,
-                        bugCandidates: prev.bugCandidates.filter((c) => c.id !== id)
-                      };
-                    });
-                    showToast("Bug candidate dismissed.");
-                  }}
-                  onNavigate={setCurrentView}
-                />
-              </div>
-
-              {/* 7. AI Model Router & Ollama Local AI Runtime */}
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
-                <ModelRouterStatus modelRouter={state.modelRouter} onNavigate={setCurrentView} />
-                <OllamaStatus modelRouter={state.modelRouter} systemHealth={state.systemHealth} onNavigate={setCurrentView} />
-              </div>
-
-              {/* 8. Timeline, Governance, and Audit Logs Tri-Grid */}
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-3.5">
-                <ExecutionTimeline timeline={state.timeline} onNavigate={setCurrentView} />
-                <GovernanceStatus policies={state.governance} onNavigate={setCurrentView} />
-                <AuditLogPreview auditLogs={state.auditLogs} onNavigate={setCurrentView} />
-              </div>
-            </>
-          )}
-
-          {/* Sub-Views */}
-          {currentView === "ai-brain" && <AiBrainView />}
-          {currentView === "projects" && <ProjectsView onNavigate={setCurrentView} />}
-          {currentView === "test-runs" && (
-            <TestRunsView
-              executions={state.liveExecutions}
-              onTriggerNew={() => setIsTriggerTestOpen(true)}
+        <nav className="flex-1 overflow-y-auto px-2 py-3">
+          <SectionLabel>Live</SectionLabel>
+          {LIVE_NAV.map((item) => (
+            <NavButton
+              key={item.id}
+              item={item}
+              active={view === item.id}
+              onClick={() => {
+                setSelectedRunId(null);
+                setView(item.id);
+              }}
             />
-          )}
-          {currentView === "test-cases" && <TestCasesView />}
-          {currentView === "test-case-generator" && <TestCaseGeneratorView />}
-          {currentView === "api-testing" && <ApiTestingView />}
-          {currentView === "mobile-testing" && <MobileTestingView />}
-          {currentView === "rbac-testing" && <RbacTestingView />}
-          {currentView === "workspace" && (
-            <WorkspaceView
-              testRuns={state.liveExecutions}
-              bugs={state.bugCandidates}
-            />
-          )}
-          {currentView === "bugs" && (
-            <BugsView
-              candidates={state.bugCandidates}
-              onReviewCandidate={(cand) => setReviewingBugCandidate(cand)}
-              onCreateBug={(cand) => setReviewingBugCandidate(cand)}
-            />
-          )}
-          {currentView === "risk-flakiness" && (
-            <RiskFlakinessView
-              metrics={state.kpiMetrics}
-              flakyTests={state.flakyTests}
-              onToggleQuarantine={handleToggleQuarantine}
-            />
-          )}
-          {currentView === "policies" && <PoliciesView policies={state.governance} />}
-          {currentView === "audit-logs" && <AuditLogsView auditLogs={state.auditLogs} />}
-          {currentView === "reports" && <ReportsView />}
-          {currentView === "settings" && <SettingsView />}
-        </main>
+          ))}
 
-        {/* High Density Status Footer */}
-        <footer className="h-7 bg-[#0D0D0E] border-t border-slate-800 flex items-center justify-between px-4 text-[9px] uppercase tracking-widest text-slate-500 font-mono select-none">
-          <div className="flex items-center gap-4">
-            <span className="flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-              <span>CLUSTER SYNC: ACTIVE (SSE 1000ms)</span>
-            </span>
-            <span className="hidden sm:inline">|</span>
-            <span className="hidden sm:inline">SCHEDULER: K8S RUNNER V2</span>
-          </div>
-          <div className="flex items-center gap-3">
-            <span>REGION: US-CENTRAL1-A</span>
-            <span>AIQA ENTERPRISE v2.4</span>
-          </div>
-        </footer>
+          <SectionLabel className="mt-4">
+            No backend capability
+          </SectionLabel>
+          {UNAVAILABLE_NAV.map((item) => (
+            <NavButton
+              key={item.id}
+              item={item}
+              active={view === item.id}
+              muted
+              onClick={() => {
+                setSelectedRunId(null);
+                setView(item.id);
+              }}
+            />
+          ))}
+        </nav>
+
+        <div className="border-t border-slate-800 px-3 py-2 font-mono text-[9px] leading-relaxed text-slate-600">
+          Data source: Rust orchestrator only.
+          <br />
+          No sample or generated values.
+        </div>
+      </aside>
+
+      {/* Main */}
+      <div className="ml-52 flex min-w-0 flex-1 flex-col">
+        <ConnectionBanner onOpenSettings={() => setView("settings")} />
+        <main className="mx-auto w-full max-w-[1500px] flex-1 p-4">{renderView()}</main>
       </div>
-
-      {/* Global Modals */}
-      <SystemDiagnosticsModal
-        isOpen={isDiagnosticsOpen}
-        onClose={() => setIsDiagnosticsOpen(false)}
-        health={state.systemHealth}
-        onSimulateChaos={handleSimulateChaos}
-      />
-
-      <AlertCenter
-        isOpen={isAlertsOpen}
-        onClose={() => setIsAlertsOpen(false)}
-        alerts={state.alerts}
-        onDismissAlert={handleDismissAlert}
-        onNavigate={setCurrentView}
-      />
-
-      <GlobalSearchModal
-        isOpen={isSearchOpen}
-        onClose={() => setIsSearchOpen(false)}
-        onNavigate={setCurrentView}
-      />
-
-      <CreateBugModal
-        isOpen={!!reviewingBugCandidate}
-        onClose={() => setReviewingBugCandidate(null)}
-        candidate={reviewingBugCandidate}
-        onConfirmCreate={handleConfirmCreateBug}
-      />
-
-      <TriggerTestModal
-        isOpen={isTriggerTestOpen}
-        onClose={() => setIsTriggerTestOpen(false)}
-        onTrigger={handleTriggerTest}
-      />
     </div>
+  );
+}
+
+function SectionLabel({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+  return (
+    <div className={`px-2 pb-1.5 font-mono text-[9px] uppercase tracking-widest text-slate-600 ${className}`}>
+      {children}
+    </div>
+  );
+}
+
+function NavButton({
+  item,
+  active,
+  muted = false,
+  onClick,
+}: {
+  item: NavItem;
+  active: boolean;
+  muted?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`mb-0.5 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition ${
+        active
+          ? "bg-cyan-500/10 text-cyan-300"
+          : muted
+            ? "text-slate-600 hover:bg-slate-800/40 hover:text-slate-400"
+            : "text-slate-400 hover:bg-slate-800/40 hover:text-slate-200"
+      }`}
+    >
+      <span className="shrink-0 opacity-80">{item.icon}</span>
+      <span className="truncate">{item.label}</span>
+      {muted && <Ban size={11} className="ml-auto shrink-0 opacity-50" />}
+    </button>
   );
 }
 
