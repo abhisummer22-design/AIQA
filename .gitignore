@@ -35,3 +35,7 @@ infra/data/evidence/*
 # OS
 .DS_Store
 Thumbs.db
+
+# Pre-audit runtime DB snapshots (local only)
+infra/data/*.preaudit
+infra/data/*.bak-preaudit
