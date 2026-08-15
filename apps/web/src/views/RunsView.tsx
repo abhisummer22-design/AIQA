@@ -19,8 +19,22 @@ import type { RunListItem, RunPlan, TaskDef } from "../types/orchestrator";
 import { ResourceView } from "../components/common/StateViews";
 import { RunStateBadge } from "../components/common/Badges";
 
+/** Filter values are the backend's own RunState strings, so the filter can
+ *  never drift from what the orchestrator can actually return. */
+const STATE_FILTERS: Array<"ALL" | RunListItem["state"]> = [
+  "ALL",
+  "RUNNING",
+  "PENDING_APPROVAL",
+  "PARTIAL",
+  "COMPLETED",
+  "FAILED",
+  "REJECTED",
+];
+
 export function RunsView({ onOpenRun }: { onOpenRun: (runId: string) => void }) {
   const [showCreate, setShowCreate] = useState(false);
+  const [query, setQuery] = useState("");
+  const [stateFilter, setStateFilter] = useState<(typeof STATE_FILTERS)[number]>("ALL");
   const runs = useApiResource<RunListItem[]>((signal) => listRuns(100, signal), []);
 
   const approve = useApiAction((id: string) => approveRun(id));
@@ -55,6 +69,30 @@ export function RunsView({ onOpenRun }: { onOpenRun: (runId: string) => void }) 
         </div>
       )}
 
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Filter by name or id…"
+          className="w-56 rounded border border-slate-700 bg-slate-900/60 px-2.5 py-1.5 text-xs text-slate-200 outline-none focus:border-cyan-600"
+        />
+        <div className="flex gap-1">
+          {STATE_FILTERS.map((s) => (
+            <button
+              key={s}
+              onClick={() => setStateFilter(s)}
+              className={`rounded border px-2 py-1 font-mono text-[10px] uppercase tracking-wider transition ${
+                stateFilter === s
+                  ? "border-cyan-700 bg-cyan-950/40 text-cyan-300"
+                  : "border-slate-800 text-slate-500 hover:text-slate-300"
+              }`}
+            >
+              {s === "ALL" ? "all" : s.replace("_", " ").toLowerCase()}
+            </button>
+          ))}
+        </div>
+      </div>
+
       <div className="rounded-xl border border-slate-800 bg-[#0a0f1a] p-3">
         <ResourceView
           state={runs}
@@ -62,7 +100,23 @@ export function RunsView({ onOpenRun }: { onOpenRun: (runId: string) => void }) 
           emptyTitle="No runs"
           emptyMessage="The orchestrator has no runs recorded yet."
         >
-          {(rows) => (
+          {(allRows) => {
+            const q = query.trim().toLowerCase();
+            const rows = allRows.filter(
+              (r) =>
+                (stateFilter === "ALL" || r.state === stateFilter) &&
+                (!q || r.name.toLowerCase().includes(q) || r.run_id.toLowerCase().includes(q)),
+            );
+
+            if (rows.length === 0) {
+              return (
+                <p className="py-8 text-center text-xs text-slate-600">
+                  No runs match this filter. {allRows.length} run(s) loaded.
+                </p>
+              );
+            }
+
+            return (
             <table className="w-full text-left text-xs">
               <thead>
                 <tr className="font-mono text-[10px] uppercase tracking-wider text-slate-600">
@@ -125,7 +179,8 @@ export function RunsView({ onOpenRun }: { onOpenRun: (runId: string) => void }) 
                 ))}
               </tbody>
             </table>
-          )}
+            );
+          }}
         </ResourceView>
       </div>
 
