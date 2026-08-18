@@ -1,5 +1,5 @@
 use crate::domain::RunId;
-use crate::engine::RunRecord;
+use crate::engine::{ProjectStream, RunRecord};
 use crate::evidence::LocalEvidenceStore;
 use crate::executor::ExecutorRegistry;
 use crate::policy::PolicyConfig;
@@ -20,6 +20,13 @@ pub struct AppState {
     pub store: Store,
     pub policy: Arc<PolicyConfig>,
     pub evidence: Arc<LocalEvidenceStore>,
+    /// BE-14 (§14) — one `ProjectStream` per project, lazily created on
+    /// first need (a run created in that project, or a subscriber
+    /// connecting to it, whichever happens first). Every run belonging to
+    /// a project fans its real events into the same `ProjectStream`, so a
+    /// `GET /api/v1/projects/{id}/events` WS subscriber sees that
+    /// project's activity across all of its runs, not just one.
+    pub project_streams: Arc<RwLock<HashMap<String, Arc<ProjectStream>>>>,
 }
 
 impl AppState {
@@ -35,6 +42,20 @@ impl AppState {
             store,
             policy: Arc::new(policy),
             evidence: Arc::new(evidence),
+            project_streams: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// Gets or creates the `ProjectStream` for `project_id`. Called both by
+    /// run creation (`api.rs::create_run_core`, to hand the new
+    /// `RunRecord` something real to publish into) and by a subscriber
+    /// connecting before any run in that project has ever existed yet (so
+    /// a subscription never fails just because it was first).
+    pub async fn project_stream(&self, project_id: &str) -> Arc<ProjectStream> {
+        if let Some(ps) = self.project_streams.read().await.get(project_id) {
+            return ps.clone();
+        }
+        let mut map = self.project_streams.write().await;
+        map.entry(project_id.to_string()).or_insert_with(|| Arc::new(ProjectStream::default())).clone()
     }
 }

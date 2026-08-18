@@ -19,3 +19,5 @@ mod store_tests;
 mod engine_tests;
 #[cfg(test)]
 mod api_tests;
+#[cfg(test)]
+mod ws_tests;

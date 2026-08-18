@@ -19,6 +19,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use tokio::sync::broadcast;
 use uuid::Uuid;
 
 /// `/health` is intentionally the only route outside the auth layer (see
@@ -59,7 +60,17 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/projects/:project_id/executions/:run_id/tasks", get(list_run_tasks_scoped))
         .route("/api/v1/projects/:project_id/executions/:run_id/tasks/:task_id", get(get_run_task_detail_scoped))
         .route("/api/v1/projects/:project_id/executions/:run_id/evidence", get(list_evidence_scoped))
-        .route("/api/v1/projects/:project_id/evidence/:evidence_id", get(get_evidence_content_scoped))
+        // BE-15 — API Contract §15.2/§16/§25. `/evidence/:evidence_id` now
+        // returns metadata (Detail), not raw bytes — see
+        // `get_evidence_detail_scoped`'s doc comment; the bytes moved to
+        // the new `/content` sibling, not removed.
+        .route("/api/v1/projects/:project_id/evidence/:evidence_id", get(get_evidence_detail_scoped))
+        .route("/api/v1/projects/:project_id/evidence/:evidence_id/content", get(get_evidence_content_scoped))
+        .route("/api/v1/projects/:project_id/findings", get(list_findings_scoped))
+        .route("/api/v1/projects/:project_id/findings/:finding_id", get(get_finding_detail_scoped))
+        .route("/api/v1/projects/:project_id/findings/:finding_id/analysis", post(get_finding_analysis_scoped))
+        .route("/api/v1/projects/:project_id/findings/:finding_id/review", post(review_finding_scoped))
+        .route("/api/v1/projects/:project_id/audit", get(get_audit_log_scoped))
         // Legacy, flat, unscoped routes — kept fully functional (Step 6: no
         // document calls for removing or redirecting them; see the report's
         // "Route Compatibility" section for the explicit reasoning).
@@ -83,6 +94,12 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/runs/:id/ws", get(ws_handler))
+        // BE-14 (API Contract §14) — project-scoped realtime stream.
+        // Mounted outside the header-based `require_auth` layer for the
+        // same reason `/runs/:id/ws` is: a WebSocket upgrade can't carry
+        // an `Authorization` header, so this authenticates itself via
+        // `?key=` instead (see `project_events_ws_handler`).
+        .route("/api/v1/projects/:project_id/events", get(project_events_ws_handler))
         .merge(protected)
         .with_state(state)
 }
@@ -350,7 +367,14 @@ async fn create_run_core(
         .await
         .map_err(to_500)?;
 
-    let record = RunRecord::new(run_id, &plan, project_id.clone(), Some(ctx.name.clone()), initial_state, policy_notes.clone());
+    // BE-14 — resolve this run's project realtime stream (if any) up front,
+    // so `emit()` can fan every event into it without needing `AppState`
+    // itself (keeps `engine.rs` decoupled from `state.rs`).
+    let project_stream = match &project_id {
+        Some(pid) => Some(state.project_stream(pid).await),
+        None => None,
+    };
+    let record = RunRecord::new(run_id, &plan, project_id.clone(), Some(ctx.name.clone()), initial_state, policy_notes.clone(), project_stream);
     state.runs.write().await.insert(run_id, record.clone());
 
     audit(state, ctx, "run.create", Some(&run_id.to_string()), policy_notes.as_deref(), "ok").await;
@@ -1094,10 +1118,42 @@ async fn list_evidence_scoped(
 }
 
 /// GET /api/v1/projects/:project_id/evidence/:evidence_id — API Contract
-/// §15.2, exact path match. The evidence's *owning run's* project is what
-/// must match the URL, since evidence itself carries no `project_id` of
-/// its own (same resolve-through-the-run pattern the legacy
-/// `get_evidence_content` already uses for authorization).
+/// §15.2 "Evidence Detail". BE-15: this used to serve the raw binary
+/// content directly at this exact path (the same behavior as the legacy
+/// `/evidence/:id/content`) — a genuine path match but not a shape match:
+/// the contract names this "Detail" (metadata, like every other "X Detail"
+/// endpoint in it, e.g. §8.4) and separately says "Large binary artifacts
+/// SHOULD be accessed through secure artifact references rather than
+/// embedded in normal API responses." The raw bytes are still fully
+/// available — moved to the sibling `/content` path below, not removed —
+/// and this path now returns the same `EvidenceRow` metadata shape §15.1's
+/// list endpoint already uses per item.
+async fn get_evidence_detail_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, evidence_id)): ApiPath<(Uuid, Uuid)>,
+) -> Result<Json<crate::store::EvidenceRow>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let (row, run_id) = state
+        .store
+        .get_evidence_by_id(evidence_id)
+        .await
+        .map_err(to_500)?
+        .ok_or_else(|| ApiError::not_found("evidence not found"))?;
+    let run_id = run_id
+        .as_deref()
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .ok_or_else(|| ApiError::not_found("evidence not found"))?;
+    scoped_run_summary(&state, run_id, project_id).await?;
+    Ok(Json(row))
+}
+
+/// GET /api/v1/projects/:project_id/evidence/:evidence_id/content — the
+/// raw binary artifact `get_evidence_detail_scoped` above points at (BE-15;
+/// same body this route served before the split). The evidence's *owning
+/// run's* project is what must match the URL, since evidence itself
+/// carries no `project_id` of its own (same resolve-through-the-run
+/// pattern the legacy `get_evidence_content` already uses).
 async fn get_evidence_content_scoped(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -1126,6 +1182,152 @@ async fn get_evidence_content_scoped(
         bytes,
     )
         .into_response())
+}
+
+// ------------------------------------------------------------- findings
+
+/// GET /api/v1/projects/:project_id/findings — API Contract §16.1.
+/// "Finding" is this backend's real `bug_drafts` entity (title,
+/// description, severity, confidence, `review_state` — including
+/// `NEEDS_REVIEW`, the contract's own required distinction between an AI
+/// hypothesis and a confirmed fact), reused verbatim rather than
+/// reinvented under a new name; see the BE-15 report §2 for the full
+/// reasoning.
+async fn list_findings_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+) -> Result<Json<Vec<crate::store::BugDraftRow>>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let rows = state.store.list_bug_drafts(Some(project_id.to_string().as_str())).await.map_err(to_500)?;
+    Ok(Json(rows))
+}
+
+/// A finding (`bug_drafts` row) carries no `project_id` of its own —
+/// ownership resolves through its failure cluster, exactly like
+/// `review_bug_draft`'s existing project check. Shared so every findings
+/// route below checks it identically.
+async fn require_finding_in_project(state: &AppState, finding_id: Uuid, project_id: Uuid) -> Result<(), ApiError> {
+    let owner = state
+        .store
+        .bug_draft_project(finding_id)
+        .await
+        .map_err(to_500)?
+        .ok_or_else(|| ApiError::not_found("finding not found"))?;
+    require_resource_in_project(Some(owner.as_str()), project_id)
+}
+
+/// GET /api/v1/projects/:project_id/findings/:finding_id — API Contract
+/// §16.2.
+async fn get_finding_detail_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, finding_id)): ApiPath<(Uuid, Uuid)>,
+) -> Result<Json<crate::store::BugDraftRow>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    require_finding_in_project(&state, finding_id, project_id).await?;
+    let row = state
+        .store
+        .get_bug_draft_by_id(finding_id)
+        .await
+        .map_err(to_500)?
+        .ok_or_else(|| ApiError::not_found("finding not found"))?;
+    Ok(Json(row))
+}
+
+/// POST /api/v1/projects/:project_id/findings/:finding_id/analysis — API
+/// Contract §16.3. "Failure analysis may correlate: execution evidence,
+/// environment information, historical failures, logs." This backend's
+/// real, already-computed correlation for a finding is its underlying
+/// failure cluster (root-cause hypothesis, signature, occurrence count,
+/// reproducibility — all real, deterministic output of
+/// `intelligence::classify_failure`, never an LLM call; see that module's
+/// doc comment). No separate "environment"/"log" linkage exists anywhere
+/// in this schema to correlate against, so none is fabricated — see the
+/// BE-15 report for exactly what was and wasn't included and why. No
+/// request body: the contract gives none, and there is nothing to
+/// validate.
+#[derive(Serialize)]
+struct FindingAnalysisResponse {
+    finding: crate::store::BugDraftRow,
+    failure_cluster: crate::store::FailureClusterRow,
+}
+
+async fn get_finding_analysis_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, finding_id)): ApiPath<(Uuid, Uuid)>,
+) -> Result<Json<FindingAnalysisResponse>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    require_finding_in_project(&state, finding_id, project_id).await?;
+    let finding = state
+        .store
+        .get_bug_draft_by_id(finding_id)
+        .await
+        .map_err(to_500)?
+        .ok_or_else(|| ApiError::not_found("finding not found"))?;
+    let failure_cluster = state
+        .store
+        .get_failure_cluster_by_id(finding.failure_cluster_id)
+        .await
+        .map_err(to_500)?
+        .ok_or_else(|| ApiError::internal("finding references a failure cluster that no longer exists"))?;
+    audit(&state, &ctx, "finding.analysis", Some(&finding_id.to_string()), None, "ok").await;
+    Ok(Json(FindingAnalysisResponse { finding, failure_cluster }))
+}
+
+/// POST /api/v1/projects/:project_id/findings/:finding_id/review — not a
+/// Contract §16 endpoint (the contract defines no review/promotion
+/// action), but real, necessary, pre-existing functionality
+/// (`review_bug_draft`/legacy `POST /bug-drafts/:id/review`) with nowhere
+/// else to go under the new scheme; mounted as a sub-resource of the
+/// contract-defined `findings/{finding_id}` the same way Actual BE-9
+/// mounted `/approve`/`/reject`/`/events` under `executions/{run_id}`
+/// (Contract §2.1: "non-breaking additions may remain within the current
+/// version"). Reuses `review_bug_draft`'s exact logic, not a second copy.
+async fn review_finding_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, finding_id)): ApiPath<(Uuid, Uuid)>,
+    ApiJson(body): ApiJson<ReviewBody>,
+) -> Result<StatusCode, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    auth::require_role(&ctx, Role::Operator)?;
+    require_finding_in_project(&state, finding_id, project_id).await?;
+    let new_state = match body.action.as_str() {
+        "confirm" => "CONFIRMED",
+        "dismiss" => "DISMISSED",
+        other => return Err(ApiError::validation(format!("unknown action '{other}', expected 'confirm' or 'dismiss'"))),
+    };
+    state.store.review_bug_draft(finding_id, new_state, &ctx.name).await.map_err(to_500)?;
+    audit(&state, &ctx, "finding.review", Some(&finding_id.to_string()), Some(new_state), "ok").await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ------------------------------------------------------------ audit (§25)
+
+/// GET /api/v1/projects/:project_id/audit — API Contract §25.1. Unlike the
+/// legacy `/admin/audit-log` (global, `Role::Admin`-only), this is a
+/// project's own audit trail — visibility follows the same bar every other
+/// scoped resource in this project uses (`Role::Operator` + project
+/// access), not the global-admin bar, since seeing your own project's
+/// history is not a cross-tenant action. The contract specifies no
+/// per-endpoint role, so this is a resolved (documented, not blocking)
+/// scope decision — see the BE-15 report.
+async fn get_audit_log_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiQuery(q): ApiQuery<AuditQuery>,
+) -> Result<Json<Vec<crate::store::AuditRow>>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    auth::require_role(&ctx, Role::Operator)?;
+    let rows = state
+        .store
+        .list_audit(Some(project_id.to_string().as_str()), q.limit.unwrap_or(100).clamp(1, 1000))
+        .await
+        .map_err(to_500)?;
+    Ok(Json(rows))
 }
 
 // ----------------------------------------------------------- intelligence
@@ -1285,7 +1487,7 @@ async fn get_audit_log(
     ApiQuery(q): ApiQuery<AuditQuery>,
 ) -> Result<Json<Vec<crate::store::AuditRow>>, ApiError> {
     auth::require_role(&ctx, Role::Admin)?;
-    let rows = state.store.list_audit(q.limit.unwrap_or(100).clamp(1, 1000)).await.map_err(to_500)?;
+    let rows = state.store.list_audit(None, q.limit.unwrap_or(100).clamp(1, 1000)).await.map_err(to_500)?;
     Ok(Json(rows))
 }
 
@@ -1344,7 +1546,7 @@ async fn ws_handler(
 }
 
 async fn handle_socket(mut socket: WebSocket, record: Arc<RunRecord>) {
-    let mut rx = record.tx.subscribe();
+    let rx = record.tx.subscribe();
 
     let backlog = record.events.read().await.clone();
     for ev in backlog {
@@ -1357,6 +1559,69 @@ async fn handle_socket(mut socket: WebSocket, record: Arc<RunRecord>) {
         }
     }
 
+    drive_socket(socket, rx).await;
+}
+
+/// BE-14 — API Contract §14. Project-scoped counterpart to `/runs/:id/ws`:
+/// multiplexes every run in this project's real events onto one stream
+/// (Integration Plan §11.2 item 1), keeping the per-run socket above as
+/// internal plumbing rather than replacing it. Auth reuses the exact same
+/// `?key=` technique as the per-run socket (browsers cannot set headers on
+/// a WS upgrade; see that handler's doc comment, and G-WS in the
+/// Integration Plan for the broader, deliberately-not-resolved-here
+/// question of whether that technique should eventually change) and the
+/// same project-access model every REST scoped route already uses
+/// (`auth::require_project_access`) — the project id in the URL does not
+/// itself grant access.
+async fn project_events_ws_handler(
+    State(state): State<AppState>,
+    Path(project_id): Path<Uuid>,
+    Query(q): Query<WsAuthQuery>,
+    ws: WebSocketUpgrade,
+) -> Response {
+    let ctx = match q.key.as_deref() {
+        Some(key) => match state.store.find_api_key_by_hash(&auth::hash_key(key)).await {
+            Ok(Some(row)) => AuthContext {
+                key_id: row.id,
+                name: row.name,
+                role: Role::parse(&row.role),
+                project_id: row.project_id,
+            },
+            _ => return (StatusCode::UNAUTHORIZED, "invalid or revoked API key").into_response(),
+        },
+        None => return (StatusCode::UNAUTHORIZED, "missing ?key= query parameter").into_response(),
+    };
+
+    match state.store.get_project(project_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return (StatusCode::NOT_FOUND, "project not found").into_response(),
+        Err(e) => {
+            tracing::error!("project_events_ws_handler: get_project failed: {e}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+        }
+    }
+    if auth::require_project_access(&ctx, Some(project_id.to_string().as_str())).is_err() {
+        return (StatusCode::FORBIDDEN, "resource belongs to a different project").into_response();
+    }
+
+    // No backlog replay here: unlike a single run's small, bounded event
+    // list, "every event from every run this project has ever had" is not
+    // something to hold in memory or dump on connect. Contract §14/ACC-008
+    // catch-up is `GET .../executions/:run_id/events?since=`, per-run, and
+    // continues to work unchanged (Step 7's honest ordering/delivery
+    // semantics: this stream delivers events occurring *after* a
+    // successful subscription, nothing before it).
+    let stream = state.project_stream(&project_id.to_string()).await;
+    let rx = stream.tx.subscribe();
+    ws.on_upgrade(move |socket| drive_socket(socket, rx))
+}
+
+/// Shared consumption loop for both the per-run and project-scoped
+/// sockets: forward broadcast events to the client, watch for the client
+/// closing, and stop cleanly either way so no subscriber/task/channel is
+/// leaked (dropping `rx` on return unsubscribes it from the `broadcast`
+/// channel automatically).
+async fn drive_socket(mut socket: WebSocket, mut rx: broadcast::Receiver<RunEvent>) {
     loop {
         tokio::select! {
             ev = rx.recv() => {
@@ -1366,7 +1631,24 @@ async fn handle_socket(mut socket: WebSocket, record: Arc<RunRecord>) {
                             break;
                         }
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    // BE-14 (Integration Plan §11.2 item 5 / audit M5) — a
+                    // slow consumer previously `continue`d silently here,
+                    // meaning missed events left no trace at all: a client
+                    // trusting a gap-free stream would be silently wrong.
+                    // Closing with a distinct code makes the gap visible
+                    // and tells the client to reconnect and re-catch-up via
+                    // the REST endpoint, rather than inventing an in-band
+                    // "resync marker" event that never came from real
+                    // execution state.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        let _ = socket
+                            .send(Message::Close(Some(axum::extract::ws::CloseFrame {
+                                code: 4001,
+                                reason: format!("lagged behind by {skipped} events; reconnect and catch up via REST").into(),
+                            })))
+                            .await;
+                        break;
+                    }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }

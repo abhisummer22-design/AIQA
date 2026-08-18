@@ -630,9 +630,11 @@ async fn actual_be9_cross_project_isolation_is_enforced_on_every_scoped_route() 
 }
 
 /// The same isolation, but for evidence specifically addressed by its own
-/// id (`GET /api/v1/projects/:project_id/evidence/:evidence_id`), which
-/// resolves ownership through the evidence's owning run rather than a
-/// direct `project_id` column — the exact path BE-8/legacy
+/// id (`GET /api/v1/projects/:project_id/evidence/:evidence_id` for
+/// metadata, `.../content` for the raw bytes — BE-15 split this path into
+/// the two per API Contract §15.2; see `get_evidence_detail_scoped`'s doc
+/// comment), which resolves ownership through the evidence's owning run
+/// rather than a direct `project_id` column — the exact path BE-8/legacy
 /// `get_evidence_content` already used, now re-verified under the new
 /// scoped route.
 #[tokio::test]
@@ -663,19 +665,32 @@ async fn actual_be9_cross_project_isolation_on_evidence_by_id() {
         .await
         .expect("insert_evidence");
 
-    // B can read its own evidence via the scoped path. Success here is raw
-    // evidence bytes, not JSON (matching the legacy `get_evidence_content`
-    // exactly), so this one assertion bypasses `send`'s JSON parsing.
+    // B can read its own evidence detail (JSON metadata — BE-15) via the
+    // scoped path.
+    let (status, detail) = send(
+        &state,
+        req("GET", &format!("/api/v1/projects/{project_b}/evidence/{evidence_id}"), Some(&owner_b), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={detail}");
+    assert_eq!(detail["id"], evidence_id.to_string());
+    assert_eq!(detail["kind"], "log");
+
+    // ...and the actual bytes via the sibling `/content` path. Success here
+    // is raw evidence bytes, not JSON (matching the legacy
+    // `get_evidence_content` exactly), so this one assertion bypasses
+    // `send`'s JSON parsing.
     let app = router(state.clone());
     let resp = app
-        .oneshot(req("GET", &format!("/api/v1/projects/{project_b}/evidence/{evidence_id}"), Some(&owner_b), None))
+        .oneshot(req("GET", &format!("/api/v1/projects/{project_b}/evidence/{evidence_id}/content"), Some(&owner_b), None))
         .await
         .expect("router call");
     assert_eq!(resp.status(), StatusCode::OK);
     let bytes = resp.into_body().collect().await.expect("collect body").to_bytes();
     assert_eq!(&bytes[..], b"real captured output");
 
-    // A cannot, under either project's path.
+    // A cannot, under either project's path, on either the detail or the
+    // content route.
     let (status, body) = send(
         &state,
         req("GET", &format!("/api/v1/projects/{project_a}/evidence/{evidence_id}"), Some(&owner_a), None),
@@ -686,6 +701,13 @@ async fn actual_be9_cross_project_isolation_on_evidence_by_id() {
     let (status, body) = send(
         &state,
         req("GET", &format!("/api/v1/projects/{project_b}/evidence/{evidence_id}"), Some(&owner_a), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+
+    let (status, body) = send(
+        &state,
+        req("GET", &format!("/api/v1/projects/{project_b}/evidence/{evidence_id}/content"), Some(&owner_a), None),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
@@ -1032,7 +1054,7 @@ async fn be13_cancel_running_execution_succeeds_and_is_auditable() {
     );
 
     // Required audit behavior (Contract §12.3 "auditable").
-    let audit = state.store.list_audit(50).await.expect("list_audit");
+    let audit = state.store.list_audit(None, 50).await.expect("list_audit");
     assert!(
         audit.iter().any(|a| a.action == "run.cancel" && a.target.as_deref() == Some(run_id.as_str()) && a.outcome == "ok"),
         "audit_log must contain a run.cancel entry for this run"
@@ -1207,4 +1229,338 @@ async fn be13_legacy_create_response_shape_is_unchanged() {
     assert_eq!(status, StatusCode::CREATED, "body={created}");
     assert!(created["state"].is_string(), "legacy response must keep its original `state` field; body={created}");
     assert!(created["status"].is_null(), "legacy response must NOT gain the new `status` field; body={created}");
+}
+
+// =============================== BE-15 — Evidence/Findings/Audit contract paths
+
+fn failing_plan(name: &str, task_name: &str) -> Value {
+    serde_json::json!({
+        "name": name,
+        "concurrency": 1,
+        "tasks": [{"id": "t1", "name": task_name, "simulate": {"outcome": "fail", "delay_ms": 0}}],
+    })
+}
+
+/// A finding (`bug_drafts` row) is only drafted once the same normalized
+/// failure signature recurs (`occurrence_count >= 2` — see
+/// `intelligence.rs::record_failure`), so this runs the same failing task
+/// name twice across two separate real runs, then polls until the finding
+/// is actually persisted (ingestion happens after `RunCompleted`, in the
+/// background). Returns the finding id.
+///
+/// Note: `SimulatedExecutor`'s failure reason is the fixed string
+/// "simulated failure" regardless of task name, so the *signature*
+/// clustering is keyed on is identical across every simulated-fail task —
+/// clustering is per `(project_id, signature)`, not per task name. Two
+/// calls to this helper *within the same project* would collapse onto the
+/// same cluster and only the first ever drafts a finding; call it against
+/// a fresh project per distinct finding a test needs.
+async fn make_real_finding(state: &AppState, project: Uuid, owner: &str, task_name: &str) -> Uuid {
+    for i in 0..2 {
+        let (status, _created) = send(
+            state,
+            req("POST", &format!("/api/v1/projects/{project}/executions"), Some(owner), Some(failing_plan(&format!("fail-run-{i}"), task_name))),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
+    for _ in 0..50 {
+        let drafts = state.store.list_bug_drafts(Some(&project.to_string())).await.expect("list_bug_drafts");
+        if let Some(d) = drafts.into_iter().find(|d| d.title.contains(task_name)) {
+            return d.id;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("finding for task '{task_name}' was not drafted in time");
+}
+
+/// Category: valid response + real data (not fabricated) for list/detail.
+#[tokio::test]
+async fn be15_findings_list_and_detail_reflect_real_recurring_failures() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "Findings Real Data").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let finding_id = make_real_finding(&state, project, &owner, "flaky-login-check").await;
+
+    let (status, list) = send(&state, req("GET", &format!("/api/v1/projects/{project}/findings"), Some(&owner), None)).await;
+    assert_eq!(status, StatusCode::OK, "body={list}");
+    let arr = list.as_array().unwrap();
+    assert!(arr.iter().any(|f| f["id"] == finding_id.to_string()), "list={arr:?}");
+
+    let (status, detail) =
+        send(&state, req("GET", &format!("/api/v1/projects/{project}/findings/{finding_id}"), Some(&owner), None)).await;
+    assert_eq!(status, StatusCode::OK, "body={detail}");
+    assert_eq!(detail["id"], finding_id.to_string());
+    assert!(detail["title"].as_str().unwrap().contains("flaky-login-check"), "detail={detail}");
+    // Contract §16.3: uncertain findings use NEEDS_REVIEW, never an
+    // automatically-confirmed defect.
+    assert_eq!(detail["review_state"], "NEEDS_REVIEW", "detail={detail}");
+}
+
+/// Category: "Failure analysis may correlate ... historical failures" —
+/// the response must contain the finding's *real, linked* failure-cluster
+/// data (root cause hypothesis, occurrence count), and the action must be
+/// audited (Contract §25).
+#[tokio::test]
+async fn be15_finding_analysis_correlates_real_failure_cluster_and_is_audited() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "Findings Analysis").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let finding_id = make_real_finding(&state, project, &owner, "flaky-payment-check").await;
+
+    let (status, analysis) = send(
+        &state,
+        req("POST", &format!("/api/v1/projects/{project}/findings/{finding_id}/analysis"), Some(&owner), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={analysis}");
+    assert_eq!(analysis["finding"]["id"], finding_id.to_string(), "analysis={analysis}");
+    assert!(analysis["failure_cluster"]["occurrence_count"].as_i64().unwrap() >= 2, "analysis={analysis}");
+    assert!(analysis["failure_cluster"]["root_cause_hypothesis"].is_string(), "analysis={analysis}");
+
+    let audit = state.store.list_audit(None, 50).await.expect("list_audit");
+    assert!(
+        audit.iter().any(|a| a.action == "finding.analysis" && a.target.as_deref() == Some(finding_id.to_string().as_str())),
+        "audit_log must record the analysis request"
+    );
+}
+
+/// Category: review/promotion transitions + auditability, scoped path.
+/// Two separate projects, not two task names in one — see
+/// `make_real_finding`'s doc comment on why clustering can't distinguish
+/// same-project findings by task name alone with `SimulatedExecutor`.
+#[tokio::test]
+async fn be15_finding_review_scoped_confirms_and_dismisses() {
+    let (state, _dir) = test_state().await;
+    let project_confirm = make_project(&state, "Findings Review Confirm").await;
+    let project_dismiss = make_project(&state, "Findings Review Dismiss").await;
+    let owner_confirm = mint_key(&state, "operator", Some(&project_confirm.to_string())).await;
+    let owner_dismiss = mint_key(&state, "operator", Some(&project_dismiss.to_string())).await;
+
+    let confirm_id = make_real_finding(&state, project_confirm, &owner_confirm, "confirm-me-check").await;
+    let (status, _) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_confirm}/findings/{confirm_id}/review"),
+            Some(&owner_confirm),
+            Some(serde_json::json!({"action": "confirm"})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, detail) = send(
+        &state,
+        req("GET", &format!("/api/v1/projects/{project_confirm}/findings/{confirm_id}"), Some(&owner_confirm), None),
+    )
+    .await;
+    assert_eq!(detail["review_state"], "CONFIRMED", "detail={detail}");
+
+    let dismiss_id = make_real_finding(&state, project_dismiss, &owner_dismiss, "dismiss-me-check").await;
+    let (status, _) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_dismiss}/findings/{dismiss_id}/review"),
+            Some(&owner_dismiss),
+            Some(serde_json::json!({"action": "dismiss"})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, detail) = send(
+        &state,
+        req("GET", &format!("/api/v1/projects/{project_dismiss}/findings/{dismiss_id}"), Some(&owner_dismiss), None),
+    )
+    .await;
+    assert_eq!(detail["review_state"], "DISMISSED", "detail={detail}");
+
+    let audit = state.store.list_audit(None, 50).await.expect("list_audit");
+    assert!(audit.iter().any(|a| a.action == "finding.review" && a.detail.as_deref() == Some("CONFIRMED")));
+    assert!(audit.iter().any(|a| a.action == "finding.review" && a.detail.as_deref() == Some("DISMISSED")));
+
+    // Invalid action is rejected as validation, not silently accepted.
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_confirm}/findings/{confirm_id}/review"),
+            Some(&owner_confirm),
+            Some(serde_json::json!({"action": "nonsense"})),
+        ),
+    )
+    .await;
+    assert_envelope(status, &body, StatusCode::BAD_REQUEST, "VALIDATION_ERROR");
+}
+
+/// Category: cross-project isolation on every findings route + unauthorized
+/// role on review.
+#[tokio::test]
+async fn be15_findings_cross_project_isolation_and_role_check() {
+    let (state, _dir) = test_state().await;
+    let project_a = make_project(&state, "Findings Tenant A").await;
+    let project_b = make_project(&state, "Findings Tenant B").await;
+    let owner_b = mint_key(&state, "operator", Some(&project_b.to_string())).await;
+    let owner_a = mint_key(&state, "operator", Some(&project_a.to_string())).await;
+    let viewer_b = mint_key(&state, "viewer", Some(&project_b.to_string())).await;
+
+    let finding_id = make_real_finding(&state, project_b, &owner_b, "isolation-check").await;
+
+    // A's list must never contain B's finding.
+    let (_, list_a) = send(&state, req("GET", &format!("/api/v1/projects/{project_a}/findings"), Some(&owner_a), None)).await;
+    assert!(list_a.as_array().unwrap().iter().all(|f| f["id"] != finding_id.to_string()), "list_a={list_a}");
+
+    // A cannot read/analyze/review B's finding under B's own project path.
+    let (status, body) =
+        send(&state, req("GET", &format!("/api/v1/projects/{project_b}/findings/{finding_id}"), Some(&owner_a), None)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+
+    let (status, body) = send(
+        &state,
+        req("POST", &format!("/api/v1/projects/{project_b}/findings/{finding_id}/analysis"), Some(&owner_a), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_b}/findings/{finding_id}/review"),
+            Some(&owner_a),
+            Some(serde_json::json!({"action": "confirm"})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+
+    // B's own viewer key (right project, insufficient role) cannot review.
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_b}/findings/{finding_id}/review"),
+            Some(&viewer_b),
+            Some(serde_json::json!({"action": "confirm"})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+
+    // Finding remains untouched by every rejected attempt.
+    let (_, detail) =
+        send(&state, req("GET", &format!("/api/v1/projects/{project_b}/findings/{finding_id}"), Some(&owner_b), None)).await;
+    assert_eq!(detail["review_state"], "NEEDS_REVIEW", "detail={detail}");
+}
+
+/// Category: missing auth + nonexistent project/finding.
+#[tokio::test]
+async fn be15_findings_require_authentication_and_reject_nonexistent_resources() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "Findings Missing").await;
+    let admin = mint_key(&state, "admin", None).await;
+    let phantom_project = Uuid::new_v4();
+    let phantom_finding = Uuid::new_v4();
+
+    let (status, body) = send(&state, req("GET", &format!("/api/v1/projects/{project}/findings"), None, None)).await;
+    assert_envelope(status, &body, StatusCode::UNAUTHORIZED, "UNAUTHENTICATED");
+
+    let (status, body) =
+        send(&state, req("GET", &format!("/api/v1/projects/{phantom_project}/findings"), Some(&admin), None)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
+
+    let (status, body) =
+        send(&state, req("GET", &format!("/api/v1/projects/{project}/findings/{phantom_finding}"), Some(&admin), None)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
+}
+
+/// Category: §15.2 response-shape split. Detail is metadata (no raw
+/// bytes embedded); the sibling `/content` path is where the actual
+/// artifact lives.
+#[tokio::test]
+async fn be15_evidence_detail_is_metadata_not_raw_bytes() {
+    let (state, dir) = test_state().await;
+    let project = make_project(&state, "Evidence Shape").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (_, created) =
+        send(&state, req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&owner), Some(simple_plan("ev-run")))).await;
+    let run_id: Uuid = created["run_id"].as_str().unwrap().parse().unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let evidence_store = crate::evidence::LocalEvidenceStore::new(dir.path().join("evidence")).unwrap();
+    let (object_key, size) = evidence_store.put(&run_id.to_string(), "t1", "log", "shape-check bytes").unwrap();
+    let evidence_id = state.store.insert_evidence(run_id, "t1", "log", &object_key, "text/plain", size).await.unwrap();
+
+    let (status, detail) =
+        send(&state, req("GET", &format!("/api/v1/projects/{project}/evidence/{evidence_id}"), Some(&owner), None)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail["size_bytes"], size, "detail={detail}");
+    assert_eq!(detail["content_type"], "text/plain", "detail={detail}");
+    assert!(detail.get("object_key").is_some(), "detail must be the real EvidenceRow metadata, not a raw byte string; detail={detail}");
+}
+
+/// Category: project-scoped audit list, isolation, role bar (Operator, not
+/// Admin-only like the legacy global route), and legacy-route regression.
+#[tokio::test]
+async fn be15_audit_log_scoped_to_project_and_isolated() {
+    let (state, _dir) = test_state().await;
+    let project_a = make_project(&state, "Audit Tenant A").await;
+    let project_b = make_project(&state, "Audit Tenant B").await;
+    let owner_a = mint_key(&state, "operator", Some(&project_a.to_string())).await;
+    let owner_b = mint_key(&state, "operator", Some(&project_b.to_string())).await;
+
+    // Real audited actions in each project.
+    send(&state, req("POST", &format!("/api/v1/projects/{project_a}/executions"), Some(&owner_a), Some(simple_plan("audit-a")))).await;
+    send(&state, req("POST", &format!("/api/v1/projects/{project_b}/executions"), Some(&owner_b), Some(simple_plan("audit-b")))).await;
+
+    let (status, log_a) = send(&state, req("GET", &format!("/api/v1/projects/{project_a}/audit"), Some(&owner_a), None)).await;
+    assert_eq!(status, StatusCode::OK, "body={log_a}");
+    let entries_a = log_a.as_array().unwrap();
+    assert!(!entries_a.is_empty(), "project A must see its own audit entries");
+    assert!(
+        entries_a.iter().all(|e| e["project_id"] == project_a.to_string()),
+        "project A's audit view must never include another project's rows; entries={entries_a:?}"
+    );
+
+    // Cross-project blocked.
+    let (status, body) = send(&state, req("GET", &format!("/api/v1/projects/{project_b}/audit"), Some(&owner_a), None)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+
+    // Nonexistent project.
+    let phantom = Uuid::new_v4();
+    let (status, body) = send(&state, req("GET", &format!("/api/v1/projects/{phantom}/audit"), Some(&owner_a), None)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
+
+    // Missing auth.
+    let (status, body) = send(&state, req("GET", &format!("/api/v1/projects/{project_a}/audit"), None, None)).await;
+    assert_envelope(status, &body, StatusCode::UNAUTHORIZED, "UNAUTHENTICATED");
+}
+
+/// Category: legacy-route regression — the pre-existing global
+/// `/admin/audit-log` (Admin-only) and `/bug-drafts`/`/bug-drafts/:id/review`
+/// must keep working exactly as before BE-15.
+#[tokio::test]
+async fn be15_legacy_admin_audit_log_and_bug_drafts_still_work() {
+    let (state, _dir) = test_state().await;
+    let admin = mint_key(&state, "admin", None).await;
+    let operator = mint_key(&state, "operator", None).await;
+
+    let (status, _) = send(&state, req("POST", "/runs", Some(&admin), Some(simple_plan("legacy-audit-seed")))).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, log) = send(&state, req("GET", "/admin/audit-log", Some(&admin), None)).await;
+    assert_eq!(status, StatusCode::OK, "body={log}");
+    assert!(!log.as_array().unwrap().is_empty());
+
+    // Still admin-only, unchanged.
+    let (status, body) = send(&state, req("GET", "/admin/audit-log", Some(&operator), None)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+
+    let (status, drafts) = send(&state, req("GET", "/bug-drafts", Some(&admin), None)).await;
+    assert_eq!(status, StatusCode::OK, "body={drafts}");
+    assert!(drafts.is_array());
 }

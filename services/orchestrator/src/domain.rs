@@ -298,4 +298,24 @@ pub struct RunEvent {
     pub event_type: EventType,
     pub status: Option<TaskStatus>,
     pub summary: Option<String>,
+    /// BE-14 (API Contract §14 envelope) — the run's owning project, filled
+    /// in by `RunRecord::emit` from real, already-known state (never
+    /// fabricated). `None` for an untenanted run, and also `None` for an
+    /// event reconstructed from `run_events` via `list_events_since` — that
+    /// table has no `project_id` column (denormalizing it there was not a
+    /// genuine BE-14 requirement; see the BE-14 report), so a DB-reloaded
+    /// event honestly omits it rather than guessing.
+    #[serde(default)]
+    pub project_id: Option<String>,
+    /// BE-14 (§11.2 item 4 of the Integration Plan's own Realtime
+    /// Strategy) — a *separate*, project-wide monotonic counter, distinct
+    /// from `sequence` above (which stays run-local, exactly as every
+    /// existing per-run catch-up/replay consumer already depends on). Only
+    /// set on the copy published to a project's realtime stream
+    /// (`AppState::project_stream`); `None` everywhere else — merging two
+    /// concurrent runs' events by their own per-run `sequence` would
+    /// collide (both start at 0), which is exactly the bug this field
+    /// avoids for project-scoped subscribers.
+    #[serde(default)]
+    pub project_sequence: Option<u64>,
 }

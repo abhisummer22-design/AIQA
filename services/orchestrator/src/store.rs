@@ -328,6 +328,11 @@ impl Store {
                     .get::<Option<String>, _>("status")
                     .map(|s| TaskStatus::from_db_str(&s)),
                 summary: r.get("summary"),
+                // BE-14 — `run_events` has no `project_id` column (see
+                // `RunEvent`'s doc comment); honestly `None` rather than
+                // guessed for an event reconstructed from the DB.
+                project_id: None,
+                project_sequence: None,
             })
             .collect())
     }
@@ -663,6 +668,37 @@ impl Store {
             .fetch_optional(&self.pool)
             .await?;
         Ok(row.map(|r| (r.get("object_key"), r.get("content_type"), r.get("run_id"))))
+    }
+
+    /// BE-15 (§15.2 Evidence Detail) — the metadata row for one evidence
+    /// item plus its owning run id (for the project-ownership check every
+    /// other scoped resource already does). The real binary content stays
+    /// behind the sibling `/content` endpoint (`get_evidence_object_key` +
+    /// `evidence.rs`), per the contract's own "large binary artifacts
+    /// SHOULD be accessed through secure artifact references rather than
+    /// embedded in normal API responses."
+    pub async fn get_evidence_by_id(&self, id: Uuid) -> Result<Option<(EvidenceRow, Option<String>)>> {
+        let row = sqlx::query(
+            "SELECT id, task_id, kind, object_key, content_type, size_bytes, created_at, run_id FROM evidence WHERE id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| {
+            let run_id: Option<String> = r.get("run_id");
+            (
+                EvidenceRow {
+                    id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap_or_default(),
+                    task_id: r.get("task_id"),
+                    kind: r.get("kind"),
+                    object_key: r.get("object_key"),
+                    content_type: r.get("content_type"),
+                    size_bytes: r.get::<i64, _>("size_bytes"),
+                    created_at: parse_ts(&r.get::<String, _>("created_at")),
+                },
+                run_id,
+            )
+        }))
     }
 
     // ----------------------------------------------------------- auth/keys
@@ -1053,6 +1089,31 @@ impl Store {
             .collect())
     }
 
+    /// BE-15 (§16.2/§16.3 — "Finding" detail/analysis). A finding's
+    /// underlying failure cluster (the real, existing root-cause
+    /// hypothesis/reproducibility/occurrence data), fetched by the
+    /// cluster's own id.
+    pub async fn get_failure_cluster_by_id(&self, id: Uuid) -> Result<Option<FailureClusterRow>> {
+        let row = sqlx::query(
+            "SELECT id, signature, first_seen_at, last_seen_at, occurrence_count, root_cause_hypothesis, confidence, reproducibility, review_state
+             FROM failure_clusters WHERE id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| FailureClusterRow {
+            id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap_or_default(),
+            signature: r.get("signature"),
+            first_seen_at: parse_ts(&r.get::<String, _>("first_seen_at")),
+            last_seen_at: parse_ts(&r.get::<String, _>("last_seen_at")),
+            occurrence_count: r.get("occurrence_count"),
+            root_cause_hypothesis: r.get("root_cause_hypothesis"),
+            confidence: r.get("confidence"),
+            reproducibility: r.get("reproducibility"),
+            review_state: r.get("review_state"),
+        }))
+    }
+
     pub async fn has_bug_draft_for_cluster(&self, cluster_id: Uuid) -> Result<bool> {
         let row = sqlx::query("SELECT COUNT(*) as c FROM bug_drafts WHERE failure_cluster_id = ?")
             .bind(cluster_id.to_string())
@@ -1152,6 +1213,29 @@ impl Store {
     /// can reject a cross-project mutation *before* it happens. Returns
     /// `None` when the draft does not exist. An untenanted cluster resolves
     /// to `"default"`, matching `intelligence::tenant_key`.
+    /// BE-15 (§16.2 Finding Detail) — a single finding by id.
+    pub async fn get_bug_draft_by_id(&self, id: Uuid) -> Result<Option<BugDraftRow>> {
+        let row = sqlx::query(
+            "SELECT id, failure_cluster_id, title, description, severity, confidence, review_state, created_at, promoted_at, promoted_by
+             FROM bug_drafts WHERE id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| BugDraftRow {
+            id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap_or_default(),
+            failure_cluster_id: Uuid::parse_str(&r.get::<String, _>("failure_cluster_id")).unwrap_or_default(),
+            title: r.get("title"),
+            description: r.get("description"),
+            severity: r.get("severity"),
+            confidence: r.get("confidence"),
+            review_state: r.get("review_state"),
+            created_at: parse_ts(&r.get::<String, _>("created_at")),
+            promoted_at: parse_ts_opt(r.get("promoted_at")),
+            promoted_by: r.get("promoted_by"),
+        }))
+    }
+
     pub async fn bug_draft_project(&self, id: Uuid) -> Result<Option<String>> {
         let row = sqlx::query(
             "SELECT COALESCE(c.project_id, 'default') as project_id
@@ -1208,14 +1292,34 @@ impl Store {
         Ok(())
     }
 
-    pub async fn list_audit(&self, limit: i64) -> Result<Vec<AuditRow>> {
-        let rows = sqlx::query(
-            "SELECT occurred_at, actor, role, project_id, action, target, detail, outcome
-             FROM audit_log ORDER BY occurred_at DESC LIMIT ?",
-        )
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await?;
+    /// BE-15 (§25.1) — `project_filter: Some(pid)` restricts to that
+    /// project's own audit rows (`project_id = ?`, no "default" sentinel:
+    /// unlike `quality_nodes`, a `NULL` audit row genuinely means "no
+    /// project context" — an admin action — and correctly never matches a
+    /// real project's scoped view). `None` is the legacy unscoped
+    /// behavior (`/admin/audit-log`), unchanged.
+    pub async fn list_audit(&self, project_filter: Option<&str>, limit: i64) -> Result<Vec<AuditRow>> {
+        let rows = match project_filter {
+            Some(pid) => {
+                sqlx::query(
+                    "SELECT occurred_at, actor, role, project_id, action, target, detail, outcome
+                     FROM audit_log WHERE project_id = ? ORDER BY occurred_at DESC LIMIT ?",
+                )
+                .bind(pid)
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await?
+            }
+            None => {
+                sqlx::query(
+                    "SELECT occurred_at, actor, role, project_id, action, target, detail, outcome
+                     FROM audit_log ORDER BY occurred_at DESC LIMIT ?",
+                )
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await?
+            }
+        };
         Ok(rows
             .into_iter()
             .map(|r| AuditRow {
