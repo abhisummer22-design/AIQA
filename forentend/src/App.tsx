@@ -7,6 +7,7 @@ import React from 'react';
 import { BrowserRouter } from 'react-router-dom';
 import { AIQAProvider } from './context/AIQAContext';
 import { AuthProvider } from './context/AuthContext';
+import { ProjectProvider } from './context/ProjectContext';
 import { Header } from './components/layout/Header';
 import { Sidebar } from './components/layout/Sidebar';
 import { CommandPalette } from './components/layout/CommandPalette';
@@ -33,17 +34,25 @@ const MainContentArea: React.FC = () => (
  */
 export const AppShell: React.FC = () => (
   <AuthProvider>
-    <AIQAProvider>
-      <div className="flex flex-col h-screen w-screen overflow-hidden bg-[#020617] text-slate-100 font-sans">
-        <Header />
-        <div className="flex flex-1 overflow-hidden relative">
-          <Sidebar />
-          <MainContentArea />
+    {/* FE-5: project scope depends on real auth state (`useAuth()` inside
+        `ProjectProvider`), so it must sit inside `AuthProvider` and outside
+        everything that wants to read it — `AIQAProvider` included, even
+        though `AIQAProvider`'s own project data remains its separate,
+        pre-existing fabricated set (see `ProjectContext.tsx`'s own
+        top-level comment). */}
+    <ProjectProvider>
+      <AIQAProvider>
+        <div className="flex flex-col h-screen w-screen overflow-hidden bg-[#020617] text-slate-100 font-sans">
+          <Header />
+          <div className="flex flex-1 overflow-hidden relative">
+            <Sidebar />
+            <MainContentArea />
+          </div>
+          <CommandPalette />
+          <RunTriggerModal />
         </div>
-        <CommandPalette />
-        <RunTriggerModal />
-      </div>
-    </AIQAProvider>
+      </AIQAProvider>
+    </ProjectProvider>
   </AuthProvider>
 );
 

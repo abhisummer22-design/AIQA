@@ -30,6 +30,7 @@ import {
   Cpu,
 } from 'lucide-react';
 import { useAIQA } from '../../context/AIQAContext';
+import { useProject } from '../../context/ProjectContext';
 import { DocumentUploadSection } from '../test-generator/DocumentUploadSection';
 import { ApplicationSourceSection } from '../test-generator/ApplicationSourceSection';
 import { GenerationConfigSection, TEST_CATEGORIES } from '../test-generator/GenerationConfigSection';
@@ -45,6 +46,16 @@ import {
 
 // FE-4: the one, minimal, non-visual routing change made to this
 // product-owner-designed page — see `handleExportToExecution` below.
+//
+// FE-5: every generation call in this page is entirely local/simulated
+// (`handleTriggerGenerate`'s own `setTimeout` pipeline below) — there is no
+// real `aiqaApi` call anywhere in this file, so brief §12's "project-
+// dependent actions must use the selected project when the real backend
+// contract requires it" currently has nothing to wire (no such real,
+// project-scoped action exists yet on this page). `realProjectId` is
+// exposed for exactly that future wiring and, in the meantime, used as a
+// remount key so an in-progress local generation session is not silently
+// carried over to a different real project scope.
 export const TestCaseGeneratorPage: React.FC = () => {
   const {
     activeGenerationSession,
@@ -53,6 +64,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
     currentEnvironment,
     addActivity,
   } = useAIQA();
+  const { selectedProjectId: realProjectId } = useProject();
   const navigate = useNavigate();
 
   // Navigation Branch Tab ('SOURCES_AND_GENERATION' | 'GENERATED_CASES')
@@ -504,7 +516,11 @@ export const TestCaseGeneratorPage: React.FC = () => {
   };
 
   return (
-    <div id="aiqa-test-case-generator-page" className="space-y-4 animate-in fade-in duration-200 text-slate-200">
+    <div
+      id="aiqa-test-case-generator-page"
+      key={realProjectId ?? 'no-real-project-selected'}
+      className="space-y-4 animate-in fade-in duration-200 text-slate-200"
+    >
       {/* 1. Page Header */}
       <header
         id="test-generator-header"

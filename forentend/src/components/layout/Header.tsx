@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { useAIQA } from '../../context/AIQAContext';
 import { Environment } from '../../types';
+import { ProjectSelector } from '../project/ProjectSelector';
 
 export const Header: React.FC = () => {
   const {
@@ -134,6 +135,15 @@ export const Header: React.FC = () => {
             </div>
           )}
         </div>
+
+        {/* FE-5: real, global project scope — see `ProjectSelector.tsx`.
+            Placed here (global top header, next to the existing environment
+            selector it visually mirrors) per this sprint's brief §10:
+            "prefer integrating into an existing header/sidebar area already
+            intended for contextual controls" — least invasive, no layout
+            redesign. */}
+        <div className="hidden sm:block h-4 w-[1px] bg-slate-800 mx-1" />
+        <ProjectSelector />
       </div>
 
       {/* Center: Command Palette Trigger */}

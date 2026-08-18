@@ -25,6 +25,7 @@ import {
   Cpu,
 } from 'lucide-react';
 import { useAIQA } from '../../context/AIQAContext';
+import { useProject } from '../../context/ProjectContext';
 import { AIQualityCoreOrb } from '../dashboard/AIQualityCoreOrb';
 import { ProjectStatusDonut } from '../dashboard/ProjectStatusDonut';
 import { ProjectExecutionGraph } from '../dashboard/ProjectExecutionGraph';
@@ -34,6 +35,22 @@ import { ProjectStatus } from '../../types';
 // product-owner-designed page — the "Execution Hub" quick-action below now
 // navigates via the real router instead of the old in-memory `activePage`
 // setter. No markup, styling, or interaction was altered.
+//
+// FE-5: this page's own header selector, KPI cards, and every field read
+// off `selectedProject` below (`.metrics`, `.activeRun`, `.environment`,
+// `.slug`, `.timelineData`, ...) are `AIQAContext`'s pre-existing fabricated
+// `AIQAProject` demo data — none of those fields exist on the real backend
+// `Project` type (`{id, name, description, created_at, updated_at}`), and
+// this sprint's brief explicitly forbids both inventing them and
+// prematurely wiring real per-project KPI endpoints here (brief §11/§12).
+// So this page's own selector/data is left exactly as FE-4 left it. The
+// one real, non-visual integration point is `realProjectId` below, used
+// only as a remount key: if the real global project scope changes, this
+// page's local component state (branch/tab selections, in-progress local
+// UI state) resets rather than silently continuing to display against a
+// project it no longer reflects — this is what "know the current project /
+// don't retain stale project-specific info after switching" (brief §11)
+// means for a page whose visible data is still 100% fabricated.
 export const DashboardPage: React.FC = () => {
   const {
     projects,
@@ -43,6 +60,7 @@ export const DashboardPage: React.FC = () => {
     setNewRunModalOpen,
     backendState,
   } = useAIQA();
+  const { selectedProjectId: realProjectId } = useProject();
   const navigate = useNavigate();
 
   // Color helper for project status
@@ -93,6 +111,7 @@ export const DashboardPage: React.FC = () => {
   return (
     <div
       id="aiqa-dashboard-main-content"
+      key={realProjectId ?? 'no-real-project-selected'}
       className="space-y-4 animate-in fade-in duration-200 text-slate-200"
     >
       {/* 1. Header with Project Selector */}
