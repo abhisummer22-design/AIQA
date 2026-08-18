@@ -10,6 +10,7 @@
  */
 
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Sparkles,
   Layers,
@@ -42,15 +43,17 @@ import {
   GeneratedTestCase,
 } from '../../types';
 
+// FE-4: the one, minimal, non-visual routing change made to this
+// product-owner-designed page — see `handleExportToExecution` below.
 export const TestCaseGeneratorPage: React.FC = () => {
   const {
     activeGenerationSession,
     setActiveGenerationSession,
     triggerNewRun,
-    setActivePage,
     currentEnvironment,
     addActivity,
   } = useAIQA();
+  const navigate = useNavigate();
 
   // Navigation Branch Tab ('SOURCES_AND_GENERATION' | 'GENERATED_CASES')
   const [activeBranch, setActiveBranch] = useState<'SOURCES_AND_GENERATION' | 'GENERATED_CASES'>(
@@ -497,7 +500,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
       executor: 'k8s-runner-pool-us',
       concurrency: 8,
     });
-    setActivePage('execution');
+    navigate('/execution');
   };
 
   return (

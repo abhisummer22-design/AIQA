@@ -5,7 +5,6 @@
 
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import {
-  NavPage,
   AIQAStatus,
   Environment,
   BackendConnectionState,
@@ -25,8 +24,10 @@ import {
 } from '../types';
 
 interface AIQAContextType {
-  activePage: NavPage;
-  setActivePage: (page: NavPage) => void;
+  // FE-4: `activePage`/`setActivePage` were removed from here — the real
+  // URL (via react-router) is now the single source of truth for "which
+  // page is active"; see `routes/AppRoutes.tsx` and `types.ts`'s `NavPage`
+  // (still used to key routes, just no longer mirrored into this context).
   isSidebarCollapsed: boolean;
   setIsSidebarCollapsed: (collapsed: boolean) => void;
   toggleSidebar: () => void;
@@ -153,7 +154,6 @@ const defaultSettings: SystemSettings = {
 const AIQAContext = createContext<AIQAContextType | undefined>(undefined);
 
 export const AIQAProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [activePage, setActivePage] = useState<NavPage>('dashboard');
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
   const [currentEnvironment, setCurrentEnvironment] = useState<Environment>('staging');
   const [isCommandPaletteOpen, setCommandPaletteOpen] = useState<boolean>(false);
@@ -1136,8 +1136,6 @@ export const AIQAProvider: React.FC<{ children: React.ReactNode }> = ({ children
   return (
     <AIQAContext.Provider
       value={{
-        activePage,
-        setActivePage,
         isSidebarCollapsed,
         setIsSidebarCollapsed,
         toggleSidebar,

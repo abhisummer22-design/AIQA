@@ -17,11 +17,109 @@ import {
   Check,
   Save,
   RotateCcw,
-  ExternalLink
+  ExternalLink,
+  Loader2,
 } from 'lucide-react';
 import { useAIQA } from '../../context/AIQAContext';
+import { useAuth } from '../../context/AuthContext';
+import { renderAuthState } from '../state/StateViews';
 import { SectionHeader } from '../common/SectionHeader';
 import { SystemSettings } from '../../types';
+
+/**
+ * FE-2/FE-3 — the real orchestrator credential panel. Everything else on
+ * this tab (SSO toggle, "Control Plane Daemon API Token" card below) is
+ * pre-existing fabricated content unrelated to this backend's actual
+ * authentication model and is left exactly as-is per this sprint's
+ * explicit "do not remove existing fake data" instruction; this panel is
+ * additive, not a replacement.
+ *
+ * FE-3: the status card (badge/icon/title/description/actions) is no
+ * longer drawn here — it's `renderAuthState` from `components/state/
+ * StateViews.tsx`, the single state-to-component mapping every consumer
+ * shares. This component now only owns what is genuinely
+ * Settings-page-specific: the key-entry input and its Save/Replace button,
+ * wired in via the `onConfigure` callback.
+ */
+const OrchestratorAuthPanel: React.FC = () => {
+  const auth = useAuth();
+  const { hasKey, saveKey } = auth;
+  const [inputValue, setInputValue] = useState('');
+  const [showInput, setShowInput] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async () => {
+    const trimmed = inputValue.trim();
+    if (!trimmed) return;
+    setSaving(true);
+    try {
+      await saveKey(trimmed);
+      // The raw value never lingers in component state once saved — only
+      // the masked form (read from storage via `maskedKey`) is ever shown
+      // again (this sprint's brief §4, §6).
+      setInputValue('');
+      setShowInput(false);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-1.5 text-slate-200 font-semibold text-xs">
+        <Key className="w-3.5 h-3.5 text-indigo-400" />
+        AIQA Orchestrator API Key
+      </div>
+      <div className="text-slate-400 text-[11px] -mt-2">
+        Real backend credential (Bearer token) — <code className="font-mono">services/orchestrator</code>, opaque{' '}
+        <code className="font-mono">aiqa_&lt;hex&gt;</code> keys, roles viewer / operator / admin.
+      </div>
+
+      {renderAuthState(auth, { onConfigure: () => setShowInput(true) })}
+
+      {(!hasKey || showInput) ? (
+        // A plain <div>, not <form> — this panel is rendered inside the
+        // Settings page's own outer <form> (its unrelated, pre-existing
+        // "Save Settings" submit), and nested <form> elements are invalid
+        // HTML with undefined submit behavior across browsers.
+        <div className="flex items-center gap-2">
+          <input
+            type="password"
+            autoComplete="off"
+            spellCheck={false}
+            value={inputValue}
+            onChange={(e) => setInputValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                void handleSave();
+              }
+            }}
+            placeholder="aiqa_..."
+            className="flex-1 px-2.5 py-1.5 rounded-md bg-[#0B1120] border border-slate-700 text-slate-200 focus:border-indigo-500 focus:outline-none font-mono text-xs"
+          />
+          <button
+            type="button"
+            onClick={() => void handleSave()}
+            disabled={!inputValue.trim() || saving}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs shadow-sm shadow-indigo-950/60 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Key className="w-3.5 h-3.5" />}
+            {hasKey ? 'Replace Key' : 'Save Key'}
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setShowInput(true)}
+          className="text-[11px] font-medium text-indigo-400 hover:text-indigo-300 cursor-pointer"
+        >
+          Enter a different key…
+        </button>
+      )}
+    </div>
+  );
+};
 
 type SettingsTab =
   | 'general'
@@ -191,6 +289,8 @@ export const SettingsPage: React.FC = () => {
                   <h3 className="text-xs font-bold text-slate-100 uppercase font-mono">Authentication & Identity Providers</h3>
                   <p className="text-slate-400 text-xs mt-0.5">Enterprise SAML SSO and control plane service tokens</p>
                 </div>
+
+                <OrchestratorAuthPanel />
 
                 <div className="p-3 rounded-lg bg-[#020617] border border-slate-800 space-y-2.5">
                   <label className="flex items-center justify-between cursor-pointer">

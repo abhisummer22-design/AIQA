@@ -4,6 +4,7 @@
  */
 
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   X,
   Play,
@@ -22,8 +23,8 @@ export const RunTriggerModal: React.FC = () => {
     setNewRunModalOpen,
     currentEnvironment,
     triggerNewRun,
-    setActivePage,
   } = useAIQA();
+  const navigate = useNavigate();
 
   const [title, setTitle] = useState('Manual QA Verification Suite');
   const [environment, setEnvironment] = useState<Environment>(currentEnvironment);
@@ -48,7 +49,7 @@ export const RunTriggerModal: React.FC = () => {
       concurrency,
     });
     setNewRunModalOpen(false);
-    setActivePage('execution');
+    navigate('/execution');
   };
 
   return (

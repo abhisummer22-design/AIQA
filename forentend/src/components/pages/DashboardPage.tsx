@@ -5,6 +5,7 @@
  */
 
 import React from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Layers,
   Play,
@@ -29,16 +30,20 @@ import { ProjectStatusDonut } from '../dashboard/ProjectStatusDonut';
 import { ProjectExecutionGraph } from '../dashboard/ProjectExecutionGraph';
 import { ProjectStatus } from '../../types';
 
+// FE-4: this is the one, minimal, non-visual routing change made to this
+// product-owner-designed page — the "Execution Hub" quick-action below now
+// navigates via the real router instead of the old in-memory `activePage`
+// setter. No markup, styling, or interaction was altered.
 export const DashboardPage: React.FC = () => {
   const {
     projects,
     selectedProjectId,
     setSelectedProjectId,
     selectedProject,
-    setActivePage,
     setNewRunModalOpen,
     backendState,
   } = useAIQA();
+  const navigate = useNavigate();
 
   // Color helper for project status
   const getStatusBadge = (status: ProjectStatus) => {
@@ -333,7 +338,7 @@ export const DashboardPage: React.FC = () => {
 
             {/* Quick Action Button to Execution Hub */}
             <button
-              onClick={() => setActivePage('execution')}
+              onClick={() => navigate('/execution')}
               className="flex items-center gap-1 text-xs text-indigo-400 hover:text-indigo-300 font-medium font-mono cursor-pointer self-start sm:self-center"
             >
               <span>Execution Hub</span>

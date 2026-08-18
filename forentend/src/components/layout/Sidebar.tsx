@@ -1,62 +1,23 @@
 /**
  * AIQA Sidebar Navigation Component
  * Contains strictly the 8 primary navigation items with expanded/collapsed modes
+ *
+ * FE-4: the nav item list is no longer hardcoded here — it's read from
+ * `routes/routeConfig.tsx`, the single source every navigation surface
+ * shares. Active state and click-navigation are driven by the real URL
+ * (`useLocation`/`useNavigate`), not the old in-memory `activePage`.
  */
 
 import React from 'react';
-import {
-  LayoutDashboard,
-  Sparkles,
-  Workflow,
-  CheckCheck,
-  PlayCircle,
-  ShieldCheck,
-  Network,
-  Smartphone,
-  Sliders,
-  Layers,
-  FileText,
-  Settings,
-  ChevronLeft,
-  ChevronRight,
-  Activity,
-  Cpu,
-} from 'lucide-react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { ChevronLeft, ChevronRight, Activity, Cpu } from 'lucide-react';
 import { useAIQA } from '../../context/AIQAContext';
-import { NavPage } from '../../types';
-
-interface NavItemDef {
-  id: NavPage;
-  label: string;
-  icon: React.ComponentType<{ className?: string }>;
-  badge?: string;
-  badgeType?: 'info' | 'warning' | 'live';
-}
-
-const navItems: NavItemDef[] = [
-  { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { id: 'generator', label: 'Test Case Generator', icon: Sparkles, badge: 'AI' },
-  { id: 'orchestrator', label: 'AIQA Orchestrator', icon: Workflow, badge: 'PLAN' },
-  { id: 'validator', label: 'Test Case Validator', icon: CheckCheck, badge: 'GATE' },
-  { id: 'execution', label: 'Test Execution Hub', icon: PlayCircle, badge: 'LIVE', badgeType: 'live' },
-  { id: 'rbac', label: 'RBAC Testing', icon: ShieldCheck },
-  { id: 'api-testing', label: 'API Testing', icon: Network },
-  { id: 'mobile-testing', label: 'Mobile Testing', icon: Smartphone },
-  { id: 'custom', label: 'Custom Testing', icon: Sliders },
-  { id: 'feature-map', label: 'Feature Map / Flow', icon: Layers },
-  { id: 'reports', label: 'Reports', icon: FileText },
-  { id: 'settings', label: 'Settings / AI Model', icon: Settings },
-];
+import { routeDefs } from '../../routes/routeConfig';
 
 export const Sidebar: React.FC = () => {
-  const {
-    activePage,
-    setActivePage,
-    isSidebarCollapsed,
-    toggleSidebar,
-    runs,
-    settings,
-  } = useAIQA();
+  const { isSidebarCollapsed, toggleSidebar, runs, settings } = useAIQA();
+  const navigate = useNavigate();
+  const location = useLocation();
 
   // Find running count for live indicator
   const runningCount = runs.filter((r) => r.status === 'RUNNING').length;
@@ -112,15 +73,15 @@ export const Sidebar: React.FC = () => {
             Navigation Plane
           </div>
         )}
-        {navItems.map((item) => {
+        {routeDefs.map((item) => {
           const Icon = item.icon;
-          const isActive = activePage === item.id;
+          const isActive = location.pathname === item.path;
 
           return (
             <button
               key={item.id}
               id={`nav-item-${item.id}`}
-              onClick={() => setActivePage(item.id)}
+              onClick={() => navigate(item.path)}
               className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-xs font-medium transition-all group relative cursor-pointer ${
                 isActive
                   ? 'bg-indigo-600 text-white font-semibold shadow-sm shadow-indigo-950/60'
