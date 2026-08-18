@@ -15,6 +15,8 @@ export type NavPage =
   | 'custom'
   | 'feature-map'
   | 'reports'
+  | 'audit'
+  | 'evidence'
   | 'settings';
 
 export type AIQAStatus =

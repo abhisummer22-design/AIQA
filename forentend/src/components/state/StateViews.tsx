@@ -49,7 +49,15 @@ import { AuthContextType, AuthStatus } from '../../context/AuthContext';
 
 // ------------------------------------------------------------- primitive
 
-interface AuthStateCardProps {
+/** FE-6: exported (was module-private through FE-3/4/5) so a later unit's
+ *  own resource-state model — e.g. Audit's Loading/Empty/Error/Unauthorized/
+ *  Forbidden/Offline set, which is real but distinct from `AuthStatus` — can
+ *  reuse the exact same visual primitive instead of duplicating this card's
+ *  markup a second time (this sprint's brief: "use the existing design-
+ *  system state components... do not create a completely new design
+ *  language"). Genuinely generic already — nothing about its own props is
+ *  auth-specific except `maskedKey`, which any non-auth caller simply omits. */
+export interface StateCardProps {
   icon: LucideIcon;
   iconClassName: string;
   /** Short, uppercase, machine-scannable — matches the existing status-pill
@@ -67,7 +75,7 @@ interface AuthStateCardProps {
   actions?: React.ReactNode;
 }
 
-const AuthStateCard: React.FC<AuthStateCardProps> = ({
+export const StateCard: React.FC<StateCardProps> = ({
   icon: Icon,
   iconClassName,
   statusLabel,
@@ -123,8 +131,9 @@ const secondaryClassName =
 /** Every button rendered by this module is a real `<button type="button">`
  *  — native keyboard accessibility (Tab focus, Enter/Space activation)
  *  comes for free from the element itself; nothing here needs a manual
- *  key handler (this sprint's brief §6). */
-const Cta: React.FC<{ label: string; icon: LucideIcon; onClick?: () => void; primary?: boolean; disabled?: boolean }> = ({
+ *  key handler (this sprint's brief §6). Exported for the same reason as
+ *  `StateCard` above (FE-6). */
+export const Cta: React.FC<{ label: string; icon: LucideIcon; onClick?: () => void; primary?: boolean; disabled?: boolean }> = ({
   label,
   icon: Icon,
   onClick,
@@ -150,7 +159,7 @@ export interface AuthStateActions {
 }
 
 const NoKeyState: React.FC<{ onConfigure?: () => void }> = ({ onConfigure }) => (
-  <AuthStateCard
+  <StateCard
     icon={CircleHelp}
     iconClassName="text-slate-400"
     statusLabel="NO KEY CONFIGURED"
@@ -166,7 +175,7 @@ const KeyPresentState: React.FC<{ maskedKey: string | null; onVerify: () => void
   onVerify,
   onSignOut,
 }) => (
-  <AuthStateCard
+  <StateCard
     icon={AlertTriangle}
     iconClassName="text-amber-400"
     statusLabel="KEY SAVED · UNVERIFIED"
@@ -184,7 +193,7 @@ const KeyPresentState: React.FC<{ maskedKey: string | null; onVerify: () => void
 );
 
 const CheckingState: React.FC<{ maskedKey: string | null }> = ({ maskedKey }) => (
-  <AuthStateCard
+  <StateCard
     icon={Loader2}
     iconClassName="text-indigo-400"
     spin
@@ -204,7 +213,7 @@ const AuthenticatedState: React.FC<{ maskedKey: string | null; onVerify: () => v
   onVerify,
   onSignOut,
 }) => (
-  <AuthStateCard
+  <StateCard
     icon={ShieldCheck}
     iconClassName="text-emerald-400"
     statusLabel="CONNECTED"
@@ -232,7 +241,7 @@ const UnauthorizedState: React.FC<{
   onSignOut: () => void;
   onConfigure?: () => void;
 }> = ({ maskedKey, onVerify, onSignOut, onConfigure }) => (
-  <AuthStateCard
+  <StateCard
     icon={XCircle}
     iconClassName="text-rose-400"
     statusLabel="AUTHENTICATION REQUIRED · 401"
@@ -255,7 +264,7 @@ const ForbiddenState: React.FC<{ maskedKey: string | null; onVerify: () => void;
   onVerify,
   onSignOut,
 }) => (
-  <AuthStateCard
+  <StateCard
     icon={ShieldAlert}
     iconClassName="text-orange-400"
     statusLabel="ACCESS FORBIDDEN · 403"
@@ -282,7 +291,7 @@ const OfflineState: React.FC<{ maskedKey: string | null; onVerify: () => void; o
   onVerify,
   onSignOut,
 }) => (
-  <AuthStateCard
+  <StateCard
     icon={WifiOff}
     iconClassName="text-slate-400"
     statusLabel="ORCHESTRATOR UNREACHABLE"
@@ -306,7 +315,7 @@ const GenericErrorState: React.FC<{
   onVerify: () => void;
   onSignOut: () => void;
 }> = ({ maskedKey, message, requestId, onVerify, onSignOut }) => (
-  <AuthStateCard
+  <StateCard
     icon={AlertTriangle}
     iconClassName="text-rose-400"
     statusLabel="ERROR"
@@ -325,7 +334,7 @@ const GenericErrorState: React.FC<{
     }
   >
     {requestId && <p className="text-[10px] font-mono text-slate-500">request_id: {requestId}</p>}
-  </AuthStateCard>
+  </StateCard>
 );
 
 // ------------------------------------------------------------- the map

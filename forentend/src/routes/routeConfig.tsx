@@ -1,30 +1,36 @@
 /**
  * FE-4 — the single, centralized route definition every navigation surface
  * (Sidebar, CommandPalette, the router itself) reads from. No component
- * outside this file hardcodes a path string for one of these 12 pages —
+ * outside this file hardcodes a path string for one of these 14 pages —
  * this is what "do not scatter hardcoded navigation paths throughout
- * components" (this sprint's brief §5) means in practice.
+ * components" (FE-4's brief §5) means in practice.
  *
- * FRD/SRD/PRD/flow-diagram note (brief §3, §20): no such documents exist
- * anywhere in this repository (confirmed by an exhaustive repo-wide
- * search — see the FE-4 report §14 for the exact search performed and its
- * result). In their absence, route naming/scope was reconciled against the
- * next-best actually-authoritative source: this codebase's own existing,
- * already-product-reviewed page vocabulary (`types.ts`'s `NavPage`,
- * `Sidebar.tsx`'s existing labels) — not the brief's own illustrative
- * route-name list, several of which (`/analytics`, `/findings`, `/audit`,
- * `/evidence`, `/ui-testing`, `/security-testing`, `/performance-testing`)
- * have no corresponding page in `forentend` today and are therefore NOT
- * implemented as routes here (implementing them would mean fabricating new
- * pages, which is explicitly out of scope: "FE-4 is NOT the phase for
- * implementing real backend pages").
+ * FRD/SRD/PRD/flow-diagram note (FE-4 brief §3, §20; re-checked every FE
+ * unit since): no such documents exist anywhere in this repository
+ * (confirmed by an exhaustive repo-wide search, re-run at the start of
+ * every FE unit — see each unit's own report). In their absence, route
+ * naming/scope was reconciled against the next-best actually-authoritative
+ * source: this codebase's own existing, already-product-reviewed page
+ * vocabulary (`types.ts`'s `NavPage`, `Sidebar.tsx`'s existing labels)
+ * plus, from FE-6 onward, the real backend contract — not FE-4's brief's
+ * own illustrative route-name list, several of which (`/analytics`,
+ * `/findings`, `/ui-testing`, `/security-testing`, `/performance-testing`)
+ * still have no corresponding page/backend support in `forentend` today
+ * and remain NOT implemented as routes here. `/audit` and `/evidence` were
+ * both on that original list too, but FE-6 and FE-7 respectively
+ * implemented each for real once its own real backend endpoint was
+ * confirmed to exist — see `AuditPage.tsx`'s and `EvidencePage.tsx`'s own
+ * doc comments.
  *
  * Product-design status (brief §1, §18) — exactly two pages are
  * product-owner-designed references and were not touched beyond a single
  * `setActivePage` → `useNavigate` call each (§ "Dashboard"/"Test
- * Generator" below); the other nine remain Google-Studio-generated and are
- * explicitly NOT treated as approved final design — routed here, visually
- * untouched, so navigation exists without locking in incorrect UI.
+ * Generator" below); nine remain Google-Studio-generated and are explicitly
+ * NOT treated as approved final design; `audit` and `evidence` are a
+ * third, distinct bucket — built fresh in FE-6/FE-7 following the approved
+ * pages' visual language, but not themselves product-reviewed (see
+ * `RouteDef.designStatus`'s own doc comment for why neither is folded into
+ * either existing bucket).
  */
 
 import type { ComponentType } from 'react';
@@ -41,6 +47,8 @@ import {
   Sliders,
   Layers,
   FileText,
+  ScrollText,
+  FileSearch,
   Settings,
 } from 'lucide-react';
 import { DashboardPage } from '../components/pages/DashboardPage';
@@ -54,6 +62,8 @@ import { MobileTestingPage } from '../components/pages/MobileTestingPage';
 import { CustomTestingPage } from '../components/pages/CustomTestingPage';
 import { FeatureMapFlowPage } from '../components/pages/FeatureMapFlowPage';
 import { ReportsPage } from '../components/pages/ReportsPage';
+import { AuditPage } from '../components/pages/AuditPage';
+import { EvidencePage } from '../components/pages/EvidencePage';
 import { SettingsPage } from '../components/pages/SettingsPage';
 import type { NavPage } from '../types';
 
@@ -69,8 +79,19 @@ export interface RouteDef {
   /** Product-design status (brief §1/§18) — for the report and for
    *  anyone reading this file; not rendered as UI (adding a visible
    *  "not final design" banner would itself be a small visual redesign of
-   *  these pages, which is out of scope). */
-  designStatus: 'product-owner-approved' | 'google-studio-not-final';
+   *  these pages, which is out of scope).
+   *
+   *  `new-follows-approved-language` (introduced FE-6, reused FE-7): a page
+   *  built fresh in a later FE unit (not a pre-existing Google-Studio page,
+   *  and not one of the two approved-page files themselves) that follows
+   *  the Dashboard/Test Generator visual language by construction — an
+   *  honest third bucket, since calling it `google-studio-not-final` would
+   *  misstate its provenance, and `product-owner-approved` would falsely
+   *  claim a product review that has not happened. Deliberately named
+   *  sprint-agnostically (not `fe6-...`) so any later unit's new page can
+   *  reuse it without another rename. Currently `AuditPage` (FE-6) and
+   *  `EvidencePage` (FE-7). */
+  designStatus: 'product-owner-approved' | 'google-studio-not-final' | 'new-follows-approved-language';
   /**
    * Whether this route requires a real, backend-verified session
    * (`AuthContext.status === 'authenticated'`) before its content renders
@@ -192,6 +213,24 @@ export const routeDefs: RouteDef[] = [
     icon: FileText,
     Component: ReportsPage,
     designStatus: 'google-studio-not-final',
+    protectedRoute: true,
+  },
+  {
+    id: 'audit',
+    path: '/audit',
+    label: 'Audit Trail',
+    icon: ScrollText,
+    Component: AuditPage,
+    designStatus: 'new-follows-approved-language',
+    protectedRoute: true,
+  },
+  {
+    id: 'evidence',
+    path: '/evidence',
+    label: 'Evidence Viewer',
+    icon: FileSearch,
+    Component: EvidencePage,
+    designStatus: 'new-follows-approved-language',
     protectedRoute: true,
   },
   {
