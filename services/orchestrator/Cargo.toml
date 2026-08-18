@@ -21,3 +21,19 @@ hex = "0.4.3"
 anyhow = "1.0.104"
 regex = "1.13.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+[dev-dependencies]
+# Phase 1 regression tests need a real, disposable SQLite file per test:
+# the defects being pinned (WAL/busy-timeout config, transactional inserts,
+# tenant-scoped queries, recovery) are all properties of the on-disk store,
+# so an in-memory or shared database would not exercise them.
+tempfile = "3"
+# BE-9: structured-error tests must inspect the actual HTTP response body
+# (JSON shape, code, message), not just the status code — that requires
+# driving real requests through the real `axum::Router` in-process rather
+# than calling handler functions directly. `tower`'s `ServiceExt::oneshot`
+# is the standard way to do that; `http-body-util` reads the response body
+# axum 0.7 hands back (already a transitive dependency of axum itself,
+# added here only so this crate may `use` it directly).
+tower = { version = "0.4", features = ["util"] }
+http-body-util = "0.1"

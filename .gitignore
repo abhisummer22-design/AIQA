@@ -7,6 +7,10 @@ apps/web/.next/
 apps/web/out/
 apps/web/.env*.local
 
+# forentend (Vite target frontend)
+forentend/node_modules/
+forentend/dist/
+
 # Python
 services/workers/__pycache__/
 services/workers/**/__pycache__/

@@ -151,7 +151,11 @@ impl<'a> Intelligence<'a> {
             .upsert_quality_node(project_id, "test", &t.name, &t.name)
             .await?;
 
-        let history = self.store.task_history_by_name(&t.name, 20).await?;
+        // B3 — scored history must come from this tenant only. `project_id`
+        // here is already the resolved tenant key (see `tenant_key`), so an
+        // untenanted run scores against other untenanted runs and never
+        // against a real project's history.
+        let history = self.store.task_history_by_name(&t.name, Some(project_id), 20).await?;
         let relevant: Vec<bool> = history
             .iter()
             .filter(|h| matches!(h.status, TaskStatus::Passed | TaskStatus::Failed | TaskStatus::Timeout))

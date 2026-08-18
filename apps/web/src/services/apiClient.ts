@@ -13,7 +13,7 @@
  *     dev by `vite.config.ts`).
  *  3. **Errors are typed, not stringly.** `ApiError.kind` lets a component
  *     distinguish "you are not logged in" from "the server is down" from
- *     "this returned nothing", which are four different screens.
+ *     "rate limited" from "validation failed", which are distinct states.
  *
  * Auth: the orchestrator requires `Authorization: Bearer <key>` on every
  * route except `/health` (see `services/orchestrator/src/auth.rs`). The key
@@ -79,11 +79,17 @@ export type ApiErrorKind =
   | "not_found"
   /** 409 — e.g. approving a run that is not PENDING_APPROVAL. */
   | "conflict"
+  /** 422 — Unprocessable Entity / contract schema validation failure. */
+  | "validation_error"
+  /** 429 — Rate Limited / Too Many Requests. */
+  | "rate_limited"
   /** 4xx that is none of the above (bad request body, bad plan, ...). */
   | "bad_request"
   /** 5xx from the orchestrator. */
   | "server_error"
-  /** Network-level failure: orchestrator not running, DNS, CORS, TLS. */
+  /** 503 — Service Unavailable / Maintenance. */
+  | "service_unavailable"
+  /** Network-level failure: orchestrator not running, DNS, CORS, TLS, timeout. */
   | "offline";
 
 export class ApiError extends Error {
@@ -104,7 +110,12 @@ export class ApiError extends Error {
   /** Whether retrying the same request could plausibly succeed without the
    *  user changing something first. Drives whether a "Retry" button shows. */
   get isRetryable(): boolean {
-    return this.kind === "offline" || this.kind === "server_error";
+    return (
+      this.kind === "offline" ||
+      this.kind === "server_error" ||
+      this.kind === "service_unavailable" ||
+      this.kind === "rate_limited"
+    );
   }
 }
 
@@ -113,12 +124,11 @@ function kindForStatus(status: number): ApiErrorKind {
   if (status === 403) return "forbidden";
   if (status === 404) return "not_found";
   if (status === 409) return "conflict";
+  if (status === 422) return "validation_error";
+  if (status === 429) return "rate_limited";
+  if (status === 503) return "service_unavailable";
   // Gateway-level failures mean the request never reached the orchestrator.
-  // The dev proxy emits 502 when the upstream is down (see vite.config.ts);
-  // a production reverse proxy emits 502/503/504 for the same reason. These
-  // are "the backend is not reachable", which is a different fact — and a
-  // different screen — from "the backend errored".
-  if (status === 502 || status === 503 || status === 504) return "offline";
+  if (status === 502 || status === 504) return "offline";
   if (status >= 500) return "server_error";
   return "bad_request";
 }
@@ -126,19 +136,25 @@ function kindForStatus(status: number): ApiErrorKind {
 function messageForKind(kind: ApiErrorKind, detail: string | null): string {
   switch (kind) {
     case "unauthenticated":
-      return "Not authenticated. Enter an orchestrator API key to continue.";
+      return "Not authenticated. Enter an orchestrator API key in Settings to continue.";
     case "unauthorized":
       return "API key was rejected. It may be invalid or revoked.";
     case "forbidden":
-      return detail || "Your API key's role or project scope does not permit this.";
+      return detail || "Your API key's role or project scope does not permit this action.";
     case "not_found":
       return detail || "The orchestrator has no such resource.";
     case "conflict":
       return detail || "The resource is not in a state that allows this action.";
+    case "validation_error":
+      return detail || "The request failed contract validation rules.";
+    case "rate_limited":
+      return detail || "Too many requests. Please wait a moment and retry.";
     case "bad_request":
       return detail || "The orchestrator rejected the request.";
     case "server_error":
       return detail || "The orchestrator returned an internal error.";
+    case "service_unavailable":
+      return detail || "Orchestrator service is temporarily unavailable.";
     case "offline":
       return "Cannot reach the AIQA orchestrator. Is it running on port 8080?";
   }

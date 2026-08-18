@@ -1,6 +1,6 @@
 use crate::domain::*;
 use crate::evidence::LocalEvidenceStore;
-use crate::executor::ExecutorRegistry;
+use crate::executor::{ExecutionOutcome, ExecutorRegistry};
 use crate::intelligence::Intelligence;
 use crate::scheduler::RunEngine;
 use crate::store::Store;
@@ -8,7 +8,7 @@ use crate::webhook;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::{broadcast, RwLock, Semaphore};
+use tokio::sync::{broadcast, watch, RwLock, Semaphore};
 use uuid::Uuid;
 
 /// All server-side state for one run (SRD §2 Orchestrator State Machine +
@@ -34,6 +34,26 @@ pub struct RunRecord {
     pub approved_by: RwLock<Option<String>>,
     pub approved_at: RwLock<Option<chrono::DateTime<chrono::Utc>>>,
     seq: AtomicU64,
+    /// B1 — first durable-write failure observed while driving this run.
+    ///
+    /// The run loop cannot propagate an error upward (it is a detached
+    /// `tokio::spawn`), and it must not simply log and carry on: that is
+    /// exactly what let a completed run persist as FAILED and passing tasks
+    /// persist as RUNNING. So a persistence failure is recorded here, and
+    /// finalisation reads it to transition the run into an explicit,
+    /// auditable failure state instead of reporting success over a database
+    /// that disagrees.
+    persistence_error: RwLock<Option<String>>,
+    /// BE-13 (§12.3) — cooperative cancellation signal. `false` until
+    /// `request_cancel` is called. The dispatch loop in `spawn_run` checks
+    /// it before dispatching any new task, and every in-flight task's
+    /// executor future races it via `tokio::select!`; when cancellation
+    /// wins, the executor future is dropped, which is the exact mechanism
+    /// B5's own timeout already relies on (`kill_on_drop`) to make sure a
+    /// real subprocess actually dies rather than merely being relabeled
+    /// while it keeps running in the background.
+    cancel: watch::Sender<bool>,
+    cancel_requested_by: RwLock<Option<String>>,
 }
 
 impl RunRecord {
@@ -46,6 +66,7 @@ impl RunRecord {
         policy_notes: Option<String>,
     ) -> Arc<Self> {
         let (tx, _rx) = broadcast::channel(1024);
+        let (cancel, _cancel_rx) = watch::channel(false);
         Arc::new(Self {
             run_id,
             name: plan.name.clone(),
@@ -62,7 +83,41 @@ impl RunRecord {
             approved_by: RwLock::new(None),
             approved_at: RwLock::new(None),
             seq: AtomicU64::new(0),
+            persistence_error: RwLock::new(None),
+            cancel,
+            cancel_requested_by: RwLock::new(None),
         })
+    }
+
+    pub fn is_cancel_requested(&self) -> bool {
+        *self.cancel.borrow()
+    }
+
+    /// Signals cancellation to `spawn_run`'s dispatch loop and every
+    /// in-flight task future. Safe to call more than once (idempotent —
+    /// `watch::Sender::send` just republishes `true`); the API handler is
+    /// still responsible for rejecting a second `/cancel` call against an
+    /// already-terminal run via the state check, so this alone is not the
+    /// idempotency boundary.
+    pub async fn request_cancel(&self, actor: &str) {
+        *self.cancel_requested_by.write().await = Some(actor.to_string());
+        let _ = self.cancel.send(true);
+    }
+
+    /// B1 — record a durable-write failure. Keeps the first one (the
+    /// root cause; later failures are usually the same contention) and logs
+    /// every occurrence so the operator sees the full extent.
+    pub async fn note_persistence_failure(&self, context: &str, err: impl std::fmt::Display) {
+        let message = format!("{context}: {err}");
+        tracing::error!("run {}: durable write failed — {message}", self.run_id);
+        let mut slot = self.persistence_error.write().await;
+        if slot.is_none() {
+            *slot = Some(message);
+        }
+    }
+
+    pub async fn persistence_error(&self) -> Option<String> {
+        self.persistence_error.read().await.clone()
     }
 
     pub fn task_defs(&self) -> HashMap<TaskId, TaskDef> {
@@ -103,7 +158,10 @@ impl RunRecord {
         // connected; the event is already durably in `events` for replay.
         let _ = self.tx.send(ev.clone());
         if let Err(e) = store.insert_event(&ev).await {
-            tracing::warn!("failed to persist event {} for run {}: {e}", ev.event_id, self.run_id);
+            // B1 — a lost event leaves a permanent gap in a log SRD §5
+            // requires to be complete and gap-free, so this is escalated
+            // rather than logged and forgotten.
+            self.note_persistence_failure(&format!("insert_event({})", ev.event_id), e).await;
         }
     }
 
@@ -137,6 +195,71 @@ impl RunRecord {
     }
 }
 
+/// B2 — the single place a run's terminal state is derived from its tasks.
+///
+/// Used by recovery so a restarted process reaches the same verdict the
+/// live driver would have. Vocabulary is Phase 1's existing one (no status
+/// renames in this phase):
+///
+///   * any `CANCELLED` task (BE-13) -> `Cancelled`, checked first — see the
+///     inline comment below for why this outranks every other case;
+///   * any infrastructure outcome (`INFRA_ERROR` / `TIMEOUT`) -> `Partial`,
+///     because part of the run never produced a real product verdict;
+///   * otherwise any product failure (`FAILED`) -> `Failed`;
+///   * otherwise any `BLOCKED` task -> `Partial`, since some declared work
+///     never ran even though nothing failed outright;
+///   * otherwise -> `Completed`.
+///
+/// `Blocked` is deliberately checked *after* `Failed`: a blocked task is
+/// almost always the consequence of a failed prerequisite, and the failure
+/// is the more informative verdict.
+fn derive_run_state(tasks: &[TaskState]) -> RunState {
+    let has = |s: TaskStatus| tasks.iter().any(|t| t.status == s);
+
+    // BE-13 — a cancelled task only ever exists because a human explicitly
+    // requested cancellation (nothing else produces this status), so it
+    // takes priority over every other classification: a run interrupted
+    // mid-flight should report CANCELLED, not PARTIAL/FAILED, even if the
+    // interrupted task's executor happened to be mid-timeout or some other
+    // task had already failed for unrelated reasons. Checked first (not
+    // just before the `else`) so it also wins recovery's read of this same
+    // function after a restart — see `RunRecord::cancel`'s doc comment for
+    // why that in-memory signal alone isn't durable, but a persisted
+    // CANCELLED task status is.
+    if has(TaskStatus::Cancelled) {
+        RunState::Cancelled
+    } else if has(TaskStatus::InfraError) || has(TaskStatus::Timeout) {
+        RunState::Partial
+    } else if has(TaskStatus::Failed) {
+        RunState::Failed
+    } else if has(TaskStatus::Blocked) {
+        RunState::Partial
+    } else {
+        RunState::Completed
+    }
+}
+
+/// Persists the final status of every task `complete_task` just made
+/// terminal and emits its event — the shared tail end of "a task reached a
+/// terminal state," used both by a real executor completion (`spawn_run`'s
+/// `done_rx` branch) and by BE-13's cancellation path, which drives tasks
+/// straight to `Cancelled` without ever dispatching them. Factored out so
+/// cancellation reuses exactly the same persist/emit code a normal
+/// completion already uses, rather than a second copy of it.
+async fn persist_and_emit_terminal(record: &Arc<RunRecord>, store: &Store, newly_terminal: Vec<TaskId>) {
+    for tid in newly_terminal {
+        let (status, reason) = {
+            let engine = record.engine.read().await;
+            let t = &engine.tasks[&tid];
+            (t.status, t.reason.clone())
+        };
+        if let Err(e) = store.set_task_status(record.run_id, &tid, status, reason.as_deref(), false, true).await {
+            record.note_persistence_failure(&format!("set_task_status(final, {tid})"), e).await;
+        }
+        record.emit(store, event_type_for(status), Some(tid), Some(status), reason).await;
+    }
+}
+
 fn event_type_for(status: TaskStatus) -> EventType {
     match status {
         TaskStatus::Passed => EventType::TaskPassed,
@@ -166,22 +289,31 @@ pub async fn approve_and_spawn(
     store: Store,
     evidence: Arc<LocalEvidenceStore>,
     actor: &str,
-) {
+    task_timeout: std::time::Duration,
+) -> anyhow::Result<()> {
     if let Err(e) = store.approve_run(record.run_id, actor).await {
-        tracing::error!("failed to persist approval for run {}: {e}", record.run_id);
+        record.note_persistence_failure("approve_run", &e).await;
+        return Err(e);
     }
     *record.approved_by.write().await = Some(actor.to_string());
     *record.approved_at.write().await = Some(chrono::Utc::now());
-    spawn_run(record, registry, concurrency, store, evidence);
+    spawn_run(record, registry, concurrency, store, evidence, task_timeout);
+    Ok(())
 }
 
 /// The other side of the approval gate: a held run that a human declines.
 /// It never enters the scheduler loop — its tasks stay QUEUED in the DB
 /// forever, which is fine, they were never real (SRD §25 semantics only
 /// apply to scheduled runs).
-pub async fn reject_run(record: Arc<RunRecord>, store: &Store, actor: &str, reason: &str) {
+pub async fn reject_run(
+    record: Arc<RunRecord>,
+    store: &Store,
+    actor: &str,
+    reason: &str,
+) -> anyhow::Result<()> {
     if let Err(e) = store.reject_run(record.run_id, actor, reason).await {
-        tracing::error!("failed to persist rejection for run {}: {e}", record.run_id);
+        record.note_persistence_failure("reject_run", &e).await;
+        return Err(e);
     }
     *record.state.write().await = RunState::Rejected;
     *record.finished_at.write().await = Some(chrono::Utc::now());
@@ -197,6 +329,7 @@ pub async fn reject_run(record: Arc<RunRecord>, store: &Store, actor: &str, reas
             Some(format!("run rejected by {actor}: {reason}")),
         )
         .await;
+    Ok(())
 }
 
 /// Run recovery on startup — build report: "Observability, audit log,
@@ -226,8 +359,20 @@ pub async fn recover_incomplete_runs(store: &Store) -> anyhow::Result<usize> {
                 touched_any = true;
             }
         }
-        let final_state = if touched_any { RunState::Partial } else { RunState::Failed };
-        store.set_run_finished(*run_id, final_state).await?;
+        // B2 — derive the run's final state from what the tasks actually
+        // say, re-read after any orphan was forced terminal.
+        //
+        // The old rule was `if touched_any { Partial } else { Failed }`,
+        // which is inverted for the most important case: when recovery had
+        // to force *nothing*, every task was already terminal and only the
+        // run-level completion write was lost (the B1 scenario) — that is a
+        // run that finished, not one that failed. It was being recorded as
+        // FAILED, and a 50-task run in which all 50 tasks passed was
+        // permanently stored as a failure.
+        let tasks_after = store.list_tasks_for_run(*run_id).await?;
+        let final_state = derive_run_state(&tasks_after);
+        let _ = touched_any; // retained only for the log line below
+        store.set_run_finished(*run_id, final_state, None).await?;
         let sequence = tasks.len() as u64 + 1000; // best-effort tail marker; exact ordering isn't load-bearing here
         let ev = RunEvent {
             event_id: Uuid::new_v4(),
@@ -256,21 +401,33 @@ pub async fn recover_incomplete_runs(store: &Store) -> anyhow::Result<usize> {
 /// transition (`store`), captures full executor stdout/stderr as evidence
 /// (`evidence`), and — on completion — feeds the run into the heuristic
 /// intelligence layer and fires the completion webhook.
+/// Per-task execution ceiling (B5). Configurable so a slow real suite is not
+/// cut off, while a genuinely hung tool still cannot stall a run forever.
+pub fn default_task_timeout() -> std::time::Duration {
+    let secs = std::env::var("AIQA_TASK_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|s| *s > 0)
+        .unwrap_or(600);
+    std::time::Duration::from_secs(secs)
+}
+
 pub fn spawn_run(
     record: Arc<RunRecord>,
     registry: Arc<ExecutorRegistry>,
     concurrency: usize,
     store: Store,
     evidence: Arc<LocalEvidenceStore>,
+    task_timeout: std::time::Duration,
 ) {
     let task_defs = record.task_defs();
     tokio::spawn(async move {
         *record.state.write().await = RunState::Running;
         if let Err(e) = store.set_run_state(record.run_id, RunState::Running).await {
-            tracing::error!("failed to persist run state for {}: {e}", record.run_id);
+            record.note_persistence_failure("set_run_state(Running)", e).await;
         }
         if let Err(e) = store.set_run_started(record.run_id).await {
-            tracing::error!("failed to persist run start time for {}: {e}", record.run_id);
+            record.note_persistence_failure("set_run_started", e).await;
         }
         record
             .emit(
@@ -287,35 +444,100 @@ pub fn spawn_run(
         let mut in_flight = 0usize;
 
         loop {
-            let newly_eligible = {
-                let mut engine = record.engine.write().await;
-                let ids = engine.eligible();
-                for id in &ids {
-                    engine.mark_started(id);
-                }
-                ids
-            };
+            // B4 — a task is marked started only once it actually holds a
+            // concurrency permit and is about to execute.
+            //
+            // Previously every eligible task was marked started in one batch
+            // *before* any permit was acquired, so with concurrency below the
+            // eligible count they all recorded the same `started_at` and
+            // their durations silently included queue wait: five 600ms tasks
+            // at concurrency 1 reported identical start instants and 2.5-3.1s
+            // durations. That timing also feeds `execution_cost_ms`, which is
+            // 15% of the risk score, so the corruption reached the
+            // intelligence layer.
+            //
+            // `try_acquire_owned` (rather than awaiting a permit) keeps the
+            // loop responsive: we dispatch only what can genuinely start now
+            // and immediately return to draining completions, so TASK_PASSED
+            // events are not held back behind a blocked dispatch.
+            let eligible = { record.engine.read().await.eligible() };
 
-            for id in newly_eligible {
-                record
-                    .emit(&store, EventType::TaskStarted, Some(id.clone()), Some(TaskStatus::Running), None)
-                    .await;
-                if let Err(e) = store
-                    .set_task_status(record.run_id, &id, TaskStatus::Running, None, true, false)
-                    .await
-                {
-                    tracing::warn!("failed to persist task-started for {}/{id}: {e}", record.run_id);
+            if record.is_cancel_requested() {
+                // BE-13 — nothing further is dispatched once cancellation is
+                // requested. Every still-QUEUED task (never acquired a
+                // permit, never ran) goes straight to CANCELLED through the
+                // same terminal-completion path a real outcome would use, so
+                // dependents cascade-BLOCK exactly like a failed prerequisite
+                // already would (`complete_task`'s existing cascade — see
+                // `TaskStatus::satisfies_dependents`). In-flight tasks are
+                // handled below, not here — they still hold a permit and are
+                // racing their own executor future against the same signal.
+                for id in eligible {
+                    let newly_terminal = {
+                        let mut engine = record.engine.write().await;
+                        engine.complete_task(&id, TaskStatus::Cancelled, Some("run cancelled before this task started".to_string()))
+                    };
+                    persist_and_emit_terminal(&record, &store, newly_terminal).await;
                 }
-                let permit = semaphore.clone().acquire_owned().await.expect("semaphore open");
-                in_flight += 1;
-                let task_def = task_defs[&id].clone();
-                let exec = registry.resolve(&task_def);
-                let done_tx = done_tx.clone();
-                tokio::spawn(async move {
-                    let outcome = exec.execute(&task_def).await;
-                    let _ = done_tx.send((task_def.id, outcome));
-                    drop(permit);
-                });
+            } else {
+                for id in eligible {
+                    let Ok(permit) = semaphore.clone().try_acquire_owned() else {
+                        break; // at capacity — the rest wait for a completion
+                    };
+
+                    {
+                        let mut engine = record.engine.write().await;
+                        engine.mark_started(&id);
+                    }
+                    record
+                        .emit(&store, EventType::TaskStarted, Some(id.clone()), Some(TaskStatus::Running), None)
+                        .await;
+                    if let Err(e) = store
+                        .set_task_status(record.run_id, &id, TaskStatus::Running, None, true, false)
+                        .await
+                    {
+                        record.note_persistence_failure(&format!("set_task_status(started, {id})"), e).await;
+                    }
+
+                    in_flight += 1;
+                    let task_def = task_defs[&id].clone();
+                    let exec = registry.resolve(&task_def);
+                    let done_tx = done_tx.clone();
+                    // BE-13 — races the executor invocation against
+                    // cancellation, the same way B5 already races it against
+                    // a timeout (both rely on dropping this future to kill a
+                    // real subprocess via `kill_on_drop`; see
+                    // `RunRecord::cancel`'s doc comment).
+                    let mut cancel_rx = record.cancel.subscribe();
+                    tokio::spawn(async move {
+                        let outcome = tokio::select! {
+                            _ = cancel_rx.wait_for(|v| *v) => ExecutionOutcome {
+                                status: TaskStatus::Cancelled,
+                                reason: Some("run cancelled while this task was executing".to_string()),
+                                evidence: None,
+                            },
+                            // B5 — bound every executor invocation. Without this a
+                            // hung tool (a browser waiting on a device, a fuzzer
+                            // against an unresponsive target) held its permit
+                            // forever, `in_flight` never decremented, and the run
+                            // stalled indefinitely. TaskStatus::Timeout was
+                            // unreachable for real executors.
+                            result = tokio::time::timeout(task_timeout, exec.execute(&task_def)) => match result {
+                                Ok(outcome) => outcome,
+                                Err(_) => ExecutionOutcome {
+                                    status: TaskStatus::Timeout,
+                                    reason: Some(format!(
+                                        "executor exceeded the {}s task timeout and was cancelled",
+                                        task_timeout.as_secs()
+                                    )),
+                                    evidence: None,
+                                },
+                            },
+                        };
+                        let _ = done_tx.send((task_def.id, outcome));
+                        drop(permit); // released on cancel/timeout too, so the run continues
+                    });
+                }
             }
 
             if in_flight == 0 {
@@ -335,10 +557,12 @@ pub fn spawn_run(
                                         .insert_evidence(record.run_id, &id, "log", &object_key, "text/plain", size)
                                         .await
                                     {
-                                        tracing::warn!("failed to record evidence row for {}/{id}: {e}", record.run_id);
+                                        record.note_persistence_failure(&format!("insert_evidence({id})"), e).await;
                                     }
                                 }
-                                Err(e) => tracing::warn!("failed to write evidence file for {}/{id}: {e}", record.run_id),
+                                Err(e) => {
+                                    record.note_persistence_failure(&format!("evidence.put({id})"), e).await;
+                                }
                             }
                         }
                     }
@@ -347,22 +571,7 @@ pub fn spawn_run(
                         let mut engine = record.engine.write().await;
                         engine.complete_task(&id, outcome.status, outcome.reason.clone())
                     };
-                    for tid in newly_terminal {
-                        let (status, reason) = {
-                            let engine = record.engine.read().await;
-                            let t = &engine.tasks[&tid];
-                            (t.status, t.reason.clone())
-                        };
-                        if let Err(e) = store
-                            .set_task_status(record.run_id, &tid, status, reason.as_deref(), false, true)
-                            .await
-                        {
-                            tracing::warn!("failed to persist task completion for {}/{tid}: {e}", record.run_id);
-                        }
-                        record
-                            .emit(&store, event_type_for(status), Some(tid), Some(status), reason)
-                            .await;
-                    }
+                    persist_and_emit_terminal(&record, &store, newly_terminal).await;
                 }
                 None => break, // all senders dropped; nothing more can complete
             }
@@ -374,26 +583,74 @@ pub fn spawn_run(
 
         // SRD §9 Environment Health Gate (pause/quarantine on environment-wide
         // failure) is not implemented in this slice — see README. Final run
-        // state here only distinguishes "some tasks hit infra errors" from a
-        // clean completion; it does not yet pre-empt in-flight tasks.
-        let final_state = {
-            let engine = record.engine.read().await;
-            if engine.tasks.values().any(|t| t.status == TaskStatus::InfraError) {
-                RunState::Partial
-            } else {
-                RunState::Completed
+        // state here does not yet pre-empt in-flight tasks; by this point
+        // `is_finished()` has already guaranteed every task is terminal.
+        //
+        // D4 — this used to be its own inline check (InfraError -> Partial,
+        // else Completed), a second copy of the rule `derive_run_state`
+        // already encodes for recovery. That let a run containing FAILED,
+        // BLOCKED, or TIMEOUT tasks report COMPLETED live, while the exact
+        // same task snapshot would derive FAILED/PARTIAL had the process
+        // restarted first — the same tasks, two different verdicts depending
+        // on an accident of timing. Reusing the one canonical function here
+        // makes that impossible: live and recovery now always agree, because
+        // they are the same code path over the same kind of snapshot.
+        let tasks_snapshot: Vec<TaskState> = { record.engine.read().await.tasks.values().cloned().collect() };
+        let mut final_state = derive_run_state(&tasks_snapshot);
+
+        // B1 — if any durable write failed while driving this run, the
+        // database no longer agrees with what actually happened. Reporting
+        // COMPLETED over a store we know to be wrong is precisely the
+        // behaviour that produced silent corruption, so the run is
+        // transitioned into an explicit failure state and the cause is
+        // recorded in policy_notes (which surfaces on the run summary) and
+        // in a RunCompleted summary line, making it auditable rather than a
+        // log entry nobody reads.
+        let persistence_error = record.persistence_error().await;
+        // BE-13 — a cancelled task only exists because cancellation was
+        // requested (see `derive_run_state`), so its presence in this
+        // snapshot is exactly the "was this run cancelled" signal; there is
+        // no separate boolean to fall out of sync with the persisted task
+        // states.
+        let was_cancelled = final_state == RunState::Cancelled;
+        let completion_summary = match &persistence_error {
+            None if was_cancelled => {
+                let note = match record.cancel_requested_by.read().await.clone() {
+                    Some(actor) => format!("run cancelled by {actor}"),
+                    None => "run cancelled".to_string(),
+                };
+                *record.policy_notes.write().await = Some(note.clone());
+                note
+            }
+            None => "run finished".to_string(),
+            Some(cause) => {
+                final_state = RunState::Failed;
+                let note = format!(
+                    "durable persistence failed during this run; recorded state may be incomplete — first failure: {cause}"
+                );
+                *record.policy_notes.write().await = Some(note.clone());
+                tracing::error!("run {} marked FAILED: {note}", record.run_id);
+                format!("run finished with persistence failure: {cause}")
             }
         };
+
+        let policy_notes_to_persist = record.policy_notes.read().await.clone();
+
         *record.state.write().await = final_state;
         *record.finished_at.write().await = Some(chrono::Utc::now());
-        if let Err(e) = store.set_run_finished(record.run_id, final_state).await {
-            tracing::error!("failed to persist run completion for {}: {e}", record.run_id);
+        if let Err(e) = store
+            .set_run_finished(record.run_id, final_state, policy_notes_to_persist.as_deref())
+            .await
+        {
+            record.note_persistence_failure("set_run_finished", e).await;
         }
         record
-            .emit(&store, EventType::RunCompleted, None, None, Some("run finished".into()))
+            .emit(&store, EventType::RunCompleted, None, None, Some(completion_summary))
             .await;
 
-        let tasks_snapshot: Vec<TaskState> = { record.engine.read().await.tasks.values().cloned().collect() };
+        // Same snapshot already used to derive `final_state` above — no
+        // task can change between then and now, since the dispatch loop has
+        // already exited and nothing is still in flight.
         let intel = Intelligence::new(&store);
         if let Err(e) = intel.ingest_run(record.project_id.as_deref(), &record.plan, &tasks_snapshot).await {
             tracing::warn!("intelligence ingest failed for run {}: {e}", record.run_id);

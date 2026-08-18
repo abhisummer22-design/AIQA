@@ -1,0 +1,6 @@
+{
+  "name": "AIQA",
+  "description": "AI-driven Quality Engineering Control Plane — enterprise test generation, live execution, RBAC verification, API testing, and quality intelligence.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
