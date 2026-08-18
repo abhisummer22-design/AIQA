@@ -52,7 +52,7 @@ async fn run_to_completion(
         .insert_run(run_id, &plan, Some("p1"), Some("tester"), RunState::Scheduled, None)
         .await
         .expect("insert_run");
-    let record = RunRecord::new(run_id, &plan, Some("p1".into()), Some("tester".into()), RunState::Scheduled, None);
+    let record = RunRecord::new(run_id, &plan, Some("p1".into()), Some("tester".into()), RunState::Scheduled, None, None);
     let concurrency = plan.concurrency;
     spawn_run(record.clone(), registry, concurrency, store.clone(), evidence, task_timeout);
 
@@ -677,7 +677,7 @@ async fn d3_orphaned_task_under_terminal_run_is_repaired_by_recovery() {
         .await
         .expect("insert_run");
 
-    let record = RunRecord::new(run_id, &p, Some("p1".into()), Some("tester".into()), RunState::Scheduled, None);
+    let record = RunRecord::new(run_id, &p, Some("p1".into()), Some("tester".into()), RunState::Scheduled, None, None);
     let registry = Arc::new(ExecutorRegistry::new(Arc::new(SimulatedExecutor)));
     let evidence = evidence_store(&dir);
 
@@ -868,7 +868,7 @@ async fn d4_live_run_with_failed_task_matches_recovery_derived_state() {
         .insert_run(run_id, &p, Some("p1"), Some("tester"), RunState::Scheduled, None)
         .await
         .expect("insert_run");
-    let record = RunRecord::new(run_id, &p, Some("p1".into()), Some("tester".into()), RunState::Scheduled, None);
+    let record = RunRecord::new(run_id, &p, Some("p1".into()), Some("tester".into()), RunState::Scheduled, None, None);
     spawn_run(record.clone(), registry, p.concurrency, store.clone(), evidence, std::time::Duration::from_secs(10));
 
     for _ in 0..200 {
@@ -931,7 +931,7 @@ async fn d4_live_run_with_blocked_task_matches_recovery_derived_state() {
         .insert_run(run_id, &p, Some("p1"), Some("tester"), RunState::Scheduled, None)
         .await
         .expect("insert_run");
-    let record = RunRecord::new(run_id, &p, Some("p1".into()), Some("tester".into()), RunState::Scheduled, None);
+    let record = RunRecord::new(run_id, &p, Some("p1".into()), Some("tester".into()), RunState::Scheduled, None, None);
     spawn_run(record.clone(), registry, p.concurrency, store.clone(), evidence, std::time::Duration::from_secs(10));
 
     for _ in 0..200 {
@@ -998,7 +998,7 @@ async fn d4_live_run_with_timeout_task_matches_recovery_derived_state() {
         .insert_run(run_id, &p, Some("p1"), Some("tester"), RunState::Scheduled, None)
         .await
         .expect("insert_run");
-    let record = RunRecord::new(run_id, &p, Some("p1".into()), Some("tester".into()), RunState::Scheduled, None);
+    let record = RunRecord::new(run_id, &p, Some("p1".into()), Some("tester".into()), RunState::Scheduled, None, None);
     spawn_run(
         record.clone(),
         registry,
@@ -1094,7 +1094,7 @@ async fn d5_insert_evidence_failure_is_escalated_with_no_false_success_row() {
         .insert_run(run_id, &p, Some("p1"), Some("tester"), RunState::Scheduled, None)
         .await
         .expect("insert_run");
-    let record = RunRecord::new(run_id, &p, Some("p1".into()), Some("tester".into()), RunState::Scheduled, None);
+    let record = RunRecord::new(run_id, &p, Some("p1".into()), Some("tester".into()), RunState::Scheduled, None, None);
 
     // Real SQLite write failure on every INSERT into `evidence` — not a mock,
     // not a manually-set flag.
@@ -1165,7 +1165,7 @@ async fn d5_set_run_state_running_failure_is_escalated_and_run_finishes_failed()
         .insert_run(run_id, &p, Some("p1"), Some("tester"), RunState::Scheduled, None)
         .await
         .expect("insert_run");
-    let record = RunRecord::new(run_id, &p, Some("p1".into()), Some("tester".into()), RunState::Scheduled, None);
+    let record = RunRecord::new(run_id, &p, Some("p1".into()), Some("tester".into()), RunState::Scheduled, None, None);
 
     // Fails only the UPDATE that sets state to RUNNING — set_run_finished's
     // UPDATE never sets state to 'RUNNING', so it is untouched by this trigger.
@@ -1226,7 +1226,7 @@ async fn d5_set_run_started_failure_is_escalated_and_started_at_stays_null() {
         .insert_run(run_id, &p, Some("p1"), Some("tester"), RunState::Scheduled, None)
         .await
         .expect("insert_run");
-    let record = RunRecord::new(run_id, &p, Some("p1".into()), Some("tester".into()), RunState::Scheduled, None);
+    let record = RunRecord::new(run_id, &p, Some("p1".into()), Some("tester".into()), RunState::Scheduled, None, None);
 
     // set_run_finished's UPDATE never touches started_at, so NEW.started_at
     // during that write just carries over the (still-NULL) old value — this
@@ -1372,7 +1372,7 @@ async fn be13_cancel_actually_interrupts_an_in_flight_task_rather_than_waiting_i
     let p = plan("cancel-in-flight", vec![sim_task("slow", SimOutcome::Pass, 2_000)], 1);
     let run_id = Uuid::new_v4();
     store.insert_run(run_id, &p, Some("p1"), Some("tester"), RunState::Scheduled, None).await.expect("insert_run");
-    let record = RunRecord::new(run_id, &p, Some("p1".into()), Some("tester".into()), RunState::Scheduled, None);
+    let record = RunRecord::new(run_id, &p, Some("p1".into()), Some("tester".into()), RunState::Scheduled, None, None);
     spawn_run(record.clone(), registry, p.concurrency, store.clone(), evidence, std::time::Duration::from_secs(30));
 
     // Give the task a moment to actually be dispatched and start running.
@@ -1426,7 +1426,7 @@ async fn be13_cancel_prevents_a_not_yet_started_queued_task_from_ever_running() 
     );
     let run_id = Uuid::new_v4();
     store.insert_run(run_id, &p, Some("p1"), Some("tester"), RunState::Scheduled, None).await.expect("insert_run");
-    let record = RunRecord::new(run_id, &p, Some("p1".into()), Some("tester".into()), RunState::Scheduled, None);
+    let record = RunRecord::new(run_id, &p, Some("p1".into()), Some("tester".into()), RunState::Scheduled, None, None);
     spawn_run(record.clone(), registry, p.concurrency, store.clone(), evidence, std::time::Duration::from_secs(30));
 
     tokio::time::sleep(std::time::Duration::from_millis(30)).await;
