@@ -152,13 +152,22 @@ fn shell_command(program: &str, args: &[&str], cwd: &Path) -> tokio::process::Co
     // it's harmless to set them unconditionally for every adapter here
     // rather than special-casing Python ones.
     std_cmd.env("PYTHONIOENCODING", "utf-8").env("PYTHONUTF8", "1");
-    tokio::process::Command::from(std_cmd)
+    let mut cmd = tokio::process::Command::from(std_cmd);
+    // B5 — the engine bounds every invocation with `tokio::time::timeout`,
+    // which drops this future on expiry. Without kill_on_drop the child
+    // process would outlive the task that was supposed to own it, leaking a
+    // hung tool for the lifetime of the orchestrator.
+    cmd.kill_on_drop(true);
+    cmd
 }
 
 #[cfg(not(windows))]
 fn shell_command(program: &str, args: &[&str], cwd: &Path) -> tokio::process::Command {
     let mut c = tokio::process::Command::new(program);
     c.args(args).current_dir(cwd);
+    // B5 — see the Windows branch: a timed-out invocation is dropped, and
+    // the child must die with it rather than outliving the run.
+    c.kill_on_drop(true);
     c
 }
 
@@ -310,7 +319,10 @@ impl Executor for PytestExecutor {
         let mut cmd = tokio::process::Command::new("python");
         cmd.args(["-m", "pytest", "-q", node_id.as_str()])
             .current_dir(&self.project_dir)
-            .env("AIQA_TARGET_BASE_URL", base_url);
+            .env("AIQA_TARGET_BASE_URL", base_url)
+            // B5 — invoked directly rather than through `shell_command`, so
+            // it needs the same kill-on-timeout guarantee.
+            .kill_on_drop(true);
         match cmd.output().await {
             Ok(output) => outcome_from_output(output, "pytest"),
             Err(e) => spawn_error_outcome("pytest", e),

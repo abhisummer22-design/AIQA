@@ -2,6 +2,7 @@ pub mod api;
 pub mod auth;
 pub mod domain;
 pub mod engine;
+pub mod errors;
 pub mod evidence;
 pub mod executor;
 pub mod intelligence;
@@ -11,3 +12,10 @@ pub mod scheduler;
 pub mod state;
 pub mod store;
 pub mod webhook;
+
+#[cfg(test)]
+mod store_tests;
+#[cfg(test)]
+mod engine_tests;
+#[cfg(test)]
+mod api_tests;

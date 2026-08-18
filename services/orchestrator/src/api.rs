@@ -1,11 +1,16 @@
 use crate::auth::{self, AuthContext, Role};
 use crate::domain::*;
 use crate::engine::{self, RunRecord};
+use crate::errors::{ApiError, ApiJson, ApiPath, ApiQuery};
 use crate::policy::{self, PolicyDecision};
 use crate::scheduler::validate_plan;
 use crate::state::AppState;
 use axum::{
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
+    // BE-10: `Path`/`Query` are kept imported for `ws_handler` only — its
+    // pre-upgrade rejections are deliberately not converted to `ApiError`
+    // (see `errors.rs`'s module doc comment; G-WS is out of scope). Every
+    // other handler below uses `ApiPath`/`ApiQuery`/`ApiJson` instead.
     extract::{Extension, Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Json, Response},
@@ -25,6 +30,39 @@ use uuid::Uuid;
 /// `ws_handler`).
 pub fn router(state: AppState) -> Router {
     let protected = Router::new()
+        // BE-8 — API Contract §5.1-5.4.
+        .route("/api/v1/projects", post(create_project).get(list_projects_handler))
+        .route("/api/v1/projects/:id", get(get_project_handler).patch(update_project_handler))
+        // BE-12 — API Contract §23.1-23.2 Dashboard/KPI JSON endpoints,
+        // project-scoped the same way as the executions/evidence routes
+        // below (`require_scoped_project`).
+        .route("/api/v1/projects/:project_id/dashboard", get(get_project_dashboard))
+        .route("/api/v1/projects/:project_id/kpis", get(get_project_kpis))
+        // "Actual BE-9" (Integration Plan's own numbering) — project-scoped
+        // routing for the execution/evidence resources. See the module doc
+        // comment above `require_scoped_project` for exactly which routes
+        // moved here and why the rest (bug-drafts/intelligence/audit-log,
+        // admin/api-keys, metrics) did not — full reasoning in
+        // AIQA_PHASE2_ACTUAL_BE9_PROJECT_SCOPED_ROUTING_REPORT.md §2.
+        .route(
+            "/api/v1/projects/:project_id/executions",
+            post(create_run_scoped).get(list_runs_scoped),
+        )
+        .route("/api/v1/projects/:project_id/executions/:run_id", get(get_run_scoped))
+        .route("/api/v1/projects/:project_id/executions/:run_id/events", get(get_events_scoped))
+        .route("/api/v1/projects/:project_id/executions/:run_id/approve", post(approve_run_scoped))
+        .route("/api/v1/projects/:project_id/executions/:run_id/reject", post(reject_run_scoped))
+        // BE-13 — API Contract §12.3-12.5. Cancel + the standalone task list
+        // /detail endpoints (previously only reachable embedded inside
+        // `GET .../executions/:run_id`'s `tasks` array).
+        .route("/api/v1/projects/:project_id/executions/:run_id/cancel", post(cancel_run_scoped))
+        .route("/api/v1/projects/:project_id/executions/:run_id/tasks", get(list_run_tasks_scoped))
+        .route("/api/v1/projects/:project_id/executions/:run_id/tasks/:task_id", get(get_run_task_detail_scoped))
+        .route("/api/v1/projects/:project_id/executions/:run_id/evidence", get(list_evidence_scoped))
+        .route("/api/v1/projects/:project_id/evidence/:evidence_id", get(get_evidence_content_scoped))
+        // Legacy, flat, unscoped routes — kept fully functional (Step 6: no
+        // document calls for removing or redirecting them; see the report's
+        // "Route Compatibility" section for the explicit reasoning).
         .route("/runs", post(create_run).get(list_runs))
         .route("/runs/:id", get(get_run))
         .route("/runs/:id/events", get(get_events))
@@ -53,8 +91,8 @@ async fn health() -> &'static str {
     "ok"
 }
 
-fn to_500<E: std::fmt::Display>(e: E) -> (StatusCode, String) {
-    (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+fn to_500<E: std::fmt::Display>(e: E) -> ApiError {
+    ApiError::internal(e)
 }
 
 async fn audit(
@@ -69,6 +107,195 @@ async fn audit(
         .store
         .insert_audit(Some(&ctx.name), Some(ctx.role.as_str()), ctx.project_id.as_deref(), action, target, detail, outcome)
         .await;
+}
+
+// ---------------------------------------------------- project-scoped routing
+//
+// "Actual BE-9" (Integration Plan's own numbering, §15: "`/api/v1` + scoped
+// routing | All routes contract-shaped") — every handler below this point
+// whose name ends in `_scoped` is reached through a URL that names a
+// project. Two checks are mandatory for every one of them (Step 3 of the
+// brief this was implemented against):
+//
+//   1. `require_scoped_project` — the project in the URL must actually
+//      exist (`store.get_project`), and the caller must be authorized for
+//      it (`auth::require_project_access`, the same gate every existing
+//      handler already uses — no new authorization primitive was written).
+//   2. `require_resource_in_project` — for any handler that also names a
+//      specific resource (a run, a piece of evidence) under that project,
+//      the resource's *own* stored `project_id` must match the URL's
+//      project id. This is what actually prevents Project A's key —
+//      including a *global* admin key, which passes check 1 for any
+//      project — from reading Project B's run by requesting it under
+//      Project A's path. Checking only #1 would authorize the *namespace*
+//      without ever confirming the *resource* is really in it.
+//
+// A mismatch in #2 is reported as 404, never 403: from this URL's point of
+// view the resource simply isn't there, and a 403 would leak that it
+// exists somewhere else.
+
+/// Requirement #1 above. Existence is checked before authorization,
+/// matching this file's own established convention elsewhere (`get_run`,
+/// `get_project_handler`): a project that doesn't exist can't be "yours"
+/// either way, so 404 is the more informative answer than 403.
+async fn require_scoped_project(state: &AppState, ctx: &AuthContext, project_id: Uuid) -> Result<(), ApiError> {
+    state
+        .store
+        .get_project(project_id)
+        .await
+        .map_err(to_500)?
+        .ok_or_else(|| ApiError::not_found("project not found"))?;
+    auth::require_project_access(ctx, Some(project_id.to_string().as_str()))?;
+    Ok(())
+}
+
+/// Requirement #2 above.
+fn require_resource_in_project(resource_project_id: Option<&str>, url_project_id: Uuid) -> Result<(), ApiError> {
+    if resource_project_id == Some(url_project_id.to_string().as_str()) {
+        Ok(())
+    } else {
+        Err(ApiError::not_found("resource not found in this project"))
+    }
+}
+
+// ------------------------------------------------------------- projects
+
+#[derive(Deserialize)]
+struct CreateProjectBody {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+}
+
+fn validate_project_name(name: &str) -> Result<&str, ApiError> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(ApiError::validation("project name must not be empty"));
+    }
+    Ok(trimmed)
+}
+
+/// POST /api/v1/projects — API Contract §5.2. Creating a project is a
+/// foundational, cross-cutting action (it defines a new isolation boundary
+/// every other resource will scope against), so it follows the same bar as
+/// the other action that creates a new access boundary today, minting an
+/// API key (`create_api_key`, below): Admin-only, and — matching that
+/// handler exactly — not additionally restricted by the creating key's own
+/// `project_id` scope, since an admin key (scoped or global) can already
+/// mint keys for any project.
+async fn create_project(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiJson(body): ApiJson<CreateProjectBody>,
+) -> Result<(StatusCode, Json<crate::store::Project>), ApiError> {
+    auth::require_role(&ctx, Role::Admin)?;
+    let name = validate_project_name(&body.name)?;
+
+    let id = Uuid::new_v4();
+    state
+        .store
+        .insert_project(id, name, body.description.as_deref())
+        .await
+        .map_err(to_500)?;
+
+    audit(&state, &ctx, "project.create", Some(&id.to_string()), Some(name), "ok").await;
+
+    let project = state
+        .store
+        .get_project(id)
+        .await
+        .map_err(to_500)?
+        .ok_or_else(|| to_500("project vanished immediately after insert"))?;
+    Ok((StatusCode::CREATED, Json(project)))
+}
+
+/// GET /api/v1/projects — API Contract §5.1. Same isolation convention as
+/// every other list endpoint in this API (`list_runs`, `list_bug_drafts`,
+/// `list_test_intelligence`): a global key (`project_id: None`) sees every
+/// project; a project-scoped key sees only its own — which, per BE-8's own
+/// scope note, may legitimately be an empty list if that project id was
+/// never created via `POST /api/v1/projects`.
+async fn list_projects_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+) -> Result<Json<Vec<crate::store::Project>>, ApiError> {
+    let rows = state
+        .store
+        .list_projects(ctx.project_id.as_deref())
+        .await
+        .map_err(to_500)?;
+    Ok(Json(rows))
+}
+
+/// GET /api/v1/projects/:id — API Contract §5.3. Fetch-then-authorize, the
+/// same order every other scoped-resource handler in this file already uses
+/// (`get_run`, `list_evidence`, `get_evidence_content`): existence is
+/// checked first (404 if genuinely absent), then `require_project_access`
+/// against the project's own id (403 on a cross-project read).
+async fn get_project_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(id): ApiPath<Uuid>,
+) -> Result<Json<crate::store::Project>, ApiError> {
+    let project = state
+        .store
+        .get_project(id)
+        .await
+        .map_err(to_500)?
+        .ok_or_else(|| ApiError::not_found("project not found"))?;
+    auth::require_project_access(&ctx, Some(project.id.to_string().as_str()))?;
+    Ok(Json(project))
+}
+
+#[derive(Deserialize)]
+struct UpdateProjectBody {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+}
+
+/// PATCH /api/v1/projects/:id — API Contract §5.4. Mutating a resource
+/// within your own scope follows the same bar as every other in-scope
+/// mutation (`create_run`, `approve_run`/`reject_run`): Operator, plus
+/// `require_project_access` so a project-scoped operator can only edit its
+/// own project. A `None` field is left unchanged (partial update); an
+/// absent body updates nothing but still refreshes `updated_at`.
+async fn update_project_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(id): ApiPath<Uuid>,
+    ApiJson(body): ApiJson<UpdateProjectBody>,
+) -> Result<Json<crate::store::Project>, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    let existing = state
+        .store
+        .get_project(id)
+        .await
+        .map_err(to_500)?
+        .ok_or_else(|| ApiError::not_found("project not found"))?;
+    auth::require_project_access(&ctx, Some(existing.id.to_string().as_str()))?;
+
+    let name = body.name.as_deref().map(validate_project_name).transpose()?;
+
+    let updated = state
+        .store
+        .update_project(id, name, body.description.as_deref())
+        .await
+        .map_err(to_500)?;
+    if !updated {
+        return Err(ApiError::not_found("project not found"));
+    }
+
+    audit(&state, &ctx, "project.update", Some(&id.to_string()), name, "ok").await;
+
+    let project = state
+        .store
+        .get_project(id)
+        .await
+        .map_err(to_500)?
+        .ok_or_else(|| ApiError::not_found("project not found"))?;
+    Ok(Json(project))
 }
 
 // -------------------------------------------------------------- run create
@@ -87,28 +314,32 @@ struct CreateRunResponse {
     policy_notes: Option<String>,
 }
 
-/// POST /runs — FRD §1 Execution Lifecycle: "Run creation -> plan validation
-/// -> dependency graph creation -> task scheduling -> parallel execution
-/// ...", now with a policy-engine gate in between validation and scheduling
-/// (`policy.rs`) and durable persistence of every stage (`store.rs`).
-async fn create_run(
-    State(state): State<AppState>,
-    Extension(ctx): Extension<AuthContext>,
-    Query(q): Query<CreateRunQuery>,
-    Json(plan): Json<RunPlan>,
-) -> Result<(StatusCode, Json<CreateRunResponse>), (StatusCode, String)> {
-    auth::require_role(&ctx, Role::Operator)?;
-    validate_plan(&plan).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+/// The actual run-creation logic (FRD §1 Execution Lifecycle: plan
+/// validation -> dependency graph -> policy gate -> scheduling ->
+/// persistence), shared verbatim by the legacy `POST /runs` handler and the
+/// project-scoped `POST /api/v1/projects/:project_id/executions` handler —
+/// the two differ only in *where their `project_id` comes from* (Step 7:
+/// reuse existing logic rather than duplicate it). `project_id` here is
+/// already resolved and, for the scoped caller, already verified against a
+/// real project by `require_scoped_project`; this function does not decide
+/// it, only uses it.
+async fn create_run_core(
+    state: &AppState,
+    ctx: &AuthContext,
+    project_id: Option<String>,
+    plan: RunPlan,
+) -> Result<(StatusCode, Json<CreateRunResponse>), ApiError> {
+    auth::require_role(ctx, Role::Operator)?;
+    validate_plan(&plan).map_err(ApiError::validation)?;
 
-    let project_id = ctx.project_id.clone().or_else(|| q.project_id.clone());
     let decision = policy::evaluate(&state.policy, &plan);
 
     let (initial_state, policy_notes, spawn_now) = match &decision {
         PolicyDecision::Allow => (RunState::Scheduled, None, true),
         PolicyDecision::RequireApproval(reason) => (RunState::PendingApproval, Some(reason.clone()), false),
         PolicyDecision::Deny(reason) => {
-            audit(&state, &ctx, "run.create", None, Some(reason), "denied").await;
-            return Err((StatusCode::FORBIDDEN, format!("policy denied: {reason}")));
+            audit(state, ctx, "run.create", None, Some(reason), "denied").await;
+            return Err(ApiError::forbidden(format!("policy denied: {reason}")));
         }
     };
 
@@ -122,16 +353,36 @@ async fn create_run(
     let record = RunRecord::new(run_id, &plan, project_id.clone(), Some(ctx.name.clone()), initial_state, policy_notes.clone());
     state.runs.write().await.insert(run_id, record.clone());
 
-    audit(&state, &ctx, "run.create", Some(&run_id.to_string()), policy_notes.as_deref(), "ok").await;
+    audit(state, ctx, "run.create", Some(&run_id.to_string()), policy_notes.as_deref(), "ok").await;
 
     if spawn_now {
-        engine::spawn_run(record, state.registry.clone(), plan.concurrency, state.store.clone(), state.evidence.clone());
+        engine::spawn_run(
+            record,
+            state.registry.clone(),
+            plan.concurrency,
+            state.store.clone(),
+            state.evidence.clone(),
+            engine::default_task_timeout(),
+        );
     }
 
     Ok((
         StatusCode::CREATED,
         Json(CreateRunResponse { run_id, state: initial_state, policy_notes }),
     ))
+}
+
+/// POST /runs — legacy, flat, unscoped. `project_id` comes from the
+/// caller's own key scope, or (global keys only) the `?project_id=` query
+/// param — unchanged from before this unit.
+async fn create_run(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiQuery(q): ApiQuery<CreateRunQuery>,
+    ApiJson(plan): ApiJson<RunPlan>,
+) -> Result<(StatusCode, Json<CreateRunResponse>), ApiError> {
+    let project_id = ctx.project_id.clone().or_else(|| q.project_id.clone());
+    create_run_core(&state, &ctx, project_id, plan).await
 }
 
 // ---------------------------------------------------------------- listing
@@ -159,8 +410,8 @@ struct ListRunsQuery {
 async fn list_runs(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
-    Query(q): Query<ListRunsQuery>,
-) -> Result<Json<Vec<RunListItem>>, (StatusCode, String)> {
+    ApiQuery(q): ApiQuery<ListRunsQuery>,
+) -> Result<Json<Vec<RunListItem>>, ApiError> {
     let ids = state
         .store
         .list_run_ids(ctx.project_id.as_deref())
@@ -204,8 +455,8 @@ struct RunDetail {
 async fn get_run(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
-    Path(id): Path<Uuid>,
-) -> Result<Json<RunDetail>, (StatusCode, String)> {
+    ApiPath(id): ApiPath<Uuid>,
+) -> Result<Json<RunDetail>, ApiError> {
     if let Some(record) = state.runs.read().await.get(&id).cloned() {
         let summary = record.summary().await;
         auth::require_project_access(&ctx, summary.project_id.as_deref())?;
@@ -219,7 +470,7 @@ async fn get_run(
         .get_run_summary(id)
         .await
         .map_err(to_500)?
-        .ok_or((StatusCode::NOT_FOUND, "run not found".to_string()))?;
+        .ok_or_else(|| ApiError::not_found("run not found"))?;
     auth::require_project_access(&ctx, summary.project_id.as_deref())?;
     let mut tasks = state.store.list_tasks_for_run(id).await.map_err(to_500)?;
     tasks.sort_by(|a, b| a.id.cmp(&b.id));
@@ -238,9 +489,9 @@ struct EventsQuery {
 async fn get_events(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
-    Path(id): Path<Uuid>,
-    Query(q): Query<EventsQuery>,
-) -> Result<Json<Vec<RunEvent>>, (StatusCode, String)> {
+    ApiPath(id): ApiPath<Uuid>,
+    ApiQuery(q): ApiQuery<EventsQuery>,
+) -> Result<Json<Vec<RunEvent>>, ApiError> {
     let since = q.since.unwrap_or(0);
     if let Some(record) = state.runs.read().await.get(&id).cloned() {
         let summary = record.summary().await;
@@ -253,7 +504,7 @@ async fn get_events(
         .get_run_summary(id)
         .await
         .map_err(to_500)?
-        .ok_or((StatusCode::NOT_FOUND, "run not found".to_string()))?;
+        .ok_or_else(|| ApiError::not_found("run not found"))?;
     auth::require_project_access(&ctx, summary.project_id.as_deref())?;
     let events = state.store.list_events_since(id, since).await.map_err(to_500)?;
     Ok(Json(events))
@@ -270,8 +521,8 @@ async fn get_events(
 async fn approve_run(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
-    Path(id): Path<Uuid>,
-) -> Result<Json<RunSummary>, (StatusCode, String)> {
+    ApiPath(id): ApiPath<Uuid>,
+) -> Result<Json<RunSummary>, ApiError> {
     auth::require_role(&ctx, Role::Operator)?;
     let record = state
         .runs
@@ -279,16 +530,26 @@ async fn approve_run(
         .await
         .get(&id)
         .cloned()
-        .ok_or((StatusCode::NOT_FOUND, "run not held in this process's memory (see README)".to_string()))?;
+        .ok_or_else(|| ApiError::not_found("run not held in this process's memory (see README)"))?;
     auth::require_project_access(&ctx, record.project_id.as_deref())?;
     {
         let cur = *record.state.read().await;
         if cur != RunState::PendingApproval {
-            return Err((StatusCode::CONFLICT, format!("run is in state {cur:?}, not PENDING_APPROVAL")));
+            return Err(ApiError::conflict(format!("run is in state {cur:?}, not PENDING_APPROVAL")));
         }
     }
     let concurrency = record.plan.concurrency;
-    engine::approve_and_spawn(record.clone(), state.registry.clone(), concurrency, state.store.clone(), state.evidence.clone(), &ctx.name).await;
+    engine::approve_and_spawn(
+        record.clone(),
+        state.registry.clone(),
+        concurrency,
+        state.store.clone(),
+        state.evidence.clone(),
+        &ctx.name,
+        engine::default_task_timeout(),
+    )
+    .await
+    .map_err(to_500)?;
     audit(&state, &ctx, "run.approve", Some(&id.to_string()), None, "ok").await;
     Ok(Json(record.summary().await))
 }
@@ -302,9 +563,9 @@ struct RejectBody {
 async fn reject_run(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
-    Path(id): Path<Uuid>,
-    body: Option<Json<RejectBody>>,
-) -> Result<Json<RunSummary>, (StatusCode, String)> {
+    ApiPath(id): ApiPath<Uuid>,
+    body: Option<ApiJson<RejectBody>>,
+) -> Result<Json<RunSummary>, ApiError> {
     auth::require_role(&ctx, Role::Operator)?;
     let record = state
         .runs
@@ -312,16 +573,18 @@ async fn reject_run(
         .await
         .get(&id)
         .cloned()
-        .ok_or((StatusCode::NOT_FOUND, "run not held in this process's memory (see README)".to_string()))?;
+        .ok_or_else(|| ApiError::not_found("run not held in this process's memory (see README)"))?;
     auth::require_project_access(&ctx, record.project_id.as_deref())?;
     {
         let cur = *record.state.read().await;
         if cur != RunState::PendingApproval {
-            return Err((StatusCode::CONFLICT, format!("run is in state {cur:?}, not PENDING_APPROVAL")));
+            return Err(ApiError::conflict(format!("run is in state {cur:?}, not PENDING_APPROVAL")));
         }
     }
-    let reason = body.and_then(|b| b.reason.clone()).unwrap_or_else(|| "no reason given".to_string());
-    engine::reject_run(record.clone(), &state.store, &ctx.name, &reason).await;
+    let reason = body.and_then(|b| b.0.reason.clone()).unwrap_or_else(|| "no reason given".to_string());
+    engine::reject_run(record.clone(), &state.store, &ctx.name, &reason)
+        .await
+        .map_err(to_500)?;
     audit(&state, &ctx, "run.reject", Some(&id.to_string()), Some(&reason), "ok").await;
     Ok(Json(record.summary().await))
 }
@@ -331,14 +594,14 @@ async fn reject_run(
 async fn list_evidence(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
-    Path(id): Path<Uuid>,
-) -> Result<Json<Vec<crate::store::EvidenceRow>>, (StatusCode, String)> {
+    ApiPath(id): ApiPath<Uuid>,
+) -> Result<Json<Vec<crate::store::EvidenceRow>>, ApiError> {
     let summary = state
         .store
         .get_run_summary(id)
         .await
         .map_err(to_500)?
-        .ok_or((StatusCode::NOT_FOUND, "run not found".to_string()))?;
+        .ok_or_else(|| ApiError::not_found("run not found"))?;
     auth::require_project_access(&ctx, summary.project_id.as_deref())?;
     let rows = state.store.list_evidence_for_run(id).await.map_err(to_500)?;
     Ok(Json(rows))
@@ -347,14 +610,14 @@ async fn list_evidence(
 async fn get_evidence_content(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
-    Path(id): Path<Uuid>,
-) -> Result<Response, (StatusCode, String)> {
+    ApiPath(id): ApiPath<Uuid>,
+) -> Result<Response, ApiError> {
     let (object_key, content_type, run_id) = state
         .store
         .get_evidence_object_key(id)
         .await
         .map_err(to_500)?
-        .ok_or((StatusCode::NOT_FOUND, "evidence not found".to_string()))?;
+        .ok_or_else(|| ApiError::not_found("evidence not found"))?;
     if let Some(run_id) = run_id.as_deref().and_then(|s| Uuid::parse_str(s).ok()) {
         if let Some(summary) = state.store.get_run_summary(run_id).await.map_err(to_500)? {
             auth::require_project_access(&ctx, summary.project_id.as_deref())?;
@@ -363,7 +626,500 @@ async fn get_evidence_content(
     let bytes = state
         .evidence
         .read(&object_key)
-        .map_err(|e| (StatusCode::NOT_FOUND, format!("evidence file unavailable: {e}")))?;
+        .map_err(|e| ApiError::not_found(format!("evidence file unavailable: {e}")))?;
+    Ok((
+        StatusCode::OK,
+        [("Content-Type", content_type.unwrap_or_else(|| "text/plain".to_string()))],
+        bytes,
+    )
+        .into_response())
+}
+
+// --------------------------------------------- project-scoped executions
+//
+// API Contract §12 names this resource "executions" (`POST
+// /api/v1/projects/{project_id}/executions`); §15.1/§15.2 name evidence
+// under the same project scope. BE-13 (§12.1-12.5) aligned the *response*
+// field name (`run_id`/`status`, see `CreateExecutionResponse`) and added
+// the cancel/tasks endpoints below, but deliberately left the *request*
+// schema alone: full alignment to Contract §12's own request concept
+// (`test_case_ids`, `test_suite_id`, `execution_mode`) presupposes real
+// test-case/suite entities that do not exist in this backend at all (§8
+// Test Generation and §10 Suites/Plans are MISSING/PARTIAL-without-
+// persistence per the Integration Plan's own gap matrix) — accepting those
+// fields without real validation behind them would be exactly the fake-ID
+// behavior this unit is told not to build. See
+// AIQA_PHASE2_BE13_EXECUTION_ALIGNMENT_IMPLEMENTATION_REPORT.md §3 for the
+// full reasoning.
+//
+// `/approve`, `/reject`, and `/events` are not enumerated in Contract §12
+// at all, but are real, necessary, pre-existing functionality (the
+// governance gate and the realtime catch-up path) with nowhere else to go
+// under the new scheme; they are mounted as sub-resources of the same
+// `executions/{run_id}` the contract does define, which Contract §2.1
+// permits ("non-breaking additions may remain within the current
+// version").
+
+/// BE-13 (§12.1) response alignment: the contract's own field name is
+/// `status`, not this backend's internal `state` — renamed here for the
+/// contract-defined scoped endpoint only. The *value* is still this run's
+/// real initial `RunState` (`SCHEDULED` or `PENDING_APPROVAL`, whichever the
+/// policy gate actually produced) — the contract's own illustrative example
+/// (`"status": "QUEUED"`) is not reproduced literally, because `QUEUED` is
+/// not a value this backend's run-level state machine ever produces (§13's
+/// canonical status list is task-level, not run-level; see the BE-13
+/// report). Fabricating it would misrepresent the run's actual state. The
+/// legacy `POST /runs` response (`CreateRunResponse`, `state` field) is
+/// left completely unchanged.
+#[derive(Serialize)]
+struct CreateExecutionResponse {
+    run_id: Uuid,
+    status: RunState,
+    policy_notes: Option<String>,
+}
+
+/// POST /api/v1/projects/:project_id/executions — project_id is canonical
+/// from the URL (Step 3: never trust a project id elsewhere when the route
+/// already carries one) — the legacy `?project_id=`/key-scope resolution
+/// this route's sibling `create_run` uses does not apply here at all.
+async fn create_run_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiJson(plan): ApiJson<RunPlan>,
+) -> Result<(StatusCode, Json<CreateExecutionResponse>), ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let (status_code, Json(body)) = create_run_core(&state, &ctx, Some(project_id.to_string()), plan).await?;
+    Ok((status_code, Json(CreateExecutionResponse { run_id: body.run_id, status: body.state, policy_notes: body.policy_notes })))
+}
+
+/// GET /api/v1/projects/:project_id/executions — filtered to exactly the
+/// URL's project, never the caller's own key scope (a global admin
+/// listing project X's executions must see only X's, not everything).
+async fn list_runs_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiQuery(q): ApiQuery<ListRunsQuery>,
+) -> Result<Json<Vec<RunListItem>>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let pid_str = project_id.to_string();
+    let ids = state.store.list_run_ids(Some(&pid_str)).await.map_err(to_500)?;
+    let limit = q.limit.unwrap_or(50).max(1) as usize;
+
+    let mut items = Vec::new();
+    for id in ids.into_iter().take(limit) {
+        let summary = if let Some(record) = state.runs.read().await.get(&id).cloned() {
+            record.summary().await
+        } else {
+            match state.store.get_run_summary(id).await.map_err(to_500)? {
+                Some(s) => s,
+                None => continue,
+            }
+        };
+        items.push(RunListItem {
+            run_id: summary.run_id,
+            name: summary.name,
+            state: summary.state,
+            total: summary.total,
+            passed: summary.passed,
+            failed: summary.failed,
+            project_id: summary.project_id,
+        });
+    }
+    Ok(Json(items))
+}
+
+/// Fetches a run's durable summary (falling back from the in-memory record
+/// to the DB, same as every legacy handler) and confirms it belongs to
+/// `project_id` — the shared core every `_scoped` run-detail handler below
+/// uses, so that check is written exactly once.
+async fn scoped_run_summary(state: &AppState, run_id: Uuid, project_id: Uuid) -> Result<RunSummary, ApiError> {
+    let summary = if let Some(record) = state.runs.read().await.get(&run_id).cloned() {
+        record.summary().await
+    } else {
+        state
+            .store
+            .get_run_summary(run_id)
+            .await
+            .map_err(to_500)?
+            .ok_or_else(|| ApiError::not_found("run not found"))?
+    };
+    require_resource_in_project(summary.project_id.as_deref(), project_id)?;
+    Ok(summary)
+}
+
+/// GET /api/v1/projects/:project_id/executions/:run_id
+/// Fetches a run's tasks (in-memory record first, falling back to the DB —
+/// same pattern `scoped_run_summary` uses), sorted by task id. Shared by
+/// `get_run_scoped` (embeds them in `RunDetail`) and BE-13's standalone
+/// §12.4/§12.5 task endpoints below, so there is exactly one place that
+/// knows how to fetch a run's tasks.
+async fn scoped_run_tasks(state: &AppState, run_id: Uuid) -> Result<Vec<TaskState>, ApiError> {
+    let mut tasks = if let Some(record) = state.runs.read().await.get(&run_id).cloned() {
+        record.engine.read().await.tasks.values().cloned().collect()
+    } else {
+        state.store.list_tasks_for_run(run_id).await.map_err(to_500)?
+    };
+    tasks.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(tasks)
+}
+
+async fn get_run_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, run_id)): ApiPath<(Uuid, Uuid)>,
+) -> Result<Json<RunDetail>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let summary = scoped_run_summary(&state, run_id, project_id).await?;
+    let tasks = scoped_run_tasks(&state, run_id).await?;
+    Ok(Json(RunDetail { summary, tasks }))
+}
+
+// ---------------------------------------------------- BE-13 — run tasks
+
+/// GET /api/v1/projects/:project_id/executions/:run_id/tasks (§12.4)
+async fn list_run_tasks_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, run_id)): ApiPath<(Uuid, Uuid)>,
+) -> Result<Json<Vec<TaskState>>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    scoped_run_summary(&state, run_id, project_id).await?;
+    Ok(Json(scoped_run_tasks(&state, run_id).await?))
+}
+
+/// GET /api/v1/projects/:project_id/executions/:run_id/tasks/:task_id (§12.5)
+async fn get_run_task_detail_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, run_id, task_id)): ApiPath<(Uuid, Uuid, String)>,
+) -> Result<Json<TaskState>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    scoped_run_summary(&state, run_id, project_id).await?;
+    let tasks = scoped_run_tasks(&state, run_id).await?;
+    tasks
+        .into_iter()
+        .find(|t| t.id == task_id)
+        .map(Json)
+        .ok_or_else(|| ApiError::not_found("task not found in this run"))
+}
+
+// -------------------------------------------------------- BE-13 — cancel
+
+#[derive(Serialize)]
+struct CancelRunResponse {
+    run_id: Uuid,
+    /// The run's state at the instant cancellation was accepted — execution
+    /// is asynchronous (Contract §12 "All execution is asynchronous"), so
+    /// this is not guaranteed to already be `CANCELLED`: an in-flight task's
+    /// subprocess needs a moment to actually be killed. Poll `GET
+    /// .../executions/:run_id` (or the event stream) to observe the final
+    /// state — this response only confirms the request was accepted, it
+    /// does not claim execution has already stopped.
+    status: RunState,
+}
+
+/// POST /api/v1/projects/:project_id/executions/:run_id/cancel (§12.3).
+///
+/// "Cancellation must be policy-aware and auditable" (contract's entire
+/// spec for this endpoint — no request/response schema is given). Resolved
+/// here as: policy-aware = the same authorization gate every other mutating
+/// execution route already uses (Operator role + project ownership — there
+/// is no separate "cancel policy" concept anywhere in `policy.rs`, and
+/// inventing one would be exactly the kind of undefined-semantics guess
+/// this unit is told not to make); auditable = the existing generic
+/// `audit_log` mechanism already used for run.create/approve/reject.
+///
+/// Only `Created`/`Scheduled`/`Running` runs are cancellable —
+/// `PendingApproval` already has its own dedicated stop action (`/reject`),
+/// and every other state is already terminal. See `RunState::is_terminal`'s
+/// doc comment for the full reasoning.
+async fn cancel_run_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, run_id)): ApiPath<(Uuid, Uuid)>,
+) -> Result<Json<CancelRunResponse>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    auth::require_role(&ctx, Role::Operator)?;
+    let summary = scoped_run_summary(&state, run_id, project_id).await?;
+
+    if summary.state == RunState::PendingApproval {
+        return Err(ApiError::conflict(
+            "run is PENDING_APPROVAL; use POST .../reject to stop a run that has not started executing",
+        ));
+    }
+    if summary.state.is_terminal() {
+        return Err(ApiError::conflict(format!("run is already in a terminal state ({:?}), cannot be cancelled", summary.state)));
+    }
+
+    // A run whose persisted state is non-terminal but that is *not* held in
+    // this process's memory would mean recovery (B2) has not yet run for it
+    // — recovery forces every non-terminal run/task to a terminal state at
+    // startup, so this should not happen. Fail safely rather than silently
+    // no-op a cancel request that cannot actually reach anything.
+    let record = state
+        .runs
+        .read()
+        .await
+        .get(&run_id)
+        .cloned()
+        .ok_or_else(|| ApiError::internal("run reports a live state but is not tracked in this process; cannot safely cancel"))?;
+
+    record.request_cancel(&ctx.name).await;
+    audit(&state, &ctx, "run.cancel", Some(&run_id.to_string()), None, "ok").await;
+
+    let current_state = *record.state.read().await;
+    Ok(Json(CancelRunResponse { run_id, status: current_state }))
+}
+
+// ------------------------------------------------------- dashboard / kpis
+
+/// BE-12 (API Contract §23.1/§23.2). Only concepts this backend can
+/// honestly compute from persisted state are included. §23's "Dashboard may
+/// expose"/"Supported KPI concepts include" wording (reinforced by
+/// Acceptance Matrix ACC-017's "KPI Coverage (Where implemented)") is a
+/// permissive list, not a required schema — several listed concepts (report
+/// counts, a computed project-health status, API latency, UI stability,
+/// model/worker health, requirement/edge/business-logic/RBAC/security
+/// coverage, test-generation accuracy) have no backing data model anywhere
+/// in this codebase (no reports table, no test-generation/requirements
+/// entities, no latency telemetry, no model gateway). They are
+/// intentionally omitted rather than faked; see
+/// AIQA_PHASE2_BE12_DASHBOARD_KPI_IMPLEMENTATION_REPORT.md for the full
+/// list and reasoning.
+#[derive(Serialize)]
+struct DashboardResponse {
+    project_id: Uuid,
+    project_name: String,
+    /// Run counts by state (§23.1 "execution counts").
+    execution_counts: std::collections::BTreeMap<String, i64>,
+    /// Task counts by status, across every run in this project.
+    task_counts: std::collections::BTreeMap<String, i64>,
+    /// §23.1 "pass/fail ratios" — PASSED vs FAILED task counts.
+    pass_fail: PassFailCounts,
+    /// §23.1 "test counts" — distinct known tests (`quality_nodes`,
+    /// node_type='test') for this project.
+    test_count: i64,
+    generated_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Serialize)]
+struct PassFailCounts {
+    passed: i64,
+    failed: i64,
+}
+
+/// GET /api/v1/projects/:project_id/dashboard
+async fn get_project_dashboard(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+) -> Result<Json<DashboardResponse>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let pid = project_id.to_string();
+
+    let project = state
+        .store
+        .get_project(project_id)
+        .await
+        .map_err(to_500)?
+        .ok_or_else(|| ApiError::not_found("project not found"))?;
+
+    let execution_counts: std::collections::BTreeMap<String, i64> =
+        state.store.dashboard_run_counts(&pid).await.map_err(to_500)?.into_iter().collect();
+    let task_counts: std::collections::BTreeMap<String, i64> =
+        state.store.dashboard_task_counts(&pid).await.map_err(to_500)?.into_iter().collect();
+    let passed = *task_counts.get("PASSED").unwrap_or(&0);
+    let failed = *task_counts.get("FAILED").unwrap_or(&0);
+    let test_count = state.store.dashboard_test_count(&pid).await.map_err(to_500)?;
+
+    Ok(Json(DashboardResponse {
+        project_id,
+        project_name: project.name,
+        execution_counts,
+        task_counts,
+        pass_fail: PassFailCounts { passed, failed },
+        test_count,
+        generated_at: chrono::Utc::now(),
+    }))
+}
+
+/// §23.2 KPI concepts this backend can honestly derive today: `execution
+/// reliability` (product pass rate — PASSED / (PASSED+FAILED+TIMEOUT),
+/// mirroring `intelligence.rs`'s own product-vs-infrastructure split, which
+/// deliberately excludes INFRA_ERROR/BLOCKED/SKIPPED/CANCELLED as not being
+/// evidence the thing under test is broken) and `execution efficiency`
+/// (average task duration). Every other listed KPI concept has no backing
+/// data model — see `DashboardResponse`'s doc comment.
+#[derive(Serialize)]
+struct KpisResponse {
+    project_id: Uuid,
+    /// PASSED / (PASSED+FAILED+TIMEOUT) among this project's tasks, or
+    /// `null` when no task has reached one of those outcomes yet.
+    execution_reliability: Option<f64>,
+    /// Average task duration in milliseconds, or `null` when no task has
+    /// both a recorded start and finish yet.
+    execution_efficiency_ms: Option<f64>,
+    generated_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// GET /api/v1/projects/:project_id/kpis
+async fn get_project_kpis(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+) -> Result<Json<KpisResponse>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let pid = project_id.to_string();
+
+    let task_counts: std::collections::BTreeMap<String, i64> =
+        state.store.dashboard_task_counts(&pid).await.map_err(to_500)?.into_iter().collect();
+    let passed = *task_counts.get("PASSED").unwrap_or(&0);
+    let failed = *task_counts.get("FAILED").unwrap_or(&0);
+    let timeout = *task_counts.get("TIMEOUT").unwrap_or(&0);
+    let terminal_product_outcomes = passed + failed + timeout;
+    let execution_reliability =
+        if terminal_product_outcomes > 0 { Some(passed as f64 / terminal_product_outcomes as f64) } else { None };
+
+    let execution_efficiency_ms = state.store.dashboard_avg_task_duration_ms(&pid).await.map_err(to_500)?;
+
+    Ok(Json(KpisResponse {
+        project_id,
+        execution_reliability,
+        execution_efficiency_ms,
+        generated_at: chrono::Utc::now(),
+    }))
+}
+
+/// GET /api/v1/projects/:project_id/executions/:run_id/events?since=N
+async fn get_events_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, run_id)): ApiPath<(Uuid, Uuid)>,
+    ApiQuery(q): ApiQuery<EventsQuery>,
+) -> Result<Json<Vec<RunEvent>>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    scoped_run_summary(&state, run_id, project_id).await?;
+    let since = q.since.unwrap_or(0);
+
+    if let Some(record) = state.runs.read().await.get(&run_id).cloned() {
+        let events: Vec<RunEvent> = record.events.read().await.iter().filter(|e| e.sequence >= since).cloned().collect();
+        return Ok(Json(events));
+    }
+    let events = state.store.list_events_since(run_id, since).await.map_err(to_500)?;
+    Ok(Json(events))
+}
+
+/// POST /api/v1/projects/:project_id/executions/:run_id/approve
+async fn approve_run_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, run_id)): ApiPath<(Uuid, Uuid)>,
+) -> Result<Json<RunSummary>, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let record = state
+        .runs
+        .read()
+        .await
+        .get(&run_id)
+        .cloned()
+        .ok_or_else(|| ApiError::not_found("run not held in this process's memory (see README)"))?;
+    require_resource_in_project(record.project_id.as_deref(), project_id)?;
+    {
+        let cur = *record.state.read().await;
+        if cur != RunState::PendingApproval {
+            return Err(ApiError::conflict(format!("run is in state {cur:?}, not PENDING_APPROVAL")));
+        }
+    }
+    let concurrency = record.plan.concurrency;
+    engine::approve_and_spawn(
+        record.clone(),
+        state.registry.clone(),
+        concurrency,
+        state.store.clone(),
+        state.evidence.clone(),
+        &ctx.name,
+        engine::default_task_timeout(),
+    )
+    .await
+    .map_err(to_500)?;
+    audit(&state, &ctx, "run.approve", Some(&run_id.to_string()), None, "ok").await;
+    Ok(Json(record.summary().await))
+}
+
+/// POST /api/v1/projects/:project_id/executions/:run_id/reject
+async fn reject_run_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, run_id)): ApiPath<(Uuid, Uuid)>,
+    body: Option<ApiJson<RejectBody>>,
+) -> Result<Json<RunSummary>, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let record = state
+        .runs
+        .read()
+        .await
+        .get(&run_id)
+        .cloned()
+        .ok_or_else(|| ApiError::not_found("run not held in this process's memory (see README)"))?;
+    require_resource_in_project(record.project_id.as_deref(), project_id)?;
+    {
+        let cur = *record.state.read().await;
+        if cur != RunState::PendingApproval {
+            return Err(ApiError::conflict(format!("run is in state {cur:?}, not PENDING_APPROVAL")));
+        }
+    }
+    let reason = body.and_then(|b| b.0.reason.clone()).unwrap_or_else(|| "no reason given".to_string());
+    engine::reject_run(record.clone(), &state.store, &ctx.name, &reason)
+        .await
+        .map_err(to_500)?;
+    audit(&state, &ctx, "run.reject", Some(&run_id.to_string()), Some(&reason), "ok").await;
+    Ok(Json(record.summary().await))
+}
+
+/// GET /api/v1/projects/:project_id/executions/:run_id/evidence — API
+/// Contract §15.1, exact path match.
+async fn list_evidence_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, run_id)): ApiPath<(Uuid, Uuid)>,
+) -> Result<Json<Vec<crate::store::EvidenceRow>>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    scoped_run_summary(&state, run_id, project_id).await?;
+    let rows = state.store.list_evidence_for_run(run_id).await.map_err(to_500)?;
+    Ok(Json(rows))
+}
+
+/// GET /api/v1/projects/:project_id/evidence/:evidence_id — API Contract
+/// §15.2, exact path match. The evidence's *owning run's* project is what
+/// must match the URL, since evidence itself carries no `project_id` of
+/// its own (same resolve-through-the-run pattern the legacy
+/// `get_evidence_content` already uses for authorization).
+async fn get_evidence_content_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, evidence_id)): ApiPath<(Uuid, Uuid)>,
+) -> Result<Response, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let (object_key, content_type, run_id) = state
+        .store
+        .get_evidence_object_key(evidence_id)
+        .await
+        .map_err(to_500)?
+        .ok_or_else(|| ApiError::not_found("evidence not found"))?;
+    let run_id = run_id
+        .as_deref()
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .ok_or_else(|| ApiError::not_found("evidence not found"))?;
+    scoped_run_summary(&state, run_id, project_id).await?;
+
+    let bytes = state
+        .evidence
+        .read(&object_key)
+        .map_err(|e| ApiError::not_found(format!("evidence file unavailable: {e}")))?;
     Ok((
         StatusCode::OK,
         [("Content-Type", content_type.unwrap_or_else(|| "text/plain".to_string()))],
@@ -377,7 +1133,7 @@ async fn get_evidence_content(
 async fn list_test_intelligence(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
-) -> Result<Json<Vec<crate::store::TestIntelRow>>, (StatusCode, String)> {
+) -> Result<Json<Vec<crate::store::TestIntelRow>>, ApiError> {
     let rows = state
         .store
         .list_test_intelligence(ctx.project_id.as_deref())
@@ -389,7 +1145,7 @@ async fn list_test_intelligence(
 async fn list_failure_clusters(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
-) -> Result<Json<Vec<crate::store::FailureClusterRow>>, (StatusCode, String)> {
+) -> Result<Json<Vec<crate::store::FailureClusterRow>>, ApiError> {
     let rows = state
         .store
         .list_failure_clusters(ctx.project_id.as_deref())
@@ -398,11 +1154,21 @@ async fn list_failure_clusters(
     Ok(Json(rows))
 }
 
+/// GET /bug-drafts — B14: scoped to the caller's project.
+///
+/// This previously bound `Extension(_ctx)`, discarding the auth context
+/// entirely, and called an unfiltered query — so a project-scoped *viewer*
+/// key received every tenant's drafts. A global/admin key (`project_id:
+/// None`) still sees everything, matching `list_runs`.
 async fn list_bug_drafts(
     State(state): State<AppState>,
-    Extension(_ctx): Extension<AuthContext>,
-) -> Result<Json<Vec<crate::store::BugDraftRow>>, (StatusCode, String)> {
-    let rows = state.store.list_bug_drafts().await.map_err(to_500)?;
+    Extension(ctx): Extension<AuthContext>,
+) -> Result<Json<Vec<crate::store::BugDraftRow>>, ApiError> {
+    let rows = state
+        .store
+        .list_bug_drafts(ctx.project_id.as_deref())
+        .await
+        .map_err(to_500)?;
     Ok(Json(rows))
 }
 
@@ -417,15 +1183,32 @@ struct ReviewBody {
 async fn review_bug_draft(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
-    Path(id): Path<Uuid>,
-    Json(body): Json<ReviewBody>,
-) -> Result<StatusCode, (StatusCode, String)> {
+    ApiPath(id): ApiPath<Uuid>,
+    ApiJson(body): ApiJson<ReviewBody>,
+) -> Result<StatusCode, ApiError> {
     auth::require_role(&ctx, Role::Operator)?;
     let new_state = match body.action.as_str() {
         "confirm" => "CONFIRMED",
         "dismiss" => "DISMISSED",
-        other => return Err((StatusCode::BAD_REQUEST, format!("unknown action '{other}', expected 'confirm' or 'dismiss'"))),
+        other => {
+            return Err(ApiError::validation(format!(
+                "unknown action '{other}', expected 'confirm' or 'dismiss'"
+            )))
+        }
     };
+
+    // B14 — this mutation previously performed no project check at all, so a
+    // project-scoped operator could confirm or dismiss another tenant's
+    // draft. Resolve the owning project first and reuse the same gate every
+    // other scoped resource uses.
+    let owner = state
+        .store
+        .bug_draft_project(id)
+        .await
+        .map_err(to_500)?
+        .ok_or_else(|| ApiError::not_found("bug draft not found"))?;
+    auth::require_project_access(&ctx, Some(owner.as_str()))?;
+
     state.store.review_bug_draft(id, new_state, &ctx.name).await.map_err(to_500)?;
     audit(&state, &ctx, "bug_draft.review", Some(&id.to_string()), Some(new_state), "ok").await;
     Ok(StatusCode::NO_CONTENT)
@@ -453,12 +1236,12 @@ struct CreateApiKeyResponse {
 async fn create_api_key(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
-    Json(body): Json<CreateApiKeyBody>,
-) -> Result<Json<CreateApiKeyResponse>, (StatusCode, String)> {
+    ApiJson(body): ApiJson<CreateApiKeyBody>,
+) -> Result<Json<CreateApiKeyResponse>, ApiError> {
     auth::require_role(&ctx, Role::Admin)?;
     let role = match body.role.as_str() {
         "admin" | "operator" | "viewer" => body.role.as_str(),
-        other => return Err((StatusCode::BAD_REQUEST, format!("unknown role '{other}'"))),
+        other => return Err(ApiError::validation(format!("unknown role '{other}'"))),
     };
     let id = Uuid::new_v4();
     let raw = auth::generate_key();
@@ -474,7 +1257,7 @@ async fn create_api_key(
 async fn list_api_keys_handler(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
-) -> Result<Json<Vec<crate::store::ApiKeyListRow>>, (StatusCode, String)> {
+) -> Result<Json<Vec<crate::store::ApiKeyListRow>>, ApiError> {
     auth::require_role(&ctx, Role::Admin)?;
     let rows = state.store.list_api_keys().await.map_err(to_500)?;
     Ok(Json(rows))
@@ -483,8 +1266,8 @@ async fn list_api_keys_handler(
 async fn revoke_api_key_handler(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
-    Path(id): Path<Uuid>,
-) -> Result<StatusCode, (StatusCode, String)> {
+    ApiPath(id): ApiPath<Uuid>,
+) -> Result<StatusCode, ApiError> {
     auth::require_role(&ctx, Role::Admin)?;
     state.store.revoke_api_key(id).await.map_err(to_500)?;
     audit(&state, &ctx, "apikey.revoke", Some(&id.to_string()), None, "ok").await;
@@ -499,8 +1282,8 @@ struct AuditQuery {
 async fn get_audit_log(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
-    Query(q): Query<AuditQuery>,
-) -> Result<Json<Vec<crate::store::AuditRow>>, (StatusCode, String)> {
+    ApiQuery(q): ApiQuery<AuditQuery>,
+) -> Result<Json<Vec<crate::store::AuditRow>>, ApiError> {
     auth::require_role(&ctx, Role::Admin)?;
     let rows = state.store.list_audit(q.limit.unwrap_or(100).clamp(1, 1000)).await.map_err(to_500)?;
     Ok(Json(rows))

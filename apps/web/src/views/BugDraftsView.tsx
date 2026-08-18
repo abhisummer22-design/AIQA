@@ -2,24 +2,16 @@
  * Bug drafts — the anomaly -> confirmed-defect review gate (PRD §14).
  *
  * Sources: `GET /bug-drafts`, `POST /bug-drafts/:id/review`.
- *
- * A draft is explicitly *not* a defect. Promotion happens only when a human
- * presses Confirm, which calls the real review endpoint; the orchestrator
- * records who did it and audits the decision. Nothing here promotes
- * automatically, and confidence is always shown next to the claim so a
- * low-confidence draft never reads as an established fact.
- *
- * The previous UI shipped two hardcoded "bug candidates" with invented 94%
- * and 89% confidence values and an "evidenceCount" that counted nothing.
  */
 
 import React from "react";
-import { Bug, Check, X } from "lucide-react";
+import { Bug, Check, X, ShieldAlert, RotateCcw } from "lucide-react";
 import { useApiAction, useApiResource } from "../hooks/useApi";
 import { listBugDrafts, reviewBugDraft } from "../services/orchestrator";
 import type { BugDraftRow } from "../types/orchestrator";
 import { ResourceView } from "../components/common/StateViews";
 import { ConfidenceLabel, ReviewStateBadge, Timestamp } from "../components/common/Badges";
+import { SectionHeader } from "../components/common/SectionHeader";
 
 export function BugDraftsView() {
   const drafts = useApiResource<BugDraftRow[]>((signal) => listBugDrafts(signal), []);
@@ -32,13 +24,21 @@ export function BugDraftsView() {
 
   return (
     <div className="space-y-4">
-      <header>
-        <h1 className="text-lg font-bold tracking-tight text-slate-100">Bug Drafts</h1>
-        <p className="mt-0.5 text-xs text-slate-500">
-          AI-generated drafts awaiting human review. A draft becomes a confirmed defect only when someone confirms it —
-          the decision is recorded and audited server-side.
-        </p>
-      </header>
+      <SectionHeader
+        title="Bug Drafts & Human Review Gate"
+        subtitle="AI-synthesized defect candidates awaiting human confirmation before formal ticket promotion."
+        badge="REALTIME BACKEND"
+        badgeTone="live"
+        action={
+          <button
+            onClick={() => drafts.reload()}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-slate-700 bg-slate-900/60 hover:bg-slate-800 text-xs text-slate-300 transition-colors cursor-pointer"
+          >
+            <RotateCcw size={12} />
+            <span>Refresh Drafts</span>
+          </button>
+        }
+      />
 
       {review.error && (
         <div className="rounded-lg border border-rose-800/60 bg-rose-950/30 px-3 py-2 text-xs text-rose-300">
@@ -46,29 +46,29 @@ export function BugDraftsView() {
         </div>
       )}
 
-      <section className="rounded-xl border border-slate-800 bg-[#0a0f1a]">
-        <h2 className="flex items-center gap-2 border-b border-slate-800 px-4 py-2.5 text-sm font-semibold text-slate-200">
+      <section className="rounded-xl border border-slate-800 bg-[#0a0f1a] shadow-lg">
+        <h2 className="flex items-center gap-2 border-b border-slate-800 px-4 py-3 text-sm font-semibold text-slate-200">
           <Bug size={14} className="text-cyan-400" />
-          Drafts
+          <span>Defect Candidates</span>
         </h2>
         <div className="p-3">
           <ResourceView
             state={drafts}
             loadingLabel="Loading bug drafts…"
-            emptyTitle="No bug drafts"
-            emptyMessage="The intelligence pipeline has not drafted any bugs. Drafts are produced from failure clusters."
+            emptyTitle="No bug drafts awaiting review"
+            emptyMessage="The intelligence pipeline has not drafted any defects from recent run failure clusters."
           >
             {(rows) => (
-              <ul className="space-y-2">
+              <ul className="space-y-2.5">
                 {rows.map((d) => {
                   const isPending = d.review_state !== "CONFIRMED" && d.review_state !== "DISMISSED";
                   return (
-                    <li key={d.id} className="rounded-lg border border-slate-800 bg-slate-900/40 p-3">
+                    <li key={d.id} className="rounded-lg border border-slate-800 bg-slate-900/50 p-3.5 space-y-2">
                       <div className="flex flex-wrap items-start justify-between gap-2">
-                        <h3 className="min-w-0 flex-1 text-sm font-medium text-slate-200">{d.title}</h3>
+                        <h3 className="min-w-0 flex-1 text-sm font-semibold text-slate-100">{d.title}</h3>
                         <div className="flex shrink-0 items-center gap-2">
                           {d.severity && (
-                            <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider text-slate-400">
+                            <span className="rounded bg-slate-800 px-2 py-0.5 font-mono text-[9px] uppercase tracking-wider text-slate-300 border border-slate-700">
                               {d.severity}
                             </span>
                           )}
@@ -76,40 +76,38 @@ export function BugDraftsView() {
                         </div>
                       </div>
 
-                      <p className="mt-1.5 whitespace-pre-wrap text-[11px] leading-relaxed text-slate-400">
+                      <p className="whitespace-pre-wrap text-xs leading-relaxed text-slate-300 bg-slate-950/70 p-3 rounded border border-slate-800/80">
                         {d.description}
                       </p>
 
-                      <div className="mt-2 flex flex-wrap items-center gap-3">
+                      <div className="flex flex-wrap items-center gap-4 text-[11px] font-mono text-slate-400 pt-1">
                         <ConfidenceLabel value={d.confidence} />
-                        <span className="font-mono text-[10px] text-slate-600">
-                          cluster {d.failure_cluster_id.slice(0, 8)}
-                        </span>
-                        <span className="font-mono text-[10px] text-slate-600">
-                          drafted <Timestamp value={d.created_at} />
+                        <span>cluster: {d.failure_cluster_id.slice(0, 8)}</span>
+                        <span>
+                          drafted: <Timestamp value={d.created_at} />
                         </span>
                         {d.promoted_by && (
-                          <span className="font-mono text-[10px] text-slate-500">
-                            reviewed by {d.promoted_by} <Timestamp value={d.promoted_at} />
+                          <span className="text-cyan-300">
+                            reviewed by: {d.promoted_by} (<Timestamp value={d.promoted_at} />)
                           </span>
                         )}
                       </div>
 
                       {isPending && (
-                        <div className="mt-2.5 flex gap-2">
-                          <button
-                            disabled={review.isRunning}
-                            onClick={() => act(d.id, "confirm")}
-                            className="flex items-center gap-1 rounded border border-rose-700/60 px-2.5 py-1 text-[11px] text-rose-300 transition hover:bg-rose-950/40 disabled:opacity-40"
-                          >
-                            <Check size={11} /> Confirm as defect
-                          </button>
+                        <div className="pt-2 border-t border-slate-800/60 flex items-center justify-end gap-2">
                           <button
                             disabled={review.isRunning}
                             onClick={() => act(d.id, "dismiss")}
-                            className="flex items-center gap-1 rounded border border-slate-700 px-2.5 py-1 text-[11px] text-slate-400 transition hover:bg-slate-800 disabled:opacity-40"
+                            className="flex items-center gap-1 rounded border border-slate-700 bg-slate-800/60 px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors disabled:opacity-40 cursor-pointer"
                           >
-                            <X size={11} /> Dismiss
+                            <X size={12} /> Dismiss
+                          </button>
+                          <button
+                            disabled={review.isRunning}
+                            onClick={() => act(d.id, "confirm")}
+                            className="flex items-center gap-1 rounded border border-rose-800/60 bg-rose-950/60 px-3 py-1.5 text-xs font-semibold text-rose-300 hover:bg-rose-900/60 transition-colors disabled:opacity-40 cursor-pointer"
+                          >
+                            <Check size={12} /> Confirm as Defect
                           </button>
                         </div>
                       )}

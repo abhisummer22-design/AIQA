@@ -13,10 +13,11 @@
 //! API needs *some* gate before "who called POST /runs" is even a
 //! meaningful question, and this is the minimum that makes it one.
 
+use crate::errors::ApiError;
 use crate::store::Store;
 use axum::{
     extract::{Request, State},
-    http::{header, StatusCode},
+    http::header,
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -108,7 +109,7 @@ pub async fn require_auth(State(store): State<Store>, mut req: Request, next: Ne
             let _ = store
                 .insert_audit(None, None, None, "auth.fail", None, Some("missing or malformed Authorization header"), "denied")
                 .await;
-            return (StatusCode::UNAUTHORIZED, "missing or malformed Authorization: Bearer <key> header").into_response();
+            return ApiError::unauthenticated("missing or malformed Authorization: Bearer <key> header").into_response();
         }
     };
 
@@ -127,39 +128,37 @@ pub async fn require_auth(State(store): State<Store>, mut req: Request, next: Ne
             let _ = store
                 .insert_audit(None, None, None, "auth.fail", None, Some("unknown or revoked API key"), "denied")
                 .await;
-            (StatusCode::UNAUTHORIZED, "invalid or revoked API key").into_response()
+            ApiError::unauthenticated("invalid or revoked API key").into_response()
         }
-        Err(e) => {
-            tracing::error!("auth lookup failed: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, "auth backend error").into_response()
-        }
+        Err(e) => ApiError::internal(format!("auth lookup failed: {e}")).into_response(),
     }
 }
 
 /// Returns `Err(403)` if `ctx.role` doesn't meet `min` — call at the top of
 /// any handler that needs more than viewer-level access.
-pub fn require_role(ctx: &AuthContext, min: Role) -> Result<(), (StatusCode, String)> {
+pub fn require_role(ctx: &AuthContext, min: Role) -> Result<(), ApiError> {
     if ctx.role.at_least(min) {
         Ok(())
     } else {
-        Err((
-            StatusCode::FORBIDDEN,
-            format!("role '{}' cannot perform this action (requires '{}')", ctx.role.as_str(), min.as_str()),
-        ))
+        Err(ApiError::forbidden(format!(
+            "role '{}' cannot perform this action (requires '{}')",
+            ctx.role.as_str(),
+            min.as_str()
+        )))
     }
 }
 
 /// Multi-tenancy gate: an `Admin`/global key (`project_id: None`) may act on
 /// anything; a scoped key may only act on its own project. `resource_pid`
 /// is the project the target run/resource actually belongs to.
-pub fn require_project_access(ctx: &AuthContext, resource_pid: Option<&str>) -> Result<(), (StatusCode, String)> {
+pub fn require_project_access(ctx: &AuthContext, resource_pid: Option<&str>) -> Result<(), ApiError> {
     match &ctx.project_id {
         None => Ok(()),
         Some(pid) => {
             if resource_pid == Some(pid.as_str()) {
                 Ok(())
             } else {
-                Err((StatusCode::FORBIDDEN, "resource belongs to a different project".to_string()))
+                Err(ApiError::forbidden("resource belongs to a different project"))
             }
         }
     }

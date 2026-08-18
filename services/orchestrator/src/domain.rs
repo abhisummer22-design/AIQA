@@ -90,6 +90,16 @@ pub enum RunState {
 }
 
 impl RunState {
+    /// BE-13 (§12.3) — states from which a run can still be cancelled are
+    /// exactly the non-terminal ones: `PendingApproval` is deliberately
+    /// excluded even though it isn't "finished" — that state already has its
+    /// own dedicated stop action (`/reject`), so cancel targets a run that
+    /// has actually entered the execution pipeline (`Created`/`Scheduled`
+    /// while about to start, or `Running`).
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, RunState::Rejected | RunState::Partial | RunState::Completed | RunState::Cancelled | RunState::Failed)
+    }
+
     pub fn as_db_str(&self) -> &'static str {
         match self {
             RunState::Created => "CREATED",

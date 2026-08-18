@@ -46,14 +46,42 @@ fn parse_ts_opt(s: Option<String>) -> Option<chrono::DateTime<chrono::Utc>> {
     s.map(|s| parse_ts(&s))
 }
 
+fn project_from_row(r: sqlx::sqlite::SqliteRow) -> Project {
+    Project {
+        id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap_or_default(),
+        name: r.get("name"),
+        description: r.get("description"),
+        created_at: parse_ts(&r.get::<String, _>("created_at")),
+        updated_at: parse_ts(&r.get::<String, _>("updated_at")),
+    }
+}
+
 impl Store {
     pub async fn connect(db_path: &Path) -> Result<Self> {
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        // B1 — the orchestrator writes concurrently from many task futures.
+        // Under the default rollback journal every write takes an exclusive
+        // lock on the whole database, and with no busy timeout a blocked
+        // writer fails *immediately* with SQLITE_BUSY. That is the root
+        // cause of the silent durable-state corruption in the backend audit
+        // (a completed run persisted as FAILED, passed tasks left RUNNING).
+        //
+        //   journal_mode = WAL  -> readers never block writers, and writers
+        //                          serialise without locking out readers.
+        //   busy_timeout = 5s   -> a contended writer waits and retries
+        //                          instead of erroring out on first contact.
+        //   synchronous = NORMAL-> the safe/standard pairing with WAL; FULL
+        //                          is only needed to survive OS-level crash,
+        //                          not process crash, and costs an fsync per
+        //                          commit.
         let opts = SqliteConnectOptions::from_str(&format!("sqlite://{}", db_path.display()))?
             .create_if_missing(true)
-            .foreign_keys(true);
+            .foreign_keys(true)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+            .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+            .busy_timeout(std::time::Duration::from_secs(5));
         let pool = SqlitePoolOptions::new()
             .max_connections(8)
             .connect_with(opts)
@@ -74,12 +102,33 @@ impl Store {
         state: RunState,
         policy_notes: Option<&str>,
     ) -> Result<()> {
+        // B6 — this used to issue one un-batched INSERT per task and per
+        // dependency, each in its own implicit transaction (and therefore
+        // its own fsync). A 100-task plan took ~14s and then failed; 500
+        // tasks failed outright. Two changes fix it:
+        //
+        //   1. ONE transaction for the whole plan. A partially-inserted run
+        //      is now impossible — previously a failure mid-loop left a run
+        //      row with an incomplete task set and no rollback.
+        //   2. Multi-row INSERTs in bounded chunks, so 1,000 tasks become a
+        //      handful of statements rather than 1,000 round trips.
+        //
+        // CHUNK is deliberately conservative: SQLite's default bound-variable
+        // ceiling (SQLITE_MAX_VARIABLE_NUMBER) is 999 on older builds, and
+        // tasks bind 4 variables per row, so 200 rows = 800 variables stays
+        // safely inside it on every build.
+        const CHUNK: usize = 200;
+
         let plan_json = serde_json::to_string(plan)?;
+        let run_id_s = run_id.to_string();
+
+        let mut tx = self.pool.begin().await?;
+
         sqlx::query(
             "INSERT INTO runs (id, name, project_id, state, concurrency, plan, created_at, requested_by, policy_notes)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(run_id.to_string())
+        .bind(&run_id_s)
         .bind(&plan.name)
         .bind(project_id)
         .bind(state.as_db_str())
@@ -88,30 +137,47 @@ impl Store {
         .bind(now_rfc3339())
         .bind(requested_by)
         .bind(policy_notes)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
 
-        for t in &plan.tasks {
-            sqlx::query(
-                "INSERT INTO tasks (id, run_id, name, status, executor_kind) VALUES (?, ?, ?, 'QUEUED', ?)",
-            )
-            .bind(&t.id)
-            .bind(run_id.to_string())
-            .bind(&t.name)
-            .bind(&t.executor)
-            .execute(&self.pool)
-            .await?;
-            for p in &t.prerequisites {
-                sqlx::query(
-                    "INSERT INTO task_dependencies (run_id, task_id, prerequisite_id) VALUES (?, ?, ?)",
-                )
-                .bind(run_id.to_string())
-                .bind(&t.id)
-                .bind(p)
-                .execute(&self.pool)
-                .await?;
-            }
+        // `QueryBuilder` rather than a `format!`ed string: sqlx 0.9 refuses
+        // runtime-built SQL at compile time (injection guard), and this is
+        // the API it provides for exactly this multi-row-insert case.
+        for chunk in plan.tasks.chunks(CHUNK) {
+            let mut qb = sqlx::QueryBuilder::new(
+                "INSERT INTO tasks (id, run_id, name, status, executor_kind) ",
+            );
+            qb.push_values(chunk, |mut b, t| {
+                b.push_bind(t.id.clone())
+                    .push_bind(run_id_s.clone())
+                    .push_bind(t.name.clone())
+                    .push_bind("QUEUED")
+                    .push_bind(t.executor.clone());
+            });
+            qb.build().execute(&mut *tx).await?;
         }
+
+        // Dependency edges, flattened first so they chunk evenly regardless
+        // of how unevenly prerequisites are distributed across tasks.
+        let edges: Vec<(&str, &str)> = plan
+            .tasks
+            .iter()
+            .flat_map(|t| t.prerequisites.iter().map(move |p| (t.id.as_str(), p.as_str())))
+            .collect();
+
+        for chunk in edges.chunks(CHUNK) {
+            let mut qb = sqlx::QueryBuilder::new(
+                "INSERT INTO task_dependencies (run_id, task_id, prerequisite_id) ",
+            );
+            qb.push_values(chunk, |mut b, (task_id, prereq)| {
+                b.push_bind(run_id_s.clone())
+                    .push_bind(task_id.to_string())
+                    .push_bind(prereq.to_string());
+            });
+            qb.build().execute(&mut *tx).await?;
+        }
+
+        tx.commit().await?;
         Ok(())
     }
 
@@ -133,13 +199,21 @@ impl Store {
         Ok(())
     }
 
-    pub async fn set_run_finished(&self, run_id: RunId, state: RunState) -> Result<()> {
-        sqlx::query("UPDATE runs SET state = ?, finished_at = ? WHERE id = ?")
-            .bind(state.as_db_str())
-            .bind(now_rfc3339())
-            .bind(run_id.to_string())
-            .execute(&self.pool)
-            .await?;
+    pub async fn set_run_finished(
+        &self,
+        run_id: RunId,
+        state: RunState,
+        policy_notes: Option<&str>,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE runs SET state = ?, finished_at = ?, policy_notes = COALESCE(?, policy_notes) WHERE id = ?",
+        )
+        .bind(state.as_db_str())
+        .bind(now_rfc3339())
+        .bind(policy_notes)
+        .bind(run_id.to_string())
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -359,6 +433,64 @@ impl Store {
             .collect())
     }
 
+    // ------------------------------------------------------ dashboard / kpis
+
+    /// BE-12 (API Contract §23.1). Run counts by state for one project — the
+    /// same `GROUP BY state` shape `metrics.rs::render` already uses for the
+    /// global Prometheus counter, scoped down to a single project.
+    pub async fn dashboard_run_counts(&self, project_id: &str) -> Result<Vec<(String, i64)>> {
+        let rows = sqlx::query("SELECT state, COUNT(*) as c FROM runs WHERE project_id = ? GROUP BY state")
+            .bind(project_id)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().map(|r| (r.get("state"), r.get("c"))).collect())
+    }
+
+    /// Task counts by status for one project. `tasks` carries no
+    /// `project_id` of its own, so the tenant is resolved via the owning
+    /// run — the same join `task_history_by_name` already uses.
+    pub async fn dashboard_task_counts(&self, project_id: &str) -> Result<Vec<(String, i64)>> {
+        let rows = sqlx::query(
+            "SELECT t.status as status, COUNT(*) as c
+             FROM tasks t JOIN runs r ON r.id = t.run_id
+             WHERE r.project_id = ?
+             GROUP BY t.status",
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|r| (r.get("status"), r.get("c"))).collect())
+    }
+
+    /// Distinct known tests for one project: `quality_nodes` rows of type
+    /// `'test'` (see `intelligence.rs::update_test_intelligence`), which is
+    /// this backend's only real "test" identity — there is no separate
+    /// generated-test-case table (Test Case Generator, §8/§9, is not built).
+    pub async fn dashboard_test_count(&self, project_id: &str) -> Result<i64> {
+        let row = sqlx::query("SELECT COUNT(*) as c FROM quality_nodes WHERE project_id = ? AND node_type = 'test'")
+            .bind(project_id)
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(row.get("c"))
+    }
+
+    /// Average task duration in milliseconds for one project, over tasks
+    /// that have both `started_at` and `finished_at` recorded. `None` when
+    /// no such task exists yet — an honest "no data", never a fabricated 0
+    /// (BE-12 data-integrity rule / FE-10's own "unavailable -> `—`, never
+    /// `0`" convention).
+    pub async fn dashboard_avg_task_duration_ms(&self, project_id: &str) -> Result<Option<f64>> {
+        let row = sqlx::query(
+            "SELECT AVG((julianday(t.finished_at) - julianday(t.started_at)) * 86400000.0) as avg_ms
+             FROM tasks t JOIN runs r ON r.id = t.run_id
+             WHERE r.project_id = ? AND t.started_at IS NOT NULL AND t.finished_at IS NOT NULL",
+        )
+        .bind(project_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.get("avg_ms"))
+    }
+
     pub async fn get_run_plan(&self, run_id: RunId) -> Result<Option<RunPlan>> {
         let row = sqlx::query("SELECT plan FROM runs WHERE id = ?")
             .bind(run_id.to_string())
@@ -370,12 +502,26 @@ impl Store {
         })
     }
 
-    /// Runs left in a non-terminal state — only possible if the process
-    /// died mid-run (crash, kill, host restart). Used by the startup
-    /// recovery pass in `main.rs`.
+    /// Runs recovery needs to look at on startup: either the RUN row itself
+    /// is non-terminal (the process died mid-run — crash, kill, host
+    /// restart), or a task under it is still QUEUED/RUNNING even though the
+    /// run row is already terminal.
+    ///
+    /// The second half is D3: a mid-run durable-write failure can make the
+    /// live driver mark the *run* FAILED (B1/D2's escalation, correctly)
+    /// while the *task's own* terminal-status write was the very write that
+    /// failed — leaving that one task stuck at RUNNING forever, because the
+    /// run row no longer qualifies as "incomplete" by itself. The same
+    /// invariant `recover_incomplete_runs`'s doc comment already states —
+    /// "any run/task the DB shows as non-terminal at startup must have been
+    /// orphaned by an unclean shutdown" — applies per-task, not just
+    /// per-run, so this widens the selection instead of adding a second
+    /// recovery code path.
     pub async fn list_incomplete_runs(&self) -> Result<Vec<Uuid>> {
         let rows = sqlx::query(
-            "SELECT id FROM runs WHERE state IN ('CREATED','SCHEDULED','RUNNING','PENDING_APPROVAL')",
+            "SELECT id FROM runs WHERE state IN ('CREATED','SCHEDULED','RUNNING','PENDING_APPROVAL')
+             UNION
+             SELECT DISTINCT run_id AS id FROM tasks WHERE status IN ('QUEUED','RUNNING')",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -383,6 +529,79 @@ impl Store {
             .into_iter()
             .filter_map(|r| Uuid::parse_str(&r.get::<String, _>("id")).ok())
             .collect())
+    }
+
+    // ----------------------------------------------------------- projects
+
+    /// BE-8 (API Contract §5.2). `id` is generated by the caller
+    /// (`Uuid::new_v4()`), matching every other entity in this store
+    /// (`evidence`, `bug_drafts`, `api_keys`) rather than relying on a
+    /// DB-side default.
+    pub async fn insert_project(&self, id: Uuid, name: &str, description: Option<&str>) -> Result<()> {
+        let now = now_rfc3339();
+        sqlx::query(
+            "INSERT INTO projects (id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(name)
+        .bind(description)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// BE-8 (API Contract §5.1). `project_filter`: `None` returns every
+    /// project (an unscoped/global key); `Some(pid)` returns at most the one
+    /// project matching that id — the same `Option<&str>` filter convention
+    /// already used by `list_bug_drafts`/`list_test_intelligence`/
+    /// `task_history_by_name`, so a project-scoped caller's "list" is just
+    /// its own project (or empty, if that project id was never actually
+    /// created via `insert_project`).
+    pub async fn list_projects(&self, project_filter: Option<&str>) -> Result<Vec<Project>> {
+        let rows = match project_filter {
+            Some(pid) => {
+                sqlx::query("SELECT id, name, description, created_at, updated_at FROM projects WHERE id = ? ORDER BY created_at")
+                    .bind(pid)
+                    .fetch_all(&self.pool)
+                    .await?
+            }
+            None => {
+                sqlx::query("SELECT id, name, description, created_at, updated_at FROM projects ORDER BY created_at")
+                    .fetch_all(&self.pool)
+                    .await?
+            }
+        };
+        Ok(rows.into_iter().map(project_from_row).collect())
+    }
+
+    /// BE-8 (API Contract §5.3). Single-project lookup, used both for
+    /// `GET .../projects/{id}` and as the existence check before `PATCH`.
+    pub async fn get_project(&self, id: Uuid) -> Result<Option<Project>> {
+        let row = sqlx::query("SELECT id, name, description, created_at, updated_at FROM projects WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(project_from_row))
+    }
+
+    /// BE-8 (API Contract §5.4). Partial update: `None` leaves that field
+    /// unchanged (`COALESCE`), matching the same pattern `set_run_finished`
+    /// already uses for `policy_notes`. Returns `false` (zero rows affected)
+    /// when `id` does not exist, so the caller can return 404 rather than a
+    /// false "ok" on a no-op update.
+    pub async fn update_project(&self, id: Uuid, name: Option<&str>, description: Option<&str>) -> Result<bool> {
+        let result = sqlx::query(
+            "UPDATE projects SET name = COALESCE(?, name), description = COALESCE(?, description), updated_at = ? WHERE id = ?",
+        )
+        .bind(name)
+        .bind(description)
+        .bind(now_rfc3339())
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
     }
 
     // ------------------------------------------------------------ evidence
@@ -566,17 +785,53 @@ impl Store {
     /// Execution history for every quality-node with this `external_ref`
     /// (i.e. every past run of a test with this name), oldest first. Used to
     /// compute flakiness (status flips) and historical failure rate.
-    pub async fn task_history_by_name(&self, name: &str, limit: i64) -> Result<Vec<TaskHistoryRow>> {
-        let rows = sqlx::query(
-            "SELECT t.status as status, t.finished_at as finished_at
-             FROM tasks t
-             WHERE t.name = ? AND t.finished_at IS NOT NULL
-             ORDER BY t.finished_at DESC LIMIT ?",
-        )
-        .bind(name)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await?;
+    /// B3 — history feeding risk/flakiness scoring MUST stay inside one
+    /// project. This previously filtered on task *name* alone, so two
+    /// tenants that happened to name a test the same thing shared a failure
+    /// history: a project whose test always passed could be reported at a
+    /// 75% failure rate because another tenant's test of the same name kept
+    /// failing. `tasks` carries no project_id of its own, so the tenant is
+    /// resolved by joining back to the owning run.
+    ///
+    /// `project_filter` is the resolved tenant key (see
+    /// `intelligence::tenant_key`): `Some(pid)` restricts to that tenant,
+    /// where an untenanted run counts as `"default"`; `None` means an
+    /// unscoped/global caller and returns every tenant's history.
+    pub async fn task_history_by_name(
+        &self,
+        name: &str,
+        project_filter: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<TaskHistoryRow>> {
+        let rows = match project_filter {
+            Some(pid) => {
+                sqlx::query(
+                    "SELECT t.status as status, t.finished_at as finished_at
+                     FROM tasks t
+                     JOIN runs r ON r.id = t.run_id
+                     WHERE t.name = ? AND t.finished_at IS NOT NULL
+                       AND COALESCE(r.project_id, 'default') = ?
+                     ORDER BY t.finished_at DESC LIMIT ?",
+                )
+                .bind(name)
+                .bind(pid)
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await?
+            }
+            None => {
+                sqlx::query(
+                    "SELECT t.status as status, t.finished_at as finished_at
+                     FROM tasks t
+                     WHERE t.name = ? AND t.finished_at IS NOT NULL
+                     ORDER BY t.finished_at DESC LIMIT ?",
+                )
+                .bind(name)
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await?
+            }
+        };
         let mut out: Vec<TaskHistoryRow> = rows
             .into_iter()
             .map(|r| TaskHistoryRow {
@@ -831,13 +1086,47 @@ impl Store {
         Ok(id)
     }
 
-    pub async fn list_bug_drafts(&self) -> Result<Vec<BugDraftRow>> {
-        let rows = sqlx::query(
-            "SELECT id, failure_cluster_id, title, description, severity, confidence, review_state, created_at, promoted_at, promoted_by
-             FROM bug_drafts ORDER BY created_at DESC",
-        )
-        .fetch_all(&self.pool)
-        .await?;
+    /// B14 — bug drafts are project-owned, via the failure cluster they were
+    /// drafted from. This previously had no project filter at all, so a
+    /// project-scoped viewer key received every tenant's drafts (title,
+    /// description, severity and confidence included). `bug_drafts` has no
+    /// project_id column, so ownership is resolved through
+    /// `failure_clusters`.
+    ///
+    /// `Some(pid)` restricts to that tenant (untenanted clusters counting as
+    /// `"default"`); `None` is an unscoped/global caller and sees everything.
+    pub async fn list_bug_drafts(&self, project_filter: Option<&str>) -> Result<Vec<BugDraftRow>> {
+        // Two literal statements rather than one built by `format!`: sqlx 0.9
+        // rejects runtime-constructed SQL at compile time.
+        let rows = match project_filter {
+            Some(pid) => {
+                sqlx::query(
+                    "SELECT d.id as id, d.failure_cluster_id as failure_cluster_id, d.title as title,
+                            d.description as description, d.severity as severity, d.confidence as confidence,
+                            d.review_state as review_state, d.created_at as created_at,
+                            d.promoted_at as promoted_at, d.promoted_by as promoted_by
+                     FROM bug_drafts d
+                     JOIN failure_clusters c ON c.id = d.failure_cluster_id
+                     WHERE COALESCE(c.project_id, 'default') = ?
+                     ORDER BY d.created_at DESC",
+                )
+                .bind(pid)
+                .fetch_all(&self.pool)
+                .await?
+            }
+            None => {
+                sqlx::query(
+                    "SELECT d.id as id, d.failure_cluster_id as failure_cluster_id, d.title as title,
+                            d.description as description, d.severity as severity, d.confidence as confidence,
+                            d.review_state as review_state, d.created_at as created_at,
+                            d.promoted_at as promoted_at, d.promoted_by as promoted_by
+                     FROM bug_drafts d
+                     ORDER BY d.created_at DESC",
+                )
+                .fetch_all(&self.pool)
+                .await?
+            }
+        };
         Ok(rows
             .into_iter()
             .map(|r| BugDraftRow {
@@ -859,6 +1148,23 @@ impl Store {
     /// missing entirely ("Anomaly -> confirmed-defect promotion path (PRD
     /// §14) is undefined"): a NEEDS_REVIEW draft only becomes CONFIRMED or
     /// DISMISSED via this explicit, audited call — never automatically.
+    /// B14 — resolves the project that owns a draft so `/bug-drafts/:id/review`
+    /// can reject a cross-project mutation *before* it happens. Returns
+    /// `None` when the draft does not exist. An untenanted cluster resolves
+    /// to `"default"`, matching `intelligence::tenant_key`.
+    pub async fn bug_draft_project(&self, id: Uuid) -> Result<Option<String>> {
+        let row = sqlx::query(
+            "SELECT COALESCE(c.project_id, 'default') as project_id
+             FROM bug_drafts d
+             JOIN failure_clusters c ON c.id = d.failure_cluster_id
+             WHERE d.id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| r.get::<String, _>("project_id")))
+    }
+
     pub async fn review_bug_draft(&self, id: Uuid, new_state: &str, reviewed_by: &str) -> Result<()> {
         sqlx::query(
             "UPDATE bug_drafts SET review_state = ?, promoted_at = ?, promoted_by = ? WHERE id = ?",
@@ -927,6 +1233,19 @@ impl Store {
 }
 
 // --------------------------------------------------------------- row DTOs
+
+/// BE-8 — API Contract §5 Project resource. Deliberately minimal: exactly
+/// the fields §5.2's "authoritative metadata" requires, nothing the
+/// contract doesn't ask for (no nested run counts — that's Dashboard's job,
+/// §23, not this resource's).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Project {
+    pub id: Uuid,
+    pub name: String,
+    pub description: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct EvidenceRow {

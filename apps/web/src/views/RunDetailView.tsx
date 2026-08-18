@@ -5,17 +5,10 @@
  * WebSocket (`WS /runs/:id/ws?key=`), not a timer. Reconnect follows
  * SRD §18: on close, re-fetch `GET /runs/:id/events?since=<last sequence>`
  * and merge by sequence, so nothing is missed or double-counted.
- *
- * Every panel here reads a field the backend already returns:
- *   Tasks        status, reason, prerequisites, started_at, finished_at
- *   Timeline     durations computed from those timestamps
- *   Dependencies the real DAG from prerequisites
- *   Events       the durable event log, replayed then streamed
- *   Evidence     artifacts captured by the executor, grouped by task
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, GitBranch, ListTree, Paperclip, Radio, RefreshCw, Timer } from "lucide-react";
+import { ArrowLeft, GitBranch, ListTree, Paperclip, Radio, RefreshCw, Timer, RotateCcw } from "lucide-react";
 import { useApiResource } from "../hooks/useApi";
 import { getRun, getRunEvents, listRunEvidence, openRunEventSocket } from "../services/orchestrator";
 import type { EvidenceRow, RunDetail, RunEvent, TaskStatus } from "../types/orchestrator";
@@ -32,10 +25,10 @@ type Tab = "tasks" | "timeline" | "graph" | "events" | "evidence";
 
 const TABS: Array<{ id: Tab; label: string; icon: React.ReactNode }> = [
   { id: "tasks", label: "Tasks", icon: <ListTree size={12} /> },
-  { id: "timeline", label: "Timeline", icon: <Timer size={12} /> },
-  { id: "graph", label: "Dependencies", icon: <GitBranch size={12} /> },
-  { id: "events", label: "Events", icon: <Radio size={12} /> },
-  { id: "evidence", label: "Evidence", icon: <Paperclip size={12} /> },
+  { id: "timeline", label: "Timeline Waterfall", icon: <Timer size={12} /> },
+  { id: "graph", label: "Dependencies DAG", icon: <GitBranch size={12} /> },
+  { id: "events", label: "Live Event Stream", icon: <Radio size={12} /> },
+  { id: "evidence", label: "Artifacts & Evidence", icon: <Paperclip size={12} /> },
 ];
 
 export function RunDetailView({ runId, onBack }: { runId: string; onBack: () => void }) {
@@ -118,23 +111,42 @@ export function RunDetailView({ runId, onBack }: { runId: string; onBack: () => 
 
   return (
     <div className="space-y-4">
-      <header className="flex items-start justify-between gap-3">
-        <div className="flex min-w-0 items-start gap-3">
+      {/* Header */}
+      <header className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
+        <div className="flex items-center gap-3">
           <button
             onClick={onBack}
-            className="mt-0.5 shrink-0 rounded border border-slate-700 p-1 text-slate-400 transition hover:bg-slate-800 hover:text-slate-200"
+            className="p-1.5 rounded-md border border-slate-700 bg-slate-900/60 hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition-colors cursor-pointer"
+            title="Back to All Runs"
           >
             <ArrowLeft size={14} />
           </button>
-          <div className="min-w-0">
-            <h1 className="truncate text-lg font-bold tracking-tight text-slate-100">{run.data?.name ?? "Run"}</h1>
-            <div className="font-mono text-[10px] text-slate-600">{runId}</div>
+          <div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <h1 className="text-lg font-bold tracking-tight text-slate-100 font-sans">
+                {run.data?.name ?? "Execution Run"}
+              </h1>
+              {run.data && <RunStateBadge state={run.data.state} />}
+            </div>
+            <div className="font-mono text-[10px] text-slate-500">{runId}</div>
           </div>
         </div>
-        <SocketIndicator state={socketState} />
+        <div className="flex items-center gap-3">
+          <SocketIndicator state={socketState} />
+          <button
+            onClick={() => {
+              run.reload();
+              evidence.reload();
+            }}
+            className="p-1.5 rounded border border-slate-800 text-slate-400 hover:text-slate-200 transition-colors cursor-pointer"
+            title="Reload Run State"
+          >
+            <RotateCcw size={12} />
+          </button>
+        </div>
       </header>
 
-      <ResourceView state={run} loadingLabel="Loading run…">
+      <ResourceView state={run} loadingLabel="Loading execution details…">
         {(detail) => {
           const counters: Array<{ label: string; status: TaskStatus; value: number }> = [
             { label: "Passed", status: "PASSED", value: detail.passed },
@@ -151,24 +163,27 @@ export function RunDetailView({ runId, onBack }: { runId: string; onBack: () => 
 
           return (
             <>
-              {/* Summary */}
-              <section className="rounded-xl border border-slate-800 bg-[#0a0f1a] p-4">
-                <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2">
-                  <RunStateBadge state={detail.state} />
+              {/* Summary Section */}
+              <section className="rounded-xl border border-slate-800 bg-[#0a0f1a] p-4 space-y-3.5 shadow-lg">
+                <div className="flex flex-wrap items-center gap-x-6 gap-y-2 border-b border-slate-800/80 pb-3">
                   <Field label="Duration">{formatSpan(detail.started_at, detail.finished_at)}</Field>
-                  <Field label="Started">
+                  <Field label="Started At">
                     <Timestamp value={detail.started_at} />
                   </Field>
-                  <Field label="Finished">
-                    {detail.finished_at ? <Timestamp value={detail.finished_at} /> : "still running"}
+                  <Field label="Finished At">
+                    {detail.finished_at ? <Timestamp value={detail.finished_at} /> : "still active running"}
                   </Field>
-                  <Field label="Requested by">{detail.requested_by ?? "—"}</Field>
-                  <Field label="Project">{detail.project_id ?? "global"}</Field>
+                  <Field label="Requested By">{detail.requested_by ?? "system / operator"}</Field>
+                  <Field label="Project Scope">
+                    <span className="font-mono text-[10px] text-cyan-300">
+                      {detail.project_id ?? "global"}
+                    </span>
+                  </Field>
                 </div>
 
                 {detail.policy_notes && (
-                  <div className="mb-3 rounded border border-amber-800/60 bg-amber-950/30 px-3 py-2 text-[11px] text-amber-300">
-                    <span className="font-semibold">Policy gate: </span>
+                  <div className="rounded-lg border border-amber-800/60 bg-amber-950/30 px-3 py-2 text-xs text-amber-300">
+                    <span className="font-semibold">Policy gate assessment: </span>
                     {detail.policy_notes}
                     {detail.approved_by && (
                       <span className="ml-2 text-amber-400/80">
@@ -178,10 +193,10 @@ export function RunDetailView({ runId, onBack }: { runId: string; onBack: () => 
                   </div>
                 )}
 
-                <div className="mb-3">
-                  <div className="mb-1 flex items-center justify-between font-mono text-[9px] uppercase tracking-wider text-slate-600">
-                    <span>Outcome composition</span>
-                    <span>{detail.total} tasks</span>
+                <div>
+                  <div className="mb-1.5 flex items-center justify-between font-mono text-[9px] uppercase tracking-wider text-slate-500">
+                    <span>Task Outcome Composition</span>
+                    <span>{detail.total} Total Tasks</span>
                   </div>
                   <RunOutcomeBar
                     counters={counters.map((c) => ({ status: c.status, value: c.value }))}
@@ -193,7 +208,7 @@ export function RunDetailView({ runId, onBack }: { runId: string; onBack: () => 
               </section>
 
               {/* Tabs */}
-              <div className="flex gap-1 border-b border-slate-800">
+              <div className="flex gap-1 border-b border-slate-800 bg-[#060a12] px-2 rounded-t-lg">
                 {TABS.map((t) => {
                   const count =
                     t.id === "events" ? events.length : t.id === "evidence" ? (evidence.data?.length ?? null) : null;
@@ -201,15 +216,19 @@ export function RunDetailView({ runId, onBack }: { runId: string; onBack: () => 
                     <button
                       key={t.id}
                       onClick={() => setTab(t.id)}
-                      className={`flex items-center gap-1.5 border-b-2 px-3 py-2 text-xs transition ${
+                      className={`flex items-center gap-1.5 border-b-2 px-3 py-2.5 text-xs font-medium transition-colors cursor-pointer ${
                         tab === t.id
-                          ? "border-cyan-500 text-cyan-300"
+                          ? "border-cyan-400 text-cyan-300 font-semibold"
                           : "border-transparent text-slate-500 hover:text-slate-300"
                       }`}
                     >
                       {t.icon}
                       {t.label}
-                      {count !== null && <span className="font-mono text-[10px] text-slate-600">{count}</span>}
+                      {count !== null && (
+                        <span className="font-mono text-[10px] px-1.5 py-0.2 rounded bg-slate-900 border border-slate-800 text-slate-400">
+                          {count}
+                        </span>
+                      )}
                     </button>
                   );
                 })}
@@ -218,7 +237,7 @@ export function RunDetailView({ runId, onBack }: { runId: string; onBack: () => 
               {tab === "tasks" && <TasksTable detail={detail} evidenceByTask={evidenceByTask} />}
 
               {tab === "timeline" && (
-                <Card icon={<Timer size={14} />} title="Task timing" bodyClassName="p-4">
+                <Card icon={<Timer size={14} />} title="Task Execution Timeline Waterfall" bodyClassName="p-4">
                   <TaskWaterfall
                     tasks={detail.tasks}
                     runStartedAt={detail.started_at}
@@ -228,7 +247,7 @@ export function RunDetailView({ runId, onBack }: { runId: string; onBack: () => 
               )}
 
               {tab === "graph" && (
-                <Card icon={<GitBranch size={14} />} title="Dependency graph" bodyClassName="p-4">
+                <Card icon={<GitBranch size={14} />} title="Task Dependency DAG Topology" bodyClassName="p-4">
                   <DependencyGraph tasks={detail.tasks} />
                 </Card>
               )}
@@ -236,45 +255,48 @@ export function RunDetailView({ runId, onBack }: { runId: string; onBack: () => 
               {tab === "events" && <EventsPanel events={events} socketState={socketState} />}
 
               {tab === "evidence" && (
-                <Card icon={<Paperclip size={14} />} title="Evidence">
+                <Card icon={<Paperclip size={14} />} title="Captured Artifacts & Trace Evidence">
                   <ResourceView
                     state={evidence}
-                    loadingLabel="Loading evidence…"
-                    emptyTitle="No evidence"
-                    emptyMessage="No artifacts were captured. The SimulatedExecutor produces none; real executors write logs."
+                    loadingLabel="Loading evidence artifacts…"
+                    emptyTitle="No evidence captured"
+                    emptyMessage="No artifacts were recorded. Real executors (Playwright, Newman, Schemathesis, Maestro) attach logs and trace files here."
                   >
                     {(rows) => (
                       <div className="space-y-3">
                         {[...evidenceByTask.entries()].map(([taskId, items]) => (
-                          <div key={taskId}>
-                            <div className="mb-1 font-mono text-[9px] uppercase tracking-wider text-slate-600">
-                              {taskId}
+                          <div key={taskId} className="border border-slate-800/80 rounded-lg p-3 bg-slate-950/40">
+                            <div className="mb-2 font-mono text-[10px] uppercase tracking-wider text-cyan-400 font-semibold flex items-center gap-1.5">
+                              <Paperclip size={11} />
+                              <span>Task ID: {taskId}</span>
                             </div>
                             <ul className="space-y-1">
                               {items.map((row) => (
                                 <li key={row.id}>
                                   <button
                                     onClick={() => onOpenEvidence(row)}
-                                    className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left transition hover:bg-slate-800/50"
+                                    className="flex w-full items-center justify-between rounded px-2.5 py-2 text-left transition hover:bg-slate-900/80 border border-slate-800/60 bg-slate-900/40 cursor-pointer"
                                   >
                                     <div className="min-w-0">
-                                      <div className="truncate text-[11px] text-slate-300">
+                                      <div className="truncate text-xs text-slate-200 font-mono font-medium">
                                         {row.object_key.split("/").pop()}
                                       </div>
-                                      <div className="font-mono text-[9px] text-slate-600">
+                                      <div className="font-mono text-[10px] text-slate-500 mt-0.5">
                                         {row.kind} · {row.content_type ?? "text/plain"} · {formatBytes(row.size_bytes)} ·{" "}
                                         {relativeTime(row.created_at)}
                                       </div>
                                     </div>
-                                    <span className="ml-2 shrink-0 text-[10px] text-cyan-400">View</span>
+                                    <span className="ml-2 shrink-0 text-xs text-cyan-400 font-mono font-semibold">
+                                      View Content →
+                                    </span>
                                   </button>
                                 </li>
                               ))}
                             </ul>
                           </div>
                         ))}
-                        <p className="pt-1 font-mono text-[9px] text-slate-600">
-                          {rows.length} artifact(s), {formatBytes(rows.reduce((a, r) => a + r.size_bytes, 0))} total.
+                        <p className="pt-1 font-mono text-[9px] text-slate-500">
+                          {rows.length} artifact(s), {formatBytes(rows.reduce((a, r) => a + r.size_bytes, 0))} total stored.
                         </p>
                       </div>
                     )}
@@ -303,22 +325,22 @@ function TasksTable({
   if (detail.tasks.length === 0) {
     return (
       <Card title="Tasks">
-        <p className="py-6 text-center text-xs text-slate-600">This run has no tasks.</p>
+        <p className="py-8 text-center text-xs text-slate-500 font-mono">This execution run has no tasks defined.</p>
       </Card>
     );
   }
 
   return (
-    <Card icon={<ListTree size={14} />} title={`Tasks (${detail.tasks.length})`}>
+    <Card icon={<ListTree size={14} />} title={`Dispatched Tasks (${detail.tasks.length})`}>
       <div className="overflow-x-auto">
         <table className="w-full min-w-[760px] text-left text-xs">
           <thead>
-            <tr className="font-mono text-[10px] uppercase tracking-wider text-slate-600">
-              <th className="pb-2 font-normal">Task</th>
+            <tr className="font-mono text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800/80">
+              <th className="pb-2 font-normal">Task Name & ID</th>
               <th className="pb-2 font-normal">Status</th>
               <th className="pb-2 text-right font-normal">Duration</th>
               <th className="pb-2 font-normal">Prerequisites</th>
-              <th className="pb-2 font-normal">Reason</th>
+              <th className="pb-2 font-normal">Reason / Detail</th>
               <th className="pb-2 text-right font-normal">Evidence</th>
             </tr>
           </thead>
@@ -326,27 +348,27 @@ function TasksTable({
             {detail.tasks.map((task) => {
               const artifacts = evidenceByTask.get(task.id)?.length ?? 0;
               return (
-                <tr key={task.id} className="border-t border-slate-800/70 align-top">
-                  <td className="py-2 pr-3">
+                <tr key={task.id} className="border-t border-slate-800/60 align-top hover:bg-slate-900/30 transition-colors">
+                  <td className="py-2.5 pr-3">
                     <div
                       className="border-l-2 pl-2 font-medium text-slate-200"
                       style={{ borderColor: TASK_STATUS_COLOR[task.status] }}
                     >
                       {task.name}
                     </div>
-                    <div className="pl-2 font-mono text-[10px] text-slate-600">{task.id}</div>
+                    <div className="pl-2 font-mono text-[10px] text-slate-500">{task.id}</div>
                   </td>
-                  <td className="py-2 pr-3">
+                  <td className="py-2.5 pr-3">
                     <TaskStatusBadge status={task.status} />
                   </td>
-                  <td className="py-2 pr-3 text-right font-mono text-[11px] text-slate-400">
+                  <td className="py-2.5 pr-3 text-right font-mono text-[11px] text-slate-400">
                     {formatSpan(task.started_at, task.finished_at)}
                   </td>
-                  <td className="py-2 pr-3 font-mono text-[10px] text-slate-500">
+                  <td className="py-2.5 pr-3 font-mono text-[10px] text-slate-400">
                     {task.prerequisites.length ? task.prerequisites.join(", ") : "—"}
                   </td>
-                  <td className="max-w-xs py-2 pr-3 text-[11px] text-slate-400">{task.reason ?? "—"}</td>
-                  <td className="py-2 text-right font-mono text-[10px] text-slate-500">{artifacts || "—"}</td>
+                  <td className="max-w-xs py-2.5 pr-3 text-[11px] text-slate-400">{task.reason ?? "—"}</td>
+                  <td className="py-2.5 text-right font-mono text-[10px] text-slate-400 font-semibold">{artifacts || "—"}</td>
                 </tr>
               );
             })}
@@ -359,38 +381,38 @@ function TasksTable({
 
 function EventsPanel({ events, socketState }: { events: RunEvent[]; socketState: SocketState }) {
   return (
-    <Card icon={<Radio size={14} />} title={`Event stream (${events.length})`}>
+    <Card icon={<Radio size={14} />} title={`Realtime Event Stream (${events.length} frames)`}>
       <div className="max-h-[460px] overflow-y-auto">
         {events.length === 0 ? (
-          <p className="py-8 text-center text-xs text-slate-600">
+          <p className="py-8 text-center text-xs text-slate-500 font-mono">
             {socketState === "unauthenticated"
-              ? "No API key — cannot open the event socket."
-              : "No events received yet."}
+              ? "No API key configured — cannot open the event WebSocket."
+              : "No events streamed yet."}
           </p>
         ) : (
-          <ul className="space-y-0.5">
+          <ul className="space-y-1">
             {events.map((ev) => (
               <li
                 key={ev.event_id}
-                className="flex items-start gap-2 rounded px-1.5 py-1 font-mono text-[10px] leading-relaxed hover:bg-slate-800/40"
+                className="flex items-start gap-2 rounded px-2 py-1.5 font-mono text-[10px] leading-relaxed hover:bg-slate-900/60 border border-transparent hover:border-slate-800"
               >
-                <span className="w-8 shrink-0 text-right text-slate-600">#{ev.sequence}</span>
+                <span className="w-8 shrink-0 text-right text-slate-500 font-bold">#{ev.sequence}</span>
                 <span className="w-16 shrink-0 text-slate-500">{new Date(ev.timestamp).toLocaleTimeString()}</span>
                 <span
-                  className="w-36 shrink-0"
+                  className="w-36 shrink-0 font-semibold"
                   style={{ color: ev.status ? TASK_STATUS_COLOR[ev.status] : "#22d3ee" }}
                 >
                   {ev.type}
                 </span>
-                <span className="w-12 shrink-0 text-slate-400">{ev.task_id ?? "—"}</span>
-                <span className="min-w-0 flex-1 text-slate-500">{ev.summary ?? ""}</span>
+                <span className="w-16 shrink-0 text-slate-400 truncate">{ev.task_id ?? "—"}</span>
+                <span className="min-w-0 flex-1 text-slate-400">{ev.summary ?? ""}</span>
               </li>
             ))}
           </ul>
         )}
       </div>
-      <p className="mt-2 border-t border-slate-800 pt-2 font-mono text-[9px] text-slate-600">
-        Delivered over WS /runs/:id/ws. Merged by sequence number, so a replayed backlog cannot double-count (SRD §5).
+      <p className="mt-2 border-t border-slate-800 pt-2 font-mono text-[9px] text-slate-500">
+        Connected to WS /runs/:id/ws. Frames merged by sequence number to prevent double-counting on reconnection (SRD §5).
       </p>
     </Card>
   );
@@ -399,16 +421,16 @@ function EventsPanel({ events, socketState }: { events: RunEvent[]; socketState:
 function SocketIndicator({ state }: { state: SocketState }) {
   const copy: Record<SocketState, { text: string; dot: string; fg: string }> = {
     connecting: { text: "connecting", dot: "bg-slate-500", fg: "text-slate-500" },
-    open: { text: "live", dot: "bg-emerald-500", fg: "text-emerald-400" },
-    closed: { text: "disconnected", dot: "bg-amber-500", fg: "text-amber-400" },
+    open: { text: "live stream", dot: "bg-emerald-500", fg: "text-emerald-400" },
+    closed: { text: "disconnected (reconnecting)", dot: "bg-amber-500", fg: "text-amber-400" },
     unauthenticated: { text: "no api key", dot: "bg-rose-500", fg: "text-rose-400" },
   };
   const c = copy[state];
   return (
-    <div className="flex shrink-0 items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider">
+    <div className="flex shrink-0 items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider px-2.5 py-1 rounded bg-slate-900 border border-slate-800">
       <span className={`h-1.5 w-1.5 rounded-full ${c.dot}`} />
       <span className={c.fg}>{c.text}</span>
-      {state === "closed" && <RefreshCw size={9} className="animate-spin text-slate-600" />}
+      {state === "closed" && <RefreshCw size={9} className="animate-spin text-slate-600 ml-1" />}
     </div>
   );
 }
