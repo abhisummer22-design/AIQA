@@ -13,7 +13,7 @@
  * made — these tests open the dropdown rather than assuming auto-select.
  */
 import React from 'react';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppShell } from '../../App';
@@ -80,22 +80,49 @@ describe('ProjectSelector (FE-5 §20 items 17-20)', () => {
     await waitForProjectsLoaded();
     await openSelector();
 
-    await waitFor(() => expect(screen.getByRole('option', { name: REAL_PROJECT.name })).toBeTruthy());
+    // Scoped to the header's own real listbox — FE-10's Dashboard has its
+    // own real `<select>` of the same projects, colliding on an unscoped
+    // "option" role query.
+    await waitFor(() => expect(within(screen.getByRole('listbox', { name: 'Projects' })).getByRole('option', { name: REAL_PROJECT.name })).toBeTruthy());
 
     expect(document.body.innerHTML).not.toContain(RAW_KEY);
   });
 
   it('item 18 — selecting a project never puts anything into the URL', async () => {
     setApiKey(RAW_KEY);
-    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => jsonResponse(200, [REAL_PROJECT])));
+    // FE-10: this test genuinely selects a project (below), which now
+    // triggers Dashboard's real `/dashboard`/`/kpis`/`/executions` fetches
+    // — URL-aware so those get real-shaped responses, not the bare
+    // `[REAL_PROJECT]` array every other call in this test still expects.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        if (url.includes('/dashboard')) {
+          return jsonResponse(200, {
+            project_id: REAL_PROJECT.id,
+            project_name: REAL_PROJECT.name,
+            execution_counts: {},
+            task_counts: {},
+            pass_fail: { passed: 0, failed: 0 },
+            test_count: 0,
+            generated_at: '2026-08-19T00:00:00Z',
+          });
+        }
+        if (url.includes('/kpis')) {
+          return jsonResponse(200, { project_id: REAL_PROJECT.id, execution_reliability: null, execution_efficiency_ms: null, generated_at: '2026-08-19T00:00:00Z' });
+        }
+        if (url.includes('/executions')) return jsonResponse(200, []);
+        return jsonResponse(200, [REAL_PROJECT]);
+      }),
+    );
     renderApp();
     await verifyKey();
     await waitForProjectsLoaded();
     await openSelector();
-    await waitFor(() => expect(screen.getByRole('option', { name: REAL_PROJECT.name })).toBeTruthy());
+    await waitFor(() => expect(within(screen.getByRole('listbox', { name: 'Projects' })).getByRole('option', { name: REAL_PROJECT.name })).toBeTruthy());
 
     await act(async () => {
-      screen.getByRole('option', { name: REAL_PROJECT.name }).click();
+      within(screen.getByRole('listbox', { name: 'Projects' })).getByRole('option', { name: REAL_PROJECT.name }).click();
     });
 
     // The selection did take effect (button now shows the real name)...
@@ -108,19 +135,46 @@ describe('ProjectSelector (FE-5 §20 items 17-20)', () => {
     expect(window.location.pathname).not.toContain(REAL_PROJECT.id);
   });
 
-  it('item 19 — Dashboard still renders its existing product-owner-approved content unregressed', async () => {
+  it('item 19 — Dashboard still renders its existing product-owner-approved content, now with real data (FE-10)', async () => {
     setApiKey(RAW_KEY);
-    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => jsonResponse(200, [REAL_PROJECT])));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        if (url.includes('/dashboard')) {
+          return jsonResponse(200, {
+            project_id: REAL_PROJECT.id,
+            project_name: REAL_PROJECT.name,
+            execution_counts: {},
+            task_counts: {},
+            pass_fail: { passed: 0, failed: 0 },
+            test_count: 0,
+            generated_at: '2026-08-19T00:00:00Z',
+          });
+        }
+        if (url.includes('/kpis')) {
+          return jsonResponse(200, { project_id: REAL_PROJECT.id, execution_reliability: null, execution_efficiency_ms: null, generated_at: '2026-08-19T00:00:00Z' });
+        }
+        if (url.includes('/executions')) return jsonResponse(200, []);
+        return jsonResponse(200, [REAL_PROJECT]);
+      }),
+    );
     renderApp(['/dashboard']);
     await verifyKey();
+    await waitForProjectsLoaded();
+    await openSelector();
+    // Scoped to the header's own real listbox — FE-10's Dashboard has its
+    // own real `<select>` of the same projects, colliding on an unscoped
+    // "option" role query.
+    await act(async () => {
+      within(screen.getByRole('listbox', { name: 'Projects' })).getByRole('option', { name: REAL_PROJECT.name }).click();
+    });
 
-    // Dashboard's own pre-existing fabricated content (AIQAContext-driven,
-    // untouched by FE-5 — see `DashboardPage.tsx`'s own FE-5 comment).
-    await waitFor(() => expect(screen.getAllByText('AIQA Platform').length).toBeGreaterThan(0));
+    // FE-10: Dashboard now renders real project-scoped data — the same
+    // real project the header's own real selector just chose, not a
+    // fabricated seed project.
+    await waitFor(() => expect(screen.getAllByText(REAL_PROJECT.name).length).toBeGreaterThan(0));
     expect(screen.getByText('Total Test Cases')).toBeTruthy();
     expect(document.getElementById('aiqa-dashboard-main-content')).toBeTruthy();
-    // The real project selector renders alongside it, unrelated to Dashboard's own fake selector.
-    await waitForProjectsLoaded();
     expect(selectorButton()).toBeTruthy();
   });
 

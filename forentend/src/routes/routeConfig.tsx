@@ -55,7 +55,7 @@ import { DashboardPage } from '../components/pages/DashboardPage';
 import { TestCaseGeneratorPage } from '../components/pages/TestCaseGeneratorPage';
 import { AIQAOrchestratorPage } from '../components/pages/AIQAOrchestratorPage';
 import { TestCaseValidatorPage } from '../components/pages/TestCaseValidatorPage';
-import { TestExecutionPage } from '../components/pages/TestExecutionPage';
+import { ExecutionHubPage } from '../components/pages/ExecutionHubPage';
 import { RBACTestingPage } from '../components/pages/RBACTestingPage';
 import { APITestingPage } from '../components/pages/APITestingPage';
 import { MobileTestingPage } from '../components/pages/MobileTestingPage';
@@ -157,8 +157,13 @@ export const routeDefs: RouteDef[] = [
     icon: PlayCircle,
     badge: 'LIVE',
     badgeType: 'live',
-    Component: TestExecutionPage,
-    designStatus: 'google-studio-not-final',
+    Component: ExecutionHubPage,
+    // FE-8: the previous `TestExecutionPage` (Google-Studio-generated, 100%
+    // AIQAContext fake data — fabricated logs, fabricated evidence files,
+    // fabricated stack traces) was replaced in place by a real
+    // implementation (`ExecutionHubPage.tsx`) that follows Dashboard/Test
+    // Generator's visual language — same third bucket as `audit`/`evidence`.
+    designStatus: 'new-follows-approved-language',
     protectedRoute: true,
   },
   {

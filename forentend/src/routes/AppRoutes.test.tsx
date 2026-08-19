@@ -73,10 +73,11 @@ describe('root and direct-route resolution (items 1-3, 8)', () => {
     renderApp(['/dashboard']);
     await verifyKey();
     expect(document.getElementById('aiqa-test-case-generator-page')).toBeNull();
-    // Dashboard's own real content (not fabricated for this test — the
-    // same "Execution Hub" quick-action link this sprint's own minimal
-    // edit touched).
-    expect(screen.getByText('Execution Hub')).toBeTruthy();
+    // Dashboard's own real shell (FE-10: always renders regardless of
+    // project-selection state — no project is selected in this test's own
+    // deliberately-empty `/projects` mock).
+    expect(document.getElementById('aiqa-dashboard-main-content')).toBeTruthy();
+    expect(screen.getAllByText('Dashboard').length).toBeGreaterThan(0);
   });
 
   it('item 3 — the /test-generator route renders the Test Case Generator page', async () => {
@@ -250,7 +251,12 @@ describe('route protection via the real AuthContext / StateGate (items 10-16)', 
     await act(async () => {
       screen.getByText('Verify Connection').closest('button')!.click();
     });
-    expect(screen.getByText('Execution Hub')).toBeTruthy();
+    // FE-10: Dashboard's real body (including the "Execution Hub" link)
+    // only renders once a real project is selected — no project exists in
+    // this test's own deliberately-empty `/projects` mock, so the real,
+    // honest "no project" shell is what proves protected content rendered.
+    expect(document.getElementById('aiqa-dashboard-main-content')).toBeTruthy();
+    await waitFor(() => expect(screen.getByText('No project selected')).toBeTruthy());
   });
 
   it('item 14 — unauthenticated (401): shows the 401 state, not protected content', async () => {
@@ -318,20 +324,21 @@ describe('security (item 17)', () => {
 });
 
 describe('existing page regression (items 18-19)', () => {
-  it('item 18 — Dashboard: the existing product-owner-designed UI renders with its real fabricated data untouched', async () => {
+  it('item 18 — Dashboard: the existing product-owner-designed UI renders, now with real (not fabricated) project-scoped data', async () => {
     setApiKey('aiqa_ok00000000000000000');
+    // FE-10: `/projects` genuinely returns none here — this proves the
+    // page's own real content, not just the route, survived intact: the
+    // real header/KPI-label shell renders, and the real "no project"
+    // empty state is honest rather than a fabricated seed project's data.
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(200, [])));
     renderApp(['/dashboard']);
     await act(async () => {
       screen.getByText('Verify Connection').closest('button')!.click();
     });
-    // Real, pre-existing AIQAContext fake data (untouched by this sprint) —
-    // proves the page's own content, not just the route, survived intact.
-    // "AIQA Platform" (the seed project's name) legitimately appears in
-    // several places on this page (selector, header, breadcrumb), so this
-    // asserts real occurrences exist rather than requiring exactly one.
-    expect(screen.getAllByText('AIQA Platform').length).toBeGreaterThan(0);
-    expect(screen.getByText('Total Test Cases')).toBeTruthy();
+    expect(screen.getAllByText('Dashboard').length).toBeGreaterThan(0);
+    expect(document.getElementById('aiqa-dashboard-main-content')).toBeTruthy();
+    await waitFor(() => expect(screen.getByText('No project selected')).toBeTruthy());
+    expect(screen.queryByText('AIQA Platform')).toBeNull();
   });
 
   it('item 19 — Test Generator: the existing product-owner-designed UI renders unregressed', async () => {

@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "forentend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "forentend", "run", "dev"],
+      "port": 3000
+    }
+  ]
+}

@@ -30,9 +30,24 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, FolderOpen, Inbox, RotateCcw, ScrollText, Search, ShieldAlert, WifiOff, XCircle } from 'lucide-react';
 import { ApiError, aiqaApi, getApiKey } from '../../services/aiqaApi';
 import { useProject } from '../../context/ProjectContext';
+import { useRealtime } from '../../context/RealtimeContext';
 import { StateCard, Cta } from '../state/StateViews';
 import { EmptyState } from '../common/EmptyState';
 import type { AuditRow } from '../../types/contract';
+
+/** FE-9: no real event type "is" an audit event (`domain.rs::EventType` has
+ *  no such variant — audit rows are written by a separate `audit(...)` call
+ *  inside the same request handlers, not published to the WS stream at
+ *  all). But every auditable run action this page can show
+ *  (create/approve/reject/cancel) genuinely produces a correlated real
+ *  `RunEvent` on this project's stream shortly after (`RUN_SCHEDULED` once
+ *  approval lets a run start; `RUN_COMPLETED` for a reject or a finished
+ *  run; `TASK_CANCELLED` during a cancellation) — so "a real event arrived
+ *  for this project" is used as the honest, disclosed trigger to
+ *  invalidate/refetch the real audit resource (brief §21), not a
+ *  fabricated local audit record and not a new audit-specific event this
+ *  backend does not actually emit. */
+const AUDIT_EVENT_RESYNC_DEBOUNCE_MS = 500;
 
 /** The entirety of this sprint's pagination support (brief §13): the real
  *  backend exposes no cursor/offset/page, only `limit` — so "pagination"
@@ -91,6 +106,7 @@ const outcomeBadgeClass = (outcome: string): string =>
 
 export const AuditPage: React.FC = () => {
   const { selectedProjectId, selectedProject } = useProject();
+  const realtime = useRealtime();
 
   // `null` = not yet loaded for the current scope (or no scope at all);
   // `[]` = a real, successful fetch that genuinely returned zero rows.
@@ -156,6 +172,36 @@ export const AuditPage: React.FC = () => {
   }, [selectedProjectId, limit, fetchAudit]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
+
+  // FE-9: a real event on this project's stream is treated as "the audit
+  // trail may have changed" (see the module doc comment above for exactly
+  // why) — invalidates/refetches via the *existing* `fetchAudit`, never a
+  // second audit-fetching path. Debounced so a burst of task events from
+  // one active run collapses into a single real request, not one per
+  // event. Uses `isRefresh: true` (same as the manual Refresh button) so a
+  // background resync never blanks already-rendered rows with a full
+  // loading state.
+  const auditResyncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!selectedProjectId) return;
+    const unsubscribe = realtime.subscribe(() => {
+      if (auditResyncTimeoutRef.current) clearTimeout(auditResyncTimeoutRef.current);
+      auditResyncTimeoutRef.current = setTimeout(() => {
+        auditResyncTimeoutRef.current = null;
+        void fetchAudit(selectedProjectId, limit, true);
+      }, AUDIT_EVENT_RESYNC_DEBOUNCE_MS);
+    });
+    return () => {
+      unsubscribe();
+      if (auditResyncTimeoutRef.current) clearTimeout(auditResyncTimeoutRef.current);
+    };
+    // Live-discovered FE-9 bug fix (see `ExecutionHubPage.tsx`'s own,
+    // fuller comment on this exact bug): depend on the stable
+    // `realtime.subscribe` identity, not the whole `realtime` object
+    // (which changes on every single event via `lastEventAt`) — otherwise
+    // this effect tears down and re-subscribes on every event, cancelling
+    // its own just-scheduled debounce timer before it can fire.
+  }, [selectedProjectId, limit, realtime.subscribe, fetchAudit]);
 
   const handleRefresh = useCallback(() => {
     // A plain refresh of the *same* scope keeps the currently-rendered

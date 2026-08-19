@@ -73,9 +73,20 @@ import {
 } from 'lucide-react';
 import { ApiError, aiqaApi, getApiKey } from '../../services/aiqaApi';
 import { useProject } from '../../context/ProjectContext';
+import { useRealtime } from '../../context/RealtimeContext';
 import { StateCard, Cta } from '../state/StateViews';
 import { EmptyState } from '../common/EmptyState';
 import type { EvidenceRow, RunListItem } from '../../types/contract';
+
+/** FE-9: no real event type "is" an evidence event — evidence rows are
+ *  written as a side effect of task execution, not published to the WS
+ *  stream as their own event (`domain.rs::EventType` has no such variant).
+ *  But a real `TASK_*` terminal event for the currently-viewed run is
+ *  exactly when new evidence for that task becomes possible — so it is
+ *  used as the honest, disclosed trigger to invalidate/refetch the real
+ *  evidence resource (brief §20) via the *existing* `fetchEvidence`, never
+ *  a fabricated evidence row and never a second evidence-fetching path. */
+const EVIDENCE_EVENT_RESYNC_DEBOUNCE_MS = 250;
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -162,6 +173,7 @@ interface PreviewState {
 
 export const EvidencePage: React.FC = () => {
   const { selectedProjectId, selectedProject } = useProject();
+  const realtime = useRealtime();
 
   const [runs, setRuns] = useState<RunListItem[] | null>(null);
   const [runsLoading, setRunsLoading] = useState(false);
@@ -258,6 +270,38 @@ export const EvidencePage: React.FC = () => {
     setRows(null);
     void fetchEvidence(selectedProjectId, selectedRunId, false);
   }, [selectedProjectId, selectedRunId, fetchEvidence]);
+
+  // FE-9 — see the module doc comment above for exactly why a `TASK_*`
+  // event for the currently-viewed run is the honest trigger here.
+  // Debounced (a run with several tasks finishing close together collapses
+  // into one real request) and uses `isRefresh: true` so a background
+  // resync never blanks an already-open preview/rendered rows.
+  const selectedRunIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    selectedRunIdRef.current = selectedRunId;
+  }, [selectedRunId]);
+  const evidenceResyncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!selectedProjectId) return;
+    const unsubscribe = realtime.subscribe((event) => {
+      if (!selectedRunIdRef.current || event.run_id !== selectedRunIdRef.current) return;
+      if (evidenceResyncTimeoutRef.current) clearTimeout(evidenceResyncTimeoutRef.current);
+      evidenceResyncTimeoutRef.current = setTimeout(() => {
+        evidenceResyncTimeoutRef.current = null;
+        void fetchEvidence(selectedProjectId, selectedRunIdRef.current as string, true);
+      }, EVIDENCE_EVENT_RESYNC_DEBOUNCE_MS);
+    });
+    return () => {
+      unsubscribe();
+      if (evidenceResyncTimeoutRef.current) clearTimeout(evidenceResyncTimeoutRef.current);
+    };
+    // Live-discovered FE-9 bug fix (see `ExecutionHubPage.tsx`'s own,
+    // fuller comment on this exact bug): depend on the stable
+    // `realtime.subscribe` identity, not the whole `realtime` object
+    // (which changes on every single event via `lastEventAt`) — otherwise
+    // this effect tears down and re-subscribes on every event, cancelling
+    // its own just-scheduled debounce timer before it can fire.
+  }, [selectedProjectId, realtime.subscribe, fetchEvidence]);
 
   useEffect(
     () => () => {

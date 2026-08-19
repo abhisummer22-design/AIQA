@@ -86,12 +86,22 @@ export interface UpdateProjectRequest {
 
 // ----------------------------------------------------------------- executions
 
-/** `domain.rs::TaskDef` — one task in a submitted plan. */
+/** `domain.rs::TaskDef` — one task in a submitted plan.
+ *
+ *  FE-8 fix: `simulate.outcome` was `'Pass' | 'Fail' | 'Timeout' |
+ *  'InfraError'` (the Rust enum's own variant names) — but `domain.rs::
+ *  SimOutcome` carries `#[serde(rename_all = "snake_case")]`, so the real
+ *  wire values are lowercase `snake_case` (`pass`/`fail`/`timeout`/
+ *  `infra_error`). Confirmed live: the real backend rejected the old
+ *  values with a 422 ("unknown variant `Pass`, expected one of `pass`,
+ *  `fail`, `timeout`, `infra_error`") the first time anything actually
+ *  sent one — FE-1 defined this type but nothing exercised it for real
+ *  until FE-8's execution-creation form did. */
 export interface TaskDef {
   id: string;
   name: string;
   prerequisites?: string[];
-  simulate?: { outcome: 'Pass' | 'Fail' | 'Timeout' | 'InfraError'; delay_ms?: number };
+  simulate?: { outcome: 'pass' | 'fail' | 'timeout' | 'infra_error'; delay_ms?: number };
   executor?: string;
   params?: unknown;
 }

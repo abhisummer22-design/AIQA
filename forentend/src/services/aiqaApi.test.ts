@@ -359,6 +359,144 @@ describe('Evidence endpoints (FE-7 §26 API layer, items 1-7)', () => {
   });
 });
 
+describe('Execution endpoints (FE-8 §34 API layer, items 1-10)', () => {
+  const PROJECT_ID = 'proj-execution-test';
+  const RUN_ID = 'run-execution-test';
+  const PLAN = { name: 'FE-8 test run', tasks: [{ id: 't1', name: 'Simulated task', simulate: { outcome: 'pass' as const } }] };
+  const RUN_SUMMARY = {
+    run_id: RUN_ID,
+    name: PLAN.name,
+    state: 'SCHEDULED' as const,
+    total: 1,
+    queued: 1,
+    running: 0,
+    passed: 0,
+    failed: 0,
+    blocked: 0,
+    skipped: 0,
+    cancelled: 0,
+    timeout: 0,
+    infra_error: 0,
+    needs_review: 0,
+    started_at: '2026-08-19T00:00:00Z',
+    finished_at: null,
+    project_id: PROJECT_ID,
+    requested_by: 'fe8-test-key',
+    policy_notes: null,
+    approved_by: null,
+    approved_at: null,
+  };
+  const RUN_DETAIL = { ...RUN_SUMMARY, tasks: [] };
+  const RUN_LIST_ITEM = { run_id: RUN_ID, name: PLAN.name, state: 'SCHEDULED' as const, total: 1, passed: 0, failed: 0, project_id: PROJECT_ID };
+
+  it('item 1/8/9 — aiqaApi.executions.list uses FE-1 transport, the real path, and no query params when omitted', async () => {
+    setApiKey('aiqa_exectest00000000000');
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, [RUN_LIST_ITEM]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const list = await aiqaApi.executions.list(PROJECT_ID);
+
+    expect(list).toEqual([RUN_LIST_ITEM]);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`/api/v1/projects/${PROJECT_ID}/executions`);
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer aiqa_exectest00000000000');
+  });
+
+  it('item 2/8 — aiqaApi.executions.create uses FE-1 transport, POSTs the exact real plan to the exact real path', async () => {
+    setApiKey('aiqa_exectest00000000000');
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(201, { run_id: RUN_ID, status: 'SCHEDULED', policy_notes: null }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await aiqaApi.executions.create(PROJECT_ID, PLAN);
+
+    expect(res).toEqual({ run_id: RUN_ID, status: 'SCHEDULED', policy_notes: null });
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`/api/v1/projects/${PROJECT_ID}/executions`);
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual(PLAN);
+  });
+
+  it('item 3/8 — aiqaApi.executions.get uses FE-1 transport and the real detail path', async () => {
+    setApiKey('aiqa_exectest00000000000');
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, RUN_DETAIL));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const detail = await aiqaApi.executions.get(PROJECT_ID, RUN_ID);
+
+    expect(detail).toEqual(RUN_DETAIL);
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`/api/v1/projects/${PROJECT_ID}/executions/${RUN_ID}`);
+  });
+
+  it('item 4/8 — aiqaApi.executions.cancel uses FE-1 transport, POSTs to the real cancel path', async () => {
+    setApiKey('aiqa_exectest00000000000');
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { run_id: RUN_ID, status: 'CANCELLED' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await aiqaApi.executions.cancel(PROJECT_ID, RUN_ID);
+
+    expect(res).toEqual({ run_id: RUN_ID, status: 'CANCELLED' });
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`/api/v1/projects/${PROJECT_ID}/executions/${RUN_ID}/cancel`);
+    expect(init.method).toBe('POST');
+  });
+
+  it('approve/reject return the real RunSummary shape (FE-8 fix: was mistyped as RunDetail)', async () => {
+    setApiKey('aiqa_exectest00000000000');
+    const fetchMock = vi.fn().mockImplementation(async () => jsonResponse(200, RUN_SUMMARY));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const approved = await aiqaApi.executions.approve(PROJECT_ID, RUN_ID);
+    const rejected = await aiqaApi.executions.reject(PROJECT_ID, RUN_ID);
+
+    expect(approved).toEqual(RUN_SUMMARY);
+    expect(rejected).toEqual(RUN_SUMMARY);
+    expect('tasks' in approved).toBe(false);
+    const urls = fetchMock.mock.calls.map(([u]: [string]) => u);
+    expect(urls).toEqual([
+      `/api/v1/projects/${PROJECT_ID}/executions/${RUN_ID}/approve`,
+      `/api/v1/projects/${PROJECT_ID}/executions/${RUN_ID}/reject`,
+    ]);
+  });
+
+  it('item 5 — 401 maps to unauthorized on execution creation', async () => {
+    setApiKey('aiqa_exectest00000000000');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(401, envelope('UNAUTHENTICATED', 'bad key'))));
+    await expect(aiqaApi.executions.create(PROJECT_ID, PLAN)).rejects.toMatchObject({ kind: 'unauthorized', status: 401 });
+  });
+
+  it('item 6 — 403 maps to forbidden (real backend rule: create/cancel/approve/reject require Operator role)', async () => {
+    setApiKey('aiqa_exectest00000000000');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(jsonResponse(403, envelope('FORBIDDEN', "role 'viewer' cannot perform this action"))),
+    );
+    await expect(aiqaApi.executions.create(PROJECT_ID, PLAN)).rejects.toMatchObject({ kind: 'forbidden', status: 403 });
+  });
+
+  it('item 7 — a network failure maps to offline', async () => {
+    setApiKey('aiqa_exectest00000000000');
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
+    const err = await expectApiError(aiqaApi.executions.list(PROJECT_ID));
+    expect(err.kind).toBe('offline');
+  });
+
+  it('item 10 — the API key never appears in any execution request URL', async () => {
+    const raw = 'aiqa_shouldneverbeinurl2';
+    setApiKey(raw);
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, [RUN_LIST_ITEM]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await aiqaApi.executions.list(PROJECT_ID);
+
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).not.toContain(raw);
+    expect(url).not.toContain('aiqa_');
+  });
+});
+
 describe('No hardcoded credential in source (FE-2 §6, §18 item 11)', () => {
   it('API_BASE contains no embedded secret and defaults to the contract-shaped path', async () => {
     const mod = await import('./aiqaApi');

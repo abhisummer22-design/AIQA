@@ -52,6 +52,7 @@ import type {
   RunEvent,
   RunListItem,
   RunPlan,
+  RunSummary,
   TaskState,
   UpdateProjectRequest,
 } from '../types/contract';
@@ -297,6 +298,41 @@ async function requestBlob(path: string, opts: RequestOptions = {}): Promise<Blo
   return res.blob();
 }
 
+// ------------------------------------------------------------- realtime (WS)
+
+/**
+ * FE-9 — real URL for `services/orchestrator`'s project-scoped realtime
+ * stream (`GET /api/v1/projects/:project_id/events`, `project_events_ws_handler`
+ * in `api.rs`, BE-14/Contract §14). Confirmed by reading that handler
+ * directly, not assumed from the route name:
+ *
+ *  - **Transport is a real WebSocket** (axum's `WebSocketUpgrade`), not SSE
+ *    or any other streaming mechanism.
+ *  - **Auth is a `?key=` query parameter**, not the `Authorization` header
+ *    every REST call in this file uses — the backend's own doc comment on
+ *    `ws_handler` explains why: "browsers cannot set custom headers on a
+ *    WebSocket handshake (`new WebSocket(url)` takes no headers argument)".
+ *    This is not a new, weaker auth mechanism invented here — it is the one
+ *    real mechanism the backend actually implements for this endpoint, and
+ *    reuses the exact same raw key `getApiKey()` already returns (no second
+ *    credential store).
+ *  - No backlog/replay on this endpoint (unlike the legacy per-run
+ *    `/runs/:id/ws`) — catch-up after a gap is `aiqaApi.executions.events`
+ *    (per-run, `?since=`), which already existed before this sprint.
+ *
+ * Returns `null` when no key is stored — callers must not attempt to open a
+ * socket with an empty/missing key (the backend would reject it with a real
+ * 401 anyway, but there is no reason to make that round trip).
+ */
+export function projectEventsWsUrl(projectId: string): string | null {
+  const key = getApiKey();
+  if (!key) return null;
+  const base = new URL(API_BASE, window.location.origin);
+  const wsProtocol = base.protocol === 'https:' ? 'wss:' : 'ws:';
+  const path = `${base.pathname.replace(/\/+$/, '')}/projects/${encodeURIComponent(projectId)}/events`;
+  return `${wsProtocol}//${base.host}${path}?key=${encodeURIComponent(key)}`;
+}
+
 // ------------------------------------------------------------- typed calls
 //
 // One function per real, implemented backend endpoint (BE-8..BE-15). Every
@@ -325,10 +361,16 @@ export const aiqaApi = {
       requestJson<RunDetail>(`/projects/${projectId}/executions/${runId}`, { signal }),
     cancel: (projectId: string, runId: string, signal?: AbortSignal) =>
       requestJson<CancelRunResponse>(`/projects/${projectId}/executions/${runId}/cancel`, { method: 'POST', signal }),
+    // FE-8: both real handlers (`approve_run_scoped`/`reject_run_scoped`)
+    // return `Json<RunSummary>` — confirmed by reading `api.rs` directly —
+    // not `RunDetail` (which additionally claims a `tasks` field neither
+    // response actually carries). Fixed to the real shape; call sites that
+    // need the task list re-fetch it via `.get()`/`.tasks()`, same as any
+    // other real ordering the backend enforces.
     approve: (projectId: string, runId: string, signal?: AbortSignal) =>
-      requestJson<RunDetail>(`/projects/${projectId}/executions/${runId}/approve`, { method: 'POST', signal }),
+      requestJson<RunSummary>(`/projects/${projectId}/executions/${runId}/approve`, { method: 'POST', signal }),
     reject: (projectId: string, runId: string, reason?: string, signal?: AbortSignal) =>
-      requestJson<RunDetail>(`/projects/${projectId}/executions/${runId}/reject`, {
+      requestJson<RunSummary>(`/projects/${projectId}/executions/${runId}/reject`, {
         method: 'POST',
         body: reason !== undefined ? { reason } : undefined,
         signal,
@@ -338,7 +380,8 @@ export const aiqaApi = {
     task: (projectId: string, runId: string, taskId: string, signal?: AbortSignal) =>
       requestJson<TaskState>(`/projects/${projectId}/executions/${runId}/tasks/${taskId}`, { signal }),
     /** Catch-up/history for one run (Contract §14/ACC-008 reconnect path).
-     *  The live realtime stream is FE-9 (`useEventStream`), not this. */
+     *  The live realtime stream is FE-9's `RealtimeContext`
+     *  (`projectEventsWsUrl` below), not this. */
     events: (projectId: string, runId: string, since?: number, signal?: AbortSignal) =>
       requestJson<RunEvent[]>(`/projects/${projectId}/executions/${runId}/events`, { query: { since }, signal }),
     evidence: (projectId: string, runId: string, signal?: AbortSignal) =>

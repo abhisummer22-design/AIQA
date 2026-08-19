@@ -12,7 +12,7 @@
  * this test suite — it does not touch `EvidencePage.tsx`'s own logic.
  */
 import React from 'react';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppShell } from '../../App';
@@ -114,6 +114,28 @@ function mockBackend(opts: {
       if (entry && !Array.isArray(entry) && 'status' in entry) return jsonResponse(entry.status, entry.body);
       return jsonResponse(200, entry ?? []);
     }
+    // FE-10: real Dashboard endpoints — zero-valued but real-shaped, so any
+    // test that renders `/dashboard` sees an honest, empty-but-real
+    // response instead of falling through to the `opts.projects` array.
+    if (url.includes('/dashboard')) {
+      const m = url.match(/projects\/([^/]+)\/dashboard/);
+      const pid = m ? m[1] : '';
+      const proj = opts.projects.find((p) => p.id === pid);
+      return jsonResponse(200, {
+        project_id: pid,
+        project_name: proj?.name ?? 'Unknown',
+        execution_counts: {},
+        task_counts: {},
+        pass_fail: { passed: 0, failed: 0 },
+        test_count: 0,
+        generated_at: '2026-08-19T00:00:00Z',
+      });
+    }
+    if (url.includes('/kpis')) {
+      const m = url.match(/projects\/([^/]+)\/kpis/);
+      const pid = m ? m[1] : '';
+      return jsonResponse(200, { project_id: pid, execution_reliability: null, execution_efficiency_ms: null, generated_at: '2026-08-19T00:00:00Z' });
+    }
     return jsonResponse(200, opts.projects);
   });
   vi.stubGlobal('fetch', fetchMock);
@@ -138,8 +160,11 @@ async function openAndSelectProject(project: Project): Promise<void> {
   await act(async () => {
     document.getElementById('project-selector-button')!.click();
   });
+  // Scoped to the header's own real listbox — see ExecutionHubPage.test.tsx's
+  // identical helper for why (FE-10's Dashboard has its own real `<select>`
+  // of the same projects, colliding on an unscoped "option" role query).
   await act(async () => {
-    screen.getByRole('option', { name: project.name }).click();
+    within(screen.getByRole('listbox', { name: 'Projects' })).getByRole('option', { name: project.name }).click();
   });
 }
 
@@ -508,8 +533,11 @@ describe('EvidencePage (FE-7 §26 items 8-30)', () => {
     mockBackend({ projects: [PROJECT_A] });
     renderApp(['/dashboard']);
     await verifyKey();
+    await openAndSelectProject(PROJECT_A);
 
-    await waitFor(() => expect(screen.getAllByText('AIQA Platform').length).toBeGreaterThan(0));
+    // FE-10: Dashboard now renders real project-scoped data (no more
+    // fabricated "AIQA Platform" seed project).
+    await waitFor(() => expect(screen.getAllByText(PROJECT_A.name).length).toBeGreaterThan(0));
     expect(screen.getByText('Total Test Cases')).toBeTruthy();
     expect(document.getElementById('aiqa-dashboard-main-content')).toBeTruthy();
   });

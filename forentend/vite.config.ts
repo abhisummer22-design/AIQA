@@ -50,14 +50,36 @@ export default defineConfig(() => {
             // different (and wrong) statement from "the orchestrator is not
             // running". 502 is the accurate code for "this proxy could not
             // reach upstream", and `kindForStatus` maps it to `offline`.
+            //
+            // FE-9 live-discovered fix: this `error` event also fires for
+            // the *WebSocket* upgrade proxy (BE-14's realtime stream) when
+            // the orchestrator dies mid-connection - but there, `res` is a
+            // raw `net.Socket`, not an `http.ServerResponse` (no
+            // `writeHead`/`end`), so the `typeof` guard below always
+            // skipped it. That silently left the browser-facing socket
+            // technically still open: `RealtimeContext`'s `WebSocket` never
+            // received a real `close` event, so its connection-state
+            // indicator kept showing "Live" indefinitely after a real
+            // backend crash - confirmed live during FE-9 manual
+            // verification (Scenario I), where the UI stayed on "Live" for
+            // over a minute after the real orchestrator process was
+            // killed, with the dev server's own console already logging
+            // repeated `ws proxy socket error: ECONNRESET` for the dead
+            // upstream connection the whole time. Destroying the socket
+            // here makes the proxy's own already-detected failure visible
+            // to the browser, so the real `WebSocket.onclose` (and this
+            // provider's real bounded-reconnect path) actually fires.
             proxy.on('error', (_err, _req, res) => {
               const response = res as unknown as {
                 writeHead?: (code: number, headers: Record<string, string>) => void;
                 end?: (body: string) => void;
+                destroy?: (error?: Error) => void;
               };
               if (typeof response.writeHead === 'function' && typeof response.end === 'function') {
                 response.writeHead(502, {'Content-Type': 'text/plain'});
                 response.end('orchestrator unreachable');
+              } else if (typeof response.destroy === 'function') {
+                response.destroy();
               }
             });
           },
