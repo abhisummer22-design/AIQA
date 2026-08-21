@@ -1,0 +1,228 @@
+/**
+ * Central AI Provider & Model Intelligence Layer — Settings panel tests.
+ * Renders the real `AppShell` (real providers/routing) with `fetch` mocked
+ * only at the transport boundary, matching every other real-data page test
+ * in this app (`DashboardPage.test.tsx`/`TestCaseGeneratorPage.test.tsx`).
+ */
+import React from 'react';
+import { act, render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { AppShell } from '../../App';
+import { setApiKey } from '../../services/aiqaApi';
+import type { AiProviderInfo, AiStatusResponse } from '../../types/contract';
+
+function jsonResponse(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+}
+
+const RAW_KEY = 'aiqa_settingsai0000000000000000';
+
+function renderApp() {
+  return render(
+    <MemoryRouter initialEntries={['/settings']}>
+      <AppShell />
+    </MemoryRouter>,
+  );
+}
+
+async function openAiTab(): Promise<void> {
+  await act(async () => {
+    screen.getByText('AI Models & Reasoning').click();
+  });
+}
+
+const OLLAMA_PROVIDER: AiProviderInfo = {
+  id: 'ollama',
+  name: 'Ollama',
+  provider_type: 'LOCAL',
+  endpoint: 'http://localhost:11434',
+  configured: true,
+  reachable: true,
+  status: 'HEALTHY',
+  models: [
+    {
+      id: 'gemma3:12b',
+      provider_id: 'ollama',
+      display_name: 'gemma3:12b',
+      family: 'gemma3',
+      parameter_size: '12.2B',
+      context_window: null,
+      capabilities: {
+        text_generation: 'STRONG',
+        structured_output: 'BASIC',
+        reasoning: 'BASIC',
+        vision: 'NONE',
+        embedding: 'NONE',
+        tool_use: 'UNKNOWN',
+        long_context: 'UNKNOWN',
+      },
+      status: 'AVAILABLE',
+    },
+  ],
+};
+
+const GEMINI_NOT_CONFIGURED: AiProviderInfo = {
+  id: 'gemini',
+  name: 'Gemini',
+  provider_type: 'API',
+  endpoint: null,
+  configured: false,
+  reachable: false,
+  status: 'NOT_CONFIGURED',
+  models: [],
+};
+
+function statusResponse(overrides: Partial<AiStatusResponse> = {}): AiStatusResponse {
+  return {
+    providers: [OLLAMA_PROVIDER, GEMINI_NOT_CONFIGURED],
+    settings: { mode: 'AUTO', preferred_provider: null, preferred_model: null, fallback_enabled: true },
+    routing_preview: { provider_id: 'ollama', model_id: 'gemma3:12b', routing_score: 145, reason: 'AUTO mode: best available model for TestCaseGeneration by routing score' },
+    ...overrides,
+  };
+}
+
+beforeEach(() => {
+  localStorage.clear();
+  vi.restoreAllMocks();
+  setApiKey(RAW_KEY);
+});
+
+afterEach(() => {
+  localStorage.clear();
+});
+
+describe('SettingsPage — AI Intelligence panel (Central AI Model Auto-Discovery)', () => {
+  it('renders real discovered providers and the real routing preview, never a hardcoded "Connected"', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        if (url.endsWith('/ai/status')) return jsonResponse(200, statusResponse());
+        return jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await waitFor(() => expect(screen.getByText('System Settings & Governance')).toBeTruthy());
+    await openAiTab();
+
+    await waitFor(() => expect(screen.getByText('Ollama')).toBeTruthy());
+    expect(screen.getByText('Healthy')).toBeTruthy();
+    expect(screen.getByText('Not Configured')).toBeTruthy();
+    expect(screen.getByText('Ready')).toBeTruthy();
+    expect(document.getElementById('ai-intelligence-panel')!.textContent).not.toContain('Connected');
+  });
+
+  it('shows a truthful Degraded status and "no AI model currently available" when nothing is healthy — never a fake Ready', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        if (url.endsWith('/ai/status')) {
+          return jsonResponse(
+            200,
+            statusResponse({
+              providers: [{ ...OLLAMA_PROVIDER, status: 'UNAVAILABLE', reachable: false, models: [] }, GEMINI_NOT_CONFIGURED],
+              routing_preview: null,
+            }),
+          );
+        }
+        return jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await waitFor(() => expect(screen.getByText('System Settings & Governance')).toBeTruthy());
+    await openAiTab();
+
+    await waitFor(() => expect(screen.getByText(/Degraded — No AI model currently available/)).toBeTruthy());
+    expect(screen.getByText(/No AI model currently available for Test Case Generation/)).toBeTruthy();
+    expect(screen.queryByText('Ready')).toBeNull();
+  });
+
+  it('Scan Providers makes a real POST /ai/refresh request and reloads real status', async () => {
+    let refreshCalled = false;
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/ai/refresh') && init?.method === 'POST') {
+        refreshCalled = true;
+        return jsonResponse(200, [OLLAMA_PROVIDER]);
+      }
+      if (url.endsWith('/ai/status')) return jsonResponse(200, statusResponse());
+      return jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await waitFor(() => expect(screen.getByText('System Settings & Governance')).toBeTruthy());
+    await openAiTab();
+    await waitFor(() => expect(document.getElementById('btn-refresh-ai-providers')).toBeTruthy());
+
+    await act(async () => {
+      document.getElementById('btn-refresh-ai-providers')!.click();
+    });
+
+    await waitFor(() => expect(refreshCalled).toBe(true));
+  });
+
+  it('switching to MANUAL mode and saving sends a real PUT /ai/settings request with the chosen provider/model', async () => {
+    let savedBody: any = null;
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/ai/settings') && init?.method === 'PUT') {
+        savedBody = JSON.parse(String(init.body));
+        return jsonResponse(200, savedBody);
+      }
+      if (url.endsWith('/ai/status')) return jsonResponse(200, statusResponse());
+      return jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await waitFor(() => expect(screen.getByText('System Settings & Governance')).toBeTruthy());
+    await openAiTab();
+    await waitFor(() => expect(screen.getByText('Ollama')).toBeTruthy());
+
+    const modeSelect = document.querySelector('select') as HTMLSelectElement;
+    await act(async () => {
+      modeSelect.value = 'MANUAL';
+      modeSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+
+    const selects = Array.from(document.querySelectorAll('select')) as HTMLSelectElement[];
+    const providerSelect = selects[1];
+    await act(async () => {
+      providerSelect.value = 'ollama';
+      providerSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    const modelSelect = selects[2];
+    await act(async () => {
+      modelSelect.value = 'gemma3:12b';
+      modelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+
+    await act(async () => {
+      document.getElementById('btn-save-ai-settings')!.click();
+    });
+
+    await waitFor(() => expect(savedBody).toBeTruthy());
+    expect(savedBody.mode).toBe('MANUAL');
+    expect(savedBody.preferred_provider).toBe('ollama');
+    expect(savedBody.preferred_model).toBe('gemma3:12b');
+  });
+
+  it('a failed status fetch shows a real, honest error — never a fabricated Ready/Healthy fallback', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        if (url.endsWith('/ai/status')) return jsonResponse(500, { error: { code: 'INTERNAL_ERROR', message: 'boom', details: null, request_id: 'r1' } });
+        return jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await waitFor(() => expect(screen.getByText('System Settings & Governance')).toBeTruthy());
+    await openAiTab();
+
+    await waitFor(() => expect(document.getElementById('ai-intelligence-panel')).toBeNull());
+    expect(screen.queryByText('Ready')).toBeNull();
+    expect(screen.queryByText('Healthy')).toBeNull();
+  });
+});

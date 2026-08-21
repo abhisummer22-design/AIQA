@@ -319,6 +319,7 @@ async fn d1_approval_persistence_failure_is_propagated_and_does_not_spawn_or_app
         Some("requester".into()),
         RunState::PendingApproval,
         Some("held for review".into()),
+        None,
     );
     let registry = Arc::new(ExecutorRegistry::new(Arc::new(SimulatedExecutor)));
     let evidence = evidence_store(&dir);
@@ -395,6 +396,7 @@ async fn d1_rejection_persistence_failure_is_propagated_and_does_not_mutate_in_m
         Some("requester".into()),
         RunState::PendingApproval,
         Some("held for review".into()),
+        None,
     );
 
     // Induce a genuine persistence failure by closing the store's connection pool.
@@ -460,6 +462,7 @@ async fn d1_successful_approval_persists_and_spawns() {
         Some("requester".into()),
         RunState::PendingApproval,
         Some("held for review".into()),
+        None,
     );
     let registry = Arc::new(ExecutorRegistry::new(Arc::new(SimulatedExecutor)));
     let evidence = evidence_store(&dir);
@@ -515,6 +518,7 @@ async fn d1_successful_rejection_persists_and_mutates_state() {
         Some("requester".into()),
         RunState::PendingApproval,
         Some("held for review".into()),
+        None,
     );
 
     let res = reject_run(record.clone(), &store, "rejector_bob", "policy violation").await;
@@ -556,6 +560,7 @@ async fn d2_persistence_failure_reason_is_durable_and_survives_restart() {
         Some("p1".into()),
         Some("tester".into()),
         RunState::Scheduled,
+        None,
         None,
     );
     let registry = Arc::new(ExecutorRegistry::new(Arc::new(SimulatedExecutor)));

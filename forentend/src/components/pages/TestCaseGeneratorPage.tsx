@@ -9,7 +9,8 @@
  * - Traceability Chain Inspection & Test Case Approval
  */
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Sparkles,
   Layers,
@@ -29,10 +30,14 @@ import {
   Cpu,
 } from 'lucide-react';
 import { useAIQA } from '../../context/AIQAContext';
+import { useProject } from '../../context/ProjectContext';
 import { DocumentUploadSection } from '../test-generator/DocumentUploadSection';
 import { ApplicationSourceSection } from '../test-generator/ApplicationSourceSection';
 import { GenerationConfigSection, TEST_CATEGORIES } from '../test-generator/GenerationConfigSection';
 import { GeneratedTestCasesView } from '../test-generator/GeneratedTestCasesView';
+import { SkillsAndMcpPanel } from '../test-generator/SkillsAndMcpPanel';
+import { useSkillSelection } from '../../hooks/useSkillSelection';
+import { DEFAULT_SELECTED_SKILL_IDS } from '../../services/skillRegistry';
 import {
   UploadedRequirementDoc,
   AppSourceType,
@@ -41,16 +46,87 @@ import {
   GenerationExecutionState,
   GeneratedTestCase,
 } from '../../types';
+import { ApiError, aiqaApi } from '../../services/aiqaApi';
+import type { CreateTestCaseRequest, TestCaseHandoffRequest, TestCaseRow } from '../../types/contract';
 
+/** AUD-005 — maps a real, persisted `TestCaseRow` (backend) onto the
+ *  existing `GeneratedTestCase` shape `GeneratedTestCasesView` already
+ *  renders, so that component's real, product-owner-designed layout is
+ *  reused rather than duplicated. The real backend `id`/`status` are used
+ *  as-is (never a fabricated local id) — this is a field-name/shape
+ *  translation only, not a second source of truth. */
+function testCaseRowToDisplay(row: TestCaseRow): GeneratedTestCase {
+  const statusMap: Record<TestCaseRow['status'], GeneratedTestCase['status']> = {
+    GENERATED: 'PENDING_REVIEW',
+    VALIDATED: 'VALIDATED',
+    APPROVED: 'APPROVED',
+    REJECTED: 'REJECTED',
+    EXECUTED: 'EXECUTED',
+  };
+  return {
+    id: row.id,
+    title: row.title,
+    description: row.description,
+    category: row.category as TestGenerationCategory,
+    priority: row.priority as GeneratedTestCase['priority'],
+    severity: row.severity as GeneratedTestCase['severity'],
+    sourceDocument: row.source_document ?? undefined,
+    requirementReference: row.requirement_reference ?? undefined,
+    sourceRequirement: row.source_requirement ?? undefined,
+    traceability: (row.traceability as GeneratedTestCase['traceability']) ?? undefined,
+    preconditions: row.preconditions,
+    testData: row.test_data ?? undefined,
+    steps: row.steps.map((s) => ({ stepNumber: s.step_number, action: s.action, expectedResult: s.expected_result })),
+    expectedResult: row.expected_result,
+    assertions: row.assertions,
+    riskFactor: (row.risk_factor as GeneratedTestCase['riskFactor']) ?? 'MEDIUM',
+    status: statusMap[row.status],
+    suggestedTags: row.tags,
+    generatedAt: row.created_at,
+  };
+}
+
+function generatedCaseToCreateRequest(tc: GeneratedTestCase): CreateTestCaseRequest {
+  return {
+    title: tc.title,
+    description: tc.description,
+    category: tc.category,
+    priority: tc.priority,
+    severity: tc.severity,
+    preconditions: tc.preconditions,
+    steps: tc.steps.map((s) => ({ step_number: s.stepNumber, action: s.action, expected_result: s.expectedResult })),
+    expected_result: tc.expectedResult,
+    assertions: tc.assertions,
+    test_data: tc.testData,
+    source_document: tc.sourceDocument,
+    requirement_reference: tc.requirementReference,
+    source_requirement: tc.sourceRequirement,
+    traceability: tc.traceability,
+    risk_factor: tc.riskFactor,
+    tags: tc.suggestedTags,
+  };
+}
+
+// FE-4: the one, minimal, non-visual routing change made to this
+// product-owner-designed page — see `handleOpenExecutionHub` below.
+//
+// FE-5: every generation call in this page is entirely local/simulated
+// (`handleTriggerGenerate`'s own `setTimeout` pipeline below) — there is no
+// real `aiqaApi` call anywhere in this file, so brief §12's "project-
+// dependent actions must use the selected project when the real backend
+// contract requires it" currently has nothing to wire (no such real,
+// project-scoped action exists yet on this page). `realProjectId` is
+// exposed for exactly that future wiring and, in the meantime, used as a
+// remount key so an in-progress local generation session is not silently
+// carried over to a different real project scope.
 export const TestCaseGeneratorPage: React.FC = () => {
   const {
     activeGenerationSession,
     setActiveGenerationSession,
-    triggerNewRun,
-    setActivePage,
-    currentEnvironment,
     addActivity,
   } = useAIQA();
+  const { selectedProjectId: realProjectId } = useProject();
+  const navigate = useNavigate();
 
   // Navigation Branch Tab ('SOURCES_AND_GENERATION' | 'GENERATED_CASES')
   const [activeBranch, setActiveBranch] = useState<'SOURCES_AND_GENERATION' | 'GENERATED_CASES'>(
@@ -94,10 +170,9 @@ export const TestCaseGeneratorPage: React.FC = () => {
     activeGenerationSession?.requirementText || ''
   );
 
-  // 5. Engine tuning
-  const [model, setModel] = useState<'gemini-2.0-flash' | 'gemini-1.5-pro' | 'claude-3-5-sonnet'>(
-    activeGenerationSession?.model || 'gemini-2.0-flash'
-  );
+  // 5. Generation depth (local template-selection preference — FE-16: the
+  // former 'model' provider selector was removed here; it never had any
+  // real effect on generation, see the FE-16 report).
   const [depth, setDepth] = useState<'SMOKE' | 'STANDARD' | 'EXHAUSTIVE' | 'CHAOS_EXPLORATORY'>(
     activeGenerationSession?.depth || 'STANDARD'
   );
@@ -107,10 +182,158 @@ export const TestCaseGeneratorPage: React.FC = () => {
     activeGenerationSession?.generationState || 'IDLE'
   );
 
-  // 7. Generated Test Cases list
+  // 7. Generated Test Cases list (local, unsaved draft — unchanged since
+  // FE-16: a fixed-template preview a user can locally triage before
+  // deciding whether to persist it for real).
   const [generatedCases, setGeneratedCases] = useState<GeneratedTestCase[]>(
     activeGenerationSession?.generatedCases || []
   );
+
+  // 8. AUD-005 — the real, backend-persisted test cases for the selected
+  // project. Once any exist, they are what's actually shown/actioned in
+  // the "Generated Test Cases" branch (real id, real lifecycle,
+  // survives refresh/project-switch) — the local draft above is only
+  // shown before anything has been saved yet.
+  const [persistedCases, setPersistedCases] = useState<TestCaseRow[]>([]);
+  const [casesLoading, setCasesLoading] = useState(false);
+  const [casesError, setCasesError] = useState<ApiError | null>(null);
+  const [saveState, setSaveState] = useState<'IDLE' | 'SAVING' | 'ERROR'>('IDLE');
+  const [saveErrorMessage, setSaveErrorMessage] = useState<string | null>(null);
+  const [handoffError, setHandoffError] = useState<string | null>(null);
+
+  // Skills & MCP — Phase 1 (see hooks/useSkillSelection.ts). A standalone
+  // hook, not inline state here, so a future generation-engine unit can
+  // reuse the exact same selection contract without depending on this
+  // page's other internals.
+  const { skills, selectedSkillIds, toggleSkill, addCustomSkill } = useSkillSelection(
+    activeGenerationSession?.selectedSkillIds || DEFAULT_SELECTED_SKILL_IDS,
+  );
+  const isGeneratingNow = ['VALIDATING', 'PROCESSING', 'GENERATING'].includes(generationState);
+
+  // Real fetch of this project's persisted test cases — same abort-on-
+  // switch pattern every other real-data page in this app already uses
+  // (`DashboardPage`/`ReportsPage`/`EvidencePage`), so a project switch
+  // never applies a stale response to the new project's view.
+  useEffect(() => {
+    if (!realProjectId) {
+      setPersistedCases([]);
+      setCasesError(null);
+      return;
+    }
+    const controller = new AbortController();
+    setCasesLoading(true);
+    setCasesError(null);
+    aiqaApi.testCases
+      .list(realProjectId, {}, controller.signal)
+      .then((rows) => {
+        if (controller.signal.aborted) return;
+        setPersistedCases(rows);
+      })
+      .catch((err) => {
+        if (controller.signal.aborted) return;
+        setCasesError(err instanceof ApiError ? err : new ApiError('offline', 'Failed to load test cases.'));
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setCasesLoading(false);
+      });
+    return () => controller.abort();
+  }, [realProjectId]);
+
+  const refetchPersistedCases = async () => {
+    if (!realProjectId) return;
+    try {
+      const rows = await aiqaApi.testCases.list(realProjectId);
+      setPersistedCases(rows);
+    } catch {
+      // A failed background refresh is surfaced the next time the effect
+      // above re-runs (project switch) rather than silently retried here;
+      // the just-completed action's own real result already reflects
+      // reality even if this particular re-list call fails.
+    }
+  };
+
+  /** Persists every currently-generated local draft as a real test case.
+   *  Honest partial-failure reporting: if N of M succeed, that is exactly
+   *  what is reported — never a blanket false "saved" claim. */
+  const handleSaveToProject = async () => {
+    if (!realProjectId) {
+      setSaveState('ERROR');
+      setSaveErrorMessage('Select a project before saving test cases.');
+      return;
+    }
+    setSaveState('SAVING');
+    setSaveErrorMessage(null);
+    let succeeded = 0;
+    const failures: string[] = [];
+    for (const tc of generatedCases) {
+      try {
+        await aiqaApi.testCases.create(realProjectId, generatedCaseToCreateRequest(tc));
+        succeeded += 1;
+      } catch (err) {
+        failures.push(err instanceof ApiError ? `${tc.title}: ${err.message}` : `${tc.title}: failed to save`);
+      }
+    }
+    await refetchPersistedCases();
+    if (failures.length === 0) {
+      setSaveState('IDLE');
+      setGeneratedCases([]);
+      addActivity({
+        type: 'RUN_STARTED',
+        title: `${succeeded} Test Case${succeeded === 1 ? '' : 's'} Saved to Project`,
+        description: `${succeeded} generated test case${succeeded === 1 ? '' : 's'} persisted to the backend and are now real, project-scoped records.`,
+      });
+    } else {
+      setSaveState('ERROR');
+      setSaveErrorMessage(`Saved ${succeeded} of ${generatedCases.length} cases. Failures: ${failures.join('; ')}`);
+    }
+  };
+
+  const handleValidateReal = async (id: string) => {
+    if (!realProjectId) return;
+    try {
+      await aiqaApi.testCases.validate(realProjectId, id);
+      await refetchPersistedCases();
+    } catch (err) {
+      setSaveErrorMessage(err instanceof ApiError ? err.message : 'Validation failed.');
+    }
+  };
+
+  const handleApproveReal = async (id: string) => {
+    if (!realProjectId) return;
+    try {
+      await aiqaApi.testCases.approve(realProjectId, id);
+      await refetchPersistedCases();
+    } catch (err) {
+      setSaveErrorMessage(err instanceof ApiError ? err.message : 'Approval failed.');
+    }
+  };
+
+  const handleRejectReal = async (id: string) => {
+    if (!realProjectId) return;
+    try {
+      await aiqaApi.testCases.reject(realProjectId, id);
+      await refetchPersistedCases();
+    } catch (err) {
+      setSaveErrorMessage(err instanceof ApiError ? err.message : 'Reject failed.');
+    }
+  };
+
+  /** The real bridge to the real Execution Hub (FRD-EXE-11). `outcome` is a
+   *  required, explicit, user-visible choice — see
+   *  `TestCaseHandoffRequest`'s own doc comment for why there is no
+   *  default that would silently fabricate a "passed" result. */
+  const handleHandoffReal = async (id: string, outcome: 'pass' | 'fail' | 'timeout' | 'infra_error') => {
+    if (!realProjectId) return;
+    setHandoffError(null);
+    const body: TestCaseHandoffRequest = { simulate: { outcome, delay_ms: 150 } };
+    try {
+      const created = await aiqaApi.testCases.handoff(realProjectId, id, body);
+      await refetchPersistedCases();
+      navigate(`/execution?run=${created.run_id}`);
+    } catch (err) {
+      setHandoffError(err instanceof ApiError ? err.message : 'Handoff failed.');
+    }
+  };
 
   // Helper for Header Status Indicator
   const getHeaderStatusIndicator = () => {
@@ -126,7 +349,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
         return (
           <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-mono font-bold bg-indigo-950/80 border border-indigo-700/80 text-indigo-300">
             <Cpu className="w-3.5 h-3.5 text-indigo-400 animate-pulse" />
-            Analyzing Project Sources...
+            Preparing Test Templates...
           </span>
         );
       case 'GENERATING':
@@ -184,6 +407,18 @@ export const TestCaseGeneratorPage: React.FC = () => {
   };
 
   // Test Case Generation Pipeline
+  //
+  // Skills & MCP Phase 1: `selectedSkillIds` (real, in-scope state from
+  // `useSkillSelection`) is captured into `activeGenerationSession` below,
+  // exactly like `selectedCategories`/`depth` already are — architecturally
+  // available to whatever consumes this session next. This local, fixed-
+  // template pipeline does not vary its per-category output by selected
+  // skill (there is no real generation engine here to do that yet, and
+  // claiming Security Testing/an MCP "improved" this deterministic
+  // template would be exactly the kind of unproven claim this unit must
+  // not make) — selection is real, its effect on local generation is not
+  // yet implemented, and this is disclosed in the Skills & MCP panel
+  // itself, not just in this comment.
   const handleTriggerGenerate = () => {
     setGenerationState('VALIDATING');
 
@@ -413,7 +648,10 @@ export const TestCaseGeneratorPage: React.FC = () => {
                 sourceDoc: documents[0]?.fileName || `${docLabels} Specification`,
                 requirementRef: `${docLabels} §${idx + 1}.${idx + 2}`,
                 requirementText: title,
-                aiAnalysis: `Synthesized via ${model} (${depth} depth)`,
+                // FE-16: was `Synthesized via ${model} (${depth} depth)` — a
+                // false claim that a named AI model performed synthesis.
+                // This is a fixed local template, and it must say so.
+                aiAnalysis: 'Locally assembled from a fixed category template — no AI model was called.',
                 testCaseId: tcId,
                 testCategory: cat,
                 executionTarget: 'k8s-runner-pool-us',
@@ -430,7 +668,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
               assertions,
               riskFactor: priority === 'CRITICAL' ? 'HIGH' : priority === 'HIGH' ? 'MEDIUM' : 'LOW',
               status: 'PENDING_REVIEW',
-              suggestedTags: [cat.toLowerCase().replace(/\s+/g, '-'), 'ai-generated', 'traceable'],
+              suggestedTags: [cat.toLowerCase().replace(/\s+/g, '-'), 'template-generated', 'traceable'],
               generatedAt: new Date().toISOString(),
             };
           });
@@ -451,57 +689,93 @@ export const TestCaseGeneratorPage: React.FC = () => {
               selectedCategories,
               documents,
               appSources,
-              model,
               depth,
               generatedCases: newGenerated,
               createdAt: new Date().toISOString(),
+              selectedSkillIds,
             });
           }
 
           addActivity({
             type: 'RUN_STARTED',
-            title: `AI Test Case Generation Completed (${newGenerated.length} Cases)`,
-            description: `Generated ${newGenerated.length} test cases across ${selectedCategories.length} categories from ${docLabels}.`,
+            title: `Test Case Generation Completed (${newGenerated.length} Cases)`,
+            description: `Locally assembled ${newGenerated.length} test cases across ${selectedCategories.length} categories from fixed category templates for ${docLabels}.`,
           });
         }, 1800);
       }, 1400);
     }, 1000);
   };
 
-  // Test Case Review Actions
+  // AUD-005 — once any real, persisted cases exist for this project, the
+  // Generated Test Cases branch displays and actions those, not the local
+  // draft. Approve/Reject on a real case calls the real backend lifecycle
+  // endpoint; on a still-local draft (before "Save to Project") it stays
+  // exactly the lightweight local triage it always was (FE-16, unchanged).
+  const hasPersisted = persistedCases.length > 0;
+  const displayedCases: GeneratedTestCase[] = hasPersisted ? persistedCases.map(testCaseRowToDisplay) : generatedCases;
+
   const handleApproveTestCase = (id: string) => {
-    setGeneratedCases((prev) =>
-      prev.map((tc) => (tc.id === id ? { ...tc, status: 'APPROVED' } : tc))
-    );
+    if (hasPersisted) {
+      void handleApproveReal(id);
+      return;
+    }
+    setGeneratedCases((prev) => prev.map((tc) => (tc.id === id ? { ...tc, status: 'APPROVED' } : tc)));
   };
 
   const handleRejectTestCase = (id: string) => {
-    setGeneratedCases((prev) =>
-      prev.map((tc) => (tc.id === id ? { ...tc, status: 'REJECTED' } : tc))
-    );
+    if (hasPersisted) {
+      void handleRejectReal(id);
+      return;
+    }
+    setGeneratedCases((prev) => prev.map((tc) => (tc.id === id ? { ...tc, status: 'REJECTED' } : tc)));
   };
 
   const handleApproveAll = () => {
+    if (hasPersisted) {
+      // Real approval requires each case to already be VALIDATED
+      // (FRD-EXE-11/FRD-AGT-04) — this runs the real validate-then-approve
+      // sequence for every still-GENERATED case, one real API call pair
+      // per case, never a fabricated bulk-approve that skips the gate.
+      void (async () => {
+        for (const row of persistedCases) {
+          if (row.status !== 'GENERATED') continue;
+          try {
+            await aiqaApi.testCases.validate(realProjectId!, row.id);
+            await aiqaApi.testCases.approve(realProjectId!, row.id);
+          } catch (err) {
+            setSaveErrorMessage(err instanceof ApiError ? err.message : `Failed to approve ${row.title}.`);
+          }
+        }
+        await refetchPersistedCases();
+      })();
+      return;
+    }
     setGeneratedCases((prev) =>
       prev.map((tc) => (tc.status === 'PENDING_REVIEW' ? { ...tc, status: 'APPROVED' } : tc))
     );
   };
 
-  const handleExportToExecution = () => {
-    const approved = generatedCases.filter((tc) => tc.status === 'APPROVED');
-    if (approved.length === 0) return;
-
-    triggerNewRun({
-      title: `Generated Suite: ${selectedCategories.join(', ')} (${approved.length} Cases)`,
-      environment: currentEnvironment,
-      executor: 'k8s-runner-pool-us',
-      concurrency: 8,
-    });
-    setActivePage('execution');
+  // FE-16: this used to call `AIQAContext.triggerNewRun`, which fabricated a
+  // complete local `ExecutionRun` (a random run id, hardcoded fake
+  // pass/running/queued counts, and two fake test names unrelated to the
+  // categories actually generated) — an object the real Execution Hub
+  // (which reads only `aiqaApi.executions.*`) never consumed. No real
+  // `GeneratedTestCase -> TaskDef` mapping exists (FE-15 GAP-02), so there is
+  // no real handoff to perform. This now does exactly what it truthfully
+  // can: navigate to the real Execution Hub, with no claim that the
+  // generated cases were transferred, exported, or turned into a real
+  // execution — see `GeneratedTestCasesView.tsx`'s "Open Execution Hub"
+  // button, which no longer implies dispatch/export.
+  const handleOpenExecutionHub = () => {
+    navigate('/execution');
   };
 
   return (
-    <div id="aiqa-test-case-generator-page" className="space-y-4 animate-in fade-in duration-200 text-slate-200">
+    <div
+      id="aiqa-test-case-generator-page"
+      key={realProjectId ?? 'no-real-project-selected'}
+      className="space-y-4 animate-in fade-in duration-200 text-slate-200"
+    >
       {/* 1. Page Header */}
       <header
         id="test-generator-header"
@@ -516,7 +790,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
               Test Case Generator
             </h1>
             <span className="px-2 py-0.5 rounded bg-cyan-950/60 border border-cyan-800/60 text-[10px] font-mono text-cyan-300 uppercase font-semibold">
-              GEMINI 2.0 FLASH REASONING
+              LOCAL TEMPLATE GENERATION
             </span>
           </div>
           <p className="text-xs text-slate-400 font-sans">
@@ -598,70 +872,105 @@ export const TestCaseGeneratorPage: React.FC = () => {
 
       {/* Main Content Body */}
       {activeBranch === 'SOURCES_AND_GENERATION' ? (
-        /* Branch 1: Source & Generation Workspace */
-        <div id="project-sources-workspace" className="space-y-6">
-          {/* Section Banner: Project Sources */}
-          <div className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 space-y-1">
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] font-mono text-cyan-400 uppercase font-bold bg-cyan-950/60 px-1.5 py-0.5 rounded border border-cyan-800/60">
-                SOURCE WORKSPACE
-              </span>
-              <h2 className="text-sm font-bold text-slate-100 font-sans">
-                Project Sources
-              </h2>
+        /* Branch 1: Source & Generation Workspace.
+           Skills & MCP Phase 1: a 70/30 grid (`lg:grid-cols-10`,
+           `col-span-7`/`col-span-3` — the same 12/10-column grid idiom
+           `GeneratedTestCasesView.tsx`'s own detail layout already uses,
+           not a new ratio system) puts the Skills & MCP panel beside this
+           existing input area on desktop, and stacks it below on
+           tablet/mobile via the default `grid-cols-1`. Nothing inside
+           either column below was redesigned — only re-parented. */
+        <div id="project-sources-workspace" className="grid grid-cols-1 lg:grid-cols-10 gap-4 items-start">
+          <div className="lg:col-span-7 space-y-6 min-w-0">
+            {/* Section Banner: Project Sources */}
+            <div className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-mono text-cyan-400 uppercase font-bold bg-cyan-950/60 px-1.5 py-0.5 rounded border border-cyan-800/60">
+                  SOURCE WORKSPACE
+                </span>
+                <h2 className="text-sm font-bold text-slate-100 font-sans">
+                  Project Sources
+                </h2>
+              </div>
+              <p className="text-xs text-slate-400 font-sans">
+                Upload product documentation and connect application sources before generating test cases.
+              </p>
             </div>
-            <p className="text-xs text-slate-400 font-sans">
-              Upload product documentation and connect application sources before generating test cases.
-            </p>
+
+            {/* 1. Document Upload Section (5 slots) */}
+            <div className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm">
+              <DocumentUploadSection
+                documents={documents}
+                onDocumentsChange={setDocuments}
+                disabled={isGeneratingNow}
+              />
+            </div>
+
+            {/* 2. Application Source Section (4 channels) */}
+            <div className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm">
+              <ApplicationSourceSection
+                appSources={appSources}
+                onAppSourcesChange={setAppSources}
+                disabled={isGeneratingNow}
+              />
+            </div>
+
+            {/* 3. Test Generation Configuration (14 Categories & CTA).
+                Note: the "Generate Test Cases" action stays embedded here
+                (not hoisted below both grid columns) — it shares this
+                section's own validation logic
+                (`GenerationConfigSection::handleGenerateClick`), and
+                duplicating that logic at the page level purely to relocate
+                one button was judged a worse trade than this one, disclosed,
+                minor deviation from the layout mock's literal button
+                placement. See the Phase 1 implementation report. */}
+            <div className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm">
+              <GenerationConfigSection
+                selectedCategories={selectedCategories}
+                onToggleCategory={handleToggleCategory}
+                onSelectAllCategories={handleSelectAllCategories}
+                onDeselectAllCategories={handleDeselectAllCategories}
+                requirementNotes={requirementNotes}
+                onRequirementNotesChange={setRequirementNotes}
+                depth={depth}
+                onDepthChange={setDepth}
+                generationState={generationState}
+                onTriggerGenerate={handleTriggerGenerate}
+                documents={documents}
+                appSources={appSources}
+              />
+            </div>
           </div>
 
-          {/* 1. Document Upload Section (5 slots) */}
-          <div className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm">
-            <DocumentUploadSection
-              documents={documents}
-              onDocumentsChange={setDocuments}
-              disabled={['VALIDATING', 'PROCESSING', 'GENERATING'].includes(generationState)}
-            />
-          </div>
-
-          {/* 2. Application Source Section (4 channels) */}
-          <div className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm">
-            <ApplicationSourceSection
-              appSources={appSources}
-              onAppSourcesChange={setAppSources}
-              disabled={['VALIDATING', 'PROCESSING', 'GENERATING'].includes(generationState)}
-            />
-          </div>
-
-          {/* 3. Test Generation Configuration (14 Categories & CTA) */}
-          <div className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm">
-            <GenerationConfigSection
-              selectedCategories={selectedCategories}
-              onToggleCategory={handleToggleCategory}
-              onSelectAllCategories={handleSelectAllCategories}
-              onDeselectAllCategories={handleDeselectAllCategories}
-              requirementNotes={requirementNotes}
-              onRequirementNotesChange={setRequirementNotes}
-              model={model}
-              onModelChange={setModel}
-              depth={depth}
-              onDepthChange={setDepth}
-              generationState={generationState}
-              onTriggerGenerate={handleTriggerGenerate}
-              documents={documents}
-              appSources={appSources}
+          <div className="lg:col-span-3 min-w-0">
+            <SkillsAndMcpPanel
+              skills={skills}
+              selectedSkillIds={selectedSkillIds}
+              onToggleSkill={toggleSkill}
+              onAddCustomSkill={addCustomSkill}
+              disabled={isGeneratingNow}
             />
           </div>
         </div>
       ) : (
         /* Branch 2: Generated Test Cases Workspace */
         <GeneratedTestCasesView
-          testCases={generatedCases}
+          testCases={displayedCases}
           onApproveTestCase={handleApproveTestCase}
           onRejectTestCase={handleRejectTestCase}
           onApproveAll={handleApproveAll}
-          onExportToExecution={handleExportToExecution}
+          onOpenExecutionHub={handleOpenExecutionHub}
           onNavigateToSources={() => setActiveBranch('SOURCES_AND_GENERATION')}
+          hasPersisted={hasPersisted}
+          canSave={!hasPersisted && generatedCases.length > 0}
+          saveState={saveState}
+          saveErrorMessage={saveErrorMessage}
+          onSaveToProject={handleSaveToProject}
+          casesLoading={casesLoading}
+          casesError={casesError?.message ?? null}
+          onValidateTestCase={handleValidateReal}
+          onHandoffTestCase={handleHandoffReal}
+          handoffError={handoffError}
         />
       )}
     </div>

@@ -11,6 +11,29 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, watch, RwLock, Semaphore};
 use uuid::Uuid;
 
+/// BE-14 (§14, Integration Plan §11.2) — one project's realtime event
+/// fan-out: a broadcast channel every run in that project publishes into
+/// (in addition to its own per-run channel), plus a sequence counter that
+/// is monotonic *across* that project's runs, not per-run — see
+/// `RunEvent::project_sequence`'s doc comment for why a shared counter is
+/// necessary (two concurrent runs' own per-run sequences both start at 0
+/// and would collide as a merge key on a multiplexed project stream).
+/// Owned by `AppState`, created lazily on first use
+/// (`AppState::project_stream`), and handed to each `RunRecord` at
+/// construction so `emit` can publish into it directly — no polling, no
+/// second event-creation path.
+pub struct ProjectStream {
+    pub tx: broadcast::Sender<RunEvent>,
+    seq: AtomicU64,
+}
+
+impl Default for ProjectStream {
+    fn default() -> Self {
+        let (tx, _rx) = broadcast::channel(1024);
+        Self { tx, seq: AtomicU64::new(0) }
+    }
+}
+
 /// All server-side state for one run (SRD §2 Orchestrator State Machine +
 /// SRD §6 event stream). `engine` holds the pure scheduler state from
 /// `scheduler.rs`; everything else here is I/O plumbing around it —
@@ -28,6 +51,14 @@ pub struct RunRecord {
     pub engine: RwLock<RunEngine>,
     pub events: RwLock<Vec<RunEvent>>,
     pub tx: broadcast::Sender<RunEvent>,
+    /// BE-14 (§14) — the project-scoped event bus this run's events also
+    /// fan out to, alongside `tx` above. Resolved once by the caller (from
+    /// `AppState::project_stream`, keyed by `project_id`) and handed in at
+    /// construction; `None` for a run with no project (nothing to fan out
+    /// to) or for records built without an owning `AppState` at all (most
+    /// of `engine_tests.rs`) — such a run simply never appears on any
+    /// project stream, which is the correct behavior, not a gap.
+    project_stream: Option<Arc<ProjectStream>>,
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub finished_at: RwLock<Option<chrono::DateTime<chrono::Utc>>>,
     pub policy_notes: RwLock<Option<String>>,
@@ -64,6 +95,7 @@ impl RunRecord {
         requested_by: Option<String>,
         initial_state: RunState,
         policy_notes: Option<String>,
+        project_stream: Option<Arc<ProjectStream>>,
     ) -> Arc<Self> {
         let (tx, _rx) = broadcast::channel(1024);
         let (cancel, _cancel_rx) = watch::channel(false);
@@ -77,6 +109,7 @@ impl RunRecord {
             engine: RwLock::new(RunEngine::new(plan)),
             events: RwLock::new(Vec::new()),
             tx,
+            project_stream,
             started_at: chrono::Utc::now(),
             finished_at: RwLock::new(None),
             policy_notes: RwLock::new(policy_notes),
@@ -152,11 +185,24 @@ impl RunRecord {
             event_type,
             status,
             summary,
+            project_id: self.project_id.clone(),
+            project_sequence: None,
         };
         self.events.write().await.push(ev.clone());
         // A send error just means no WebSocket subscribers are currently
         // connected; the event is already durably in `events` for replay.
         let _ = self.tx.send(ev.clone());
+        // BE-14 — same real event, additionally fanned out to this
+        // project's realtime stream with its own project-wide sequence
+        // number (never the run-local `sequence` above — see
+        // `RunEvent::project_sequence`). `ev` itself (persisted below) keeps
+        // `project_sequence: None`; only the published copy carries it,
+        // since it's meaningless outside a project-stream context.
+        if let Some(ps) = &self.project_stream {
+            let mut project_ev = ev.clone();
+            project_ev.project_sequence = Some(ps.seq.fetch_add(1, Ordering::SeqCst));
+            let _ = ps.tx.send(project_ev);
+        }
         if let Err(e) = store.insert_event(&ev).await {
             // B1 — a lost event leaves a permanent gap in a log SRD §5
             // requires to be complete and gap-free, so this is escalated
@@ -384,6 +430,10 @@ pub async fn recover_incomplete_runs(store: &Store) -> anyhow::Result<usize> {
             event_type: EventType::RunCompleted,
             status: None,
             summary: Some(format!("run recovered at startup: {reason}")),
+            // No live RunRecord/project stream exists at startup recovery
+            // time to resolve or publish to — see `RunEvent`'s doc comment.
+            project_id: None,
+            project_sequence: None,
         };
         store.insert_event(&ev).await?;
     }

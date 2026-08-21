@@ -1,3 +1,5 @@
+pub mod ai_generation;
+pub mod ai_router;
 pub mod api;
 pub mod auth;
 pub mod domain;
@@ -19,3 +21,5 @@ mod store_tests;
 mod engine_tests;
 #[cfg(test)]
 mod api_tests;
+#[cfg(test)]
+mod ws_tests;

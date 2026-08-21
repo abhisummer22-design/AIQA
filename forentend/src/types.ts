@@ -15,6 +15,8 @@ export type NavPage =
   | 'custom'
   | 'feature-map'
   | 'reports'
+  | 'audit'
+  | 'evidence'
   | 'settings';
 
 export type AIQAStatus =
@@ -59,35 +61,6 @@ export interface ProjectExecutionPoint {
   blocked: number;
 }
 
-export interface AIQAProject {
-  id: string;
-  name: string;
-  slug: string;
-  status: ProjectStatus;
-  environment: string;
-  lastActivity: string;
-  metrics: ProjectMetrics;
-  activeRun?: {
-    id: string;
-    title: string;
-    status: AIQAStatus;
-    startedAt: string;
-    durationEstimate: string;
-    testsExecuted: number;
-    totalTests: number;
-    progressPct: number;
-  };
-  timelineData: ProjectExecutionPoint[];
-}
-
-export interface BackendConnectionState {
-  status: 'connected' | 'disconnected' | 'connecting' | 'degraded';
-  endpoint: string;
-  daemonVersion?: string;
-  latencyMs?: number;
-  lastHeartbeat?: string;
-}
-
 export interface ActivityEvent {
   id: string;
   type:
@@ -108,48 +81,12 @@ export interface ActivityEvent {
   actor?: string;
 }
 
-export interface TestExecutionItem {
-  id: string;
-  runId: string;
-  name: string;
-  suite: string;
-  type: 'E2E' | 'API' | 'RBAC' | 'INTEGRATION' | 'UNIT' | 'CUSTOM';
-  status: AIQAStatus;
-  durationMs?: number;
-  failureClassification?: FailureClassification;
-  failureMessage?: string;
-  stackTrace?: string;
-  executor: string;
-  retries: number;
-  evidenceFiles?: Array<{ name: string; type: 'screenshot' | 'trace' | 'har' | 'log'; size: string }>;
-  logs?: string[];
-}
-
-export interface ExecutionRun {
-  id: string;
-  title: string;
-  environment: Environment;
-  status: AIQAStatus;
-  startedAt: string;
-  completedAt?: string;
-  executor: 'k8s-runner-pool-us' | 'docker-local-agent' | 'cloud-playwright-grid' | 'ephemeral-runner';
-  concurrency: number;
-  policyApprovalState: 'APPROVED' | 'AUTO_APPROVED' | 'PENDING_APPROVAL' | 'REJECTED';
-  totalTests: number;
-  counts: {
-    passed: number;
-    failed: number;
-    blocked: number;
-    skipped: number;
-    needsReview: number;
-    infraErrors: number;
-    running: number;
-    queued: number;
-  };
-  productFailuresCount: number;
-  infraFailuresCount: number;
-  tests: TestExecutionItem[];
-}
+// FE-16: `TestExecutionItem`/`ExecutionRun` (a fabricated local execution-run
+// model, fake IDs/counts/test names) removed here — their only producer was
+// `AIQAContext.triggerNewRun`, called only from the Test Generator's former
+// fake export path, and their only consumer was `AIQAContext`'s own `runs`
+// state, which nothing ever rendered. See
+// AIQA_PHASE4_FE16_TEST_GENERATOR_TRUTHFULNESS_FAKE_EXECUTION_HANDOFF_REMOVAL_IMPLEMENTATION_REPORT.md.
 
 // Test Case Generator Models
 export type GeneratorPipelineStep =
@@ -259,7 +196,15 @@ export interface GeneratedTestCase {
   expectedResult?: string;
   assertions: string[];
   riskFactor: 'LOW' | 'MEDIUM' | 'HIGH';
-  status: 'PENDING_REVIEW' | 'APPROVED' | 'REJECTED' | 'EXPORTED_TO_EXECUTION';
+  /** AUD-005 — 'PENDING_REVIEW'/'APPROVED'/'REJECTED' also describe an
+   *  unsaved, local-only draft's own lightweight pre-save triage state
+   *  (unchanged since FE-16). 'VALIDATED' and 'EXECUTED' only ever appear
+   *  once a case has been persisted for real — they mirror
+   *  `contract.ts::TestCaseStatus` exactly (`GENERATED` displays as
+   *  'PENDING_REVIEW' for this local vocabulary's own continuity).
+   *  'EXPORTED_TO_EXECUTION' is kept only for any remaining local-draft
+   *  code path; real persisted cases use 'EXECUTED' instead. */
+  status: 'PENDING_REVIEW' | 'VALIDATED' | 'APPROVED' | 'REJECTED' | 'EXPORTED_TO_EXECUTION' | 'EXECUTED';
   reviewNotes?: string;
   suggestedTags: string[];
   generatedAt?: string;
@@ -276,114 +221,19 @@ export interface GenerationSession {
   selectedCategories?: TestGenerationCategory[];
   documents?: UploadedRequirementDoc[];
   appSources?: Record<AppSourceType, AppSourceConnection>;
-  model: 'gemini-1.5-pro' | 'gemini-2.0-flash' | 'claude-3-5-sonnet';
+  // FE-16: `model` (a hardcoded fake provider id — 'gemini-2.0-flash' etc.)
+  // removed — selecting it never had any real generation effect. See the
+  // FE-16 report.
   depth: 'SMOKE' | 'STANDARD' | 'EXHAUSTIVE' | 'CHAOS_EXPLORATORY';
+  /** Skills & MCP Phase 1 — real, session-only selected skill ids (see
+   *  `hooks/useSkillSelection.ts`), carried across a branch switch the same
+   *  way every other generation-config field on this session already is.
+   *  Not sent to any backend; this local template pipeline does not yet
+   *  use these to vary generated content (see `TestCaseGeneratorPage.tsx`'s
+   *  own doc comment on `handleTriggerGenerate`). */
+  selectedSkillIds?: string[];
   generatedCases: GeneratedTestCase[];
   createdAt: string;
-}
-
-// RBAC Testing Models
-export interface RBACMatrixRule {
-  id: string;
-  role: string;
-  resource: string;
-  action: 'READ' | 'WRITE' | 'DELETE' | 'EXECUTE' | 'ADMIN' | 'IMPERSONATE';
-  expectedAccess: 'ALLOW' | 'DENY' | 'CONDITIONAL';
-  actualAccess?: 'ALLOW' | 'DENY' | 'CONDITIONAL' | 'ERROR';
-  conditionCriteria?: string;
-  status?: AIQAStatus;
-  evidenceNote?: string;
-  evaluatedAt?: string;
-}
-
-export interface RBACScenario {
-  id: string;
-  name: string;
-  description: string;
-  targetEnvironment: Environment;
-  rolesUnderAudit: string[];
-  rules: RBACMatrixRule[];
-}
-
-// API Testing Models
-export type APIAdapterType = 'REST_HTTP' | 'GRAPHQL' | 'GRPC' | 'WEBSOCKET';
-
-export interface APIAssertion {
-  id: string;
-  property: 'STATUS_CODE' | 'RESPONSE_TIME' | 'JSON_SCHEMA' | 'HEADER_VALUE' | 'BODY_JSON_PATH';
-  operator: 'EQUALS' | 'NOT_EQUALS' | 'CONTAINS' | 'MATCHES_REGEX' | 'LESS_THAN' | 'EXISTS';
-  targetValue: string;
-  passed?: boolean;
-  actualValue?: string;
-  errorMessage?: string;
-}
-
-export interface APIEndpointTest {
-  id: string;
-  name: string;
-  adapter: APIAdapterType;
-  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
-  endpointUrl: string;
-  headers: Record<string, string>;
-  queryParams: Record<string, string>;
-  authType: 'NONE' | 'BEARER_TOKEN' | 'API_KEY' | 'OAUTH2' | 'BASIC_AUTH';
-  authConfig?: Record<string, string>;
-  bodyType: 'NONE' | 'JSON' | 'FORM_DATA' | 'RAW';
-  bodyPayload?: string;
-  assertions: APIAssertion[];
-  lastExecution?: {
-    timestamp: string;
-    status: AIQAStatus;
-    statusCode?: number;
-    responseTimeMs?: number;
-    responseHeaders?: Record<string, string>;
-    responseBody?: string;
-    failureClassification?: FailureClassification;
-  };
-}
-
-// Custom Testing Models
-export interface CustomTestSuite {
-  id: string;
-  name: string;
-  category: 'VISUAL_REGRESSION' | 'LOAD_AND_STRESS' | 'CHAOS_RESILIENCE' | 'SYNTHETIC_E2E';
-  description: string;
-  configuration: Record<string, unknown>;
-  targetUrl: string;
-  concurrencyLevel: number;
-  timeoutSeconds: number;
-  status: AIQAStatus;
-  lastRunTime?: string;
-}
-
-// Reports & Quality Intelligence Models
-export interface QualityIntelligence {
-  riskScore: number; // 0 - 100
-  riskLevel: 'LOW' | 'MODERATE' | 'HIGH' | 'CRITICAL';
-  changeImpact: {
-    impactedModules: string[];
-    riskVector: string;
-    recommendedRegressionDepth: string;
-  };
-  flakinessIndex: number; // %
-  testValueScore: number; // 0 - 100
-  failureBreakdown: {
-    productDefects: number;
-    infraErrors: number;
-    needsReviewCount: number;
-  };
-  qualityGraphNodes: Array<{ id: string; name: string; health: number; type: 'SERVICE' | 'UI' | 'DATABASE' | 'GATEWAY' }>;
-}
-
-export interface DefectDraft {
-  id: string;
-  title: string;
-  severity: 'CRITICAL' | 'MAJOR' | 'MINOR';
-  classification: FailureClassification;
-  relatedTestId: string;
-  reproductionSteps: string[];
-  suggestedFixContext: string;
-  jiraExportStatus: 'DRAFT' | 'EXPORTED';
 }
 
 // System Settings Models
@@ -433,109 +283,3 @@ export interface SystemSettings {
   };
 }
 
-// Orchestrator Domain Models
-export interface OrchestratorPlan {
-  id: string;
-  name: string;
-  scope: string;
-  riskScore: number;
-  changeDeltaImpact: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
-  testValueScore: number;
-  status: AIQAStatus;
-  specializedAgents: Array<{
-    capability: 'SECURITY_AUDIT' | 'API_CONTRACT' | 'LOAD_CHAOS' | 'MOBILE_DEVICE' | 'RBAC_MATRIX' | 'E2E_SYNTHETIC';
-    status: 'ACTIVE' | 'IDLE' | 'COMPLETED' | 'STANDBY';
-    assignedWorkers: number;
-    testsHandled: number;
-  }>;
-  dagNodes: Array<{
-    id: string;
-    label: string;
-    type: 'STAGE' | 'SUITE' | 'GATE';
-    status: AIQAStatus;
-    dependencies: string[];
-    durationEst: string;
-  }>;
-  createdAt: string;
-}
-
-// Test Case Validator Domain Models
-export interface ValidationRuleCheck {
-  id: string;
-  testCaseId: string;
-  testCaseTitle: string;
-  traceabilitySource: 'PRD-PAY-001' | 'FRD-AUTH-09' | 'FIGMA-FRAME-402' | 'SRD-API-SPEC';
-  traceabilityStatus: 'LINKED' | 'ORPHAN' | 'PARTIAL';
-  qualityScore: number; // 0 - 100
-  duplicateSimilarityPct: number; // 0 - 100
-  duplicateWithId?: string;
-  riskCoverage: 'CRITICAL_PATH' | 'EDGE_CASE' | 'SECURITY_BOUNDARY' | 'SUPERFLUOUS';
-  approvalState: 'APPROVED' | 'REQUIRES_REMEDIATION' | 'AUTO_BLOCKED';
-  remediationSuggestions?: string[];
-}
-
-// Mobile Testing Domain Models
-export interface MobileDeviceTarget {
-  id: string;
-  name: string;
-  platform: 'ANDROID' | 'IOS';
-  osVersion: string;
-  manufacturer: 'Samsung' | 'Google' | 'Apple' | 'OnePlus' | 'Motorola';
-  screenDensity: string;
-  status: 'AVAILABLE' | 'LOCKED_RESERVED' | 'EXECUTING' | 'OFFLINE';
-  batteryLevel: number;
-  thermalStatus: 'NOMINAL' | 'WARM' | 'THROTTLED';
-  lockedBy?: string;
-}
-
-export interface MobileTestExecution {
-  id: string;
-  title: string;
-  deviceId: string;
-  coverageType:
-    | 'DEEP_LINKING'
-    | 'OFFLINE_CACHE_SYNC'
-    | 'BIOMETRIC_TOKEN_AUTH'
-    | 'PUSH_NOTIFICATION_PIPELINE'
-    | 'BACKGROUND_WORKER_RESILIENCE'
-    | 'NETWORK_THROTTLING_DEGRADATION'
-    | 'MEMORY_LEAK_PROFILE';
-  status: AIQAStatus;
-  durationMs: number;
-  deviceMetrics: {
-    cpuPeakPct: number;
-    ramUsedMb: number;
-    networkPackets: number;
-    batteryDrainPct: number;
-  };
-  logSummary: string;
-}
-
-// Feature Map & Flow Domain Models
-export interface FeatureMapNode {
-  id: string;
-  name: string;
-  module: 'AUTH' | 'PAYMENTS' | 'LEDGER' | 'NOTIFICATIONS' | 'WORKFLOWS' | 'GATEWAY';
-  type: 'FRONTEND_VIEW' | 'API_GATEWAY' | 'MICROSERVICE' | 'SQL_DATABASE' | 'ASYNC_QUEUE';
-  healthScore: number;
-  testCoveragePct: number;
-  dependencies: string[];
-  activeAlertsCount: number;
-}
-
-export interface SystemCallFlow {
-  id: string;
-  title: string;
-  entryTrigger: string;
-  steps: Array<{
-    stepNumber: number;
-    sourceNode: string;
-    targetNode: string;
-    protocol: 'REST_HTTP' | 'GRPC' | 'EVENT_BUS' | 'DB_QUERY' | 'WS';
-    actionName: string;
-    latencyMs: number;
-    status: 'HEALTHY' | 'DEGRADED' | 'ERROR';
-  }>;
-  totalLatencyMs: number;
-  lastTracedAt: string;
-}

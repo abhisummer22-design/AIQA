@@ -37,3 +37,13 @@ tempfile = "3"
 # added here only so this crate may `use` it directly).
 tower = { version = "0.4", features = ["util"] }
 http-body-util = "0.1"
+# BE-14: the realtime stream is a real WebSocket upgrade, not a plain HTTP
+# request/response — `tower::ServiceExt::oneshot` (above) can't drive one.
+# These tests instead bind the real router to a real TCP listener and
+# connect with an actual WS client, so a subscription test exercises the
+# same upgrade/auth/multiplex path a browser would, not an internal
+# broadcaster called directly. Both crates are already transitive
+# dependencies of `axum`'s `ws` feature (see Cargo.lock) — nothing new is
+# pulled into the dependency tree, they're only exposed for direct use here.
+tokio-tungstenite = "0.24"
+futures-util = "0.3"

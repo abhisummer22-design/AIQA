@@ -1,65 +1,38 @@
 /**
  * AIQA Sidebar Navigation Component
  * Contains strictly the 8 primary navigation items with expanded/collapsed modes
+ *
+ * FE-4: the nav item list is no longer hardcoded here — it's read from
+ * `routes/routeConfig.tsx`, the single source every navigation surface
+ * shares. Active state and click-navigation are driven by the real URL
+ * (`useLocation`/`useNavigate`), not the old in-memory `activePage`.
+ *
+ * FE-11: removed two fabricated elements — the workspace-identity block
+ * used to show `AIQAContext`'s fake `settings.general.organizationName`/
+ * `.projectKey` ("Acme Enterprise Engineering" / "AIQA-CORE") regardless of
+ * which real project was selected; it now shows the real
+ * `useProject().selectedProject`. The bottom "k8s-runner-pool-us, 12/16
+ * slots, 75%" box was 100% hardcoded, tied to no state at all — removed
+ * rather than wired to a fake number, since no real runner-pool/capacity
+ * concept exists in the backend. The Execution Hub nav item's "LIVE" badge
+ * no longer pulses off `AIQAContext`'s fake seeded `runs` array (a fake
+ * RUNNING run that never actually completes) — it is now a plain static
+ * label, consistent with the other nav items' static badges ("AI", "PLAN",
+ * "GATE").
  */
 
 import React from 'react';
-import {
-  LayoutDashboard,
-  Sparkles,
-  Workflow,
-  CheckCheck,
-  PlayCircle,
-  ShieldCheck,
-  Network,
-  Smartphone,
-  Sliders,
-  Layers,
-  FileText,
-  Settings,
-  ChevronLeft,
-  ChevronRight,
-  Activity,
-  Cpu,
-} from 'lucide-react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useAIQA } from '../../context/AIQAContext';
-import { NavPage } from '../../types';
-
-interface NavItemDef {
-  id: NavPage;
-  label: string;
-  icon: React.ComponentType<{ className?: string }>;
-  badge?: string;
-  badgeType?: 'info' | 'warning' | 'live';
-}
-
-const navItems: NavItemDef[] = [
-  { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { id: 'generator', label: 'Test Case Generator', icon: Sparkles, badge: 'AI' },
-  { id: 'orchestrator', label: 'AIQA Orchestrator', icon: Workflow, badge: 'PLAN' },
-  { id: 'validator', label: 'Test Case Validator', icon: CheckCheck, badge: 'GATE' },
-  { id: 'execution', label: 'Test Execution Hub', icon: PlayCircle, badge: 'LIVE', badgeType: 'live' },
-  { id: 'rbac', label: 'RBAC Testing', icon: ShieldCheck },
-  { id: 'api-testing', label: 'API Testing', icon: Network },
-  { id: 'mobile-testing', label: 'Mobile Testing', icon: Smartphone },
-  { id: 'custom', label: 'Custom Testing', icon: Sliders },
-  { id: 'feature-map', label: 'Feature Map / Flow', icon: Layers },
-  { id: 'reports', label: 'Reports', icon: FileText },
-  { id: 'settings', label: 'Settings / AI Model', icon: Settings },
-];
+import { useProject } from '../../context/ProjectContext';
+import { routeDefs } from '../../routes/routeConfig';
 
 export const Sidebar: React.FC = () => {
-  const {
-    activePage,
-    setActivePage,
-    isSidebarCollapsed,
-    toggleSidebar,
-    runs,
-    settings,
-  } = useAIQA();
-
-  // Find running count for live indicator
-  const runningCount = runs.filter((r) => r.status === 'RUNNING').length;
+  const { isSidebarCollapsed, toggleSidebar } = useAIQA();
+  const { selectedProject } = useProject();
+  const navigate = useNavigate();
+  const location = useLocation();
 
   return (
     <aside
@@ -77,10 +50,10 @@ export const Sidebar: React.FC = () => {
             </div>
             <div className="truncate">
               <div className="text-xs font-semibold text-slate-200 truncate">
-                {settings.general.organizationName}
+                {selectedProject ? selectedProject.name : 'AIQA'}
               </div>
               <div className="text-[10px] font-mono text-slate-500 truncate">
-                Project: {settings.general.projectKey}
+                {selectedProject ? `Project: ${selectedProject.id.slice(0, 8)}` : 'No active project'}
               </div>
             </div>
           </div>
@@ -112,15 +85,15 @@ export const Sidebar: React.FC = () => {
             Navigation Plane
           </div>
         )}
-        {navItems.map((item) => {
+        {routeDefs.map((item) => {
           const Icon = item.icon;
-          const isActive = activePage === item.id;
+          const isActive = location.pathname === item.path;
 
           return (
             <button
               key={item.id}
               id={`nav-item-${item.id}`}
-              onClick={() => setActivePage(item.id)}
+              onClick={() => navigate(item.path)}
               className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-xs font-medium transition-all group relative cursor-pointer ${
                 isActive
                   ? 'bg-indigo-600 text-white font-semibold shadow-sm shadow-indigo-950/60'
@@ -152,8 +125,6 @@ export const Sidebar: React.FC = () => {
                   className={`text-[10px] font-mono px-1.5 py-0.2 rounded font-semibold uppercase tracking-wider shrink-0 ${
                     isActive
                       ? 'bg-indigo-700/80 text-white'
-                      : item.badgeType === 'live' && runningCount > 0
-                      ? 'bg-indigo-950 text-indigo-300 border border-indigo-800 animate-pulse'
                       : 'bg-slate-800 text-slate-400 border border-slate-700'
                   }`}
                 >
@@ -165,33 +136,6 @@ export const Sidebar: React.FC = () => {
         })}
       </nav>
 
-      {/* Runner Pool / Telemetry Bottom Box */}
-      <div className="p-2.5 border-t border-slate-800/80 bg-[#020617]">
-        {!isSidebarCollapsed ? (
-          <div className="p-2 rounded-md bg-[#0B1120] border border-slate-800 space-y-1.5">
-            <div className="flex items-center justify-between text-[11px]">
-              <div className="flex items-center gap-1.5 text-slate-300 font-medium">
-                <Cpu className="w-3.5 h-3.5 text-indigo-400" />
-                <span>k8s-runner-pool-us</span>
-              </div>
-              <span className="text-[10px] font-mono text-emerald-400">12 / 16 slots</span>
-            </div>
-            <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
-              <div
-                className="bg-gradient-to-r from-indigo-500 to-cyan-400 h-1.5 rounded-full"
-                style={{ width: '75%' }}
-              />
-            </div>
-          </div>
-        ) : (
-          <div
-            className="flex justify-center p-1.5 text-indigo-400 cursor-pointer"
-            title="Cluster Capacity: 12/16 active runners"
-          >
-            <Activity className="w-4 h-4" />
-          </div>
-        )}
-      </div>
     </aside>
   );
 };

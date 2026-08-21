@@ -1,39 +1,21 @@
 /**
  * Global Command Palette (Cmd+K)
  * Fast navigation across the 8 AIQA workspaces and quick control plane operations
+ *
+ * FE-4: the "Workspaces" list below is generated from `routeConfig.tsx`
+ * (the same source Sidebar/AppRoutes use) instead of a second hardcoded
+ * path list, and navigation goes through the real router (`useNavigate`).
  */
 
 import React, { useState, useEffect } from 'react';
-import {
-  Search,
-  LayoutDashboard,
-  Sparkles,
-  Workflow,
-  CheckCheck,
-  PlayCircle,
-  ShieldCheck,
-  Network,
-  Smartphone,
-  Sliders,
-  Layers,
-  FileText,
-  Settings,
-  Plus,
-  X,
-  ArrowRight,
-  Terminal,
-} from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Search, Plus, X, ArrowRight, Layers } from 'lucide-react';
 import { useAIQA } from '../../context/AIQAContext';
-import { NavPage, Environment } from '../../types';
+import { routeDefs } from '../../routes/routeConfig';
 
 export const CommandPalette: React.FC = () => {
-  const {
-    isCommandPaletteOpen,
-    setCommandPaletteOpen,
-    setActivePage,
-    setCurrentEnvironment,
-    setNewRunModalOpen,
-  } = useAIQA();
+  const { isCommandPaletteOpen, setCommandPaletteOpen, setCurrentEnvironment } = useAIQA();
+  const navigate = useNavigate();
 
   const [search, setSearch] = useState('');
 
@@ -48,20 +30,12 @@ export const CommandPalette: React.FC = () => {
   const actions = [
     {
       category: 'Workspaces',
-      items: [
-        { id: 'dashboard', label: 'Go to Dashboard', icon: LayoutDashboard, action: () => setActivePage('dashboard') },
-        { id: 'generator', label: 'Go to Test Case Generator', icon: Sparkles, action: () => setActivePage('generator') },
-        { id: 'orchestrator', label: 'Go to AIQA Orchestrator', icon: Workflow, action: () => setActivePage('orchestrator') },
-        { id: 'validator', label: 'Go to Test Case Validator', icon: CheckCheck, action: () => setActivePage('validator') },
-        { id: 'execution', label: 'Go to Test Execution Hub', icon: PlayCircle, action: () => setActivePage('execution') },
-        { id: 'rbac', label: 'Go to RBAC Testing Matrix', icon: ShieldCheck, action: () => setActivePage('rbac') },
-        { id: 'api-testing', label: 'Go to API Testing Console', icon: Network, action: () => setActivePage('api-testing') },
-        { id: 'mobile-testing', label: 'Go to Mobile Testing Hub', icon: Smartphone, action: () => setActivePage('mobile-testing') },
-        { id: 'custom', label: 'Go to Custom Testing Suites', icon: Sliders, action: () => setActivePage('custom') },
-        { id: 'feature-map', label: 'Go to Feature Map / Flow', icon: Layers, action: () => setActivePage('feature-map') },
-        { id: 'reports', label: 'Go to Quality & Defect Reports', icon: FileText, action: () => setActivePage('reports') },
-        { id: 'settings', label: 'Go to Settings & AI Model', icon: Settings, action: () => setActivePage('settings') },
-      ],
+      items: routeDefs.map((r) => ({
+        id: r.id,
+        label: `Go to ${r.label}`,
+        icon: r.icon,
+        action: () => navigate(r.path),
+      })),
     },
     {
       category: 'Quick Actions',
@@ -71,7 +45,7 @@ export const CommandPalette: React.FC = () => {
           label: 'Launch New Execution Run...',
           icon: Plus,
           action: () => {
-            setNewRunModalOpen(true);
+            navigate('/execution');
             setCommandPaletteOpen(false);
           },
         },

@@ -16,6 +16,8 @@ import {
   Cpu,
   Bookmark,
   Shield,
+  ShieldCheck,
+  RefreshCw,
   FileCode2,
   Camera,
   Activity,
@@ -39,8 +41,24 @@ interface GeneratedTestCasesViewProps {
   onApproveTestCase: (id: string) => void;
   onRejectTestCase: (id: string) => void;
   onApproveAll: () => void;
-  onExportToExecution: () => void;
+  /** FE-16: was `onExportToExecution` — renamed because there is no real
+   *  export/dispatch: this only navigates to the real Execution Hub. See
+   *  the FE-16 report §10. */
+  onOpenExecutionHub: () => void;
   onNavigateToSources: () => void;
+  /** AUD-005 — real, persisted-backend fields below. `hasPersisted`: true
+   *  once at least one real test case exists for this project (`testCases`
+   *  above is then the real, backend-sourced list, not a local draft). */
+  hasPersisted?: boolean;
+  canSave?: boolean;
+  saveState?: 'IDLE' | 'SAVING' | 'ERROR';
+  saveErrorMessage?: string | null;
+  onSaveToProject?: () => void;
+  casesLoading?: boolean;
+  casesError?: string | null;
+  onValidateTestCase?: (id: string) => void;
+  onHandoffTestCase?: (id: string, outcome: 'pass' | 'fail' | 'timeout' | 'infra_error') => void;
+  handoffError?: string | null;
 }
 
 export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
@@ -48,9 +66,20 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
   onApproveTestCase,
   onRejectTestCase,
   onApproveAll,
-  onExportToExecution,
+  onOpenExecutionHub,
   onNavigateToSources,
+  hasPersisted = false,
+  canSave = false,
+  saveState = 'IDLE',
+  saveErrorMessage = null,
+  onSaveToProject,
+  casesLoading = false,
+  casesError = null,
+  onValidateTestCase,
+  onHandoffTestCase,
+  handoffError = null,
 }) => {
+  const [handoffOutcome, setHandoffOutcome] = useState<'pass' | 'fail' | 'timeout' | 'infra_error'>('pass');
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
   const [selectedTestCaseId, setSelectedTestCaseId] = useState<string | null>(
     testCases.length > 0 ? testCases[0].id : null
@@ -193,6 +222,20 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
             <span>Dispatched to Runner</span>
           </span>
         );
+      case 'EXECUTED':
+        return (
+          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-mono font-bold bg-indigo-950/90 border border-indigo-600 text-indigo-300 shadow-sm">
+            <Play className="w-3.5 h-3.5 text-indigo-400 fill-current" />
+            <span>Executed</span>
+          </span>
+        );
+      case 'VALIDATED':
+        return (
+          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-mono font-bold bg-cyan-950/90 border border-cyan-600 text-cyan-300 shadow-sm">
+            <CheckSquare className="w-3.5 h-3.5 text-cyan-400" />
+            <span>Validated</span>
+          </span>
+        );
       case 'PENDING_REVIEW':
       default:
         return (
@@ -203,6 +246,26 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
         );
     }
   };
+
+  // AUD-005 — real backend fetch states, checked before the empty-draft
+  // state below (a real, in-flight/erroring fetch is a different state
+  // than "nothing has ever been generated").
+  if (casesLoading) {
+    return (
+      <div id="generated-test-cases-loading" className="p-12 rounded-lg bg-[#0B1120] border border-slate-800 text-center flex flex-col items-center justify-center space-y-3 min-h-[440px]">
+        <RefreshCw className="w-8 h-8 text-indigo-400 animate-spin" />
+        <p className="text-xs font-mono text-slate-400">Loading saved test cases…</p>
+      </div>
+    );
+  }
+  if (casesError) {
+    return (
+      <div id="generated-test-cases-error" className="p-12 rounded-lg bg-[#0B1120] border border-rose-800/60 text-center flex flex-col items-center justify-center space-y-3 min-h-[440px]">
+        <XCircle className="w-8 h-8 text-rose-400" />
+        <p className="text-xs font-mono text-rose-300 max-w-md">{casesError}</p>
+      </div>
+    );
+  }
 
   // If no test cases exist yet
   if (testCases.length === 0) {
@@ -248,7 +311,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                 Generated Test Suite ({testCases.length} Cases)
               </h2>
               <p className="text-[11px] text-slate-400 font-sans">
-                Review requirements, verify execution steps, and dispatch approved cases to the test runner.
+                Review requirements, verify execution steps, and locally approve or reject each generated case.
               </p>
             </div>
           </div>
@@ -270,6 +333,19 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
 
         {/* Global Suite Actions */}
         <div className="flex items-center gap-2.5 flex-wrap">
+          {canSave && (
+            <button
+              type="button"
+              id="btn-save-to-project"
+              onClick={onSaveToProject}
+              disabled={saveState === 'SAVING'}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-md bg-cyan-600 hover:bg-cyan-500 disabled:opacity-60 disabled:cursor-not-allowed text-white font-mono text-xs font-bold cursor-pointer transition-colors shadow-sm"
+            >
+              {saveState === 'SAVING' ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <CheckSquare className="w-3.5 h-3.5" />}
+              <span>{saveState === 'SAVING' ? 'Saving…' : 'Save to Project'}</span>
+            </button>
+          )}
+
           {pendingCount > 0 && (
             <button
               type="button"
@@ -277,21 +353,37 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
               className="flex items-center gap-1.5 px-3.5 py-2 rounded-md bg-[#020617] hover:bg-slate-900 border border-emerald-600/80 text-emerald-300 font-mono text-xs font-semibold cursor-pointer transition-colors shadow-sm"
             >
               <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-              <span>Approve All Pending ({pendingCount})</span>
+              <span>{hasPersisted ? `Validate + Approve All Pending (${pendingCount})` : `Approve All Pending (${pendingCount})`}</span>
             </button>
           )}
 
           <button
             type="button"
-            onClick={onExportToExecution}
-            disabled={approvedCount === 0}
-            className="flex items-center gap-2 px-4 py-2 rounded-md bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 text-white disabled:text-slate-500 font-mono text-xs font-bold cursor-pointer transition-all shadow-md disabled:cursor-not-allowed"
+            id="btn-open-execution-hub"
+            onClick={onOpenExecutionHub}
+            title="Opens the real Execution Hub."
+            className="flex items-center gap-2 px-4 py-2 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white font-mono text-xs font-bold cursor-pointer transition-all shadow-md"
           >
             <Play className="w-3.5 h-3.5 fill-current" />
-            <span>Dispatch {approvedCount} to Execution</span>
+            <span>Open Execution Hub</span>
           </button>
         </div>
       </div>
+
+      {saveErrorMessage && (
+        <p id="save-error-message" className="px-3 py-2 rounded bg-rose-950/60 border border-rose-800 text-[11px] font-mono text-rose-300">
+          {saveErrorMessage}
+        </p>
+      )}
+
+      {/* AUD-005: once real, persisted cases exist, this page is showing
+          and actioning them for real — the FE-16 local-only disclosure
+          only applies to a still-unsaved draft. */}
+      <p className="px-1 text-[11px] font-mono text-slate-500">
+        {hasPersisted
+          ? 'These test cases are saved to the project. Validate and approve a case, then hand it off to the real Execution Hub below.'
+          : 'Generated cases stay local to this page — opening the Execution Hub does not send them to the backend or create a run.'}
+      </p>
 
       {/* 2. Horizontal Category Filter Navigation Bar */}
       <div className="p-3 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm space-y-2">
@@ -832,31 +924,110 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
               {/* 8. APPROVAL ACTIONS: Sticky Review Footer (Full Width 12 cols) */}
               {/* ======================================================== */}
               <div id="test-case-approval-actions" className="xl:col-span-12 pt-4 border-t border-slate-800 flex items-center justify-between gap-3 flex-wrap">
-                <div className="text-xs font-mono text-slate-400">
-                  Current Review Status:{' '}
-                  <strong className="text-slate-200">{activeTestCase.status}</strong>
+                <div className="text-xs font-mono text-slate-400 flex items-center gap-1.5">
+                  <span>Current Review Status:</span>
+                  {getStatusBadge(activeTestCase.status)}
                 </div>
 
-                <div className="flex items-center gap-2.5">
-                  <button
-                    type="button"
-                    onClick={() => onRejectTestCase(activeTestCase.id)}
-                    className="flex items-center gap-1.5 px-4 py-2 rounded-md bg-rose-950/60 hover:bg-rose-900/80 border border-rose-700 text-rose-300 font-mono text-xs font-bold cursor-pointer transition-colors shadow-sm"
-                  >
-                    <X className="w-4 h-4" />
-                    <span>Reject</span>
-                  </button>
+                <div className="flex items-center gap-2.5 flex-wrap">
+                  {!hasPersisted ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => onRejectTestCase(activeTestCase.id)}
+                        className="flex items-center gap-1.5 px-4 py-2 rounded-md bg-rose-950/60 hover:bg-rose-900/80 border border-rose-700 text-rose-300 font-mono text-xs font-bold cursor-pointer transition-colors shadow-sm"
+                      >
+                        <X className="w-4 h-4" />
+                        <span>Reject</span>
+                      </button>
 
-                  <button
-                    type="button"
-                    onClick={() => onApproveTestCase(activeTestCase.id)}
-                    className="flex items-center gap-1.5 px-5 py-2 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white font-mono text-xs font-bold cursor-pointer transition-colors shadow-md"
-                  >
-                    <Check className="w-4 h-4" />
-                    <span>Approve Test Case</span>
-                  </button>
+                      <button
+                        type="button"
+                        onClick={() => onApproveTestCase(activeTestCase.id)}
+                        className="flex items-center gap-1.5 px-5 py-2 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white font-mono text-xs font-bold cursor-pointer transition-colors shadow-md"
+                      >
+                        <Check className="w-4 h-4" />
+                        <span>Approve Test Case</span>
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      {(activeTestCase.status === 'PENDING_REVIEW' || activeTestCase.status === 'VALIDATED') && (
+                        <button
+                          type="button"
+                          onClick={() => onRejectTestCase(activeTestCase.id)}
+                          className="flex items-center gap-1.5 px-4 py-2 rounded-md bg-rose-950/60 hover:bg-rose-900/80 border border-rose-700 text-rose-300 font-mono text-xs font-bold cursor-pointer transition-colors shadow-sm"
+                        >
+                          <X className="w-4 h-4" />
+                          <span>Reject</span>
+                        </button>
+                      )}
+
+                      {activeTestCase.status === 'PENDING_REVIEW' && (
+                        <button
+                          type="button"
+                          id="btn-validate-test-case"
+                          onClick={() => onValidateTestCase?.(activeTestCase.id)}
+                          className="flex items-center gap-1.5 px-5 py-2 rounded-md bg-cyan-600 hover:bg-cyan-500 text-white font-mono text-xs font-bold cursor-pointer transition-colors shadow-md"
+                        >
+                          <ShieldCheck className="w-4 h-4" />
+                          <span>Validate Test Case</span>
+                        </button>
+                      )}
+
+                      {activeTestCase.status === 'VALIDATED' && (
+                        <button
+                          type="button"
+                          onClick={() => onApproveTestCase(activeTestCase.id)}
+                          className="flex items-center gap-1.5 px-5 py-2 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white font-mono text-xs font-bold cursor-pointer transition-colors shadow-md"
+                        >
+                          <Check className="w-4 h-4" />
+                          <span>Approve Test Case</span>
+                        </button>
+                      )}
+
+                      {activeTestCase.status === 'APPROVED' && (
+                        <div className="flex items-center gap-2">
+                          <label className="text-[10px] font-mono text-slate-400" htmlFor="handoff-outcome-select">
+                            Simulated outcome
+                          </label>
+                          <select
+                            id="handoff-outcome-select"
+                            value={handoffOutcome}
+                            onChange={(e) => setHandoffOutcome(e.target.value as typeof handoffOutcome)}
+                            className="px-2 py-1.5 rounded bg-[#020617] border border-slate-700 text-xs font-mono text-slate-200 cursor-pointer"
+                          >
+                            <option value="pass">pass</option>
+                            <option value="fail">fail</option>
+                            <option value="timeout">timeout</option>
+                            <option value="infra_error">infra_error</option>
+                          </select>
+                          <button
+                            type="button"
+                            id="btn-handoff-test-case"
+                            onClick={() => onHandoffTestCase?.(activeTestCase.id, handoffOutcome)}
+                            title="No real automation script exists yet for a generated case — this dispatches through the real Execution Hub with the simulated outcome selected above."
+                            className="flex items-center gap-1.5 px-5 py-2 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white font-mono text-xs font-bold cursor-pointer transition-colors shadow-md"
+                          >
+                            <Play className="w-4 h-4 fill-current" />
+                            <span>Hand Off to Execution</span>
+                          </button>
+                        </div>
+                      )}
+                    </>
+                  )}
                 </div>
               </div>
+
+              {hasPersisted && (activeTestCase.status === 'APPROVED' || activeTestCase.status === 'EXECUTED') && (
+                <p className="xl:col-span-12 text-[11px] font-mono text-slate-500 -mt-2">
+                  No real automation script exists for a generated case yet — its execution outcome is an explicit, disclosed simulated result, not a genuine verification of the steps above.
+                </p>
+              )}
+
+              {handoffError && (
+                <p className="xl:col-span-12 text-[11px] font-mono text-rose-300 -mt-2">{handoffError}</p>
+              )}
 
             </div>
           ) : (

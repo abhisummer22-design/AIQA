@@ -39,8 +39,6 @@ interface GenerationConfigSectionProps {
   onDeselectAllCategories: () => void;
   requirementNotes: string;
   onRequirementNotesChange: (val: string) => void;
-  model: 'gemini-2.0-flash' | 'gemini-1.5-pro' | 'claude-3-5-sonnet';
-  onModelChange: (model: 'gemini-2.0-flash' | 'gemini-1.5-pro' | 'claude-3-5-sonnet') => void;
   depth: 'SMOKE' | 'STANDARD' | 'EXHAUSTIVE' | 'CHAOS_EXPLORATORY';
   onDepthChange: (depth: 'SMOKE' | 'STANDARD' | 'EXHAUSTIVE' | 'CHAOS_EXPLORATORY') => void;
   generationState: GenerationExecutionState;
@@ -165,8 +163,6 @@ export const GenerationConfigSection: React.FC<GenerationConfigSectionProps> = (
   onDeselectAllCategories,
   requirementNotes,
   onRequirementNotesChange,
-  model,
-  onModelChange,
   depth,
   onDepthChange,
   generationState,
@@ -218,7 +214,7 @@ export const GenerationConfigSection: React.FC<GenerationConfigSectionProps> = (
             </span>
           </div>
           <p className="text-xs text-slate-400 font-sans mt-0.5">
-            Select the test categories and depth for autonomous AI generation.
+            Select the test categories and depth for local template-based generation.
           </p>
         </div>
 
@@ -306,24 +302,14 @@ export const GenerationConfigSection: React.FC<GenerationConfigSectionProps> = (
           </div>
         </div>
 
-        {/* Engine Tuning (4 Cols) */}
+        {/* Generation Settings (4 Cols) — FE-16: the former "AI Reasoning
+            Engine" provider selector (gemini-2.0-flash / gemini-1.5-pro /
+            claude-3-5-sonnet) was removed here. It never had any real
+            generation effect — selecting a value only changed a cosmetic
+            string in the generated case's metadata — so per FE-15 GAP-02
+            Option A it was removed rather than kept as a misleading
+            interaction. See the FE-16 report. */}
         <div className="lg:col-span-4 p-3 rounded-lg bg-[#0B1120] border border-slate-800 space-y-2.5">
-          <div>
-            <label className="block text-xs font-bold font-mono text-slate-300 mb-1">
-              AI Reasoning Engine
-            </label>
-            <select
-              value={model}
-              onChange={(e) => onModelChange(e.target.value as any)}
-              disabled={isGenerating}
-              className="w-full px-2.5 py-1.5 rounded bg-[#020617] border border-slate-700 text-xs font-mono text-slate-200 focus:outline-none focus:border-indigo-500 cursor-pointer"
-            >
-              <option value="gemini-2.0-flash">Gemini 2.0 Flash (Fast Reasoning)</option>
-              <option value="gemini-1.5-pro">Gemini 1.5 Pro (Deep Architecture)</option>
-              <option value="claude-3-5-sonnet">Claude 3.5 Sonnet (Syntax Synthesis)</option>
-            </select>
-          </div>
-
           <div>
             <label className="block text-xs font-bold font-mono text-slate-300 mb-1">
               Exploration Depth
@@ -353,7 +339,7 @@ export const GenerationConfigSection: React.FC<GenerationConfigSectionProps> = (
 
       {/* Primary CTA Area with Visual Pipeline Communication */}
       <div className="p-4 rounded-lg bg-gradient-to-r from-[#020617] via-[#0B1120] to-[#020617] border border-indigo-900/60 shadow-lg flex flex-col md:flex-row md:items-center justify-between gap-4">
-        {/* Pipeline Flow Visualization: Sources -> AI Analysis -> Test Generation */}
+        {/* Pipeline Flow Visualization: Sources -> Local Assembly -> Test Generation */}
         <div className="flex items-center gap-2 text-xs font-mono text-slate-300">
           <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#020617] border border-slate-800">
             <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
@@ -362,7 +348,7 @@ export const GenerationConfigSection: React.FC<GenerationConfigSectionProps> = (
           <ArrowRight className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
           <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#020617] border border-slate-800">
             <span className="w-1.5 h-1.5 rounded-full bg-purple-400" />
-            <span className="font-semibold text-purple-300">AI Analysis</span>
+            <span className="font-semibold text-purple-300">Local Assembly</span>
           </div>
           <ArrowRight className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
           <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#020617] border border-slate-800">
