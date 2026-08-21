@@ -12,7 +12,6 @@ import { RealtimeProvider } from './context/RealtimeContext';
 import { Header } from './components/layout/Header';
 import { Sidebar } from './components/layout/Sidebar';
 import { CommandPalette } from './components/layout/CommandPalette';
-import { RunTriggerModal } from './components/layout/RunTriggerModal';
 import { AppRoutes } from './routes/AppRoutes';
 
 // FE-4: the 12 primary pages are no longer switched on in-memory state
@@ -37,16 +36,15 @@ export const AppShell: React.FC = () => (
   <AuthProvider>
     {/* FE-5: project scope depends on real auth state (`useAuth()` inside
         `ProjectProvider`), so it must sit inside `AuthProvider` and outside
-        everything that wants to read it — `AIQAProvider` included, even
-        though `AIQAProvider`'s own project data remains its separate,
-        pre-existing fabricated set (see `ProjectContext.tsx`'s own
-        top-level comment). */}
+        everything that wants to read it — `AIQAProvider` included. FE-11
+        removed `AIQAProvider`'s own fabricated project/backend-connection
+        state entirely; `ProjectContext` is now the only "current project"
+        concept in the app. */}
     <ProjectProvider>
       {/* FE-9: realtime connection lifecycle is driven by `useAuth()` +
           `useProject()`, so it must sit inside both — same placement
           reasoning as `ProjectProvider` above. Outside `AIQAProvider`
-          (unrelated, still-fabricated demo state) since nothing here reads
-          or writes it. */}
+          since nothing here reads or writes its remaining state. */}
       <RealtimeProvider>
         <AIQAProvider>
           <div className="flex flex-col h-screen w-screen overflow-hidden bg-[#020617] text-slate-100 font-sans">
@@ -56,7 +54,6 @@ export const AppShell: React.FC = () => (
               <MainContentArea />
             </div>
             <CommandPalette />
-            <RunTriggerModal />
           </div>
         </AIQAProvider>
       </RealtimeProvider>

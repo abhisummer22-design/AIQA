@@ -1,40 +1,107 @@
 /**
  * Top Application Header Component
  * Provides global context, environment switcher, daemon health, and quick actions
+ *
+ * FE-24 — the notification bell used to open `AIQAContext`'s fabricated
+ * `notificationCount` (`useState<number>(3)`, no real entity behind it) and
+ * two hardcoded fake alert cards ("Infrastructure DNS alert on Redis" /
+ * "Auth Token Revocation Assertion") labeled "Live Stream" — none of it real
+ * (FE-23 report §Fake/Stub Audit). It now shows real, recent `RunEvent`s
+ * received through the existing `RealtimeContext` (`useRealtime().subscribe`)
+ * — the same real, already project-isolated, already-deduplicated stream
+ * every other real page (`AuditPage`/`EvidencePage`/`ExecutionHubPage`/
+ * `DashboardPage`/`ReportsPage`) already consumes. No new WebSocket, no new
+ * backend route, no new project-scoping mechanism: this is simply another
+ * subscriber. `RealtimeContext` itself only *stops delivering* an old
+ * project's events on switch — it does not clear a consumer's own retained
+ * list — so this component owns that reset itself (`useEffect` keyed on
+ * `project.selectedProjectId`), the same responsibility every other
+ * project-scoped page already takes for its own local state.
  */
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Menu,
   Search,
   Plus,
   Bell,
-  CheckCircle2,
-  AlertCircle,
-  Radio,
-  Server,
   Layers,
   ChevronDown,
-  Sparkles,
-  ExternalLink
 } from 'lucide-react';
 import { useAIQA } from '../../context/AIQAContext';
+import { useAuth } from '../../context/AuthContext';
+import { useProject } from '../../context/ProjectContext';
+import { useRealtime } from '../../context/RealtimeContext';
+import type { RealtimeConnectionState } from '../../context/RealtimeContext';
 import { Environment } from '../../types';
+import type { RunEvent } from '../../types/contract';
+import { formatStatusLabel } from '../../utils/statusLabel';
 import { ProjectSelector } from '../project/ProjectSelector';
+
+/** Bounded so a long-lived session doesn't grow this forever — matches
+ *  `RealtimeContext.tsx`'s own `DEDUP_CACHE_SIZE` reasoning (a small,
+ *  fixed window is enough for a recent-activity glance, not a history). */
+const MAX_RECENT_ACTIVITY = 10;
+
+/** Same label convention `ExecutionHubPage.tsx` already established for
+ *  this exact real `RealtimeConnectionState` — duplicated locally per this
+ *  codebase's established per-file-formatter convention rather than
+ *  extracted into a new shared module. */
+const CONNECTION_LABEL: Record<RealtimeConnectionState, string> = {
+  disconnected: 'Realtime Off',
+  connecting: 'Connecting…',
+  connected: 'Live',
+  reconnecting: 'Reconnecting…',
+  error: 'Realtime Error',
+};
+
+function formatEventTimestamp(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString(undefined, { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
 
 export const Header: React.FC = () => {
   const {
     toggleSidebar,
     currentEnvironment,
     setCurrentEnvironment,
-    backendState,
-    setBackendState,
     setCommandPaletteOpen,
-    setNewRunModalOpen,
-    notificationCount,
-    clearNotifications,
-    settings,
   } = useAIQA();
+  const project = useProject();
+  const realtime = useRealtime();
+  const [recentActivity, setRecentActivity] = useState<RunEvent[]>([]);
+
+  // Real events only — `realtime.subscribe` already delivers exclusively
+  // this project's own, already-deduplicated events (server-side per
+  // `ws_tests.rs::be14_subscribers_receive_only_their_own_projects_
+  // real_events`, plus `RealtimeContext`'s own client-side `project_id`
+  // check) — no second filter/dedup is invented here.
+  useEffect(() => {
+    return realtime.subscribe((event) => {
+      setRecentActivity((prev) => [event, ...prev].slice(0, MAX_RECENT_ACTIVITY));
+    });
+  }, [realtime.subscribe]);
+
+  // A project switch stops *new* foreign-project events from arriving, but
+  // does not retroactively clear whatever this component already retained
+  // from the previously-selected project — that reset is this component's
+  // own responsibility (brief §6/§18: "Project A events must not remain
+  // visible as active notifications for Project B").
+  useEffect(() => {
+    setRecentActivity([]);
+  }, [project.selectedProjectId]);
+  // FE-11 — this header's own daemon-health indicator used to be
+  // `AIQAContext`'s fabricated `backendState` (a static "Daemon Online,
+  // 18ms" that never actually reflected the real backend — live-caught
+  // during FE-10 manual verification: it kept reading "Daemon Online"
+  // seconds after the real orchestrator process had been killed). It now
+  // reads the real, already-computed `AuthContext.status` instead — no new
+  // connectivity check, no second polling loop, just the same real signal
+  // every protected route already gates on.
+  const auth = useAuth();
+  const navigate = useNavigate();
 
   const [isEnvDropdownOpen, setIsEnvDropdownOpen] = useState(false);
   const [isHealthDetailOpen, setIsHealthDetailOpen] = useState(false);
@@ -166,34 +233,32 @@ export const Header: React.FC = () => {
 
       {/* Right: Health, Run Trigger, Notifications, User */}
       <div className="flex items-center gap-2">
-        {/* Backend Daemon Health Indicator */}
+        {/* Real backend connectivity — mirrors `AuthContext.status`, the
+            same real signal every protected route already gates on. Only
+            'authenticated' is genuinely "online"; every other status is an
+            honest "not confirmed" rather than a fabricated version/latency. */}
         <div className="relative">
           <button
             id="backend-health-button"
             onClick={() => setIsHealthDetailOpen(!isHealthDetailOpen)}
             className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-[#020617] hover:bg-slate-900 border border-slate-800 text-xs text-slate-300 transition-colors cursor-pointer"
-            title="Backend Control Plane Status"
+            title="Real orchestrator connection status"
           >
             <span className="relative flex h-2 w-2">
               <span
                 className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
-                  backendState.status === 'connected' ? 'bg-emerald-400' : 'bg-rose-400'
+                  auth.status === 'authenticated' ? 'bg-emerald-400' : 'bg-rose-400'
                 }`}
               />
               <span
                 className={`relative inline-flex rounded-full h-2 w-2 ${
-                  backendState.status === 'connected' ? 'bg-emerald-500' : 'bg-rose-500'
+                  auth.status === 'authenticated' ? 'bg-emerald-500' : 'bg-rose-500'
                 }`}
               />
             </span>
             <span className="hidden xl:inline text-slate-400 font-mono text-[11px]">
-              {backendState.status === 'connected' ? 'Daemon Online' : 'Daemon Offline'}
+              {auth.status === 'authenticated' ? 'Orchestrator Online' : 'Not Confirmed Online'}
             </span>
-            {backendState.latencyMs && (
-              <span className="hidden sm:inline text-[10px] font-mono text-emerald-400 bg-emerald-950/60 px-1.5 py-0.2 rounded border border-emerald-800/50">
-                {backendState.latencyMs}ms
-              </span>
-            )}
           </button>
 
           {isHealthDetailOpen && (
@@ -202,106 +267,99 @@ export const Header: React.FC = () => {
               onMouseLeave={() => setIsHealthDetailOpen(false)}
             >
               <div className="flex items-center justify-between pb-2 border-b border-slate-800 mb-2">
-                <span className="font-semibold text-slate-200">Control Plane Telemetry</span>
+                <span className="font-semibold text-slate-200">Real Connection Status</span>
                 <span
                   className={`text-[10px] font-mono px-2 py-0.5 rounded font-medium ${
-                    backendState.status === 'connected'
+                    auth.status === 'authenticated'
                       ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
                       : 'bg-rose-950 text-rose-300 border border-rose-800'
                   }`}
                 >
-                  {backendState.status.toUpperCase()}
+                  {auth.status.toUpperCase()}
                 </span>
               </div>
               <div className="space-y-1 text-slate-400 text-[11px] font-mono">
                 <div className="flex justify-between">
-                  <span>Endpoint:</span>
-                  <span className="text-slate-200 truncate max-w-[140px]" title={backendState.endpoint}>
-                    {backendState.endpoint}
+                  <span>API key:</span>
+                  <span className="text-slate-200">{auth.maskedKey ?? 'not configured'}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Status:</span>
+                  <span className="text-slate-200">
+                    {auth.status === 'authenticated'
+                      ? 'A real protected request succeeded this session.'
+                      : 'Not yet confirmed against the real backend.'}
                   </span>
                 </div>
-                <div className="flex justify-between">
-                  <span>Daemon Engine:</span>
-                  <span className="text-slate-200">{backendState.daemonVersion || 'v2.4.2'}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Heartbeat:</span>
-                  <span className="text-slate-200">Active (18ms)</span>
-                </div>
-              </div>
-              <div className="mt-2.5 pt-2 border-t border-slate-800 flex justify-between gap-2">
-                <button
-                  onClick={() => {
-                    setBackendState((prev) => ({
-                      ...prev,
-                      status: prev.status === 'connected' ? 'disconnected' : 'connected',
-                    }));
-                  }}
-                  className="w-full py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium text-[11px] border border-slate-700 cursor-pointer"
-                >
-                  {backendState.status === 'connected' ? 'Simulate Disconnect' : 'Reconnect Daemon'}
-                </button>
               </div>
             </div>
           )}
         </div>
 
-        {/* Trigger Run Button */}
+        {/* Trigger Run Button — FE-11: navigates to the real Execution Hub
+            instead of opening `AIQAContext`'s fabricated `RunTriggerModal`
+            (deleted this sprint — see the FE-11 report §7/§24). There is
+            only one real execution-creation surface in this app now. */}
         <button
           id="launch-run-header-button"
-          onClick={() => setNewRunModalOpen(true)}
+          onClick={() => navigate('/execution')}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs transition-all shadow-sm shadow-indigo-950 cursor-pointer"
         >
           <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
           <span className="hidden sm:inline font-sans">Launch Run</span>
         </button>
 
-        {/* Notifications */}
+        {/* Notifications — FE-24: real recent execution activity, not a
+            fabricated alert stream. See this file's own module doc comment. */}
         <div className="relative">
           <button
             id="notifications-button"
-            onClick={() => {
-              setIsNotificationsOpen(!isNotificationsOpen);
-              if (notificationCount > 0) clearNotifications();
-            }}
+            onClick={() => setIsNotificationsOpen(!isNotificationsOpen)}
             className="p-1.5 rounded-md text-slate-400 hover:text-slate-200 hover:bg-slate-800/80 transition-colors relative cursor-pointer"
-            title="Activity Notifications"
+            title="Recent Activity"
           >
             <Bell className="w-4 h-4" />
-            {notificationCount > 0 && (
-              <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-indigo-400 ring-2 ring-[#0B1120]" />
+            {recentActivity.length > 0 && (
+              <span id="notification-badge-dot" className="absolute top-1 right-1 w-2 h-2 rounded-full bg-indigo-400 ring-2 ring-[#0B1120]" />
             )}
           </button>
 
           {isNotificationsOpen && (
             <div
+              id="recent-activity-panel"
               className="absolute right-0 mt-1.5 w-80 rounded-lg bg-[#0B1120] border border-slate-700/80 shadow-2xl p-3 z-50 text-xs"
               onMouseLeave={() => setIsNotificationsOpen(false)}
             >
               <div className="flex items-center justify-between pb-2 border-b border-slate-800 mb-2">
-                <span className="font-semibold text-slate-200">Recent Quality Alerts</span>
-                <span className="text-[10px] text-slate-400 font-mono">Live Stream</span>
+                <span className="font-semibold text-slate-200">Recent Activity</span>
+                <span className="text-[10px] text-slate-400 font-mono">{CONNECTION_LABEL[realtime.connectionState]}</span>
               </div>
-              <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
-                <div className="p-2 rounded-md bg-[#020617] border border-amber-900/40 text-amber-300">
-                  <div className="font-medium text-[11px] flex items-center gap-1.5">
-                    <AlertCircle className="w-3 h-3 text-amber-400" />
-                    <span>Infrastructure DNS alert on Redis</span>
-                  </div>
-                  <p className="text-[10px] text-slate-400 mt-0.5">
-                    test-104 failed due to DNS timeout (Infra Error, not product defect).
+              {recentActivity.length === 0 ? (
+                <div className="py-4 text-center">
+                  <p className="text-slate-300 font-medium">No recent activity</p>
+                  <p className="text-[10px] text-slate-500 mt-1">
+                    Real execution activity will appear here when events are received.
                   </p>
                 </div>
-                <div className="p-2 rounded-md bg-[#020617] border border-rose-900/40 text-rose-300">
-                  <div className="font-medium text-[11px] flex items-center gap-1.5">
-                    <AlertCircle className="w-3 h-3 text-rose-400" />
-                    <span>Auth Token Revocation Assertion</span>
-                  </div>
-                  <p className="text-[10px] text-slate-400 mt-0.5">
-                    Expected HTTP 401, received HTTP 200 on revoked cookie.
-                  </p>
+              ) : (
+                <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
+                  {recentActivity.map((event) => (
+                    <div key={event.event_id} className="p-2 rounded-md bg-[#020617] border border-slate-800">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-mono font-medium text-[10px] uppercase text-indigo-300">
+                          {formatStatusLabel(event.type)}
+                        </span>
+                        <span className="text-[9px] text-slate-500 font-mono shrink-0">{formatEventTimestamp(event.timestamp)}</span>
+                      </div>
+                      <p className="text-[10px] text-slate-400 mt-0.5">{event.summary ?? '—'}</p>
+                      <p className="text-[9px] text-slate-600 font-mono mt-0.5 truncate">
+                        Run {event.run_id.slice(0, 8)}
+                        {event.task_id ? ` · Task ${event.task_id}` : ''}
+                      </p>
+                    </div>
+                  ))}
                 </div>
-              </div>
+              )}
             </div>
           )}
         </div>

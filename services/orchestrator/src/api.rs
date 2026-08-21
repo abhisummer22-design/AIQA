@@ -71,6 +71,19 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/projects/:project_id/findings/:finding_id/analysis", post(get_finding_analysis_scoped))
         .route("/api/v1/projects/:project_id/findings/:finding_id/review", post(review_finding_scoped))
         .route("/api/v1/projects/:project_id/audit", get(get_audit_log_scoped))
+        // Phase 4 BE-10 — see `list_test_intelligence_scoped`'s doc comment.
+        .route("/api/v1/projects/:project_id/intelligence/tests", get(list_test_intelligence_scoped))
+        // AUD-005 — real, persisted Test Case CRUD + lifecycle + execution
+        // handoff. See the "test cases" section below for every handler.
+        .route("/api/v1/projects/:project_id/test-cases", post(create_test_case_scoped).get(list_test_cases_scoped))
+        .route(
+            "/api/v1/projects/:project_id/test-cases/:id",
+            get(get_test_case_scoped).patch(update_test_case_scoped).delete(delete_test_case_scoped),
+        )
+        .route("/api/v1/projects/:project_id/test-cases/:id/validate", post(validate_test_case_scoped))
+        .route("/api/v1/projects/:project_id/test-cases/:id/approve", post(approve_test_case_scoped))
+        .route("/api/v1/projects/:project_id/test-cases/:id/reject", post(reject_test_case_scoped))
+        .route("/api/v1/projects/:project_id/test-cases/:id/handoff", post(handoff_test_case_scoped))
         // Legacy, flat, unscoped routes — kept fully functional (Step 6: no
         // document calls for removing or redirecting them; see the report's
         // "Route Compatibility" section for the explicit reasoning).
@@ -313,6 +326,326 @@ async fn update_project_handler(
         .map_err(to_500)?
         .ok_or_else(|| ApiError::not_found("project not found"))?;
     Ok(Json(project))
+}
+
+// ------------------------------------------------------------- test cases
+//
+// AUD-005 — real, persisted, project-isolated Test Case CRUD + lifecycle +
+// execution handoff. See `domain.rs`'s test-case section and `store.rs`'s
+// test-case functions for the entity/persistence design; this section is
+// just the HTTP surface over them, following the exact same
+// `require_scoped_project` + `require_role` + `audit(...)` pattern every
+// other mutating scoped resource in this file already uses.
+
+fn validate_test_case_request(req: &CreateTestCaseRequest) -> Result<(), ApiError> {
+    if req.title.trim().is_empty() {
+        return Err(ApiError::validation("title must not be empty"));
+    }
+    if req.description.trim().is_empty() {
+        return Err(ApiError::validation("description must not be empty"));
+    }
+    if req.steps.is_empty() {
+        return Err(ApiError::validation("at least one step is required"));
+    }
+    if req.expected_result.as_deref().map(str::trim).unwrap_or("").is_empty() && req.assertions.iter().all(|a| a.trim().is_empty()) {
+        return Err(ApiError::validation("expected_result or at least one assertion is required"));
+    }
+    Ok(())
+}
+
+/// POST /api/v1/projects/:project_id/test-cases — persists one generated
+/// test case for real. This is deliberately a single-case create, not a
+/// batch endpoint: the Test Case Generator produces its cases client-side
+/// one at a time already, and a single, uniform create contract is simpler
+/// than inventing a second batch shape nothing else in this API uses.
+async fn create_test_case_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiJson(body): ApiJson<CreateTestCaseRequest>,
+) -> Result<(StatusCode, Json<crate::store::TestCaseRow>), ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    require_scoped_project(&state, &ctx, project_id).await?;
+    validate_test_case_request(&body)?;
+
+    let id = state.store.insert_test_case(&project_id.to_string(), &body, Some(&ctx.name)).await.map_err(to_500)?;
+
+    audit(&state, &ctx, "test_case.create", Some(&id.to_string()), Some(&body.title), "ok").await;
+
+    let row = state
+        .store
+        .get_test_case(id)
+        .await
+        .map_err(to_500)?
+        .ok_or_else(|| to_500("test case vanished immediately after insert"))?;
+    Ok((StatusCode::CREATED, Json(row)))
+}
+
+#[derive(Deserialize)]
+struct ListTestCasesQuery {
+    #[serde(default)]
+    status: Option<String>,
+}
+
+/// GET /api/v1/projects/:project_id/test-cases — project-scoped, optionally
+/// filtered to one lifecycle status (`?status=APPROVED`, etc).
+async fn list_test_cases_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiQuery(q): ApiQuery<ListTestCasesQuery>,
+) -> Result<Json<Vec<crate::store::TestCaseRow>>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let rows = state.store.list_test_cases(&project_id.to_string(), q.status.as_deref()).await.map_err(to_500)?;
+    Ok(Json(rows))
+}
+
+/// Shared fetch-then-authorize for every `:id`-scoped test-case route —
+/// same order every other scoped-resource handler in this file uses
+/// (`get_project_handler`, `scoped_run_summary`): existence first (404 if
+/// genuinely absent, including when it exists but belongs to a different
+/// project than the URL says — never leaks a cross-project id's existence),
+/// then `require_project_access` against the row's own real `project_id`
+/// (403 if the caller's key is scoped to a different project).
+async fn scoped_test_case(state: &AppState, ctx: &AuthContext, project_id: Uuid, id: Uuid) -> Result<crate::store::TestCaseRow, ApiError> {
+    let row = state.store.get_test_case(id).await.map_err(to_500)?.ok_or_else(|| ApiError::not_found("test case not found"))?;
+    if row.project_id != project_id.to_string() {
+        return Err(ApiError::not_found("test case not found"));
+    }
+    auth::require_project_access(ctx, Some(row.project_id.as_str()))?;
+    Ok(row)
+}
+
+async fn get_test_case_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
+) -> Result<Json<crate::store::TestCaseRow>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let row = scoped_test_case(&state, &ctx, project_id, id).await?;
+    Ok(Json(row))
+}
+
+#[derive(Deserialize, Default)]
+struct UpdateTestCaseBody {
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    priority: Option<String>,
+    #[serde(default)]
+    preconditions: Option<Vec<String>>,
+    #[serde(default)]
+    steps: Option<Vec<TestStep>>,
+    #[serde(default)]
+    expected_result: Option<String>,
+}
+
+/// PATCH /api/v1/projects/:project_id/test-cases/:id — partial update of
+/// the still-editable descriptive fields (never `status`; that only moves
+/// through `/validate`, `/approve`, `/reject`, `/handoff` below).
+async fn update_test_case_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
+    ApiJson(body): ApiJson<UpdateTestCaseBody>,
+) -> Result<Json<crate::store::TestCaseRow>, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    require_scoped_project(&state, &ctx, project_id).await?;
+    scoped_test_case(&state, &ctx, project_id, id).await?;
+
+    if let Some(title) = &body.title {
+        if title.trim().is_empty() {
+            return Err(ApiError::validation("title must not be empty"));
+        }
+    }
+
+    let updated = state
+        .store
+        .update_test_case(
+            id,
+            body.title.as_deref(),
+            body.description.as_deref(),
+            body.priority.as_deref(),
+            body.preconditions.as_ref(),
+            body.steps.as_ref(),
+            body.expected_result.as_deref(),
+        )
+        .await
+        .map_err(to_500)?;
+    if !updated {
+        return Err(ApiError::not_found("test case not found"));
+    }
+    audit(&state, &ctx, "test_case.update", Some(&id.to_string()), None, "ok").await;
+    let row = scoped_test_case(&state, &ctx, project_id, id).await?;
+    Ok(Json(row))
+}
+
+async fn delete_test_case_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
+) -> Result<StatusCode, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    require_scoped_project(&state, &ctx, project_id).await?;
+    scoped_test_case(&state, &ctx, project_id, id).await?;
+    let deleted = state.store.delete_test_case(id).await.map_err(to_500)?;
+    if !deleted {
+        return Err(ApiError::not_found("test case not found"));
+    }
+    audit(&state, &ctx, "test_case.delete", Some(&id.to_string()), None, "ok").await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// POST .../test-cases/:id/validate — FRD-VAL-02 ("generated cases meet
+/// configured quality/benchmark rules"). Honest scope: this checks real,
+/// verifiable structural completeness (non-empty title/description/steps/
+/// expected_result, and every step has both an action and an expected
+/// result) — there is no AI/model-scored quality benchmark anywhere in this
+/// codebase (no model-gateway/LLM integration exists in `services/
+/// orchestrator`), so this deliberately does not claim to evaluate
+/// anything beyond structure. A case that fails stays `GENERATED`, with
+/// the failure reason returned as a real 409, never silently advanced.
+async fn validate_test_case_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
+) -> Result<Json<crate::store::TestCaseRow>, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let row = scoped_test_case(&state, &ctx, project_id, id).await?;
+
+    let mut problems = Vec::new();
+    if row.title.trim().is_empty() {
+        problems.push("title is empty");
+    }
+    if row.description.trim().is_empty() {
+        problems.push("description is empty");
+    }
+    if row.steps.is_empty() {
+        problems.push("no steps defined");
+    }
+    if row.steps.iter().any(|s| s.action.trim().is_empty() || s.expected_result.trim().is_empty()) {
+        problems.push("a step is missing an action or an expected result");
+    }
+    if row.expected_result.trim().is_empty() {
+        problems.push("expected_result is empty");
+    }
+
+    if !problems.is_empty() {
+        return Err(ApiError::conflict(format!("structural validation failed: {}", problems.join("; "))));
+    }
+
+    let notes = "structural validation passed: title, description, steps and expected result are present";
+    let ok = state.store.validate_test_case(id, notes).await.map_err(to_500)?;
+    if !ok {
+        return Err(ApiError::conflict(format!("test case is not in GENERATED state (current: {})", row.status.as_db_str())));
+    }
+    audit(&state, &ctx, "test_case.validate", Some(&id.to_string()), None, "ok").await;
+    let row = scoped_test_case(&state, &ctx, project_id, id).await?;
+    Ok(Json(row))
+}
+
+/// POST .../test-cases/:id/approve — FRD-EXE-11: only an *approved* case
+/// may later convert into a schedulable task. Requires `VALIDATED` first —
+/// generation alone is never enough (FRD-AGT-04).
+async fn approve_test_case_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
+) -> Result<Json<crate::store::TestCaseRow>, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let row = scoped_test_case(&state, &ctx, project_id, id).await?;
+    let ok = state.store.approve_test_case(id).await.map_err(to_500)?;
+    if !ok {
+        return Err(ApiError::conflict(format!("test case must be VALIDATED before approval (current: {})", row.status.as_db_str())));
+    }
+    audit(&state, &ctx, "test_case.approve", Some(&id.to_string()), None, "ok").await;
+    let row = scoped_test_case(&state, &ctx, project_id, id).await?;
+    Ok(Json(row))
+}
+
+/// POST .../test-cases/:id/reject — reachable from `GENERATED` or
+/// `VALIDATED`, not from `APPROVED`/`EXECUTED` (see `store.rs::
+/// reject_test_case`'s own doc comment for why).
+async fn reject_test_case_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
+) -> Result<Json<crate::store::TestCaseRow>, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let row = scoped_test_case(&state, &ctx, project_id, id).await?;
+    let ok = state.store.reject_test_case(id).await.map_err(to_500)?;
+    if !ok {
+        return Err(ApiError::conflict(format!("test case cannot be rejected from its current state ({})", row.status.as_db_str())));
+    }
+    audit(&state, &ctx, "test_case.reject", Some(&id.to_string()), None, "ok").await;
+    let row = scoped_test_case(&state, &ctx, project_id, id).await?;
+    Ok(Json(row))
+}
+
+/// POST .../test-cases/:id/handoff — the real bridge into the existing
+/// execution engine (FRD-EXE-11). Requires `APPROVED`. Builds a real,
+/// single-task `RunPlan` — the task's id is this test case's own id, so
+/// `tasks.id` doubles as the traceability key back to it, no extra join
+/// table needed (Test Case -> Run -> Task -> Result/Evidence, all already
+/// queryable via the existing `runs`/`tasks`/`evidence`/`run_events`
+/// tables) — and dispatches it through the exact same `create_run_core`
+/// the real Execution Hub itself calls. No duplicate scheduler, no shadow
+/// execution engine.
+///
+/// Honest disclosure (see `TestCaseHandoffRequest`'s own doc comment): the
+/// caller must explicitly supply either a real `executor` or an explicit
+/// `simulate` outcome. There is no default here that would silently report
+/// a fabricated "passed" result for steps nothing has actually run.
+async fn handoff_test_case_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
+    body: Option<ApiJson<TestCaseHandoffRequest>>,
+) -> Result<(StatusCode, Json<CreateExecutionResponse>), ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let row = scoped_test_case(&state, &ctx, project_id, id).await?;
+
+    if row.status != TestCaseStatus::Approved {
+        return Err(ApiError::conflict(format!("test case must be APPROVED before handoff (current: {})", row.status.as_db_str())));
+    }
+
+    let ApiJson(body) = body.unwrap_or(ApiJson(TestCaseHandoffRequest { executor: None, params: serde_json::Value::Null, simulate: None }));
+    if body.executor.is_none() && body.simulate.is_none() {
+        return Err(ApiError::validation(
+            "handoff requires either a real executor or an explicit simulate outcome — there is no default that fabricates a result",
+        ));
+    }
+
+    let task_id = id.to_string();
+    let task = TaskDef {
+        id: task_id.clone(),
+        name: row.title.clone(),
+        prerequisites: Vec::new(),
+        simulate: body.simulate.clone(),
+        executor: body.executor.clone(),
+        params: body.params.clone(),
+    };
+    let plan = RunPlan { name: format!("Test Case: {}", row.title), tasks: vec![task], concurrency: 1 };
+
+    let (status_code, Json(created)) = create_run_core(&state, &ctx, Some(project_id.to_string()), plan).await?;
+
+    let marked = state.store.mark_test_case_executed(id, created.run_id, &task_id).await.map_err(to_500)?;
+    if !marked {
+        // The run was genuinely created either way (real, not fabricated);
+        // this only means this test case's own back-link didn't apply —
+        // surfaced, not silently swallowed.
+        tracing::warn!("test case {id} handed off as run {} but its own status transition to EXECUTED did not apply", created.run_id);
+    }
+
+    audit(&state, &ctx, "test_case.handoff", Some(&id.to_string()), Some(&created.run_id.to_string()), "ok").await;
+
+    Ok((status_code, Json(CreateExecutionResponse { run_id: created.run_id, status: created.state, policy_notes: created.policy_notes })))
 }
 
 // -------------------------------------------------------------- run create
@@ -973,9 +1306,10 @@ async fn get_project_dashboard(
 /// reliability` (product pass rate — PASSED / (PASSED+FAILED+TIMEOUT),
 /// mirroring `intelligence.rs`'s own product-vs-infrastructure split, which
 /// deliberately excludes INFRA_ERROR/BLOCKED/SKIPPED/CANCELLED as not being
-/// evidence the thing under test is broken) and `execution efficiency`
-/// (average task duration). Every other listed KPI concept has no backing
-/// data model — see `DashboardResponse`'s doc comment.
+/// evidence the thing under test is broken), `execution efficiency`
+/// (average task duration), and (BE-12b) average *run* duration. Every
+/// other listed KPI concept has no backing data model — see
+/// `DashboardResponse`'s doc comment.
 #[derive(Serialize)]
 struct KpisResponse {
     project_id: Uuid,
@@ -985,6 +1319,12 @@ struct KpisResponse {
     /// Average task duration in milliseconds, or `null` when no task has
     /// both a recorded start and finish yet.
     execution_efficiency_ms: Option<f64>,
+    /// BE-12b — average *run* duration in milliseconds, over every
+    /// terminal run (any final `RunState`) that has both `started_at` and
+    /// `finished_at`, or `null` when no such run exists yet. See
+    /// `store.rs::dashboard_avg_run_duration_ms`'s own doc comment for the
+    /// exact inclusion rule.
+    execution_avg_run_duration_ms: Option<f64>,
     generated_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -1007,11 +1347,13 @@ async fn get_project_kpis(
         if terminal_product_outcomes > 0 { Some(passed as f64 / terminal_product_outcomes as f64) } else { None };
 
     let execution_efficiency_ms = state.store.dashboard_avg_task_duration_ms(&pid).await.map_err(to_500)?;
+    let execution_avg_run_duration_ms = state.store.dashboard_avg_run_duration_ms(&pid).await.map_err(to_500)?;
 
     Ok(Json(KpisResponse {
         project_id,
         execution_reliability,
         execution_efficiency_ms,
+        execution_avg_run_duration_ms,
         generated_at: chrono::Utc::now(),
     }))
 }
@@ -1332,6 +1674,45 @@ async fn get_audit_log_scoped(
 
 // ----------------------------------------------------------- intelligence
 
+/// GET /api/v1/projects/:project_id/intelligence/tests — Phase 4 BE-10
+/// (distinct from the pre-existing Phase 2 "BE-10" in `errors.rs`/
+/// `api_tests.rs`, which is about extractor-rejection error envelopes and
+/// is unrelated to and untouched by this route). The legacy
+/// `/intelligence/tests` below scopes itself to the caller's own
+/// key-bound `ctx.project_id`, which has no URL parameter at all — safe
+/// only for a single-project key, and silently wrong (or empty, via the
+/// `"default"` tenant fallback in `store.rs::list_test_intelligence`) for
+/// an unscoped/multi-project key browsing a specific project, exactly the
+/// key pattern this frontend's project switcher relies on (see FE-21's
+/// report §3/§9). This route closes that gap the same way every other
+/// resource under `/api/v1/projects/:project_id/...` already does: the
+/// project is explicit in the URL, `require_scoped_project` confirms both
+/// that it exists and that the caller's key may access it, and the query
+/// is always given that real project id — never the caller's own
+/// (possibly different, possibly absent) bound project, never the
+/// `"default"` tenant. No new intelligence computation, no new table, no
+/// new response shape — `store.rs::list_test_intelligence`/`TestIntelRow`
+/// are reused exactly as they already exist.
+async fn list_test_intelligence_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+) -> Result<Json<Vec<crate::store::TestIntelRow>>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let rows = state
+        .store
+        .list_test_intelligence(Some(project_id.to_string().as_str()))
+        .await
+        .map_err(to_500)?;
+    Ok(Json(rows))
+}
+
+/// GET /intelligence/tests — legacy, unscoped. Kept exactly as-is (Phase 4
+/// BE-10 does not touch this handler or its behavior); nothing in this backend
+/// or its tests depends on it changing, and the project-scoped route above
+/// coexists with it the same way every other legacy/scoped pair in this
+/// router already does (see the router's own "Legacy, flat, unscoped
+/// routes" comment).
 async fn list_test_intelligence(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,

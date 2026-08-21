@@ -46,6 +46,40 @@ fn parse_ts_opt(s: Option<String>) -> Option<chrono::DateTime<chrono::Utc>> {
     s.map(|s| parse_ts(&s))
 }
 
+fn test_case_from_row(r: sqlx::sqlite::SqliteRow) -> Result<TestCaseRow> {
+    Ok(TestCaseRow {
+        id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap_or_default(),
+        project_id: r.get("project_id"),
+        title: r.get("title"),
+        description: r.get("description"),
+        category: r.get("category"),
+        priority: r.get("priority"),
+        severity: r.get("severity"),
+        preconditions: serde_json::from_str(&r.get::<String, _>("preconditions"))?,
+        steps: serde_json::from_str(&r.get::<String, _>("steps"))?,
+        expected_result: r.get("expected_result"),
+        assertions: serde_json::from_str(&r.get::<String, _>("assertions"))?,
+        test_data: r.get("test_data"),
+        source_document: r.get("source_document"),
+        requirement_reference: r.get("requirement_reference"),
+        source_requirement: r.get("source_requirement"),
+        traceability: r
+            .get::<Option<String>, _>("traceability")
+            .map(|s| serde_json::from_str(&s))
+            .transpose()?,
+        risk_factor: r.get("risk_factor"),
+        tags: serde_json::from_str(&r.get::<String, _>("tags"))?,
+        source: r.get("source"),
+        status: TestCaseStatus::from_db_str(&r.get::<String, _>("status")),
+        validation_notes: r.get("validation_notes"),
+        executed_run_id: r.get::<Option<String>, _>("executed_run_id").and_then(|s| Uuid::parse_str(&s).ok()),
+        executed_task_id: r.get("executed_task_id"),
+        created_by: r.get("created_by"),
+        created_at: parse_ts(&r.get::<String, _>("created_at")),
+        updated_at: parse_ts(&r.get::<String, _>("updated_at")),
+    })
+}
+
 fn project_from_row(r: sqlx::sqlite::SqliteRow) -> Project {
     Project {
         id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap_or_default(),
@@ -496,6 +530,38 @@ impl Store {
         Ok(row.get("avg_ms"))
     }
 
+    /// BE-12b — average *run* duration in milliseconds for one project
+    /// (distinct from `dashboard_avg_task_duration_ms` above, which is per
+    /// task). Same real columns (`runs.started_at`/`.finished_at`, present
+    /// since migration `0001_core_execution.sql`), same shape of query, one
+    /// join simpler (no `tasks` join needed — both timestamps already live
+    /// on `runs` itself). Deliberately no `state` filter, matching the
+    /// task-duration query's own methodology: every terminal run with both
+    /// timestamps counts, whatever its final state. In practice this means
+    /// COMPLETED/PARTIAL/FAILED/CANCELLED runs (all set `finished_at` via
+    /// `set_run_finished`) are included, while REJECTED runs end up
+    /// excluded not by any state check but because `reject_run` (a run
+    /// rejected while still `PENDING_APPROVAL`, before the scheduler ever
+    /// starts it) sets `finished_at` without ever setting `started_at` —
+    /// the existing `started_at IS NOT NULL` predicate alone correctly
+    /// keeps a run that never actually ran out of a *duration* average, no
+    /// special-casing added. A run still in flight (`finished_at IS NULL`)
+    /// is excluded the same way, never treated as zero duration. `None`
+    /// when no run qualifies yet — an honest "no data", never a fabricated
+    /// `0` (same BE-12 data-integrity rule the task-duration query above
+    /// already follows).
+    pub async fn dashboard_avg_run_duration_ms(&self, project_id: &str) -> Result<Option<f64>> {
+        let row = sqlx::query(
+            "SELECT AVG((julianday(r.finished_at) - julianday(r.started_at)) * 86400000.0) as avg_ms
+             FROM runs r
+             WHERE r.project_id = ? AND r.started_at IS NOT NULL AND r.finished_at IS NOT NULL",
+        )
+        .bind(project_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.get("avg_ms"))
+    }
+
     pub async fn get_run_plan(&self, run_id: RunId) -> Result<Option<RunPlan>> {
         let row = sqlx::query("SELECT plan FROM runs WHERE id = ?")
             .bind(run_id.to_string())
@@ -604,6 +670,224 @@ impl Store {
         .bind(description)
         .bind(now_rfc3339())
         .bind(id.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    // ------------------------------------------------------------- test cases
+    //
+    // AUD-005 — see `domain.rs`'s test-case section doc comment for the full
+    // lifecycle rationale. `source` is always "generator" today (the only
+    // real producer of a `CreateTestCaseRequest` in this codebase); the
+    // column exists so a future non-generator source (e.g. a human-authored
+    // case) does not need a schema change.
+
+    pub async fn insert_test_case(&self, project_id: &str, req: &CreateTestCaseRequest, created_by: Option<&str>) -> Result<Uuid> {
+        let id = Uuid::new_v4();
+        let now = now_rfc3339();
+        let expected_result = req
+            .expected_result
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| req.assertions.join("; "));
+        sqlx::query(
+            "INSERT INTO test_cases (
+                id, project_id, title, description, category, priority, severity,
+                preconditions, steps, expected_result, assertions, test_data,
+                source_document, requirement_reference, source_requirement,
+                traceability, risk_factor, tags, source, status,
+                created_by, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(project_id)
+        .bind(&req.title)
+        .bind(&req.description)
+        .bind(&req.category)
+        .bind(&req.priority)
+        .bind(&req.severity)
+        .bind(serde_json::to_string(&req.preconditions)?)
+        .bind(serde_json::to_string(&req.steps)?)
+        .bind(expected_result)
+        .bind(serde_json::to_string(&req.assertions)?)
+        .bind(&req.test_data)
+        .bind(&req.source_document)
+        .bind(&req.requirement_reference)
+        .bind(&req.source_requirement)
+        .bind(req.traceability.as_ref().map(|v| v.to_string()))
+        .bind(&req.risk_factor)
+        .bind(serde_json::to_string(&req.tags)?)
+        .bind("generator")
+        .bind(TestCaseStatus::Generated.as_db_str())
+        .bind(created_by)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        Ok(id)
+    }
+
+    pub async fn get_test_case(&self, id: Uuid) -> Result<Option<TestCaseRow>> {
+        let row = sqlx::query(
+            "SELECT id, project_id, title, description, category, priority, severity, \
+             preconditions, steps, expected_result, assertions, test_data, source_document, \
+             requirement_reference, source_requirement, traceability, risk_factor, tags, source, status, \
+             validation_notes, executed_run_id, executed_task_id, created_by, created_at, updated_at \
+             FROM test_cases WHERE id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(test_case_from_row).transpose()
+    }
+
+    /// Project-scoped list, optionally narrowed to one lifecycle status —
+    /// same optional-filter shape `list_projects`/`list_test_intelligence`
+    /// already use. Newest first, matching every other list endpoint.
+    pub async fn list_test_cases(&self, project_id: &str, status_filter: Option<&str>) -> Result<Vec<TestCaseRow>> {
+        let rows = match status_filter {
+            Some(status) => {
+                sqlx::query(
+                    "SELECT id, project_id, title, description, category, priority, severity, \
+                     preconditions, steps, expected_result, assertions, test_data, source_document, \
+                     requirement_reference, source_requirement, traceability, risk_factor, tags, source, status, \
+                     validation_notes, executed_run_id, executed_task_id, created_by, created_at, updated_at \
+                     FROM test_cases WHERE project_id = ? AND status = ? ORDER BY created_at DESC",
+                )
+                .bind(project_id)
+                .bind(status)
+                .fetch_all(&self.pool)
+                .await?
+            }
+            None => {
+                sqlx::query(
+                    "SELECT id, project_id, title, description, category, priority, severity, \
+                     preconditions, steps, expected_result, assertions, test_data, source_document, \
+                     requirement_reference, source_requirement, traceability, risk_factor, tags, source, status, \
+                     validation_notes, executed_run_id, executed_task_id, created_by, created_at, updated_at \
+                     FROM test_cases WHERE project_id = ? ORDER BY created_at DESC",
+                )
+                .bind(project_id)
+                .fetch_all(&self.pool)
+                .await?
+            }
+        };
+        rows.into_iter().map(test_case_from_row).collect()
+    }
+
+    /// Partial update of the still-editable descriptive fields. Deliberately
+    /// does not allow moving `status` from here — that only ever happens
+    /// through the dedicated, conditional transition methods below, never a
+    /// generic PATCH (same separation `set_run_finished` vs. a hypothetical
+    /// "PATCH run" already keeps for runs).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_test_case(
+        &self,
+        id: Uuid,
+        title: Option<&str>,
+        description: Option<&str>,
+        priority: Option<&str>,
+        preconditions: Option<&Vec<String>>,
+        steps: Option<&Vec<TestStep>>,
+        expected_result: Option<&str>,
+    ) -> Result<bool> {
+        let preconditions_json = preconditions.map(serde_json::to_string).transpose()?;
+        let steps_json = steps.map(serde_json::to_string).transpose()?;
+        let result = sqlx::query(
+            "UPDATE test_cases SET
+                title = COALESCE(?, title),
+                description = COALESCE(?, description),
+                priority = COALESCE(?, priority),
+                preconditions = COALESCE(?, preconditions),
+                steps = COALESCE(?, steps),
+                expected_result = COALESCE(?, expected_result),
+                updated_at = ?
+             WHERE id = ?",
+        )
+        .bind(title)
+        .bind(description)
+        .bind(priority)
+        .bind(preconditions_json)
+        .bind(steps_json)
+        .bind(expected_result)
+        .bind(now_rfc3339())
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn delete_test_case(&self, id: Uuid) -> Result<bool> {
+        let result = sqlx::query("DELETE FROM test_cases WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// `domain.rs`'s own doc comment on `TestCaseStatus`: every transition
+    /// below is a conditional `UPDATE ... WHERE status = <expected prior
+    /// state(s)>`, not just checked in a handler after the fact — a race
+    /// between two callers (or a stale client retrying an already-applied
+    /// transition) can never silently double-apply or skip a step. Zero
+    /// rows affected means "the case was not in an eligible state," which
+    /// the caller turns into a real 409, not a false "ok". Each query is a
+    /// static string (sqlx requires literal SQL for injection-safety), so
+    /// each real transition gets its own explicit method rather than one
+    /// dynamically-built query.
+    pub async fn validate_test_case(&self, id: Uuid, validation_notes: &str) -> Result<bool> {
+        let result = sqlx::query(
+            "UPDATE test_cases SET status = 'VALIDATED', validation_notes = ?, updated_at = ? WHERE id = ? AND status = 'GENERATED'",
+        )
+        .bind(validation_notes)
+        .bind(now_rfc3339())
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn approve_test_case(&self, id: Uuid) -> Result<bool> {
+        let result = sqlx::query("UPDATE test_cases SET status = 'APPROVED', updated_at = ? WHERE id = ? AND status = 'VALIDATED'")
+            .bind(now_rfc3339())
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Rejectable from either `GENERATED` or `VALIDATED` — not from
+    /// `APPROVED`/`EXECUTED`, which have their own, later, real-world
+    /// consequences (an approved case may already be mid-handoff).
+    pub async fn reject_test_case(&self, id: Uuid) -> Result<bool> {
+        let result = sqlx::query(
+            "UPDATE test_cases SET status = 'REJECTED', updated_at = ? WHERE id = ? AND status IN ('GENERATED', 'VALIDATED')",
+        )
+        .bind(now_rfc3339())
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Handoff: only an `Approved` case may become `Executed`, and only
+    /// once — same conditional-`UPDATE` pattern as
+    /// `transition_test_case_status`, plus the real run/task ids this case
+    /// was actually dispatched as (FRD-RT-04 traceability: Test Case -> Run
+    /// -> Task -> Result/Evidence, all already queryable by these two ids
+    /// via the existing `runs`/`tasks`/`evidence`/`run_events` tables).
+    pub async fn mark_test_case_executed(&self, id: Uuid, run_id: Uuid, task_id: &str) -> Result<bool> {
+        let result = sqlx::query(
+            "UPDATE test_cases SET status = ?, executed_run_id = ?, executed_task_id = ?, updated_at = ?
+             WHERE id = ? AND status = ?",
+        )
+        .bind(TestCaseStatus::Executed.as_db_str())
+        .bind(run_id.to_string())
+        .bind(task_id)
+        .bind(now_rfc3339())
+        .bind(id.to_string())
+        .bind(TestCaseStatus::Approved.as_db_str())
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected() > 0)
@@ -1367,6 +1651,40 @@ pub struct ApiKeyRow {
     pub name: String,
     pub role: String,
     pub project_id: Option<String>,
+}
+
+/// AUD-005 — the persisted shape of a Test Case (`GET`/`POST .../test-cases`
+/// response). Field set matches `CreateTestCaseRequest` one-to-one, plus the
+/// fields only the backend ever assigns: `id`, `source`, `status`,
+/// `validation_notes`, `executed_run_id`/`executed_task_id`, timestamps.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TestCaseRow {
+    pub id: Uuid,
+    pub project_id: String,
+    pub title: String,
+    pub description: String,
+    pub category: String,
+    pub priority: String,
+    pub severity: String,
+    pub preconditions: Vec<String>,
+    pub steps: Vec<TestStep>,
+    pub expected_result: String,
+    pub assertions: Vec<String>,
+    pub test_data: Option<String>,
+    pub source_document: Option<String>,
+    pub requirement_reference: Option<String>,
+    pub source_requirement: Option<String>,
+    pub traceability: Option<serde_json::Value>,
+    pub risk_factor: Option<String>,
+    pub tags: Vec<String>,
+    pub source: String,
+    pub status: TestCaseStatus,
+    pub validation_notes: Option<String>,
+    pub executed_run_id: Option<Uuid>,
+    pub executed_task_id: Option<String>,
+    pub created_by: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]

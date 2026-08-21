@@ -94,11 +94,16 @@ export const TraceabilityGraph: React.FC<TraceabilityGraphProps> = ({
     {
       id: 'ai',
       stepNum: '03',
-      label: 'AI Reasoning',
-      value: traceability?.aiAnalysis || 'Synthesized via Gemini Quality Engine',
+      label: 'Generation Method',
+      // FE-16: was `traceability?.aiAnalysis || 'Synthesized via Gemini
+      // Quality Engine'` — both the field and this fallback made a false
+      // AI-synthesis claim. `aiAnalysis` is now itself always a truthful
+      // string (see `TestCaseGeneratorPage.tsx`); this fallback covers only
+      // the case where no `traceability` exists at all.
+      value: traceability?.aiAnalysis || 'Locally assembled from template (no AI model called)',
       icon: Sparkles,
-      badge: 'GENAI',
-      status: 'SYNTHESIZED',
+      badge: 'LOCAL',
+      status: 'TEMPLATE',
       stateCategory: 'COMPLETED',
       color: 'border-purple-500/40 bg-purple-950/30 text-purple-200',
       iconColor: 'text-purple-400',
@@ -186,7 +191,7 @@ export const TraceabilityGraph: React.FC<TraceabilityGraphProps> = ({
         </div>
         <div className="flex items-center gap-2">
           <span className="text-[10px] font-mono font-bold text-slate-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
-            Steps 01–05: <span className="text-emerald-400">Synthesized</span>
+            Steps 01–05: <span className="text-emerald-400">Prepared</span>
           </span>
           <span className="text-[10px] font-mono font-bold text-slate-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
             Steps 06–08: <span className="text-amber-400">Downstream Workflow</span>

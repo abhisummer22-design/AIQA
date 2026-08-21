@@ -66,15 +66,12 @@ import {
   Inbox,
   Layers,
   RotateCcw,
-  ShieldAlert,
-  WifiOff,
-  XCircle,
-  AlertTriangle,
 } from 'lucide-react';
 import { ApiError, aiqaApi, getApiKey } from '../../services/aiqaApi';
 import { useProject } from '../../context/ProjectContext';
 import { useRealtime } from '../../context/RealtimeContext';
-import { StateCard, Cta } from '../state/StateViews';
+import { StateCard, Cta, renderResourceErrorState } from '../state/StateViews';
+import { formatStatusLabel } from '../../utils/statusLabel';
 import { EmptyState } from '../common/EmptyState';
 import type { EvidenceRow, RunListItem } from '../../types/contract';
 
@@ -378,69 +375,11 @@ export const EvidencePage: React.FC = () => {
 
   const selectedRun = useMemo(() => runs?.find((r) => r.run_id === selectedRunId) ?? null, [runs, selectedRunId]);
 
-  const requestIdNode = (err: ApiError | null) =>
-    err?.requestId ? <p className="text-[10px] font-mono text-slate-500">request_id: {err.requestId}</p> : null;
-
-  const errorStateCard = (err: ApiError, onRetry: () => void) => {
-    switch (err.kind) {
-      case 'unauthorized':
-        return (
-          <StateCard
-            icon={XCircle}
-            iconClassName="text-rose-400"
-            statusLabel="AUTHENTICATION REQUIRED · 401"
-            statusClassName="text-rose-400 bg-rose-950/60 border-rose-800"
-            title="Authentication required"
-            description="The orchestrator rejected this request. The API key may have been revoked since it was last verified."
-            actions={<Cta label="Retry" icon={RotateCcw} onClick={onRetry} primary />}
-          >
-            {requestIdNode(err)}
-          </StateCard>
-        );
-      case 'forbidden':
-        return (
-          <StateCard
-            icon={ShieldAlert}
-            iconClassName="text-orange-400"
-            statusLabel="ACCESS FORBIDDEN · 403"
-            statusClassName="text-orange-400 bg-orange-950/60 border-orange-800"
-            title="Not permitted to view this evidence"
-            description="This key's project scope does not permit viewing this project's evidence. This is a permission problem, not a bad credential."
-            actions={<Cta label="Retry" icon={RotateCcw} onClick={onRetry} primary />}
-          >
-            {requestIdNode(err)}
-          </StateCard>
-        );
-      case 'offline':
-        return (
-          <StateCard
-            icon={WifiOff}
-            iconClassName="text-slate-400"
-            statusLabel="ORCHESTRATOR UNREACHABLE"
-            statusClassName="text-slate-400 bg-slate-800/60 border-slate-700"
-            title="Orchestrator unreachable"
-            description="Unable to reach the AIQA Orchestrator."
-            actions={<Cta label="Retry" icon={RotateCcw} onClick={onRetry} primary />}
-          >
-            {requestIdNode(err)}
-          </StateCard>
-        );
-      default:
-        return (
-          <StateCard
-            icon={AlertTriangle}
-            iconClassName="text-rose-400"
-            statusLabel="ERROR"
-            statusClassName="text-rose-400 bg-rose-950/60 border-rose-800"
-            title="Couldn't load this data"
-            description={err.message}
-            actions={<Cta label="Retry" icon={RotateCcw} onClick={onRetry} primary />}
-          >
-            {requestIdNode(err)}
-          </StateCard>
-        );
-    }
-  };
+  const errorStateCard = (err: ApiError, onRetry: () => void) =>
+    renderResourceErrorState(err, onRetry, {
+      forbiddenTitle: 'Not permitted to view this evidence',
+      forbiddenDescription: "This key's project scope does not permit viewing this project's evidence. This is a permission problem, not a bad credential.",
+    });
 
   const kindIcon = (contentType: string | null): React.ReactNode => {
     const kind = previewKindFor(contentType);
@@ -647,7 +586,7 @@ export const EvidencePage: React.FC = () => {
             <option value="">Select an execution…</option>
             {runs?.map((r) => (
               <option key={r.run_id} value={r.run_id}>
-                {r.name} ({r.state})
+                {r.name} ({formatStatusLabel(r.state)})
               </option>
             ))}
           </select>

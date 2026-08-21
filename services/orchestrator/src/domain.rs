@@ -282,6 +282,126 @@ impl EventType {
     }
 }
 
+// ------------------------------------------------------------- test cases
+//
+// AUD-005 — a real, persisted, project-isolated Test Case entity produced by
+// the Test Case Generator, replacing its previous React-state-only output
+// (gone on refresh, never known to the backend, never convertible into a
+// real execution). See `AIQA_TEST_CASE_PERSISTENCE_HANDOFF_IMPLEMENTATION_
+// REPORT.md` for the full design rationale, and `store.rs`'s test-case
+// functions for the persisted shape.
+
+/// FRD-AGT-04 ("validate structured agent output before automatic
+/// execution") + FRD-EXE-11 ("convert approved test cases into schedulable
+/// tasks"): approval, not mere generation, is what gates execution. Entry
+/// state is always `Generated` (persisting a generated case *is* the
+/// generation step); `Rejected` is reachable from `Generated`/`Validated`;
+/// only `Approved` may be handed off to a real execution, which moves the
+/// case to `Executed`. Transitions are enforced in `store.rs` via a
+/// conditional `UPDATE ... WHERE status = <expected prior state>`, not just
+/// checked in a handler after the fact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum TestCaseStatus {
+    Generated,
+    Validated,
+    Approved,
+    Rejected,
+    Executed,
+}
+
+impl TestCaseStatus {
+    pub fn as_db_str(&self) -> &'static str {
+        match self {
+            TestCaseStatus::Generated => "GENERATED",
+            TestCaseStatus::Validated => "VALIDATED",
+            TestCaseStatus::Approved => "APPROVED",
+            TestCaseStatus::Rejected => "REJECTED",
+            TestCaseStatus::Executed => "EXECUTED",
+        }
+    }
+
+    pub fn from_db_str(s: &str) -> Self {
+        match s {
+            "VALIDATED" => TestCaseStatus::Validated,
+            "APPROVED" => TestCaseStatus::Approved,
+            "REJECTED" => TestCaseStatus::Rejected,
+            "EXECUTED" => TestCaseStatus::Executed,
+            _ => TestCaseStatus::Generated,
+        }
+    }
+}
+
+/// One step of a test case's procedure (FRD-VAL-05: "each case retains
+/// category, priority, preconditions, steps, expected result and
+/// traceability"). Wire field names are snake_case, matching every other
+/// real contract type in this codebase (`RunSummary`, `TestIntelRow`, ...) —
+/// not the legacy local-only frontend `GeneratedTestCase` type's camelCase,
+/// which this real entity is not a serialization mirror of.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestStep {
+    pub step_number: i64,
+    pub action: String,
+    pub expected_result: String,
+}
+
+/// `POST /api/v1/projects/:project_id/test-cases` request body. Every field
+/// here already exists on the frontend's local-only `GeneratedTestCase`
+/// type (`forentend/src/types.ts`) — nothing is added merely because it
+/// sounds useful; `traceability` is kept as opaque JSON (like `quality_nodes
+/// .metadata`/`risk_assessments.inputs` elsewhere in this schema) since the
+/// backend never interprets its internal shape, only stores/returns it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateTestCaseRequest {
+    pub title: String,
+    pub description: String,
+    pub category: String,
+    pub priority: String,
+    pub severity: String,
+    #[serde(default)]
+    pub preconditions: Vec<String>,
+    pub steps: Vec<TestStep>,
+    #[serde(default)]
+    pub expected_result: Option<String>,
+    #[serde(default)]
+    pub assertions: Vec<String>,
+    #[serde(default)]
+    pub test_data: Option<String>,
+    #[serde(default)]
+    pub source_document: Option<String>,
+    #[serde(default)]
+    pub requirement_reference: Option<String>,
+    #[serde(default)]
+    pub source_requirement: Option<String>,
+    #[serde(default)]
+    pub traceability: Option<serde_json::Value>,
+    #[serde(default)]
+    pub risk_factor: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+/// `POST .../test-cases/:id/handoff` request body. Deliberately requires the
+/// caller to supply real execution parameters rather than defaulting
+/// silently: a test case's `steps`/`assertions` are natural-language
+/// content, not an automatable script, and this codebase's own PRD draws an
+/// explicit line between an Agent (decides what/why) and an Executor
+/// (performs the actual action) — bridging "what to test" to "how it is
+/// actually executed" is exactly that Agent/Executor boundary, and is a
+/// real human/product decision this endpoint must not fabricate. Defaulting
+/// to an always-`simulate: pass` task would report a fabricated "passed"
+/// result for a test that never really ran — exactly the fake-execution
+/// outcome this unit is required not to produce.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TestCaseHandoffRequest {
+    #[serde(default)]
+    pub executor: Option<String>,
+    #[serde(default)]
+    pub params: serde_json::Value,
+    #[serde(default)]
+    pub simulate: Option<SimSpec>,
+}
+
 /// SRD §5 Event Ordering & Idempotency: every event carries event_id, run_id,
 /// task_id, sequence, timestamp, schema_version. `sequence` is a per-run
 /// monotonic counter assigned by the single writer (RunRecord), so consumers

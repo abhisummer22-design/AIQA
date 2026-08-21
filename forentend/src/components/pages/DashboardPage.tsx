@@ -23,7 +23,15 @@
  *                                          until any task reaches one of
  *                                          those), execution_efficiency_ms
  *                                          (avg task duration, `null` until
- *                                          any task has both timestamps).
+ *                                          any task has both timestamps),
+ *                                          execution_avg_run_duration_ms
+ *                                          (FE-26/BE-12b — avg *run*
+ *                                          duration, `null` until any run
+ *                                          has both `started_at`/
+ *                                          `finished_at`; no frontend
+ *                                          calculation, no new request —
+ *                                          the existing `aiqaApi.dashboard.
+ *                                          kpis` call already returns it).
  *   GET /api/v1/projects/:id/executions → reused (already existed for FE-8)
  *                                          to find the real active (RUNNING)
  *                                          run, if any, for the "Current
@@ -71,17 +79,15 @@
  *     its KPIs are real would be actively misleading, not merely
  *     decorative, so this one is fixed rather than preserved.
  *
- * **Deliberately left fake, disclosed rather than silently converted**
- * (brief §30 — FE-11 owns broader fabrication removal): the "Launch Run" /
- * "Start Execution Run" buttons still open `AIQAContext`'s pre-existing
- * `RunTriggerModal` — a fabricated quick-launch flow, unrelated to this
- * sprint's real KPI/chart work and unrelated to FE-8's real Execution Hub
- * creation flow. No FRD/SRD/PRD/flow-diagram section requires Dashboard
- * itself to launch real runs, and FE-8 already established the one real
- * execution-creation surface (`/execution`, linked via the unchanged
- * "Execution Hub" quick-action). `AIQualityCoreOrb`'s decorative animation
- * and copy are unchanged in every respect except the two real props it now
- * receives (`hasActiveRun`, `status`) — see adjustment 1.
+ * **FE-11 update**: the "Launch Run" / "Start Execution Run" buttons no
+ * longer open `AIQAContext`'s fabricated `RunTriggerModal` (deleted this
+ * sprint, along with the context state that opened it) — both now
+ * `navigate('/execution')`, the same real execution-creation surface as
+ * the unchanged "Execution Hub" quick-action, per brief §24's explicit
+ * "do not maintain two competing execution-creation systems." This page no
+ * longer reads `AIQAContext` at all. `AIQualityCoreOrb`'s decorative
+ * animation and copy are unchanged in every respect except the two real
+ * props it now receives (`hasActiveRun`, `status`) — see adjustment 1.
  *
  * **The "Execution Activity" timeline chart is always rendered with its
  * own pre-existing, real, honest empty state** (`ProjectExecutionGraph`'s
@@ -116,19 +122,15 @@ import {
   Clock,
   ChevronDown,
   ArrowUpRight,
-  AlertTriangle,
   Radio,
   RotateCcw,
-  ShieldAlert,
-  WifiOff,
   FolderOpen,
   Fingerprint,
 } from 'lucide-react';
-import { useAIQA } from '../../context/AIQAContext';
 import { useProject } from '../../context/ProjectContext';
 import { useRealtime } from '../../context/RealtimeContext';
 import { ApiError, aiqaApi } from '../../services/aiqaApi';
-import { StateCard, Cta } from '../state/StateViews';
+import { StateCard, renderResourceErrorState } from '../state/StateViews';
 import { EmptyState } from '../common/EmptyState';
 import { AIQualityCoreOrb } from '../dashboard/AIQualityCoreOrb';
 import { ProjectStatusDonut } from '../dashboard/ProjectStatusDonut';
@@ -190,10 +192,6 @@ interface DashboardData {
 }
 
 export const DashboardPage: React.FC = () => {
-  // AIQAContext is used only for the one disclosed, deliberately-still-fake
-  // "Launch Run" quick-action (see this file's own module doc comment) —
-  // no fabricated project/metrics/run data is read from it anywhere below.
-  const { setNewRunModalOpen } = useAIQA();
   const { projects, selectedProjectId, selectedProject, selectProject } = useProject();
   const realtime = useRealtime();
   const navigate = useNavigate();
@@ -312,10 +310,6 @@ export const DashboardPage: React.FC = () => {
     );
   };
 
-  const requestIdNode = error?.requestId ? (
-    <p className="text-[10px] font-mono text-slate-500">request_id: {error.requestId}</p>
-  ) : null;
-
   const renderBody = () => {
     if (!selectedProjectId) {
       return (
@@ -342,64 +336,12 @@ export const DashboardPage: React.FC = () => {
     }
 
     if (error) {
-      switch (error.kind) {
-        case 'unauthorized':
-          return (
-            <StateCard
-              icon={XCircle}
-              iconClassName="text-rose-400"
-              statusLabel="AUTHENTICATION REQUIRED · 401"
-              statusClassName="text-rose-400 bg-rose-950/60 border-rose-800"
-              title="Authentication required"
-              description="The orchestrator rejected this request. The API key may have been revoked since it was last verified."
-              actions={<Cta label="Retry" icon={RotateCcw} onClick={handleRefresh} primary />}
-            >
-              {requestIdNode}
-            </StateCard>
-          );
-        case 'forbidden':
-          return (
-            <StateCard
-              icon={ShieldAlert}
-              iconClassName="text-orange-400"
-              statusLabel="ACCESS FORBIDDEN · 403"
-              statusClassName="text-orange-400 bg-orange-950/60 border-orange-800"
-              title="Not permitted to view this dashboard"
-              description={`This key's role or project scope does not permit viewing ${selectedProject?.name ?? 'this project'}'s dashboard.`}
-              actions={<Cta label="Retry" icon={RotateCcw} onClick={handleRefresh} primary />}
-            >
-              {requestIdNode}
-            </StateCard>
-          );
-        case 'offline':
-          return (
-            <StateCard
-              icon={WifiOff}
-              iconClassName="text-slate-400"
-              statusLabel="ORCHESTRATOR UNREACHABLE"
-              statusClassName="text-slate-400 bg-slate-800/60 border-slate-700"
-              title="Orchestrator unreachable"
-              description="Unable to reach the AIQA Orchestrator to load real dashboard data."
-              actions={<Cta label="Retry" icon={RotateCcw} onClick={handleRefresh} primary />}
-            >
-              {requestIdNode}
-            </StateCard>
-          );
-        default:
-          return (
-            <StateCard
-              icon={AlertTriangle}
-              iconClassName="text-rose-400"
-              statusLabel="ERROR"
-              statusClassName="text-rose-400 bg-rose-950/60 border-rose-800"
-              title="Couldn't load the dashboard"
-              description={error.message}
-              actions={<Cta label="Retry" icon={RotateCcw} onClick={handleRefresh} primary />}
-            >
-              {requestIdNode}
-            </StateCard>
-          );
-      }
+      return renderResourceErrorState(error, handleRefresh, {
+        forbiddenTitle: 'Not permitted to view this dashboard',
+        forbiddenDescription: `This key's role or project scope does not permit viewing ${selectedProject?.name ?? 'this project'}'s dashboard.`,
+        offlineDescriptionSuffix: 'to load real dashboard data.',
+        genericTitle: "Couldn't load the dashboard",
+      });
     }
 
     if (!data) return null;
@@ -683,7 +625,7 @@ export const DashboardPage: React.FC = () => {
                     All test suites are currently in standby. Launch an orchestration run to stream live diagnostics.
                   </p>
                   <button
-                    onClick={() => setNewRunModalOpen(true)}
+                    onClick={() => navigate('/execution')}
                     className="px-3 py-1 rounded bg-indigo-950 hover:bg-indigo-900 border border-indigo-700/60 text-indigo-300 text-xs font-mono font-medium cursor-pointer transition-colors"
                   >
                     Start Execution Run
@@ -699,9 +641,18 @@ export const DashboardPage: React.FC = () => {
           </div>
         </section>
 
-        {/* Execution efficiency (KPI, real, shown once — real backend concept not present as a KPI card above) */}
+        {/* Execution efficiency / Average run duration (KPI, real, shown
+            once each — real backend concepts not present as KPI cards
+            above). FE-26 — `execution_avg_run_duration_ms` (BE-12b) reuses
+            this exact same row/formatter rather than a new card: it is the
+            same "nullable real millisecond KPI" shape as
+            `execution_efficiency_ms` directly above it, not a count like
+            the 6 grid cards, so this is its natural, already-established
+            home. */}
         <div className="px-1 -mt-1 text-[10px] font-mono text-slate-500 flex items-center gap-3">
           <span>Execution efficiency: <strong className="text-slate-300">{formatMs(kpis.execution_efficiency_ms)}</strong> avg task duration</span>
+          <span>•</span>
+          <span>Average run duration: <strong className="text-slate-300">{formatMs(kpis.execution_avg_run_duration_ms)}</strong></span>
         </div>
 
         {/* 4. Real-Time Project Status Section */}
@@ -781,10 +732,10 @@ export const DashboardPage: React.FC = () => {
             </div>
           </div>
 
-          {/* New Run Action — disclosed, still fabricated (module doc comment) */}
+          {/* New Run Action — navigates to the real Execution Hub (FE-11) */}
           <button
             id="btn-launch-run"
-            onClick={() => setNewRunModalOpen(true)}
+            onClick={() => navigate('/execution')}
             className="flex items-center gap-1.5 px-3 py-2 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs shadow-sm shadow-indigo-950/60 cursor-pointer transition-colors shrink-0"
           >
             <Play className="w-3 h-3 fill-current" />

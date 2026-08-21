@@ -77,7 +77,6 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  AlertTriangle,
   Ban,
   CheckCircle2,
   ExternalLink,
@@ -87,7 +86,6 @@ import {
   Play,
   Plus,
   RotateCcw,
-  ShieldAlert,
   Square,
   Trash2,
   Wifi,
@@ -99,8 +97,9 @@ import { ApiError, aiqaApi, getApiKey } from '../../services/aiqaApi';
 import { useProject } from '../../context/ProjectContext';
 import { useRealtime } from '../../context/RealtimeContext';
 import type { RealtimeConnectionState } from '../../context/RealtimeContext';
-import { StateCard, Cta } from '../state/StateViews';
+import { StateCard, Cta, renderResourceErrorState } from '../state/StateViews';
 import { EmptyState } from '../common/EmptyState';
+import { formatStatusLabel } from '../../utils/statusLabel';
 import type { RunDetail, RunListItem, RunPlan, RunState, TaskStatus } from '../../types/contract';
 
 /** FE-9: a burst of real events (several tasks starting/finishing within
@@ -142,12 +141,20 @@ interface DraftTask {
   name: string;
   executor: string;
   simulateOutcome: (typeof SIMULATE_OUTCOMES)[number]['value'];
+  // FE-17 — real `TaskDef.prerequisites` exposure. Stores the *other* draft
+  // tasks' stable `key` (not their editable `id` text), so a prerequisite
+  // selection survives the referenced task's id being retyped later — it's
+  // resolved to that task's current `id` only at submission time (see
+  // `handleCreate`). Never contains this task's own `key` (the UI never
+  // offers a task as its own candidate — see `renderCreatePanel` below), so
+  // a self-dependency is structurally unrepresentable, not just blocked.
+  prerequisites: string[];
 }
 
 let draftTaskCounter = 0;
 function newDraftTask(): DraftTask {
   draftTaskCounter += 1;
-  return { key: `draft-${draftTaskCounter}`, id: `task-${draftTaskCounter}`, name: '', executor: '', simulateOutcome: 'pass' };
+  return { key: `draft-${draftTaskCounter}`, id: `task-${draftTaskCounter}`, name: '', executor: '', simulateOutcome: 'pass', prerequisites: [] };
 }
 
 const RUN_STATE_STYLE: Record<RunState, string> = {
@@ -475,9 +482,30 @@ export const ExecutionHubPage: React.FC = () => {
   // -------------------------------------------------------------- create
 
   const addDraftTask = () => setDraftTasks((prev) => [...prev, newDraftTask()]);
-  const removeDraftTask = (key: string) => setDraftTasks((prev) => (prev.length > 1 ? prev.filter((t) => t.key !== key) : prev));
+  // FE-17 — dependency integrity on removal (brief §8, Option A): deleting a
+  // task also strips its `key` from every remaining task's `prerequisites`,
+  // so no stale hidden dependency reference survives the delete.
+  const removeDraftTask = (key: string) =>
+    setDraftTasks((prev) =>
+      prev.length > 1
+        ? prev.filter((t) => t.key !== key).map((t) => ({ ...t, prerequisites: t.prerequisites.filter((p) => p !== key) }))
+        : prev,
+    );
   const updateDraftTask = (key: string, patch: Partial<DraftTask>) =>
     setDraftTasks((prev) => prev.map((t) => (t.key === key ? { ...t, ...patch } : t)));
+  const toggleDraftPrerequisite = (key: string, prereqKey: string) =>
+    setDraftTasks((prev) =>
+      prev.map((t) =>
+        t.key === key
+          ? {
+              ...t,
+              prerequisites: t.prerequisites.includes(prereqKey)
+                ? t.prerequisites.filter((p) => p !== prereqKey)
+                : [...t.prerequisites, prereqKey],
+            }
+          : t,
+      ),
+    );
 
   const handleCreate = useCallback(async () => {
     if (!selectedProjectId || creating || creatingLockRef.current) return;
@@ -497,22 +525,30 @@ export const ExecutionHubPage: React.FC = () => {
       return;
     }
     // Mirrors `scheduler.rs::validate_plan`'s cheapest real check (unique
-    // ids) for UX only — the backend re-validates this and every other
-    // rule (cycle detection, unknown prerequisites) authoritatively; this
-    // sprint's minimal creation form never exposes prerequisites at all
-    // (brief §10: "do not invent an elaborate execution wizard"), so a
-    // cycle can't be constructed here regardless.
+    // ids) for UX only — the backend re-validates this and every other rule
+    // (cycle detection, unknown prerequisites) authoritatively; see
+    // `scheduler.rs::validate_plan`, confirmed real and tested (FE-17
+    // report §3/§9). This form does not duplicate that engine client-side —
+    // a submitted cycle is rejected by the real backend and its exact
+    // message is shown via `createError` below, same as any other real
+    // validation failure.
     if (new Set(ids).size !== ids.length) {
       setCreateError('Task IDs must be unique.');
       creatingLockRef.current = false;
       return;
     }
 
+    // FE-17 — `prerequisites` resolves each selected dependency's stable
+    // `key` to that task's *current* `id` text at submission time (not the
+    // id at selection time), so an edit to a referenced task's id never
+    // leaves a stale/dangling reference in the real payload.
+    const idByKey = new Map(draftTasks.map((t) => [t.key, t.id.trim()]));
     const plan: RunPlan = {
       name,
       tasks: draftTasks.map((t) => ({
         id: t.id.trim(),
         name: t.name.trim() || t.id.trim(),
+        prerequisites: t.prerequisites.map((k) => idByKey.get(k)).filter((v): v is string => !!v),
         ...(t.executor ? { executor: t.executor } : { simulate: { outcome: t.simulateOutcome } }),
       })),
       ...(concurrency.trim() ? { concurrency: Number(concurrency) } : {}),
@@ -585,69 +621,11 @@ export const ExecutionHubPage: React.FC = () => {
 
   // -------------------------------------------------------------- render
 
-  const requestIdNode = (err: ApiError | null) =>
-    err?.requestId ? <p className="text-[10px] font-mono text-slate-500">request_id: {err.requestId}</p> : null;
-
-  const errorStateCard = (err: ApiError, onRetry: () => void) => {
-    switch (err.kind) {
-      case 'unauthorized':
-        return (
-          <StateCard
-            icon={XCircle}
-            iconClassName="text-rose-400"
-            statusLabel="AUTHENTICATION REQUIRED · 401"
-            statusClassName="text-rose-400 bg-rose-950/60 border-rose-800"
-            title="Authentication required"
-            description="The orchestrator rejected this request. The API key may have been revoked since it was last verified."
-            actions={<Cta label="Retry" icon={RotateCcw} onClick={onRetry} primary />}
-          >
-            {requestIdNode(err)}
-          </StateCard>
-        );
-      case 'forbidden':
-        return (
-          <StateCard
-            icon={ShieldAlert}
-            iconClassName="text-orange-400"
-            statusLabel="ACCESS FORBIDDEN · 403"
-            statusClassName="text-orange-400 bg-orange-950/60 border-orange-800"
-            title="Not permitted"
-            description="This key's role or project scope does not permit this action. This is a permission problem, not a bad credential."
-            actions={<Cta label="Retry" icon={RotateCcw} onClick={onRetry} primary />}
-          >
-            {requestIdNode(err)}
-          </StateCard>
-        );
-      case 'offline':
-        return (
-          <StateCard
-            icon={WifiOff}
-            iconClassName="text-slate-400"
-            statusLabel="ORCHESTRATOR UNREACHABLE"
-            statusClassName="text-slate-400 bg-slate-800/60 border-slate-700"
-            title="Orchestrator unreachable"
-            description="Unable to reach the AIQA Orchestrator."
-            actions={<Cta label="Retry" icon={RotateCcw} onClick={onRetry} primary />}
-          >
-            {requestIdNode(err)}
-          </StateCard>
-        );
-      default:
-        return (
-          <StateCard
-            icon={AlertTriangle}
-            iconClassName="text-rose-400"
-            statusLabel="ERROR"
-            statusClassName="text-rose-400 bg-rose-950/60 border-rose-800"
-            title="Couldn't load this data"
-            description={err.message}
-            actions={<Cta label="Retry" icon={RotateCcw} onClick={onRetry} primary />}
-          >
-            {requestIdNode(err)}
-          </StateCard>
-        );
-    }
-  };
+  const errorStateCard = (err: ApiError, onRetry: () => void) =>
+    renderResourceErrorState(err, onRetry, {
+      forbiddenTitle: 'Not permitted',
+      forbiddenDescription: "This key's role or project scope does not permit this action. This is a permission problem, not a bad credential.",
+    });
 
   const renderRunList = () => {
     if (runsLoading) {
@@ -684,7 +662,7 @@ export const ExecutionHubPage: React.FC = () => {
                 r.run_id === selectedRunId ? 'bg-slate-800/60' : ''
               }`}
             >
-              <Badge label={r.state} className={RUN_STATE_STYLE[r.state]} />
+              <Badge label={formatStatusLabel(r.state)} className={RUN_STATE_STYLE[r.state]} />
               <span className="font-mono text-xs font-semibold text-slate-100 truncate">{r.name}</span>
               <span className="ml-auto shrink-0 text-[10px] font-mono text-slate-500">
                 {r.passed}/{r.total} passed
@@ -724,12 +702,27 @@ export const ExecutionHubPage: React.FC = () => {
           <div className="space-y-1">
             <div className="flex items-center gap-2 flex-wrap">
               <h3 className="text-sm font-bold text-slate-100 font-sans">{detail.name}</h3>
-              <Badge label={detail.state} className={RUN_STATE_STYLE[detail.state]} />
+              <Badge label={formatStatusLabel(detail.state)} className={RUN_STATE_STYLE[detail.state]} />
             </div>
             <div className="flex items-center gap-3 text-[11px] font-mono text-slate-400 flex-wrap">
               <span>Requested by: <strong className="text-slate-200">{detail.requested_by ?? '—'}</strong></span>
               <span>Started: <strong className="text-slate-200">{formatTimestamp(detail.started_at)}</strong></span>
               <span>Finished: <strong className="text-slate-200">{formatTimestamp(detail.finished_at)}</strong></span>
+              {/* FE-18 — real `RunSummary.approved_by`/`.approved_at` (already
+                  fetched by every `detail` request; `store.rs::approve_run`/
+                  `reject_run` populate both with the real acting API key's
+                  name, on *either* a real approval or a real rejection). Only
+                  ever shown for a run that genuinely passed through the real
+                  policy approval gate — a run that was auto-scheduled has
+                  both fields `null` and this line stays hidden, never a
+                  fabricated "—" placeholder. */}
+              {detail.approved_by && (
+                <span id="run-approval-attribution">
+                  {detail.state === 'REJECTED' ? 'Rejected by' : 'Approved by'}:{' '}
+                  <strong className="text-slate-200">{detail.approved_by}</strong> at{' '}
+                  <strong className="text-slate-200">{formatTimestamp(detail.approved_at)}</strong>
+                </span>
+              )}
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -750,25 +743,49 @@ export const ExecutionHubPage: React.FC = () => {
         )}
         {actionError && <div className="px-2.5 py-2 rounded-md bg-rose-950/30 border border-rose-900/60 text-rose-300 text-[11px]">{actionError.message}</div>}
 
-        <div className="grid grid-cols-3 sm:grid-cols-5 gap-2 text-[10px] font-mono">
+        <div id="run-detail-count-grid" className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-6 gap-2 text-[10px] font-mono">
           <div className="p-1.5 rounded bg-[#020617] border border-slate-800 text-center">
             <div className="text-slate-500">TOTAL</div>
             <div className="text-slate-200 font-bold">{detail.total}</div>
           </div>
           <div className="p-1.5 rounded bg-[#020617] border border-slate-800 text-center">
-            <div className="text-slate-500">PASSED</div>
+            <div className="text-slate-500">{formatStatusLabel('QUEUED')}</div>
+            <div className="text-slate-400 font-bold">{detail.queued}</div>
+          </div>
+          <div className="p-1.5 rounded bg-[#020617] border border-slate-800 text-center">
+            <div className="text-slate-500">{formatStatusLabel('RUNNING')}</div>
+            <div className="text-cyan-400 font-bold">{detail.running}</div>
+          </div>
+          <div className="p-1.5 rounded bg-[#020617] border border-slate-800 text-center">
+            <div className="text-slate-500">{formatStatusLabel('PASSED')}</div>
             <div className="text-emerald-400 font-bold">{detail.passed}</div>
           </div>
           <div className="p-1.5 rounded bg-[#020617] border border-slate-800 text-center">
-            <div className="text-slate-500">FAILED</div>
+            <div className="text-slate-500">{formatStatusLabel('FAILED')}</div>
             <div className="text-rose-400 font-bold">{detail.failed}</div>
           </div>
           <div className="p-1.5 rounded bg-[#020617] border border-slate-800 text-center">
-            <div className="text-slate-500">BLOCKED</div>
+            <div className="text-slate-500">{formatStatusLabel('BLOCKED')}</div>
             <div className="text-purple-400 font-bold">{detail.blocked}</div>
           </div>
           <div className="p-1.5 rounded bg-[#020617] border border-slate-800 text-center">
-            <div className="text-slate-500">NEEDS REVIEW</div>
+            <div className="text-slate-500">{formatStatusLabel('SKIPPED')}</div>
+            <div className="text-slate-400 font-bold">{detail.skipped}</div>
+          </div>
+          <div className="p-1.5 rounded bg-[#020617] border border-slate-800 text-center">
+            <div className="text-slate-500">{formatStatusLabel('CANCELLED')}</div>
+            <div className="text-slate-400 font-bold">{detail.cancelled}</div>
+          </div>
+          <div className="p-1.5 rounded bg-[#020617] border border-slate-800 text-center">
+            <div className="text-slate-500">{formatStatusLabel('TIMEOUT')}</div>
+            <div className="text-orange-400 font-bold">{detail.timeout}</div>
+          </div>
+          <div className="p-1.5 rounded bg-[#020617] border border-slate-800 text-center">
+            <div className="text-slate-500">{formatStatusLabel('INFRA_ERROR')}</div>
+            <div className="text-orange-400 font-bold">{detail.infra_error}</div>
+          </div>
+          <div className="p-1.5 rounded bg-[#020617] border border-slate-800 text-center">
+            <div className="text-slate-500">{formatStatusLabel('NEEDS_REVIEW')}</div>
             <div className="text-amber-400 font-bold">{detail.needs_review}</div>
           </div>
         </div>
@@ -792,7 +809,7 @@ export const ExecutionHubPage: React.FC = () => {
                     <div className="font-mono text-[10px] text-slate-500">{t.id}</div>
                   </td>
                   <td className="py-2 px-2.5">
-                    <Badge label={t.status} className={TASK_STATUS_STYLE[t.status]} />
+                    <Badge label={formatStatusLabel(t.status)} className={TASK_STATUS_STYLE[t.status]} />
                   </td>
                   <td className="py-2 px-2.5 text-slate-400 max-w-xs truncate" title={redactOwnKey(t.reason) ?? undefined}>
                     {redactOwnKey(t.reason) ?? '—'}
@@ -858,7 +875,8 @@ export const ExecutionHubPage: React.FC = () => {
           </button>
         </div>
         {draftTasks.map((t) => (
-          <div key={t.key} className="flex flex-wrap items-center gap-2 p-2 rounded-md bg-[#020617] border border-slate-800">
+          <div key={t.key} className="p-2 rounded-md bg-[#020617] border border-slate-800 space-y-1.5">
+          <div className="flex flex-wrap items-center gap-2">
             <input
               type="text"
               value={t.id}
@@ -907,10 +925,43 @@ export const ExecutionHubPage: React.FC = () => {
               <Trash2 className="w-3.5 h-3.5" />
             </button>
           </div>
+          {/* FE-17 — real `TaskDef.prerequisites` exposure. Only shown once a
+              second task exists to depend on; a task is never offered as its
+              own candidate, so a self-dependency cannot be selected. */}
+          {draftTasks.length > 1 && (
+            <div id={`task-prereqs-${t.key}`} className="flex flex-wrap items-center gap-1.5 pl-1">
+              <span className="text-[10px] font-mono text-slate-500 uppercase">Depends on:</span>
+              {draftTasks
+                .filter((other) => other.key !== t.key)
+                .map((other) => {
+                  const selected = t.prerequisites.includes(other.key);
+                  return (
+                    <button
+                      key={other.key}
+                      type="button"
+                      onClick={() => toggleDraftPrerequisite(t.key, other.key)}
+                      aria-pressed={selected}
+                      className={`px-2 py-0.5 rounded text-[10px] font-mono cursor-pointer border transition-colors ${
+                        selected
+                          ? 'bg-indigo-950/80 border-indigo-600 text-indigo-200'
+                          : 'bg-[#0B1120] border-slate-800 text-slate-400 hover:border-slate-700 hover:text-slate-200'
+                      }`}
+                    >
+                      {other.id.trim() || other.key}
+                    </button>
+                  );
+                })}
+              {t.prerequisites.length === 0 && (
+                <span className="text-[10px] text-slate-600">none — click a task above to add a dependency</span>
+              )}
+            </div>
+          )}
+          </div>
         ))}
         <p className="text-[10px] text-slate-500">
-          Tasks default to no prerequisites (this sprint's minimal creation form doesn't expose task dependencies — the real backend
-          supports them, but building that editor would mean "an elaborate execution wizard" this sprint's brief explicitly avoids).
+          Prerequisites map directly to the real backend <code>TaskDef.prerequisites</code>. The backend authoritatively
+          validates unique task ids, unknown prerequisite references, and dependency cycles — this form does not duplicate
+          that logic.
         </p>
       </div>
 

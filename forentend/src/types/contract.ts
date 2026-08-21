@@ -262,6 +262,28 @@ export interface ReviewFindingRequest {
   action: 'confirm' | 'dismiss';
 }
 
+// -------------------------------------------------------- test intelligence
+
+/** `store.rs::TestIntelRow` (FE-22 — exposed via BE-10's project-scoped
+ *  `GET .../intelligence/tests`). Real, deterministic (rule-based, not LLM
+ *  — `intelligence.rs::update_test_intelligence`) per-test risk/value/
+ *  flakiness scoring, computed after every run completes. Every numeric
+ *  field is `Option<f64>`/`Option<i64>` on the backend and stays nullable
+ *  here — a test with no scoreable history yet is `null`, never a
+ *  fabricated `0`. */
+export interface TestIntelRow {
+  id: string;
+  name: string;
+  risk_score: number | null;
+  failure_rate: number | null;
+  dependency_count: number | null;
+  execution_cost_ms: number | null;
+  value_score: number | null;
+  flakiness_score: number | null;
+  window_runs: number | null;
+  window_failures: number | null;
+}
+
 // ------------------------------------------------------------ dashboard / kpis
 
 /** `api.rs::DashboardResponse` (BE-12 §4). Only the concepts genuinely
@@ -285,6 +307,12 @@ export interface KpisResponse {
   project_id: string;
   execution_reliability: number | null;
   execution_efficiency_ms: number | null;
+  /** FE-26 — `api.rs::KpisResponse.execution_avg_run_duration_ms` (BE-12b).
+   *  Average *run* duration in milliseconds (distinct from
+   *  `execution_efficiency_ms`, which is per task), over every terminal
+   *  run with both `started_at`/`finished_at`. `null` when no such run
+   *  exists yet — never a fabricated `0`. */
+  execution_avg_run_duration_ms: number | null;
   generated_at: string;
 }
 
@@ -300,6 +328,92 @@ export interface AuditRow {
   target: string | null;
   detail: string | null;
   outcome: string;
+}
+
+// -------------------------------------------------------------- test cases
+
+/** `domain.rs::TestCaseStatus` (AUD-005). Only `APPROVED` cases may be
+ *  handed off to a real execution (FRD-EXE-11) — `store.rs`'s conditional
+ *  `UPDATE ... WHERE status = ...` enforces every transition below
+ *  server-side, not just in this client. */
+export type TestCaseStatus = 'GENERATED' | 'VALIDATED' | 'APPROVED' | 'REJECTED' | 'EXECUTED';
+
+/** `domain.rs::TestStep`. */
+export interface TestCaseStep {
+  step_number: number;
+  action: string;
+  expected_result: string;
+}
+
+/** `domain.rs::CreateTestCaseRequest` — `POST .../test-cases` body. */
+export interface CreateTestCaseRequest {
+  title: string;
+  description: string;
+  category: string;
+  priority: string;
+  severity: string;
+  preconditions?: string[];
+  steps: TestCaseStep[];
+  expected_result?: string | null;
+  assertions?: string[];
+  test_data?: string | null;
+  source_document?: string | null;
+  requirement_reference?: string | null;
+  source_requirement?: string | null;
+  traceability?: unknown;
+  risk_factor?: string | null;
+  tags?: string[];
+}
+
+/** `store.rs::TestCaseRow` — the persisted, real shape returned by every
+ *  `.../test-cases` endpoint. */
+export interface TestCaseRow {
+  id: string;
+  project_id: string;
+  title: string;
+  description: string;
+  category: string;
+  priority: string;
+  severity: string;
+  preconditions: string[];
+  steps: TestCaseStep[];
+  expected_result: string;
+  assertions: string[];
+  test_data: string | null;
+  source_document: string | null;
+  requirement_reference: string | null;
+  source_requirement: string | null;
+  traceability: unknown | null;
+  risk_factor: string | null;
+  tags: string[];
+  source: string;
+  status: TestCaseStatus;
+  validation_notes: string | null;
+  executed_run_id: string | null;
+  executed_task_id: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UpdateTestCaseRequest {
+  title?: string;
+  description?: string;
+  priority?: string;
+  preconditions?: string[];
+  steps?: TestCaseStep[];
+  expected_result?: string;
+}
+
+/** `domain.rs::TestCaseHandoffRequest`. Deliberately requires the caller to
+ *  choose either a real `executor` or an explicit `simulate` outcome — the
+ *  backend rejects a handoff with neither (400), rather than silently
+ *  reporting a fabricated "passed" result for steps nothing has actually
+ *  run. See `store.rs`/`api.rs`'s own doc comments on why. */
+export interface TestCaseHandoffRequest {
+  executor?: string;
+  params?: unknown;
+  simulate?: { outcome: 'pass' | 'fail' | 'timeout' | 'infra_error'; delay_ms?: number };
 }
 
 // ----------------------------------------------------------------------- errors

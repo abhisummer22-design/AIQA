@@ -14,7 +14,7 @@ import { useAIQA } from '../../context/AIQAContext';
 import { routeDefs } from '../../routes/routeConfig';
 
 export const CommandPalette: React.FC = () => {
-  const { isCommandPaletteOpen, setCommandPaletteOpen, setCurrentEnvironment, setNewRunModalOpen } = useAIQA();
+  const { isCommandPaletteOpen, setCommandPaletteOpen, setCurrentEnvironment } = useAIQA();
   const navigate = useNavigate();
 
   const [search, setSearch] = useState('');
@@ -45,7 +45,7 @@ export const CommandPalette: React.FC = () => {
           label: 'Launch New Execution Run...',
           icon: Plus,
           action: () => {
-            setNewRunModalOpen(true);
+            navigate('/execution');
             setCommandPaletteOpen(false);
           },
         },

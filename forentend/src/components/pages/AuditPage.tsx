@@ -27,11 +27,11 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, FolderOpen, Inbox, RotateCcw, ScrollText, Search, ShieldAlert, WifiOff, XCircle } from 'lucide-react';
+import { FolderOpen, Inbox, RotateCcw, ScrollText, Search } from 'lucide-react';
 import { ApiError, aiqaApi, getApiKey } from '../../services/aiqaApi';
 import { useProject } from '../../context/ProjectContext';
 import { useRealtime } from '../../context/RealtimeContext';
-import { StateCard, Cta } from '../state/StateViews';
+import { StateCard, renderResourceErrorState } from '../state/StateViews';
 import { EmptyState } from '../common/EmptyState';
 import type { AuditRow } from '../../types/contract';
 
@@ -216,10 +216,6 @@ export const AuditPage: React.FC = () => {
     return rows.map((row, index) => ({ row, index })).filter(({ row }) => matchesSearch(row, search));
   }, [rows, search]);
 
-  const requestIdNode = error?.requestId ? (
-    <p className="text-[10px] font-mono text-slate-500">request_id: {error.requestId}</p>
-  ) : null;
-
   const renderBody = () => {
     if (!selectedProjectId) {
       return (
@@ -246,64 +242,12 @@ export const AuditPage: React.FC = () => {
     }
 
     if (error) {
-      switch (error.kind) {
-        case 'unauthorized':
-          return (
-            <StateCard
-              icon={XCircle}
-              iconClassName="text-rose-400"
-              statusLabel="AUTHENTICATION REQUIRED · 401"
-              statusClassName="text-rose-400 bg-rose-950/60 border-rose-800"
-              title="Authentication required"
-              description="The orchestrator rejected this request. The API key may have been revoked since it was last verified."
-              actions={<Cta label="Retry" icon={RotateCcw} onClick={handleRefresh} primary />}
-            >
-              {requestIdNode}
-            </StateCard>
-          );
-        case 'forbidden':
-          return (
-            <StateCard
-              icon={ShieldAlert}
-              iconClassName="text-orange-400"
-              statusLabel="ACCESS FORBIDDEN · 403"
-              statusClassName="text-orange-400 bg-orange-950/60 border-orange-800"
-              title="Not permitted to view this audit trail"
-              description={`This key's role or project scope does not permit viewing ${selectedProject?.name ?? 'this project'}'s audit trail (the backend requires Operator role or above). This is a permission problem, not a bad credential.`}
-              actions={<Cta label="Retry" icon={RotateCcw} onClick={handleRefresh} primary />}
-            >
-              {requestIdNode}
-            </StateCard>
-          );
-        case 'offline':
-          return (
-            <StateCard
-              icon={WifiOff}
-              iconClassName="text-slate-400"
-              statusLabel="ORCHESTRATOR UNREACHABLE"
-              statusClassName="text-slate-400 bg-slate-800/60 border-slate-700"
-              title="Orchestrator unreachable"
-              description="Unable to reach the AIQA Orchestrator to load the audit trail."
-              actions={<Cta label="Retry" icon={RotateCcw} onClick={handleRefresh} primary />}
-            >
-              {requestIdNode}
-            </StateCard>
-          );
-        default:
-          return (
-            <StateCard
-              icon={AlertTriangle}
-              iconClassName="text-rose-400"
-              statusLabel="ERROR"
-              statusClassName="text-rose-400 bg-rose-950/60 border-rose-800"
-              title="Couldn't load the audit trail"
-              description={error.message}
-              actions={<Cta label="Retry" icon={RotateCcw} onClick={handleRefresh} primary />}
-            >
-              {requestIdNode}
-            </StateCard>
-          );
-      }
+      return renderResourceErrorState(error, handleRefresh, {
+        forbiddenTitle: 'Not permitted to view this audit trail',
+        forbiddenDescription: `This key's role or project scope does not permit viewing ${selectedProject?.name ?? 'this project'}'s audit trail (the backend requires Operator role or above). This is a permission problem, not a bad credential.`,
+        offlineDescriptionSuffix: 'to load the audit trail.',
+        genericTitle: "Couldn't load the audit trail",
+      });
     }
 
     if (rows && rows.length === 0) {

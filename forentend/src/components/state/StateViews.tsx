@@ -40,12 +40,14 @@ import {
   LogOut,
   LucideIcon,
   RefreshCw,
+  RotateCcw,
   ShieldAlert,
   ShieldCheck,
   WifiOff,
   XCircle,
 } from 'lucide-react';
 import { AuthContextType, AuthStatus } from '../../context/AuthContext';
+import type { ApiError } from '../../services/aiqaApi';
 
 // ------------------------------------------------------------- primitive
 
@@ -413,3 +415,106 @@ export const StateGate: React.FC<StateGateProps> = ({ auth, actions, children })
   if (auth.status === 'authenticated') return <>{children}</>;
   return <>{renderAuthState(auth, actions)}</>;
 };
+
+// ------------------------------------------------------- resource error state
+
+/** FE-12 — the single place that maps a real, per-request `ApiError` (401/
+ *  403/offline/other) to a state card, for the five real, backend-scoped
+ *  resource pages (Dashboard, Audit, Evidence, Execution Hub, Reports).
+ *
+ *  Before this sprint, each of those five pages hand-copied an identical
+ *  four-branch switch — same icons, same `statusLabel`/`statusClassName`
+ *  for every branch, same `unauthorized`/`offline` title and description
+ *  verbatim in all five, only the `forbidden` title/description (which
+ *  correctly names the specific resource and, where relevant, the specific
+ *  role requirement) and the `offline`/generic descriptions' trailing
+ *  clause varying per page. That is exactly the kind of "vocabulary
+ *  duplicated identically across pages" this sprint's brief asks to
+ *  centralize (§10) — the four-branch *shape*, the two universally-
+ *  identical branches, and the icon/color/statusLabel vocabulary for all
+ *  four branches move here; only the genuinely page-specific `forbidden`
+ *  copy (and the offline description's short suffix) stays a parameter,
+ *  since collapsing those into one generic sentence would either lose real
+ *  accuracy (e.g. Audit's real "requires Operator role or above") or force
+ *  a misleadingly generic message onto a page with a different real
+ *  requirement — this sprint's own rule against merging genuinely distinct
+ *  meanings under one label. */
+export interface ResourceErrorCopy {
+  /** e.g. "Not permitted to view this audit trail". */
+  forbiddenTitle: string;
+  /** The full 403 description sentence(s) — kept page-specific since the
+   *  real required role differs per endpoint. */
+  forbiddenDescription: string;
+  /** Trailing clause only, e.g. "to load real dashboard data." / "to load
+   *  findings." Combined as `Unable to reach the AIQA Orchestrator ${suffix}`.
+   *  Omit for the plain "Unable to reach the AIQA Orchestrator." */
+  offlineDescriptionSuffix?: string;
+  /** The generic (non-401/403/offline) error title — also genuinely varies
+   *  per page today (`"Couldn't load the audit trail"` vs `"...the
+   *  dashboard"` vs `"...findings"` vs the two pages that already used the
+   *  plain generic form). Defaults to that existing generic form. */
+  genericTitle?: string;
+}
+
+export function renderResourceErrorState(error: ApiError, onRetry: () => void, copy: ResourceErrorCopy): React.ReactNode {
+  const requestIdNode = error.requestId ? <p className="text-[10px] font-mono text-slate-500">request_id: {error.requestId}</p> : null;
+
+  switch (error.kind) {
+    case 'unauthorized':
+      return (
+        <StateCard
+          icon={XCircle}
+          iconClassName="text-rose-400"
+          statusLabel="AUTHENTICATION REQUIRED · 401"
+          statusClassName="text-rose-400 bg-rose-950/60 border-rose-800"
+          title="Authentication required"
+          description="The orchestrator rejected this request. The API key may have been revoked since it was last verified."
+          actions={<Cta label="Retry" icon={RotateCcw} onClick={onRetry} primary />}
+        >
+          {requestIdNode}
+        </StateCard>
+      );
+    case 'forbidden':
+      return (
+        <StateCard
+          icon={ShieldAlert}
+          iconClassName="text-orange-400"
+          statusLabel="ACCESS FORBIDDEN · 403"
+          statusClassName="text-orange-400 bg-orange-950/60 border-orange-800"
+          title={copy.forbiddenTitle}
+          description={copy.forbiddenDescription}
+          actions={<Cta label="Retry" icon={RotateCcw} onClick={onRetry} primary />}
+        >
+          {requestIdNode}
+        </StateCard>
+      );
+    case 'offline':
+      return (
+        <StateCard
+          icon={WifiOff}
+          iconClassName="text-slate-400"
+          statusLabel="ORCHESTRATOR UNREACHABLE"
+          statusClassName="text-slate-400 bg-slate-800/60 border-slate-700"
+          title="Orchestrator unreachable"
+          description={copy.offlineDescriptionSuffix ? `Unable to reach the AIQA Orchestrator ${copy.offlineDescriptionSuffix}` : 'Unable to reach the AIQA Orchestrator.'}
+          actions={<Cta label="Retry" icon={RotateCcw} onClick={onRetry} primary />}
+        >
+          {requestIdNode}
+        </StateCard>
+      );
+    default:
+      return (
+        <StateCard
+          icon={AlertTriangle}
+          iconClassName="text-rose-400"
+          statusLabel="ERROR"
+          statusClassName="text-rose-400 bg-rose-950/60 border-rose-800"
+          title={copy.genericTitle ?? "Couldn't load this data"}
+          description={error.message}
+          actions={<Cta label="Retry" icon={RotateCcw} onClick={onRetry} primary />}
+        >
+          {requestIdNode}
+        </StateCard>
+      );
+  }
+}

@@ -54,7 +54,12 @@ import type {
   RunPlan,
   RunSummary,
   TaskState,
+  TestCaseHandoffRequest,
+  TestCaseRow,
+  TestIntelRow,
   UpdateProjectRequest,
+  UpdateTestCaseRequest,
+  CreateTestCaseRequest,
 } from '../types/contract';
 
 /** Base path for orchestrator calls. Dev: proxy this to the orchestrator
@@ -416,5 +421,43 @@ export const aiqaApi = {
   audit: {
     list: (projectId: string, opts: { limit?: number } = {}, signal?: AbortSignal) =>
       requestJson<AuditRow[]>(`/projects/${projectId}/audit`, { query: { limit: opts.limit }, signal }),
+  },
+
+  /** FE-22 — BE-10's project-scoped `TestIntelRow[]` route. The legacy,
+   *  unscoped `/intelligence/tests` (key-bound `ctx.project_id`, no URL
+   *  parameter) is deliberately never called from here — see BE-10's
+   *  report for why that endpoint is unsafe for this app's multi-project
+   *  key/project-switcher model. No fallback to it exists. */
+  intelligence: {
+    tests: (projectId: string, signal?: AbortSignal) =>
+      requestJson<TestIntelRow[]>(`/projects/${projectId}/intelligence/tests`, { signal }),
+  },
+
+  /** AUD-005 — real, persisted, project-isolated Test Case CRUD + lifecycle
+   *  + execution handoff (`services/orchestrator/src/api.rs`'s
+   *  `*_test_case_scoped` handlers). Replaces the Test Case Generator's
+   *  previous local-only, React-state-only output. */
+  testCases: {
+    list: (projectId: string, opts: { status?: TestCaseRow['status'] } = {}, signal?: AbortSignal) =>
+      requestJson<TestCaseRow[]>(`/projects/${projectId}/test-cases`, { query: { status: opts.status }, signal }),
+    create: (projectId: string, body: CreateTestCaseRequest, signal?: AbortSignal) =>
+      requestJson<TestCaseRow>(`/projects/${projectId}/test-cases`, { method: 'POST', body, signal }),
+    get: (projectId: string, id: string, signal?: AbortSignal) =>
+      requestJson<TestCaseRow>(`/projects/${projectId}/test-cases/${id}`, { signal }),
+    update: (projectId: string, id: string, body: UpdateTestCaseRequest, signal?: AbortSignal) =>
+      requestJson<TestCaseRow>(`/projects/${projectId}/test-cases/${id}`, { method: 'PATCH', body, signal }),
+    delete: (projectId: string, id: string, signal?: AbortSignal) =>
+      requestVoid(`/projects/${projectId}/test-cases/${id}`, { method: 'DELETE', signal }),
+    validate: (projectId: string, id: string, signal?: AbortSignal) =>
+      requestJson<TestCaseRow>(`/projects/${projectId}/test-cases/${id}/validate`, { method: 'POST', signal }),
+    approve: (projectId: string, id: string, signal?: AbortSignal) =>
+      requestJson<TestCaseRow>(`/projects/${projectId}/test-cases/${id}/approve`, { method: 'POST', signal }),
+    reject: (projectId: string, id: string, signal?: AbortSignal) =>
+      requestJson<TestCaseRow>(`/projects/${projectId}/test-cases/${id}/reject`, { method: 'POST', signal }),
+    /** `TestCaseHandoffRequest.executor`/`.simulate` — at least one is
+     *  required (the backend 400s otherwise); see that type's own doc
+     *  comment for why there is no default. */
+    handoff: (projectId: string, id: string, body: TestCaseHandoffRequest, signal?: AbortSignal) =>
+      requestJson<CreateExecutionResponse>(`/projects/${projectId}/test-cases/${id}/handoff`, { method: 'POST', body, signal }),
   },
 };

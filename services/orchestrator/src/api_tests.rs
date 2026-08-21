@@ -17,6 +17,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::Value;
+use sqlx::Row;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tower::ServiceExt;
@@ -874,6 +875,253 @@ async fn be12_dashboard_and_kpis_on_empty_project_show_honest_absence_not_fake_z
     assert_eq!(status, StatusCode::OK, "body={kpis}");
     assert!(kpis["execution_reliability"].is_null(), "no terminal product outcome yet -> null, not 0 or 1; kpis={kpis}");
     assert!(kpis["execution_efficiency_ms"].is_null(), "no finished task yet -> null, not a fake 0; kpis={kpis}");
+    // BE-12b Test 2 — no runs at all -> null, never a fabricated 0.
+    assert!(kpis["execution_avg_run_duration_ms"].is_null(), "no completed run yet -> null, not a fake 0; kpis={kpis}");
+}
+
+// ==================================================== BE-12b — average run duration
+
+/// Sets a run's real `started_at`/`finished_at` columns to exact,
+/// deterministic RFC3339 values via direct SQL — the only way to make a
+/// duration-based average assertable exactly, since the real engine's own
+/// wall-clock timing is not deterministic to the millisecond in a test
+/// environment. This mutates only the two columns `dashboard_avg_run_
+/// duration_ms` itself reads; it does not touch `state`, which is set by
+/// the real engine/store calls already exercised above it in each test.
+///
+/// Fresh-audit finding (this unit): every caller polls `poll_run_state`
+/// for a terminal state first, then calls this. But `poll_run_state`
+/// reads `GET .../executions/:id`, which — while the run is still held in
+/// the in-memory `RunRecord` registry — serves `record.summary()`
+/// (`engine.rs`), whose `state`/`finished_at` fields are set in-memory
+/// *before* the corresponding `store.set_run_finished(...)` DB write is
+/// even issued (`engine.rs`'s completion path sets `record.state`/
+/// `record.finished_at`, then `.await`s the DB `UPDATE`). So a terminal
+/// state is real and observable via the API strictly before the real
+/// `finished_at` column is guaranteed to be durably written — a distinct
+/// two-step-write visibility gap, this time inside the run-completion
+/// path rather than intelligence ingestion. Overwriting `finished_at`
+/// here before that real `UPDATE` lands is a genuine race: the engine's
+/// own (real, tiny-duration) write can land *after* this deliberate
+/// overwrite and silently clobber it back to a near-zero duration,
+/// breaking the exact-average assertions above. So this first waits for
+/// the real write to land, then performs its own overwrite as the
+/// guaranteed-last write.
+async fn set_run_timestamps(state: &AppState, run_id: Uuid, started_at: &str, finished_at: &str) {
+    wait_for_run_row_finished(state, run_id).await;
+    sqlx::query("UPDATE runs SET started_at = ?, finished_at = ? WHERE id = ?")
+        .bind(started_at)
+        .bind(finished_at)
+        .bind(run_id.to_string())
+        .execute(&state.store.pool)
+        .await
+        .expect("set_run_timestamps");
+}
+
+/// Waits for the real `runs.finished_at` DB column (written by `engine.rs`'s
+/// `store.set_run_finished`) to actually land, rather than trusting the
+/// API-visible terminal state alone — see `set_run_timestamps`'s doc
+/// comment for why those two signals are not the same moment.
+async fn wait_for_run_row_finished(state: &AppState, run_id: Uuid) {
+    for _ in 0..100 {
+        let row = sqlx::query("SELECT finished_at FROM runs WHERE id = ?")
+            .bind(run_id.to_string())
+            .fetch_one(&state.store.pool)
+            .await
+            .expect("fetch run row");
+        let finished_at: Option<String> = row.get("finished_at");
+        if finished_at.is_some() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    }
+    panic!("run {run_id} never got a durable finished_at in time");
+}
+
+fn infra_error_plan(name: &str) -> Value {
+    serde_json::json!({
+        "name": name,
+        "concurrency": 1,
+        "tasks": [{"id": "t1", "name": "t1", "simulate": {"outcome": "infra_error", "delay_ms": 0}}],
+    })
+}
+
+fn fail_plan(name: &str) -> Value {
+    serde_json::json!({
+        "name": name,
+        "concurrency": 1,
+        "tasks": [{"id": "t1", "name": "t1", "simulate": {"outcome": "fail", "delay_ms": 0}}],
+    })
+}
+
+/// Test 1 — a real, deterministic average over 2 real terminal runs.
+#[tokio::test]
+async fn be12b_avg_run_duration_is_exact_over_two_real_runs() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "BE-12b Exact Average").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (_, run_a) = send(&state, req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&owner), Some(simple_plan("run-a")))).await;
+    let (_, run_b) = send(&state, req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&owner), Some(simple_plan("run-b")))).await;
+    let run_a_id: Uuid = run_a["run_id"].as_str().unwrap().parse().unwrap();
+    let run_b_id: Uuid = run_b["run_id"].as_str().unwrap().parse().unwrap();
+    poll_run_state(&state, project, &run_a_id.to_string(), &owner, "COMPLETED").await;
+    poll_run_state(&state, project, &run_b_id.to_string(), &owner, "COMPLETED").await;
+
+    // Real rows, now overwritten with exact, known durations: 10s and 30s.
+    // The real (fast, sub-second) durations the engine actually produced
+    // are deliberately replaced so the average is assertable exactly,
+    // rather than "is a number" — the real engine/store code path that
+    // ends a run is exercised unmodified above; only the timing values
+    // themselves are made deterministic for this assertion.
+    set_run_timestamps(&state, run_a_id, "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:10.000Z").await;
+    set_run_timestamps(&state, run_b_id, "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:30.000Z").await;
+
+    let (status, kpis) = send(&state, req("GET", &format!("/api/v1/projects/{project}/kpis"), Some(&owner), None)).await;
+    assert_eq!(status, StatusCode::OK, "body={kpis}");
+    let avg = kpis["execution_avg_run_duration_ms"].as_f64().expect("execution_avg_run_duration_ms must be a real number");
+    assert!((avg - 20_000.0).abs() < 1.0, "expected exactly (10s+30s)/2 = 20000ms, got {avg}; kpis={kpis}");
+}
+
+/// Test 3 — a run that has started but not finished contributes nothing.
+#[tokio::test]
+async fn be12b_running_run_excluded_from_avg_run_duration() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "BE-12b Running Excluded").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (_, created) = send(
+        &state,
+        req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&owner), Some(delayed_plan("slow-run", 5_000))),
+    )
+    .await;
+    let run_id = created["run_id"].as_str().unwrap().to_string();
+    // Real: wait for the task to actually start (started_at now real and
+    // non-null) but well before its 5s delay finishes.
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    poll_run_state(&state, project, &run_id, &owner, "RUNNING").await;
+
+    let (status, kpis) = send(&state, req("GET", &format!("/api/v1/projects/{project}/kpis"), Some(&owner), None)).await;
+    assert_eq!(status, StatusCode::OK, "body={kpis}");
+    assert!(
+        kpis["execution_avg_run_duration_ms"].is_null(),
+        "a run with started_at but no finished_at must contribute nothing -> null, not a fabricated value; kpis={kpis}"
+    );
+
+    // Real cleanup — cancel the still-running task so the test process
+    // doesn't leave a 5s task outliving it.
+    send(&state, req("POST", &format!("/api/v1/projects/{project}/executions/{run_id}/cancel"), Some(&owner), None)).await;
+}
+
+/// Test 4 — mixed real terminal states (COMPLETED/FAILED/PARTIAL/CANCELLED)
+/// all count; a REJECTED run is a genuine, evidence-based negative case —
+/// fresh audit of `store.rs::reject_run` (line 232-244) confirms a rejected
+/// run's `started_at` is never set (`reject_run` only ever fires from
+/// PENDING_APPROVAL, before the scheduler loop starts a run) — so it is
+/// correctly excluded by the existing `started_at IS NOT NULL` predicate
+/// alone, with no state-based special-casing required or added.
+#[tokio::test]
+async fn be12b_mixed_terminal_states_all_counted_rejected_naturally_excluded() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "BE-12b Mixed States").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    // COMPLETED
+    let (_, completed) = send(&state, req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&owner), Some(simple_plan("completed-run")))).await;
+    let completed_id: Uuid = completed["run_id"].as_str().unwrap().parse().unwrap();
+    poll_run_state(&state, project, &completed_id.to_string(), &owner, "COMPLETED").await;
+
+    // FAILED
+    let (_, failed) = send(&state, req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&owner), Some(fail_plan("failed-run")))).await;
+    let failed_id: Uuid = failed["run_id"].as_str().unwrap().parse().unwrap();
+    poll_run_state(&state, project, &failed_id.to_string(), &owner, "FAILED").await;
+
+    // PARTIAL (a real INFRA_ERROR task, not a product failure)
+    let (_, partial) = send(&state, req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&owner), Some(infra_error_plan("partial-run")))).await;
+    let partial_id: Uuid = partial["run_id"].as_str().unwrap().parse().unwrap();
+    poll_run_state(&state, project, &partial_id.to_string(), &owner, "PARTIAL").await;
+
+    // CANCELLED
+    let (_, cancelled) = send(&state, req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&owner), Some(delayed_plan("cancelled-run", 5_000)))).await;
+    let cancelled_id: Uuid = cancelled["run_id"].as_str().unwrap().parse().unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    send(&state, req("POST", &format!("/api/v1/projects/{project}/executions/{cancelled_id}/cancel"), Some(&owner), None)).await;
+    poll_run_state(&state, project, &cancelled_id.to_string(), &owner, "CANCELLED").await;
+
+    // REJECTED (never actually started — held at PENDING_APPROVAL then rejected)
+    let (_, rejected) = send(&state, req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&owner), Some(serde_json::json!({
+        "name": "rejected-run",
+        "concurrency": 1,
+        "tasks": [{"id": "t1", "name": "t1", "executor": "maestro", "simulate": {"outcome": "pass", "delay_ms": 0}}],
+    })))).await;
+    let rejected_id: Uuid = rejected["run_id"].as_str().unwrap().parse().unwrap();
+    send(&state, req("POST", &format!("/api/v1/projects/{project}/executions/{rejected_id}/reject"), Some(&owner), Some(serde_json::json!({"reason": "be12b test"})))).await;
+
+    // Give every real terminal run an exact, known duration so their
+    // combined average is assertable precisely (10s each, except the
+    // rejected run which is deliberately left untouched — it must never
+    // even be eligible, since its real `started_at` stays NULL).
+    set_run_timestamps(&state, completed_id, "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:10.000Z").await;
+    set_run_timestamps(&state, failed_id, "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:10.000Z").await;
+    set_run_timestamps(&state, partial_id, "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:10.000Z").await;
+    set_run_timestamps(&state, cancelled_id, "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:10.000Z").await;
+
+    // Confirm the fresh-audit finding directly: the real REJECTED row
+    // genuinely has no `started_at`.
+    let row = sqlx::query("SELECT started_at, finished_at FROM runs WHERE id = ?")
+        .bind(rejected_id.to_string())
+        .fetch_one(&state.store.pool)
+        .await
+        .expect("fetch rejected run row");
+    let rejected_started_at: Option<String> = row.get("started_at");
+    let rejected_finished_at: Option<String> = row.get("finished_at");
+    assert!(rejected_started_at.is_none(), "a real rejected run must never have a started_at (it never entered the scheduler)");
+    assert!(rejected_finished_at.is_some(), "a real rejected run does get a real finished_at — it just never qualifies for the duration average");
+
+    let (status, kpis) = send(&state, req("GET", &format!("/api/v1/projects/{project}/kpis"), Some(&owner), None)).await;
+    assert_eq!(status, StatusCode::OK, "body={kpis}");
+    let avg = kpis["execution_avg_run_duration_ms"].as_f64().expect("execution_avg_run_duration_ms must be a real number");
+    // All 4 eligible runs (COMPLETED/FAILED/PARTIAL/CANCELLED) were set to
+    // exactly 10s -> the average must be exactly 10000ms, proving the
+    // REJECTED run's absence of `started_at` correctly kept it out.
+    assert!((avg - 10_000.0).abs() < 1.0, "expected exactly 10000ms (rejected run correctly excluded), got {avg}; kpis={kpis}");
+}
+
+/// Test 5 — project isolation: Project A's real run durations never
+/// influence Project B's average, and vice versa.
+#[tokio::test]
+async fn be12b_avg_run_duration_is_project_isolated() {
+    let (state, _dir) = test_state().await;
+    let project_a = make_project(&state, "BE-12b Isolation A").await;
+    let project_b = make_project(&state, "BE-12b Isolation B").await;
+    let owner_a = mint_key(&state, "operator", Some(&project_a.to_string())).await;
+    let owner_b = mint_key(&state, "operator", Some(&project_b.to_string())).await;
+
+    let (_, run_a) = send(&state, req("POST", &format!("/api/v1/projects/{project_a}/executions"), Some(&owner_a), Some(simple_plan("a-run")))).await;
+    let (_, run_b) = send(&state, req("POST", &format!("/api/v1/projects/{project_b}/executions"), Some(&owner_b), Some(simple_plan("b-run")))).await;
+    let run_a_id: Uuid = run_a["run_id"].as_str().unwrap().parse().unwrap();
+    let run_b_id: Uuid = run_b["run_id"].as_str().unwrap().parse().unwrap();
+    poll_run_state(&state, project_a, &run_a_id.to_string(), &owner_a, "COMPLETED").await;
+    poll_run_state(&state, project_b, &run_b_id.to_string(), &owner_b, "COMPLETED").await;
+
+    // Deliberately different, known durations per project.
+    set_run_timestamps(&state, run_a_id, "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:05.000Z").await; // 5s
+    set_run_timestamps(&state, run_b_id, "2026-01-01T00:00:00.000Z", "2026-01-01T00:01:00.000Z").await; // 60s
+
+    let (status, kpis_a) = send(&state, req("GET", &format!("/api/v1/projects/{project_a}/kpis"), Some(&owner_a), None)).await;
+    assert_eq!(status, StatusCode::OK, "body={kpis_a}");
+    let avg_a = kpis_a["execution_avg_run_duration_ms"].as_f64().expect("project A must have a real average");
+    assert!((avg_a - 5_000.0).abs() < 1.0, "project A must reflect only its own 5s run, got {avg_a}; kpis_a={kpis_a}");
+
+    let (status, kpis_b) = send(&state, req("GET", &format!("/api/v1/projects/{project_b}/kpis"), Some(&owner_b), None)).await;
+    assert_eq!(status, StatusCode::OK, "body={kpis_b}");
+    let avg_b = kpis_b["execution_avg_run_duration_ms"].as_f64().expect("project B must have a real average");
+    assert!((avg_b - 60_000.0).abs() < 1.0, "project B must reflect only its own 60s run, never project A's 5s run, got {avg_b}; kpis_b={kpis_b}");
+
+    // Cross-project access is still real-403'd — same existing gate every
+    // other scoped route uses, unmodified by this unit.
+    let (status, body) = send(&state, req("GET", &format!("/api/v1/projects/{project_b}/kpis"), Some(&owner_a), None)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
 }
 
 /// Category: no cross-project leakage. Two projects each get their own
@@ -1563,4 +1811,630 @@ async fn be15_legacy_admin_audit_log_and_bug_drafts_still_work() {
     let (status, drafts) = send(&state, req("GET", "/bug-drafts", Some(&admin), None)).await;
     assert_eq!(status, StatusCode::OK, "body={drafts}");
     assert!(drafts.is_array());
+}
+
+// ============================================ Phase 4 BE-10 — project-scoped
+// test intelligence (distinct from the pre-existing Phase 2 "BE-10" section
+// above, which is about extractor-rejection error envelopes and is
+// unrelated). FE-21 found `store.rs::list_test_intelligence`/`TestIntelRow`
+// real and populated but reachable only via the legacy, key-bound-scoped
+// `/intelligence/tests` — unsafe for this frontend's multi-project-per-key
+// model. These tests cover the new `GET
+// /api/v1/projects/:project_id/intelligence/tests` route's project isolation,
+// authorization, empty state, and real-field shape.
+
+/// A plan whose one task deterministically passes or fails, so the resulting
+/// `risk_score` (weighted 40% on historical failure rate) is verifiably
+/// different between a passing and a failing task — used to prove isolation
+/// is real (distinct per-project *data*, not just a coincidentally-empty
+/// cross-project response).
+fn scored_plan(run_name: &str, task_name: &str, outcome: &str) -> Value {
+    serde_json::json!({
+        "name": run_name,
+        "concurrency": 1,
+        "tasks": [{"id": "t1", "name": task_name, "simulate": {"outcome": outcome, "delay_ms": 0}}],
+    })
+}
+
+/// Polls the scoped intelligence route until it contains a *fully computed*
+/// row for `task_name`, or panics after a bounded number of attempts.
+/// `intel.ingest_run` runs *after* the run's HTTP-visible `state` already
+/// went terminal (a real await gap in `engine.rs`), so polling run state
+/// alone would be flaky here — this polls the actual thing under test.
+///
+/// Fresh-audit finding (this unit): `ingest_run` itself writes a task's
+/// intelligence in three separate sequential upserts — `quality_nodes`
+/// (`upsert_quality_node`) first, then `risk_assessments`/
+/// `test_value_assessments`/`flakiness_metrics` after — and
+/// `list_test_intelligence`'s `LEFT JOIN` means the row becomes
+/// name-matchable the instant the *first* write lands, with the rest of
+/// its fields still `NULL`. Waiting only for "a row named X exists" (the
+/// old condition) can therefore return a genuinely mid-write row — this is
+/// not "not enough total wait time", it's waiting on the wrong condition,
+/// reproducible even in fast, unloaded, isolated runs. Every real caller
+/// needs the fully-scored row, so that's what this helper now waits for.
+async fn poll_intelligence_row(state: &AppState, project: Uuid, key: &str, task_name: &str) -> Value {
+    for _ in 0..100 {
+        let (status, rows) =
+            send(state, req("GET", &format!("/api/v1/projects/{project}/intelligence/tests"), Some(key), None)).await;
+        assert_eq!(status, StatusCode::OK, "body={rows}");
+        if let Some(row) = rows.as_array().unwrap().iter().find(|r| {
+            r["name"] == task_name
+                && r["risk_score"].is_number()
+                && r["value_score"].is_number()
+                && r["flakiness_score"].is_number()
+        }) {
+            return row.clone();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    }
+    panic!("no fully-scored intelligence row named {task_name} appeared for project {project} in time");
+}
+
+/// Test 1 (authorized project) + Test 5 (existing intelligence fields): a
+/// real completed run produces a real, fully-populated `TestIntelRow` for
+/// its own project, with the actual computed/persisted fields — not
+/// invented ones.
+#[tokio::test]
+async fn phase4_be10_intelligence_scoped_to_authorized_project_with_real_fields() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "Intel Tenant A").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    send(&state, req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&owner), Some(scored_plan("intel-run", "risk-task-a", "pass"))))
+        .await;
+
+    let row = poll_intelligence_row(&state, project, &owner, "risk-task-a").await;
+    assert!(row["id"].as_str().is_some(), "row={row}");
+    assert_eq!(row["name"], "risk-task-a", "row={row}");
+    // Real persisted/computed fields (`store.rs::TestIntelRow`) — never
+    // invented ones (no `id`/`name` other than these, no extra field).
+    assert!(row["risk_score"].is_number(), "risk_score must be a real computed value; row={row}");
+    assert!(row["value_score"].is_number(), "value_score must be a real computed value; row={row}");
+    assert!(row["flakiness_score"].is_number(), "flakiness_score must be a real computed value; row={row}");
+    assert!(row["failure_rate"].is_number(), "failure_rate must be a real computed value; row={row}");
+    assert!(row["window_runs"].is_number(), "window_runs must be a real computed value; row={row}");
+    assert!(row["window_failures"].is_number(), "window_failures must be a real computed value; row={row}");
+    assert_eq!(
+        row.as_object().unwrap().keys().map(|k| k.as_str()).collect::<std::collections::BTreeSet<_>>(),
+        ["id", "name", "risk_score", "failure_rate", "dependency_count", "execution_cost_ms", "value_score", "flakiness_score", "window_runs", "window_failures"]
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>(),
+        "response must be exactly the real TestIntelRow shape, no invented/extra fields; row={row}"
+    );
+}
+
+/// Test 2 (multi-project isolation) + Test 13/security (distinct real risk
+/// values never cross projects). Project A's task always passes (low
+/// historical failure rate → low risk); Project B's task always fails (high
+/// historical failure rate → high risk) — genuinely different real data, not
+/// just different names, so this proves the *values* never leak, not merely
+/// that an empty list happens to look isolated.
+#[tokio::test]
+async fn phase4_be10_intelligence_isolated_across_projects() {
+    let (state, _dir) = test_state().await;
+    let project_a = make_project(&state, "Intel Tenant A").await;
+    let project_b = make_project(&state, "Intel Tenant B").await;
+    let owner_a = mint_key(&state, "operator", Some(&project_a.to_string())).await;
+    let owner_b = mint_key(&state, "operator", Some(&project_b.to_string())).await;
+    let admin = mint_key(&state, "admin", None).await; // unscoped — can legitimately see either.
+
+    send(&state, req("POST", &format!("/api/v1/projects/{project_a}/executions"), Some(&owner_a), Some(scored_plan("run-a", "task-a", "pass"))))
+        .await;
+    send(&state, req("POST", &format!("/api/v1/projects/{project_b}/executions"), Some(&owner_b), Some(scored_plan("run-b", "task-b", "fail"))))
+        .await;
+
+    let row_a = poll_intelligence_row(&state, project_a, &admin, "task-a").await;
+    let row_b = poll_intelligence_row(&state, project_b, &admin, "task-b").await;
+    let risk_a = row_a["risk_score"].as_f64().unwrap();
+    let risk_b = row_b["risk_score"].as_f64().unwrap();
+    assert!(risk_b > risk_a, "project B's always-failing task must score a real, distinctly higher risk than A's always-passing task; risk_a={risk_a} risk_b={risk_b}");
+
+    // Project A's own view: task-a present, task-b (and B's higher risk
+    // value) never appears.
+    let (status, rows_a) = send(&state, req("GET", &format!("/api/v1/projects/{project_a}/intelligence/tests"), Some(&owner_a), None)).await;
+    assert_eq!(status, StatusCode::OK, "body={rows_a}");
+    let arr_a = rows_a.as_array().unwrap();
+    assert!(arr_a.iter().any(|r| r["name"] == "task-a"), "project A must see its own intelligence; rows={arr_a:?}");
+    assert!(arr_a.iter().all(|r| r["name"] != "task-b"), "project A must never see project B's task; rows={arr_a:?}");
+    assert!(
+        arr_a.iter().all(|r| r["risk_score"].as_f64() != Some(risk_b) || r["name"] != "task-b"),
+        "project A's response must never carry project B's real risk value under B's task; rows={arr_a:?}"
+    );
+
+    // Project B's own view: symmetric.
+    let (status, rows_b) = send(&state, req("GET", &format!("/api/v1/projects/{project_b}/intelligence/tests"), Some(&owner_b), None)).await;
+    assert_eq!(status, StatusCode::OK, "body={rows_b}");
+    let arr_b = rows_b.as_array().unwrap();
+    assert!(arr_b.iter().any(|r| r["name"] == "task-b"), "project B must see its own intelligence; rows={arr_b:?}");
+    assert!(arr_b.iter().all(|r| r["name"] != "task-a"), "project B must never see project A's task; rows={arr_b:?}");
+}
+
+/// Test 3 (unauthorized project) + existing-project-check regression: a key
+/// scoped to Project A hitting Project B's route 403s (matches every other
+/// scoped route's convention, `be15_audit_log_scoped_to_project_and_isolated`
+/// above); a nonexistent project 404s; missing auth 401s with the real
+/// envelope.
+#[tokio::test]
+async fn phase4_be10_intelligence_unauthorized_and_missing_project_rejected() {
+    let (state, _dir) = test_state().await;
+    let project_a = make_project(&state, "Intel Tenant A").await;
+    let project_b = make_project(&state, "Intel Tenant B").await;
+    let owner_a = mint_key(&state, "operator", Some(&project_a.to_string())).await;
+
+    // A's key cannot name B's intelligence at all.
+    let (status, body) =
+        send(&state, req("GET", &format!("/api/v1/projects/{project_b}/intelligence/tests"), Some(&owner_a), None)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+    assert_eq!(body["error"]["code"], "FORBIDDEN");
+
+    // Nonexistent project.
+    let phantom = Uuid::new_v4();
+    let (status, body) =
+        send(&state, req("GET", &format!("/api/v1/projects/{phantom}/intelligence/tests"), Some(&owner_a), None)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
+    assert_eq!(body["error"]["code"], "RESOURCE_NOT_FOUND");
+
+    // Missing auth.
+    let (status, body) =
+        send(&state, req("GET", &format!("/api/v1/projects/{project_a}/intelligence/tests"), None, None)).await;
+    assert_envelope(status, &body, StatusCode::UNAUTHORIZED, "UNAUTHENTICATED");
+}
+
+/// Test 4 (empty project): a real, authorized, existing project with zero
+/// completed runs must return a truthful empty array — 200, not an error,
+/// and no fabricated placeholder row.
+#[tokio::test]
+async fn phase4_be10_intelligence_empty_project_returns_truthful_empty_array() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "Intel Tenant Empty").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, rows) = send(&state, req("GET", &format!("/api/v1/projects/{project}/intelligence/tests"), Some(&owner), None)).await;
+    assert_eq!(status, StatusCode::OK, "body={rows}");
+    assert_eq!(rows.as_array().unwrap().len(), 0, "a project with no completed runs must return a truthful empty array, not fabricated rows; body={rows}");
+}
+
+/// Regression: the pre-existing legacy `/intelligence/tests` route (used by
+/// an unscoped/global key exactly as before) must keep working unmodified —
+/// Phase 4 BE-10 adds a new route, it does not touch this one.
+#[tokio::test]
+async fn phase4_be10_legacy_unscoped_intelligence_route_still_works() {
+    let (state, _dir) = test_state().await;
+    let admin = mint_key(&state, "admin", None).await;
+
+    send(&state, req("POST", "/runs", Some(&admin), Some(scored_plan("legacy-intel-run", "legacy-task", "pass")))).await;
+
+    for _ in 0..100 {
+        let (status, rows) = send(&state, req("GET", "/intelligence/tests", Some(&admin), None)).await;
+        assert_eq!(status, StatusCode::OK, "body={rows}");
+        if rows.as_array().unwrap().iter().any(|r| r["name"] == "legacy-task") {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    }
+    panic!("legacy /intelligence/tests never reflected the real completed run");
+}
+
+// ============================================================ AUD-005 — test cases
+
+fn sample_test_case_body(title: &str) -> Value {
+    serde_json::json!({
+        "title": title,
+        "description": "Verify the login form rejects an invalid password with a clear error.",
+        "category": "Functional",
+        "priority": "HIGH",
+        "severity": "MAJOR",
+        "preconditions": ["A registered user account exists"],
+        "steps": [
+            {"step_number": 1, "action": "Navigate to /login", "expected_result": "Login form is rendered"},
+            {"step_number": 2, "action": "Submit an invalid password", "expected_result": "A visible validation error is shown"}
+        ],
+        "expected_result": "The user is not logged in and sees a clear error message",
+        "assertions": ["No session cookie is set", "Error text is visible"],
+        "requirement_reference": "FRD-VAL-05",
+        "tags": ["auth", "negative"]
+    })
+}
+
+/// Create -> Get -> List -> persistence-across-requests, all in one real
+/// round trip: the row returned by `POST` is re-fetched independently by
+/// both `GET :id` and `GET` (list), proving this is real database
+/// persistence, not an in-memory echo of the request body.
+#[tokio::test]
+async fn aud005_create_get_list_test_case_real_persistence() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "AUD-005 Persistence").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, created) =
+        send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&owner), Some(sample_test_case_body("Reject invalid password")))).await;
+    assert_eq!(status, StatusCode::CREATED, "body={created}");
+    let id = created["id"].as_str().expect("id").to_string();
+    assert_eq!(created["status"], "GENERATED", "created={created}");
+    assert_eq!(created["title"], "Reject invalid password");
+    assert_eq!(created["steps"].as_array().unwrap().len(), 2);
+
+    // Independent GET (a fresh request, no shared in-memory state with the
+    // POST above) must return the exact same real row.
+    let (status, fetched) = send(&state, req("GET", &format!("/api/v1/projects/{project}/test-cases/{id}"), Some(&owner), None)).await;
+    assert_eq!(status, StatusCode::OK, "body={fetched}");
+    assert_eq!(fetched["id"], created["id"]);
+    assert_eq!(fetched["title"], "Reject invalid password");
+    assert_eq!(fetched["description"], created["description"]);
+
+    // List must include it.
+    let (status, listed) = send(&state, req("GET", &format!("/api/v1/projects/{project}/test-cases"), Some(&owner), None)).await;
+    assert_eq!(status, StatusCode::OK, "body={listed}");
+    let arr = listed.as_array().unwrap();
+    assert!(arr.iter().any(|r| r["id"] == id), "list must contain the created case; rows={arr:?}");
+}
+
+#[tokio::test]
+async fn aud005_update_test_case_persists_and_ignores_status() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "AUD-005 Update").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (_, created) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&owner), Some(sample_test_case_body("Original title")))).await;
+    let id = created["id"].as_str().unwrap().to_string();
+
+    let (status, updated) = send(
+        &state,
+        req(
+            "PATCH",
+            &format!("/api/v1/projects/{project}/test-cases/{id}"),
+            Some(&owner),
+            Some(serde_json::json!({"title": "Updated title", "priority": "LOW"})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={updated}");
+    assert_eq!(updated["title"], "Updated title");
+    assert_eq!(updated["priority"], "LOW");
+    // Untouched fields survive a partial update.
+    assert_eq!(updated["description"], created["description"]);
+    // A PATCH body has no `status` field at all in its contract — status
+    // never moves through this route.
+    assert_eq!(updated["status"], "GENERATED");
+}
+
+#[tokio::test]
+async fn aud005_delete_test_case_removes_it_for_real() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "AUD-005 Delete").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (_, created) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&owner), Some(sample_test_case_body("To be deleted")))).await;
+    let id = created["id"].as_str().unwrap().to_string();
+
+    let (status, _) = send(&state, req("DELETE", &format!("/api/v1/projects/{project}/test-cases/{id}"), Some(&owner), None)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (status, body) = send(&state, req("GET", &format!("/api/v1/projects/{project}/test-cases/{id}"), Some(&owner), None)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "deleted case must genuinely be gone; body={body}");
+}
+
+/// The real lifecycle end to end: GENERATED -> VALIDATED -> APPROVED, each
+/// transition checked against the real, current row after each step.
+#[tokio::test]
+async fn aud005_lifecycle_validate_then_approve_succeeds_in_order() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "AUD-005 Lifecycle").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (_, created) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&owner), Some(sample_test_case_body("Lifecycle case")))).await;
+    let id = created["id"].as_str().unwrap().to_string();
+
+    let (status, validated) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/validate"), Some(&owner), None)).await;
+    assert_eq!(status, StatusCode::OK, "body={validated}");
+    assert_eq!(validated["status"], "VALIDATED", "validated={validated}");
+    assert!(validated["validation_notes"].as_str().is_some(), "a real validation note must be recorded");
+
+    let (status, approved) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/approve"), Some(&owner), None)).await;
+    assert_eq!(status, StatusCode::OK, "body={approved}");
+    assert_eq!(approved["status"], "APPROVED", "approved={approved}");
+}
+
+/// FRD-EXE-11 enforcement: approval is not reachable by skipping validation
+/// — a GENERATED case (never validated) must be rejected with a real 409,
+/// and must remain GENERATED afterward (no silent partial advance).
+#[tokio::test]
+async fn aud005_approve_without_validate_first_is_rejected_with_409() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "AUD-005 Skip Validate").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (_, created) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&owner), Some(sample_test_case_body("Not yet validated")))).await;
+    let id = created["id"].as_str().unwrap().to_string();
+
+    let (status, body) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/approve"), Some(&owner), None)).await;
+    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+
+    let (_, row) = send(&state, req("GET", &format!("/api/v1/projects/{project}/test-cases/{id}"), Some(&owner), None)).await;
+    assert_eq!(row["status"], "GENERATED", "a rejected approve attempt must not silently move the case forward; row={row}");
+}
+
+/// A structurally incomplete case (an empty step) fails real validation
+/// with a specific, honest reason and stays GENERATED.
+#[tokio::test]
+async fn aud005_validate_rejects_structurally_incomplete_case() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "AUD-005 Bad Case").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let mut body = sample_test_case_body("Missing step content");
+    body["steps"] = serde_json::json!([{"step_number": 1, "action": "", "expected_result": ""}]);
+    let (_, created) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&owner), Some(body))).await;
+    let id = created["id"].as_str().unwrap().to_string();
+
+    let (status, body) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/validate"), Some(&owner), None)).await;
+    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+
+    let (_, row) = send(&state, req("GET", &format!("/api/v1/projects/{project}/test-cases/{id}"), Some(&owner), None)).await;
+    assert_eq!(row["status"], "GENERATED", "a failed validation must not advance the case; row={row}");
+}
+
+#[tokio::test]
+async fn aud005_reject_from_generated_and_validated_both_work() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "AUD-005 Reject").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (_, a) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&owner), Some(sample_test_case_body("Reject from generated")))).await;
+    let id_a = a["id"].as_str().unwrap().to_string();
+    let (status, rejected) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id_a}/reject"), Some(&owner), None)).await;
+    assert_eq!(status, StatusCode::OK, "body={rejected}");
+    assert_eq!(rejected["status"], "REJECTED");
+
+    let (_, b) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&owner), Some(sample_test_case_body("Reject from validated")))).await;
+    let id_b = b["id"].as_str().unwrap().to_string();
+    send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id_b}/validate"), Some(&owner), None)).await;
+    let (status, rejected) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id_b}/reject"), Some(&owner), None)).await;
+    assert_eq!(status, StatusCode::OK, "body={rejected}");
+    assert_eq!(rejected["status"], "REJECTED");
+
+    // A rejected case cannot then be approved.
+    let (status, body) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id_a}/approve"), Some(&owner), None)).await;
+    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+}
+
+/// Project isolation, enforced server-side: Project A's key can never see,
+/// read, or mutate Project B's test case, and vice versa. Mirrors the
+/// established convention every other scoped resource's own isolation test
+/// already uses in this file.
+#[tokio::test]
+async fn aud005_project_isolation_enforced_both_directions() {
+    let (state, _dir) = test_state().await;
+    let project_a = make_project(&state, "AUD-005 Isolation A").await;
+    let project_b = make_project(&state, "AUD-005 Isolation B").await;
+    let owner_a = mint_key(&state, "operator", Some(&project_a.to_string())).await;
+    let owner_b = mint_key(&state, "operator", Some(&project_b.to_string())).await;
+
+    let (_, created) = send(&state, req("POST", &format!("/api/v1/projects/{project_a}/test-cases"), Some(&owner_a), Some(sample_test_case_body("A-only case")))).await;
+    let id = created["id"].as_str().unwrap().to_string();
+
+    // B's key hitting A's case through B's own project URL: not found (the
+    // case genuinely does not belong to B's project).
+    let (status, body) = send(&state, req("GET", &format!("/api/v1/projects/{project_b}/test-cases/{id}"), Some(&owner_b), None)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
+
+    // B's key hitting A's project URL directly (even naming A's own real
+    // project id): forbidden — the standard cross-project 403.
+    let (status, body) = send(&state, req("GET", &format!("/api/v1/projects/{project_a}/test-cases/{id}"), Some(&owner_b), None)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+    assert_eq!(body["error"]["code"], "FORBIDDEN");
+
+    // B's list of its own project never contains A's case.
+    let (status, listed) = send(&state, req("GET", &format!("/api/v1/projects/{project_b}/test-cases"), Some(&owner_b), None)).await;
+    assert_eq!(status, StatusCode::OK, "body={listed}");
+    assert!(listed.as_array().unwrap().iter().all(|r| r["id"] != id), "project B must never see project A's test case; rows={listed:?}");
+
+    // B cannot mutate A's case either.
+    let (status, body) = send(&state, req("POST", &format!("/api/v1/projects/{project_a}/test-cases/{id}/reject"), Some(&owner_b), None)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+}
+
+/// RBAC: a Viewer key can read but not create/mutate. Not just a "did the
+/// route return non-2xx" check — asserts the real 403 envelope, and that
+/// the read path stays open (RBAC is about mutation, not visibility).
+#[tokio::test]
+async fn aud005_rbac_viewer_cannot_mutate_but_can_read() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "AUD-005 RBAC").await;
+    let operator = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let viewer = mint_key(&state, "viewer", Some(&project.to_string())).await;
+
+    let (_, created) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&operator), Some(sample_test_case_body("RBAC case")))).await;
+    let id = created["id"].as_str().unwrap().to_string();
+
+    let (status, body) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&viewer), Some(sample_test_case_body("Viewer attempt")))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+    assert_eq!(body["error"]["code"], "FORBIDDEN");
+
+    let (status, body) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/validate"), Some(&viewer), None)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+
+    // But a Viewer can still read.
+    let (status, row) = send(&state, req("GET", &format!("/api/v1/projects/{project}/test-cases/{id}"), Some(&viewer), None)).await;
+    assert_eq!(status, StatusCode::OK, "body={row}");
+}
+
+#[tokio::test]
+async fn aud005_missing_project_and_missing_test_case_return_404() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "AUD-005 404s").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let phantom_project = Uuid::new_v4();
+    let phantom_case = Uuid::new_v4();
+
+    let (status, body) = send(&state, req("GET", &format!("/api/v1/projects/{phantom_project}/test-cases"), Some(&owner), None)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
+    assert_eq!(body["error"]["code"], "RESOURCE_NOT_FOUND");
+
+    let (status, body) = send(&state, req("GET", &format!("/api/v1/projects/{project}/test-cases/{phantom_case}"), Some(&owner), None)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
+    assert_eq!(body["error"]["code"], "RESOURCE_NOT_FOUND");
+}
+
+#[tokio::test]
+async fn aud005_invalid_input_rejected_with_validation_error() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "AUD-005 Invalid").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let mut empty_title = sample_test_case_body("");
+    empty_title["title"] = serde_json::json!("   ");
+    let (status, body) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&owner), Some(empty_title))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+
+    let mut no_steps = sample_test_case_body("No steps");
+    no_steps["steps"] = serde_json::json!([]);
+    let (status, body) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&owner), Some(no_steps))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+}
+
+/// Handoff must refuse to fabricate an outcome: no `executor` and no
+/// `simulate` in the body is a real 400, not a silent default pass.
+#[tokio::test]
+async fn aud005_handoff_without_executor_or_simulate_is_rejected() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "AUD-005 No Fake Outcome").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (_, created) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&owner), Some(sample_test_case_body("Needs real outcome")))).await;
+    let id = created["id"].as_str().unwrap().to_string();
+    send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/validate"), Some(&owner), None)).await;
+    send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/approve"), Some(&owner), None)).await;
+
+    let (status, body) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/handoff"), Some(&owner), Some(serde_json::json!({})))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+}
+
+/// Handoff must refuse a case that is not yet APPROVED.
+#[tokio::test]
+async fn aud005_handoff_before_approval_is_rejected_with_409() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "AUD-005 Not Approved Yet").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (_, created) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&owner), Some(sample_test_case_body("Still generated")))).await;
+    let id = created["id"].as_str().unwrap().to_string();
+
+    let (status, body) = send(
+        &state,
+        req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/handoff"), Some(&owner), Some(serde_json::json!({"simulate": {"outcome": "pass"}}))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+}
+
+/// THE full real path, end to end, using the actual execution engine:
+/// Generate (persist) -> Validate -> Approve -> Handoff -> real DAG
+/// scheduling -> real task execution -> real result -> traceability back
+/// on the test case row. No mock, no simulated persistence layer, no
+/// shadow engine — the same `router`/`engine`/`scheduler` every other
+/// execution test in this file exercises.
+#[tokio::test]
+async fn aud005_full_generate_persist_validate_approve_handoff_execute_traceability() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "AUD-005 E2E").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    // 1. Generate -> persist.
+    let (status, created) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&owner), Some(sample_test_case_body("E2E login rejection")))).await;
+    assert_eq!(status, StatusCode::CREATED, "body={created}");
+    let id = created["id"].as_str().unwrap().to_string();
+
+    // 2. Retrieve after "refresh" (a completely independent GET).
+    let (status, refetched) = send(&state, req("GET", &format!("/api/v1/projects/{project}/test-cases/{id}"), Some(&owner), None)).await;
+    assert_eq!(status, StatusCode::OK, "body={refetched}");
+    assert_eq!(refetched["status"], "GENERATED");
+
+    // 3. Validate.
+    let (status, validated) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/validate"), Some(&owner), None)).await;
+    assert_eq!(status, StatusCode::OK, "body={validated}");
+    assert_eq!(validated["status"], "VALIDATED");
+
+    // 4. Approve.
+    let (status, approved) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/approve"), Some(&owner), None)).await;
+    assert_eq!(status, StatusCode::OK, "body={approved}");
+    assert_eq!(approved["status"], "APPROVED");
+
+    // 5. Handoff — explicit, disclosed simulated outcome (no real script
+    // exists for a generated case; see `handoff_test_case_scoped`'s doc
+    // comment). This dispatches through the real engine/scheduler.
+    let (status, handoff) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/handoff"),
+            Some(&owner),
+            Some(serde_json::json!({"simulate": {"outcome": "pass", "delay_ms": 0}})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={handoff}");
+    let run_id = handoff["run_id"].as_str().expect("run_id").to_string();
+
+    // 6. Real execution engine drives the real run to completion.
+    let final_run = poll_run_state(&state, project, &run_id, &owner, "COMPLETED").await;
+    assert_eq!(final_run["passed"], 1, "the single real task must have really passed; final_run={final_run}");
+
+    // 7. Traceability: the test case row now points at the real run/task,
+    // and the real run/task both genuinely exist and reflect the outcome —
+    // Test Case -> Run -> Task -> Result, all independently re-fetchable.
+    let (status, final_case) = send(&state, req("GET", &format!("/api/v1/projects/{project}/test-cases/{id}"), Some(&owner), None)).await;
+    assert_eq!(status, StatusCode::OK, "body={final_case}");
+    assert_eq!(final_case["status"], "EXECUTED", "final_case={final_case}");
+    assert_eq!(final_case["executed_run_id"], run_id, "final_case={final_case}");
+    assert_eq!(final_case["executed_task_id"], id, "final_case={final_case}");
+
+    let task_id = final_case["executed_task_id"].as_str().unwrap();
+    let task = final_run["tasks"] // not present on RunSummary directly; re-fetch full detail
+        .as_array();
+    let _ = task; // RunSummary (poll_run_state's return) has no `tasks`; fetch RunDetail explicitly below.
+
+    let (status, run_detail) = send(&state, req("GET", &format!("/api/v1/projects/{project}/executions/{run_id}"), Some(&owner), None)).await;
+    assert_eq!(status, StatusCode::OK, "body={run_detail}");
+    let tasks = run_detail["tasks"].as_array().expect("tasks");
+    let matching_task = tasks.iter().find(|t| t["id"] == task_id).expect("the real task the test case was dispatched as must exist in the real run");
+    assert_eq!(matching_task["status"], "PASSED", "matching_task={matching_task}");
+    assert_eq!(matching_task["name"], "E2E login rejection", "the real task's name must be the real test case's own title; matching_task={matching_task}");
+}
+
+/// Handoff creates a real, project-scoped run — visible through the
+/// existing, already-real Execution Hub list/detail routes, not a shadow
+/// path only the test-case feature can see.
+#[tokio::test]
+async fn aud005_handoff_run_is_a_real_execution_hub_run() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "AUD-005 Real Run Visibility").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (_, created) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&owner), Some(sample_test_case_body("Visible in Execution Hub")))).await;
+    let id = created["id"].as_str().unwrap().to_string();
+    send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/validate"), Some(&owner), None)).await;
+    send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/approve"), Some(&owner), None)).await;
+
+    let (_, handoff) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/handoff"),
+            Some(&owner),
+            Some(serde_json::json!({"simulate": {"outcome": "fail", "delay_ms": 0}})),
+        ),
+    )
+    .await;
+    let run_id = handoff["run_id"].as_str().unwrap().to_string();
+
+    let (status, listed_runs) = send(&state, req("GET", &format!("/api/v1/projects/{project}/executions"), Some(&owner), None)).await;
+    assert_eq!(status, StatusCode::OK, "body={listed_runs}");
+    assert!(
+        listed_runs.as_array().unwrap().iter().any(|r| r["run_id"] == run_id),
+        "the handoff-created run must appear in the real Execution Hub's own list; rows={listed_runs:?}"
+    );
 }

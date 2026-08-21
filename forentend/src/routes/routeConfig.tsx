@@ -89,9 +89,27 @@ export interface RouteDef {
    *  misstate its provenance, and `product-owner-approved` would falsely
    *  claim a product review that has not happened. Deliberately named
    *  sprint-agnostically (not `fe6-...`) so any later unit's new page can
-   *  reuse it without another rename. Currently `AuditPage` (FE-6) and
-   *  `EvidencePage` (FE-7). */
-  designStatus: 'product-owner-approved' | 'google-studio-not-final' | 'new-follows-approved-language';
+   *  reuse it without another rename. Currently `AuditPage` (FE-6),
+   *  `EvidencePage` (FE-7), `ExecutionHubPage` (FE-8), and `ReportsPage`
+   *  (FE-11 — rebuilt onto the real Findings/FailureCluster backend).
+   *
+   *  `unsupported-not-implemented` (introduced FE-11, brief §26): a page
+   *  whose previous Google-Studio-generated content was fully fabricated
+   *  (no corresponding backend entity/route exists at all — re-verified
+   *  against the real route table, not inferred from the page's name) and
+   *  was replaced with a truthful "not implemented" state rather than
+   *  migrated to real data, because there is no real capability to migrate
+   *  it onto. Distinct from `google-studio-not-final` (still-fake content
+   *  that *could* eventually become real) — this bucket has no real
+   *  backend counterpart to build toward. Currently `orchestrator`,
+   *  `validator`, `rbac`, `api-testing`, `mobile-testing`, `custom`, and
+   *  `feature-map` — see each page's own module doc comment for the
+   *  specific backend gap. */
+  designStatus:
+    | 'product-owner-approved'
+    | 'google-studio-not-final'
+    | 'new-follows-approved-language'
+    | 'unsupported-not-implemented';
   /**
    * Whether this route requires a real, backend-verified session
    * (`AuthContext.status === 'authenticated'`) before its content renders
@@ -135,9 +153,11 @@ export const routeDefs: RouteDef[] = [
     path: '/orchestrator',
     label: 'AIQA Orchestrator',
     icon: Workflow,
-    badge: 'PLAN',
+    // FE-11: the 'PLAN' badge was removed — it described the previous
+    // fabricated orchestration-planning capability, which no longer exists
+    // on this page (see AIQAOrchestratorPage.tsx's own doc comment).
     Component: AIQAOrchestratorPage,
-    designStatus: 'google-studio-not-final',
+    designStatus: 'unsupported-not-implemented',
     protectedRoute: true,
   },
   {
@@ -145,9 +165,10 @@ export const routeDefs: RouteDef[] = [
     path: '/validator',
     label: 'Test Case Validator',
     icon: CheckCheck,
-    badge: 'GATE',
+    // FE-11: the 'GATE' badge was removed — see AIQAOrchestratorPage's
+    // note above; same reasoning, TestCaseValidatorPage.tsx.
     Component: TestCaseValidatorPage,
-    designStatus: 'google-studio-not-final',
+    designStatus: 'unsupported-not-implemented',
     protectedRoute: true,
   },
   {
@@ -172,7 +193,7 @@ export const routeDefs: RouteDef[] = [
     label: 'RBAC Testing',
     icon: ShieldCheck,
     Component: RBACTestingPage,
-    designStatus: 'google-studio-not-final',
+    designStatus: 'unsupported-not-implemented',
     protectedRoute: true,
   },
   {
@@ -181,7 +202,7 @@ export const routeDefs: RouteDef[] = [
     label: 'API Testing',
     icon: Network,
     Component: APITestingPage,
-    designStatus: 'google-studio-not-final',
+    designStatus: 'unsupported-not-implemented',
     protectedRoute: true,
   },
   {
@@ -190,7 +211,7 @@ export const routeDefs: RouteDef[] = [
     label: 'Mobile Testing',
     icon: Smartphone,
     Component: MobileTestingPage,
-    designStatus: 'google-studio-not-final',
+    designStatus: 'unsupported-not-implemented',
     protectedRoute: true,
   },
   {
@@ -199,7 +220,7 @@ export const routeDefs: RouteDef[] = [
     label: 'Custom Testing',
     icon: Sliders,
     Component: CustomTestingPage,
-    designStatus: 'google-studio-not-final',
+    designStatus: 'unsupported-not-implemented',
     protectedRoute: true,
   },
   {
@@ -208,7 +229,7 @@ export const routeDefs: RouteDef[] = [
     label: 'Feature Map / Flow',
     icon: Layers,
     Component: FeatureMapFlowPage,
-    designStatus: 'google-studio-not-final',
+    designStatus: 'unsupported-not-implemented',
     protectedRoute: true,
   },
   {
@@ -217,7 +238,10 @@ export const routeDefs: RouteDef[] = [
     label: 'Reports',
     icon: FileText,
     Component: ReportsPage,
-    designStatus: 'google-studio-not-final',
+    // FE-11: rebuilt onto the real Findings/FailureCluster backend — same
+    // "new, follows the approved visual language" bucket as Audit/Evidence/
+    // Execution Hub (see this file's designStatus doc comment above).
+    designStatus: 'new-follows-approved-language',
     protectedRoute: true,
   },
   {

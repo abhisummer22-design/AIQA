@@ -13,7 +13,7 @@
  * made — these tests open the dropdown rather than assuming auto-select.
  */
 import React from 'react';
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppShell } from '../../App';
@@ -212,5 +212,239 @@ describe('ProjectSelector (FE-5 §20 items 17-20)', () => {
     await verifyKey();
 
     await waitFor(() => expect(selectorButton().textContent).toContain('Select a project'));
+  });
+});
+
+/**
+ * FE-14 (GAP-01) — real Project Creation UI. Same real-`AppShell`,
+ * transport-boundary-mocked-`fetch` approach as the FE-5 suite above. Every
+ * scenario here maps to this sprint's brief §17/§19 minimum list.
+ */
+describe('ProjectSelector — FE-14 real project creation (GAP-01)', () => {
+  const NEW_PROJECT: Project = {
+    id: 'proj-fe14-created',
+    name: 'Freshly Created Project',
+    description: null,
+    created_at: '2026-08-19T00:00:00Z',
+    updated_at: '2026-08-19T00:00:00Z',
+  };
+
+  function errorEnvelope(code: string, message: string) {
+    return { error: { code, message, details: {}, request_id: 'req_fe14test' } };
+  }
+
+  function nameInput(): HTMLElement {
+    return screen.getByLabelText('Name');
+  }
+
+  function createButtonInList(): HTMLElement {
+    return within(screen.getByRole('listbox', { name: 'Projects' })).getByText('Create Project').closest('button')!;
+  }
+
+  it('scenario A — the create entry point is reachable for an existing-project user', async () => {
+    setApiKey(RAW_KEY);
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => jsonResponse(200, [REAL_PROJECT])));
+    renderApp();
+    await verifyKey();
+    await waitForProjectsLoaded();
+    await openSelector();
+    expect(createButtonInList()).toBeTruthy();
+  });
+
+  it('scenario A / §15 — the create entry point is reachable for a zero-project user, no pre-existing selection required', async () => {
+    setApiKey(RAW_KEY);
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => jsonResponse(200, [])));
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(selectorButton().textContent).toContain('No accessible projects'));
+    await openSelector();
+    expect(createButtonInList()).toBeTruthy();
+  });
+
+  it('scenario B — an empty required name is rejected truthfully, with no request sent and no fake project created', async () => {
+    setApiKey(RAW_KEY);
+    const fetchMock = vi.fn().mockImplementation(async () => jsonResponse(200, [REAL_PROJECT]));
+    vi.stubGlobal('fetch', fetchMock);
+    renderApp();
+    await verifyKey();
+    await waitForProjectsLoaded();
+    await openSelector();
+
+    await act(async () => {
+      createButtonInList().click();
+    });
+    const callsBeforeSubmit = fetchMock.mock.calls.length;
+
+    await act(async () => {
+      within(screen.getByRole('listbox', { name: 'New Project' })).getByText('Create Project').closest('button')!.click();
+    });
+
+    expect(screen.getByText('Project name is required.')).toBeTruthy();
+    // No new POST /api/v1/projects request was made for the rejected submit.
+    expect(fetchMock.mock.calls.length).toBe(callsBeforeSubmit);
+  });
+
+  it('scenario C — a valid submission calls the real API, the new project enters state, and becomes selected without a reload', async () => {
+    setApiKey(RAW_KEY);
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/api/v1/projects' && init?.method === 'POST') {
+        expect(JSON.parse(init.body as string)).toEqual({ name: 'Freshly Created Project' });
+        return jsonResponse(201, NEW_PROJECT);
+      }
+      // Selecting the newly created project (below) triggers Dashboard's
+      // own real `/dashboard`/`/kpis`/`/executions` fetches for it — same
+      // URL-aware shape the existing FE-5/FE-10 tests above already use.
+      if (url.includes('/dashboard')) {
+        return jsonResponse(200, {
+          project_id: NEW_PROJECT.id,
+          project_name: NEW_PROJECT.name,
+          execution_counts: {},
+          task_counts: {},
+          pass_fail: { passed: 0, failed: 0 },
+          test_count: 0,
+          generated_at: '2026-08-19T00:00:00Z',
+        });
+      }
+      if (url.includes('/kpis')) {
+        return jsonResponse(200, {
+          project_id: NEW_PROJECT.id,
+          execution_reliability: null,
+          execution_efficiency_ms: null,
+          generated_at: '2026-08-19T00:00:00Z',
+        });
+      }
+      if (url.includes('/executions')) return jsonResponse(200, []);
+      return jsonResponse(200, [REAL_PROJECT]);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderApp();
+    await verifyKey();
+    await waitForProjectsLoaded();
+    await openSelector();
+
+    await act(async () => {
+      createButtonInList().click();
+    });
+    await act(async () => {
+      (nameInput() as HTMLInputElement).focus();
+    });
+    fireEvent.change(nameInput(), { target: { value: 'Freshly Created Project' } });
+
+    await act(async () => {
+      within(screen.getByRole('listbox', { name: 'New Project' })).getByText('Create Project').closest('button')!.click();
+    });
+
+    // Real backend confirmed success -> the new project is now the active
+    // selection, reflected purely through React state (no `location.reload`
+    // call happened — jsdom would otherwise not be here to assert against).
+    await waitFor(() => expect(selectorButton().textContent).toContain(NEW_PROJECT.name));
+
+    await openSelector();
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole('listbox', { name: 'Projects' })).getByRole('option', { name: NEW_PROJECT.name }),
+      ).toBeTruthy(),
+    );
+    // The pre-existing real project is still present too — creation appends,
+    // it does not replace the real list.
+    expect(within(screen.getByRole('listbox', { name: 'Projects' })).getByRole('option', { name: REAL_PROJECT.name })).toBeTruthy();
+  });
+
+  it('scenario D — a real backend failure (403, admin-only) shows a truthful error and creates no fake project', async () => {
+    setApiKey(RAW_KEY);
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/api/v1/projects' && init?.method === 'POST') {
+        return jsonResponse(403, errorEnvelope('FORBIDDEN', "role 'operator' cannot perform this action"));
+      }
+      return jsonResponse(200, [REAL_PROJECT]);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderApp();
+    await verifyKey();
+    await waitForProjectsLoaded();
+    await openSelector();
+
+    await act(async () => {
+      createButtonInList().click();
+    });
+    fireEvent.change(nameInput(), { target: { value: 'Should Not Be Created' } });
+
+    await act(async () => {
+      within(screen.getByRole('listbox', { name: 'New Project' })).getByText('Create Project').closest('button')!.click();
+    });
+
+    await waitFor(() => expect(screen.getByText("role 'operator' cannot perform this action")).toBeTruthy());
+    // Trigger button still shows the pre-existing real selection state, not
+    // a fabricated success — and the rejected project never entered the list.
+    expect(selectorButton().textContent).not.toContain('Should Not Be Created');
+  });
+
+  it('scenario E — duplicate submission is prevented while a creation request is pending', async () => {
+    setApiKey(RAW_KEY);
+    let resolveCreate!: (value: Response) => void;
+    const createPromise = new Promise<Response>((resolve) => {
+      resolveCreate = resolve;
+    });
+    let postCallCount = 0;
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/api/v1/projects' && init?.method === 'POST') {
+        postCallCount += 1;
+        return createPromise;
+      }
+      // Same reason as scenario C — selecting the newly created project
+      // triggers Dashboard's own real project-scoped fetches.
+      if (url.includes('/dashboard')) {
+        return jsonResponse(200, {
+          project_id: 'proj-fe14-pending',
+          project_name: 'Pending Project',
+          execution_counts: {},
+          task_counts: {},
+          pass_fail: { passed: 0, failed: 0 },
+          test_count: 0,
+          generated_at: '2026-08-19T00:00:00Z',
+        });
+      }
+      if (url.includes('/kpis')) {
+        return jsonResponse(200, {
+          project_id: 'proj-fe14-pending',
+          execution_reliability: null,
+          execution_efficiency_ms: null,
+          generated_at: '2026-08-19T00:00:00Z',
+        });
+      }
+      if (url.includes('/executions')) return jsonResponse(200, []);
+      return jsonResponse(200, [REAL_PROJECT]);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderApp();
+    await verifyKey();
+    await waitForProjectsLoaded();
+    await openSelector();
+
+    await act(async () => {
+      createButtonInList().click();
+    });
+    fireEvent.change(nameInput(), { target: { value: 'Pending Project' } });
+
+    const submitButton = () => document.getElementById('create-project-submit-button') as HTMLButtonElement;
+
+    await act(async () => {
+      submitButton().click();
+    });
+    // A second click while the first request is still in flight — the
+    // button is real-disabled during `createSubmitting`, so this must not
+    // fire a second POST.
+    await act(async () => {
+      submitButton().click();
+    });
+
+    expect(postCallCount).toBe(1);
+
+    await act(async () => {
+      resolveCreate(jsonResponse(201, { ...NEW_PROJECT, name: 'Pending Project' }));
+      await createPromise;
+    });
+    await waitFor(() => expect(selectorButton().textContent).toContain('Pending Project'));
+    expect(postCallCount).toBe(1);
   });
 });

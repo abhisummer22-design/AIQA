@@ -4,11 +4,11 @@
  * Built strictly on FE-1's transport (`aiqaApi.projects.list`) and FE-2's
  * `AuthContext` — this is not a second authentication mechanism, it only
  * *reacts* to the one real `AuthStatus` FE-2 already computes. It never
- * calls `aiqaApi` directly except through the existing FE-1 abstraction,
- * and never merges `AIQAContext`'s fabricated `AIQAProject[]` demo data
- * into its own state (see this file's own `Project` import: it is
- * `types/contract.ts`'s real backend type, not `types.ts`'s fake
- * `AIQAProject`).
+ * calls `aiqaApi` directly except through the existing FE-1 abstraction.
+ * (FE-11 removed `AIQAContext`'s own fabricated `AIQAProject[]` demo data
+ * and its `projects`/`selectedProject` fields entirely — this context is
+ * now the app's only "current project" concept. See this file's own
+ * `Project` import: `types/contract.ts`'s real backend type.)
  *
  * Source-of-truth note (brief §1): no FRD/SRD/PRD/flow-diagram document
  * exists anywhere in this repository (re-confirmed at the start of this
@@ -23,7 +23,7 @@
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, aiqaApi } from '../services/aiqaApi';
-import type { Project } from '../types/contract';
+import type { CreateProjectRequest, Project } from '../types/contract';
 import { useAuth } from './AuthContext';
 
 /** Deliberately a *different* storage key from `aiqaApi.ts`'s
@@ -77,6 +77,16 @@ export interface ProjectContextValue {
    *  goes through `AuthContext.validate()`, not this; see this file's own
    *  top-level comment on why that split is the correct one. */
   refreshProjects: () => Promise<void>;
+  /** FE-14 — real `POST /api/v1/projects` via `aiqaApi.projects.create`.
+   *  Resolves with the backend's own returned `Project` (never a locally
+   *  fabricated one) and, on success, appends it to `projects` and selects
+   *  it directly — the response body already *is* the authoritative record,
+   *  so a second round-trip through `refreshProjects` would only re-fetch
+   *  what this call already has. Rejects with the real `ApiError` on
+   *  failure (e.g. `forbidden` for a non-admin key — project creation is
+   *  Admin-only server-side, `api.rs::create_project`); callers must not
+   *  treat a rejection as anything other than "nothing was created". */
+  createProject: (body: CreateProjectRequest) => Promise<Project>;
 }
 
 const ProjectContext = createContext<ProjectContextValue | undefined>(undefined);
@@ -194,14 +204,26 @@ export const ProjectProvider: React.FC<{ children: React.ReactNode }> = ({ child
     await fetchProjects();
   }, [auth.status, fetchProjects]);
 
+  const createProject = useCallback(async (body: CreateProjectRequest): Promise<Project> => {
+    const project = await aiqaApi.projects.create(body);
+    // The backend response is the real, authoritative record — append it
+    // to the real list rather than re-fetching (brief §11: "avoid requiring
+    // a browser reload"; a full refetch here would just re-download the
+    // same object this response already carries).
+    setProjects((current) => [...current, project]);
+    setSelectedProjectIdState(project.id);
+    persistSelection(project.id);
+    return project;
+  }, []);
+
   const selectedProject = useMemo(
     () => projects.find((p) => p.id === selectedProjectId) ?? null,
     [projects, selectedProjectId],
   );
 
   const value = useMemo<ProjectContextValue>(
-    () => ({ projects, selectedProjectId, selectedProject, loading, error, selectProject, refreshProjects }),
-    [projects, selectedProjectId, selectedProject, loading, error, selectProject, refreshProjects],
+    () => ({ projects, selectedProjectId, selectedProject, loading, error, selectProject, refreshProjects, createProject }),
+    [projects, selectedProjectId, selectedProject, loading, error, selectProject, refreshProjects, createProject],
   );
 
   return <ProjectContext.Provider value={value}>{children}</ProjectContext.Provider>;

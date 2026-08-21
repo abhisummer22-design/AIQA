@@ -6,21 +6,33 @@
  * `routes/routeConfig.tsx`, the single source every navigation surface
  * shares. Active state and click-navigation are driven by the real URL
  * (`useLocation`/`useNavigate`), not the old in-memory `activePage`.
+ *
+ * FE-11: removed two fabricated elements — the workspace-identity block
+ * used to show `AIQAContext`'s fake `settings.general.organizationName`/
+ * `.projectKey` ("Acme Enterprise Engineering" / "AIQA-CORE") regardless of
+ * which real project was selected; it now shows the real
+ * `useProject().selectedProject`. The bottom "k8s-runner-pool-us, 12/16
+ * slots, 75%" box was 100% hardcoded, tied to no state at all — removed
+ * rather than wired to a fake number, since no real runner-pool/capacity
+ * concept exists in the backend. The Execution Hub nav item's "LIVE" badge
+ * no longer pulses off `AIQAContext`'s fake seeded `runs` array (a fake
+ * RUNNING run that never actually completes) — it is now a plain static
+ * label, consistent with the other nav items' static badges ("AI", "PLAN",
+ * "GATE").
  */
 
 import React from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { ChevronLeft, ChevronRight, Activity, Cpu } from 'lucide-react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useAIQA } from '../../context/AIQAContext';
+import { useProject } from '../../context/ProjectContext';
 import { routeDefs } from '../../routes/routeConfig';
 
 export const Sidebar: React.FC = () => {
-  const { isSidebarCollapsed, toggleSidebar, runs, settings } = useAIQA();
+  const { isSidebarCollapsed, toggleSidebar } = useAIQA();
+  const { selectedProject } = useProject();
   const navigate = useNavigate();
   const location = useLocation();
-
-  // Find running count for live indicator
-  const runningCount = runs.filter((r) => r.status === 'RUNNING').length;
 
   return (
     <aside
@@ -38,10 +50,10 @@ export const Sidebar: React.FC = () => {
             </div>
             <div className="truncate">
               <div className="text-xs font-semibold text-slate-200 truncate">
-                {settings.general.organizationName}
+                {selectedProject ? selectedProject.name : 'AIQA'}
               </div>
               <div className="text-[10px] font-mono text-slate-500 truncate">
-                Project: {settings.general.projectKey}
+                {selectedProject ? `Project: ${selectedProject.id.slice(0, 8)}` : 'No active project'}
               </div>
             </div>
           </div>
@@ -113,8 +125,6 @@ export const Sidebar: React.FC = () => {
                   className={`text-[10px] font-mono px-1.5 py-0.2 rounded font-semibold uppercase tracking-wider shrink-0 ${
                     isActive
                       ? 'bg-indigo-700/80 text-white'
-                      : item.badgeType === 'live' && runningCount > 0
-                      ? 'bg-indigo-950 text-indigo-300 border border-indigo-800 animate-pulse'
                       : 'bg-slate-800 text-slate-400 border border-slate-700'
                   }`}
                 >
@@ -126,33 +136,6 @@ export const Sidebar: React.FC = () => {
         })}
       </nav>
 
-      {/* Runner Pool / Telemetry Bottom Box */}
-      <div className="p-2.5 border-t border-slate-800/80 bg-[#020617]">
-        {!isSidebarCollapsed ? (
-          <div className="p-2 rounded-md bg-[#0B1120] border border-slate-800 space-y-1.5">
-            <div className="flex items-center justify-between text-[11px]">
-              <div className="flex items-center gap-1.5 text-slate-300 font-medium">
-                <Cpu className="w-3.5 h-3.5 text-indigo-400" />
-                <span>k8s-runner-pool-us</span>
-              </div>
-              <span className="text-[10px] font-mono text-emerald-400">12 / 16 slots</span>
-            </div>
-            <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
-              <div
-                className="bg-gradient-to-r from-indigo-500 to-cyan-400 h-1.5 rounded-full"
-                style={{ width: '75%' }}
-              />
-            </div>
-          </div>
-        ) : (
-          <div
-            className="flex justify-center p-1.5 text-indigo-400 cursor-pointer"
-            title="Cluster Capacity: 12/16 active runners"
-          >
-            <Activity className="w-4 h-4" />
-          </div>
-        )}
-      </div>
     </aside>
   );
 };

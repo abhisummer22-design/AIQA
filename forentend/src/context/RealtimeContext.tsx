@@ -23,10 +23,24 @@
  *   reads the exact same raw key `getApiKey()` already returns.
  * - **No backlog/replay** on this endpoint (unlike the legacy per-run
  *   `/runs/:id/ws`) — only events occurring *after* a successful
- *   subscription are delivered. Catch-up for a gap is the pre-existing
- *   per-run REST endpoint (`aiqaApi.executions.events`, `?since=<sequence>`)
- *   — there is no project-wide catch-up endpoint, so this provider does not
- *   invent one; see `handleReconnect` below and the FE-9 report §16/§17.
+ *   subscription are delivered. There is no project-wide catch-up
+ *   endpoint, so this provider does not invent one. FE-13 correction: this
+ *   comment previously claimed catch-up went through the real per-run REST
+ *   endpoint (`aiqaApi.executions.events`, `?since=<sequence>`) via a
+ *   `handleReconnect` function "below" — neither exists in this file (that
+ *   function was never added here, and `.events()` has zero call sites
+ *   anywhere in `forentend`, confirmed by a fresh repo-wide search). The
+ *   real reconnect-reconciliation strategy (ACC-008: "frontend reconciles
+ *   with authoritative backend state after reconnect") lives one layer up,
+ *   in each *consumer*: e.g. `ExecutionHubPage.tsx`'s own
+ *   `prevConnectionStateRef` effect calls the same real `fetchRuns`/
+ *   `fetchDetail` a manual Refresh click already uses — a full resync of
+ *   the resource, not a partial `?since=` replay. This satisfies the same
+ *   real requirement by a simpler, more robust path (a full refetch can
+ *   never be wrong about what it missed); `aiqaApi.executions.events`
+ *   remains real, correctly typed, and unused — a legitimate extension
+ *   point for a future finer-grained catch-up implementation, not dead
+ *   code to remove.
  * - **Real event envelope**: exactly `RunEvent`/`EventType`
  *   (`types/contract.ts`, unchanged — already an exact mirror of
  *   `domain.rs::RunEvent` since FE-1, confirmed field-for-field again this

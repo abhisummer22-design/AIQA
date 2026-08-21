@@ -566,4 +566,558 @@ describe('ExecutionHubPage (FE-8 §34 items 11-33)', () => {
     expect(screen.getAllByText('Test Case Generator').length).toBeGreaterThan(0);
     expect(screen.getByText('Ready to Generate')).toBeTruthy();
   });
+
+  describe('FE-12 — canonical status vocabulary', () => {
+    it('a multi-word real RunState renders space-separated, never with a literal underscore', async () => {
+      setApiKey(RAW_KEY);
+      const pendingRun: RunListItem = { run_id: 'run-pending', name: 'Mobile Sweep', state: 'PENDING_APPROVAL', total: 1, passed: 0, failed: 0, project_id: PROJECT_A.id };
+      const pendingDetail: RunDetail = { ...RUN_A_DETAIL, run_id: 'run-pending', name: 'Mobile Sweep', state: 'PENDING_APPROVAL', tasks: [] };
+      mockBackend({
+        projects: [PROJECT_A],
+        runsByProjectId: { [PROJECT_A.id]: [pendingRun] },
+        detailByRunId: { 'run-pending': pendingDetail },
+      });
+      renderApp();
+      await verifyKey();
+      await openAndSelectProject(PROJECT_A);
+
+      await waitFor(() => expect(screen.getByText('Mobile Sweep')).toBeTruthy());
+      // The real raw backend value stays exactly `PENDING_APPROVAL` (never
+      // renamed) — only its *display* drops the underscore for a space,
+      // the same convention Reports/the legacy StatusBadge already used.
+      await waitFor(() => expect(screen.getAllByText('PENDING APPROVAL').length).toBeGreaterThan(0));
+      expect(screen.queryByText('PENDING_APPROVAL')).toBeNull();
+    });
+
+    it('a multi-word real TaskStatus (NEEDS_REVIEW) renders space-separated in the task table', async () => {
+      setApiKey(RAW_KEY);
+      const detailWithNeedsReview: RunDetail = {
+        ...RUN_A_DETAIL_TERMINAL,
+        needs_review: 1,
+        tasks: [
+          { id: 't1', name: 'Task One', prerequisites: [], status: 'NEEDS_REVIEW', reason: 'anomaly detected', started_at: '2026-08-19T10:00:00Z', finished_at: '2026-08-19T10:00:05Z' },
+        ],
+      };
+      mockBackend({
+        projects: [PROJECT_A],
+        runsByProjectId: { [PROJECT_A.id]: [RUN_A] },
+        detailByRunId: { [RUN_A.run_id]: detailWithNeedsReview },
+      });
+      renderApp();
+      await verifyKey();
+      await openAndSelectProject(PROJECT_A);
+      await waitFor(() => expect(screen.getByText('Regression A')).toBeTruthy());
+
+      await act(async () => {
+        screen.getByText('Regression A').click();
+      });
+
+      await waitFor(() => expect(screen.getAllByText('NEEDS REVIEW').length).toBeGreaterThan(0));
+      expect(screen.queryByText('NEEDS_REVIEW')).toBeNull();
+    });
+
+    it('401 (authentication required) and 403 (forbidden) render distinct, non-interchangeable state cards', async () => {
+      setApiKey(RAW_KEY);
+      mockBackend({
+        projects: [PROJECT_A],
+        runsByProjectId: { [PROJECT_A.id]: { status: 403, body: envelope('FORBIDDEN', "role 'viewer' cannot perform this action") } },
+      });
+      renderApp();
+      await verifyKey();
+      await openAndSelectProject(PROJECT_A);
+
+      await waitFor(() => expect(screen.getByText('ACCESS FORBIDDEN · 403')).toBeTruthy());
+      expect(screen.queryByText('AUTHENTICATION REQUIRED · 401')).toBeNull();
+      expect(screen.queryByText('Authentication required')).toBeNull();
+    });
+  });
+});
+
+/**
+ * FE-17 — real `TaskDef.prerequisites` exposure in the task-creation form.
+ * Same real-`AppShell`/transport-boundary-mocked-`fetch` approach as the
+ * FE-8 suite above. Task ids are always set to explicit, human-readable
+ * values (`alpha`/`beta`/`gamma`) rather than relying on the default
+ * `task-N` counter, which is a module-level value shared across every test
+ * in this file and not reset between them.
+ */
+describe('ExecutionHubPage — FE-17 dependency/DAG editor', () => {
+  async function openCreatePanel(): Promise<void> {
+    await act(async () => {
+      document.getElementById('execution-new-button')!.click();
+    });
+  }
+  function taskIdInputs(): HTMLInputElement[] {
+    return screen.getAllByPlaceholderText('task id') as HTMLInputElement[];
+  }
+  function prereqRows(): HTMLElement[] {
+    return Array.from(document.querySelectorAll('[id^="task-prereqs-"]')) as HTMLElement[];
+  }
+  async function addTask(): Promise<void> {
+    await act(async () => {
+      screen.getByText('Add task').click();
+    });
+  }
+
+  it('item 1/2 — the dependency control renders only once a second task exists, offering the other real task as a candidate', async () => {
+    setApiKey(RAW_KEY);
+    mockBackend({ projects: [PROJECT_A], runsByProjectId: { [PROJECT_A.id]: [] } });
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(screen.getByText('No executions yet')).toBeTruthy());
+    await openCreatePanel();
+
+    // A single task has nothing to depend on — no control yet.
+    expect(screen.queryByText('Depends on:')).toBeNull();
+
+    await addTask();
+    const ids = taskIdInputs();
+    fireEvent.change(ids[0], { target: { value: 'alpha' } });
+    fireEvent.change(ids[1], { target: { value: 'beta' } });
+
+    expect(screen.getAllByText('Depends on:').length).toBe(2);
+    expect(screen.getByRole('button', { name: 'alpha' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'beta' })).toBeTruthy();
+  });
+
+  it('item 3 — a task is never offered as its own prerequisite candidate', async () => {
+    setApiKey(RAW_KEY);
+    mockBackend({ projects: [PROJECT_A], runsByProjectId: { [PROJECT_A.id]: [] } });
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(screen.getByText('No executions yet')).toBeTruthy());
+    await openCreatePanel();
+    await addTask();
+    const ids = taskIdInputs();
+    fireEvent.change(ids[0], { target: { value: 'alpha' } });
+    fireEvent.change(ids[1], { target: { value: 'beta' } });
+
+    // Exactly one 'alpha' chip exists in the whole panel (inside beta's row)
+    // and exactly one 'beta' chip (inside alpha's row) — neither task offers
+    // itself, so there is no second copy of either inside its own row.
+    expect(screen.getAllByRole('button', { name: 'alpha' }).length).toBe(1);
+    expect(screen.getAllByRole('button', { name: 'beta' }).length).toBe(1);
+  });
+
+  it('item 4/5 — multiple prerequisites can be selected and then removed', async () => {
+    setApiKey(RAW_KEY);
+    mockBackend({ projects: [PROJECT_A], runsByProjectId: { [PROJECT_A.id]: [] } });
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(screen.getByText('No executions yet')).toBeTruthy());
+    await openCreatePanel();
+    await addTask();
+    await addTask();
+    const ids = taskIdInputs();
+    fireEvent.change(ids[0], { target: { value: 'alpha' } });
+    fireEvent.change(ids[1], { target: { value: 'beta' } });
+    fireEvent.change(ids[2], { target: { value: 'gamma' } });
+
+    // gamma is the 3rd task -> its own "Depends on" row is the 3rd one.
+    const gammaRow = prereqRows()[2];
+    await act(async () => {
+      within(gammaRow).getByRole('button', { name: 'alpha' }).click();
+    });
+    await act(async () => {
+      within(gammaRow).getByRole('button', { name: 'beta' }).click();
+    });
+    expect(within(gammaRow).getByRole('button', { name: 'alpha' }).getAttribute('aria-pressed')).toBe('true');
+    expect(within(gammaRow).getByRole('button', { name: 'beta' }).getAttribute('aria-pressed')).toBe('true');
+    expect(within(gammaRow).queryByText(/none — click/)).toBeNull();
+
+    // Remove alpha again.
+    await act(async () => {
+      within(gammaRow).getByRole('button', { name: 'alpha' }).click();
+    });
+    expect(within(gammaRow).getByRole('button', { name: 'alpha' }).getAttribute('aria-pressed')).toBe('false');
+    expect(within(gammaRow).getByRole('button', { name: 'beta' }).getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('item 6 — selected prerequisites are serialized into the real request payload as TaskDef.prerequisites', async () => {
+    setApiKey(RAW_KEY);
+    let capturedBody: { tasks: Array<{ id: string; prerequisites: string[] }> } | null = null;
+    mockBackend({
+      projects: [PROJECT_A],
+      runsByProjectId: { [PROJECT_A.id]: [] },
+      onCreate: (_projectId, body) => {
+        capturedBody = body as { tasks: Array<{ id: string; prerequisites: string[] }> };
+        return jsonResponse(201, { run_id: 'dep-run-1', status: 'SCHEDULED', policy_notes: null });
+      },
+    });
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(screen.getByText('No executions yet')).toBeTruthy());
+    await openCreatePanel();
+    await addTask();
+    const ids = taskIdInputs();
+    fireEvent.change(ids[0], { target: { value: 'alpha' } });
+    fireEvent.change(ids[1], { target: { value: 'beta' } });
+
+    const betaRow = prereqRows()[1];
+    await act(async () => {
+      within(betaRow).getByRole('button', { name: 'alpha' }).click();
+    });
+
+    fireEvent.change(document.getElementById('exec-run-name') as HTMLInputElement, { target: { value: 'Dependency Run' } });
+    await act(async () => {
+      screen.getByText('Start Execution').closest('button')!.click();
+    });
+
+    await waitFor(() => expect(capturedBody).not.toBeNull());
+    const tasks = capturedBody!.tasks;
+    expect(tasks.find((t) => t.id === 'alpha')?.prerequisites).toEqual([]);
+    expect(tasks.find((t) => t.id === 'beta')?.prerequisites).toEqual(['alpha']);
+  });
+
+  it('item 7 — deleting a task strips it from every other task\'s prerequisites (no stale hidden dependency)', async () => {
+    setApiKey(RAW_KEY);
+    let capturedBody: { tasks: Array<{ id: string; prerequisites: string[] }> } | null = null;
+    mockBackend({
+      projects: [PROJECT_A],
+      runsByProjectId: { [PROJECT_A.id]: [] },
+      onCreate: (_projectId, body) => {
+        capturedBody = body as { tasks: Array<{ id: string; prerequisites: string[] }> };
+        return jsonResponse(201, { run_id: 'dep-run-2', status: 'SCHEDULED', policy_notes: null });
+      },
+    });
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(screen.getByText('No executions yet')).toBeTruthy());
+    await openCreatePanel();
+    await addTask();
+    const ids = taskIdInputs();
+    fireEvent.change(ids[0], { target: { value: 'alpha' } });
+    fireEvent.change(ids[1], { target: { value: 'beta' } });
+
+    const betaRow = prereqRows()[1];
+    await act(async () => {
+      within(betaRow).getByRole('button', { name: 'alpha' }).click();
+    });
+    expect(within(betaRow).getByRole('button', { name: 'alpha' }).getAttribute('aria-pressed')).toBe('true');
+
+    // Delete alpha (the 1st task's own remove button).
+    await act(async () => {
+      screen.getAllByTitle('Remove task')[0].click();
+    });
+
+    // Only one task remains, so the "Depends on" control disappears — but
+    // verify via the real submitted payload that no stale 'alpha' reference
+    // survived inside beta's prerequisites.
+    fireEvent.change(document.getElementById('exec-run-name') as HTMLInputElement, { target: { value: 'Cleanup Run' } });
+    await act(async () => {
+      screen.getByText('Start Execution').closest('button')!.click();
+    });
+
+    await waitFor(() => expect(capturedBody).not.toBeNull());
+    expect(capturedBody!.tasks.length).toBe(1);
+    expect(capturedBody!.tasks[0].id).toBe('beta');
+    expect(capturedBody!.tasks[0].prerequisites).toEqual([]);
+  });
+
+  it('item 9 — a real backend cycle-rejection error is shown truthfully, with no fake success', async () => {
+    setApiKey(RAW_KEY);
+    mockBackend({
+      projects: [PROJECT_A],
+      runsByProjectId: { [PROJECT_A.id]: [] },
+      onCreate: () => jsonResponse(400, envelope('VALIDATION_ERROR', "dependency cycle detected at task 'alpha'")),
+    });
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(screen.getByText('No executions yet')).toBeTruthy());
+    await openCreatePanel();
+    await addTask();
+    const ids = taskIdInputs();
+    fireEvent.change(ids[0], { target: { value: 'alpha' } });
+    fireEvent.change(ids[1], { target: { value: 'beta' } });
+    // Construct an actual cycle: alpha depends on beta, beta depends on alpha.
+    await act(async () => {
+      within(prereqRows()[0]).getByRole('button', { name: 'beta' }).click();
+    });
+    await act(async () => {
+      within(prereqRows()[1]).getByRole('button', { name: 'alpha' }).click();
+    });
+
+    fireEvent.change(document.getElementById('exec-run-name') as HTMLInputElement, { target: { value: 'Cyclic Run' } });
+    await act(async () => {
+      screen.getByText('Start Execution').closest('button')!.click();
+    });
+
+    await waitFor(() => expect(screen.getByText(/dependency cycle detected at task 'alpha'/)).toBeTruthy());
+    // Real error shown, not a fabricated success — the create panel is
+    // still open with no new run selected.
+    expect(screen.getByText('Start Execution')).toBeTruthy();
+  });
+
+  it('a network failure during creation shows a real offline error, never a fake success', async () => {
+    setApiKey(RAW_KEY);
+    mockBackend({
+      projects: [PROJECT_A],
+      runsByProjectId: { [PROJECT_A.id]: [] },
+      onCreate: () => {
+        throw new TypeError('Failed to fetch');
+      },
+    });
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(screen.getByText('No executions yet')).toBeTruthy());
+    await openCreatePanel();
+    fireEvent.change(document.getElementById('exec-run-name') as HTMLInputElement, { target: { value: 'Offline Run' } });
+    await act(async () => {
+      screen.getByText('Start Execution').closest('button')!.click();
+    });
+
+    await waitFor(() => expect(screen.getByText(/Cannot reach the AIQA orchestrator/)).toBeTruthy());
+  });
+});
+
+/**
+ * FE-18 — real `RunSummary.approved_by`/`.approved_at` exposure. These
+ * fields were already part of the real, already-fetched `RunDetail`
+ * response (`store.rs::approve_run`/`reject_run` populate both with the
+ * real acting API key's name on either a real approval or a real
+ * rejection) but were never rendered anywhere. No new API call, no new
+ * type, no backend change — see the FE-18 report.
+ */
+describe('ExecutionHubPage — FE-18 real approval/rejection attribution', () => {
+  it('shows the real approver identity and timestamp for an approved run', async () => {
+    setApiKey(RAW_KEY);
+    const approvedDetail: RunDetail = {
+      ...RUN_A_DETAIL_TERMINAL,
+      run_id: 'run-approved',
+      name: 'Approved Mobile Sweep',
+      approved_by: 'approver_alice',
+      approved_at: '2026-08-20T09:00:00Z',
+    };
+    const approvedRun: RunListItem = { run_id: 'run-approved', name: 'Approved Mobile Sweep', state: 'COMPLETED', total: 2, passed: 2, failed: 0, project_id: PROJECT_A.id };
+    mockBackend({
+      projects: [PROJECT_A],
+      runsByProjectId: { [PROJECT_A.id]: [approvedRun] },
+      detailByRunId: { 'run-approved': approvedDetail },
+    });
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(screen.getByText('Approved Mobile Sweep')).toBeTruthy());
+    await act(async () => {
+      screen.getByText('Approved Mobile Sweep').closest('button')!.click();
+    });
+
+    await waitFor(() => expect(document.getElementById('run-approval-attribution')).toBeTruthy());
+    const attribution = document.getElementById('run-approval-attribution')!.textContent ?? '';
+    expect(attribution).toContain('Approved by:');
+    expect(attribution).toContain('approver_alice');
+    expect(attribution).not.toContain('Rejected by:');
+  });
+
+  it('shows "Rejected by" (not "Approved by") for a real rejected run, using the same real fields', async () => {
+    setApiKey(RAW_KEY);
+    const rejectedDetail: RunDetail = {
+      ...RUN_A_DETAIL_TERMINAL,
+      run_id: 'run-rejected',
+      name: 'Rejected Mobile Sweep',
+      state: 'REJECTED',
+      approved_by: 'rejector_bob',
+      approved_at: '2026-08-20T09:05:00Z',
+      policy_notes: 'not safe to run against production devices right now',
+    };
+    const rejectedRun: RunListItem = { run_id: 'run-rejected', name: 'Rejected Mobile Sweep', state: 'REJECTED', total: 2, passed: 0, failed: 0, project_id: PROJECT_A.id };
+    mockBackend({
+      projects: [PROJECT_A],
+      runsByProjectId: { [PROJECT_A.id]: [rejectedRun] },
+      detailByRunId: { 'run-rejected': rejectedDetail },
+    });
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(screen.getByText('Rejected Mobile Sweep')).toBeTruthy());
+    await act(async () => {
+      screen.getByText('Rejected Mobile Sweep').closest('button')!.click();
+    });
+
+    await waitFor(() => expect(document.getElementById('run-approval-attribution')).toBeTruthy());
+    const attribution = document.getElementById('run-approval-attribution')!.textContent ?? '';
+    expect(attribution).toContain('Rejected by:');
+    expect(attribution).toContain('rejector_bob');
+    expect(attribution).not.toContain('Approved by:');
+  });
+
+  it('shows no approval attribution line at all for a run that was auto-scheduled (never held for approval)', async () => {
+    setApiKey(RAW_KEY);
+    // RUN_A_DETAIL_TERMINAL already has approved_by/approved_at: null.
+    mockBackend({
+      projects: [PROJECT_A],
+      runsByProjectId: { [PROJECT_A.id]: [RUN_A] },
+      detailByRunId: { [RUN_A.run_id]: RUN_A_DETAIL_TERMINAL },
+    });
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(screen.getByText('Regression A').closest('button')).toBeTruthy());
+    await act(async () => {
+      screen.getByText('Regression A').closest('button')!.click();
+    });
+
+    await waitFor(() => expect(screen.getAllByText('COMPLETED').length).toBeGreaterThan(0));
+    expect(document.getElementById('run-approval-attribution')).toBeNull();
+  });
+});
+
+/**
+ * FE-20 — real full-state count-grid exposure. `domain.rs::RunSummary`
+ * (`store.rs::get_run_summary`, a real SQL-backed group-by-status count over
+ * a run's persisted `tasks` rows) always carries all 11 fields
+ * (`total`/`queued`/`running`/`passed`/`failed`/`blocked`/`skipped`/
+ * `cancelled`/`timeout`/`infra_error`/`needs_review`); before this unit the
+ * grid rendered only 5 of them. Same real-`AppShell`/transport-boundary-
+ * mocked-`fetch` approach as the FE-8/17/18 suites above.
+ */
+describe('ExecutionHubPage — FE-20 real full run-summary count-grid exposure', () => {
+  const RUN_B: RunListItem = { run_id: 'run-b', name: 'Full Sweep B', state: 'RUNNING', total: 15, passed: 4, failed: 1, project_id: PROJECT_A.id };
+  const RUN_B_DETAIL: RunDetail = {
+    run_id: 'run-b',
+    name: 'Full Sweep B',
+    state: 'RUNNING',
+    total: 15,
+    queued: 3,
+    running: 2,
+    passed: 4,
+    failed: 1,
+    blocked: 0,
+    skipped: 2,
+    cancelled: 1,
+    timeout: 1,
+    infra_error: 1,
+    needs_review: 0,
+    started_at: '2026-08-20T09:00:00Z',
+    finished_at: null,
+    project_id: PROJECT_A.id,
+    requested_by: 'fe20-key',
+    policy_notes: null,
+    approved_by: null,
+    approved_at: null,
+    tasks: [],
+  };
+
+  function gridCellValue(label: string): string {
+    const grid = document.getElementById('run-detail-count-grid')!;
+    const labelEl = within(grid).getByText(label);
+    return labelEl.parentElement!.children[1].textContent ?? '';
+  }
+
+  it('item 1 — real non-zero QUEUED/RUNNING/SKIPPED/CANCELLED/TIMEOUT/INFRA ERROR values from RunDetail render in the grid', async () => {
+    setApiKey(RAW_KEY);
+    mockBackend({ projects: [PROJECT_A], runsByProjectId: { [PROJECT_A.id]: [RUN_B] }, detailByRunId: { [RUN_B.run_id]: RUN_B_DETAIL } });
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(screen.getByText('Full Sweep B')).toBeTruthy());
+    await act(async () => {
+      screen.getByText('Full Sweep B').closest('button')!.click();
+    });
+
+    await waitFor(() => expect(document.getElementById('run-detail-count-grid')).toBeTruthy());
+    expect(gridCellValue('QUEUED')).toBe('3');
+    expect(gridCellValue('RUNNING')).toBe('2');
+    expect(gridCellValue('SKIPPED')).toBe('2');
+    expect(gridCellValue('CANCELLED')).toBe('1');
+    expect(gridCellValue('TIMEOUT')).toBe('1');
+    expect(gridCellValue('INFRA ERROR')).toBe('1');
+  });
+
+  it('item 2 — semantically distinct states (TIMEOUT vs FAILED vs INFRA ERROR, SKIPPED vs CANCELLED) render distinct real counts, never merged', async () => {
+    setApiKey(RAW_KEY);
+    mockBackend({ projects: [PROJECT_A], runsByProjectId: { [PROJECT_A.id]: [RUN_B] }, detailByRunId: { [RUN_B.run_id]: RUN_B_DETAIL } });
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(screen.getByText('Full Sweep B')).toBeTruthy());
+    await act(async () => {
+      screen.getByText('Full Sweep B').closest('button')!.click();
+    });
+
+    await waitFor(() => expect(document.getElementById('run-detail-count-grid')).toBeTruthy());
+    // TIMEOUT (1) and INFRA ERROR (1) share the same real count value but
+    // must remain two separate cells with their own real backend field —
+    // never collapsed into a single "FAILED" bucket.
+    expect(gridCellValue('TIMEOUT')).toBe('1');
+    expect(gridCellValue('INFRA ERROR')).toBe('1');
+    expect(gridCellValue('FAILED')).toBe('1');
+    // SKIPPED (2) and CANCELLED (1) are genuinely different real counts —
+    // confirms they are not aliased to each other.
+    expect(gridCellValue('SKIPPED')).toBe('2');
+    expect(gridCellValue('CANCELLED')).toBe('1');
+    expect(gridCellValue('SKIPPED')).not.toBe(gridCellValue('CANCELLED'));
+  });
+
+  it('item 3 — a real backend zero renders as the literal count 0, never blank or omitted (no fabricated fallback, no hidden cell)', async () => {
+    setApiKey(RAW_KEY);
+    // RUN_A_DETAIL already has queued/blocked/skipped/cancelled/timeout/infra_error/needs_review all real-zero.
+    mockBackend({ projects: [PROJECT_A], runsByProjectId: { [PROJECT_A.id]: [RUN_A] }, detailByRunId: { [RUN_A.run_id]: RUN_A_DETAIL } });
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(screen.getByText('Regression A')).toBeTruthy());
+    await act(async () => {
+      screen.getByText('Regression A').closest('button')!.click();
+    });
+
+    await waitFor(() => expect(document.getElementById('run-detail-count-grid')).toBeTruthy());
+    expect(gridCellValue('QUEUED')).toBe('0');
+    expect(gridCellValue('SKIPPED')).toBe('0');
+    expect(gridCellValue('CANCELLED')).toBe('0');
+    expect(gridCellValue('TIMEOUT')).toBe('0');
+    expect(gridCellValue('INFRA ERROR')).toBe('0');
+  });
+
+  it('item 4 — previously-exposed real counts (TOTAL/PASSED/FAILED/BLOCKED/NEEDS REVIEW) remain correct alongside the new fields', async () => {
+    setApiKey(RAW_KEY);
+    mockBackend({ projects: [PROJECT_A], runsByProjectId: { [PROJECT_A.id]: [RUN_B] }, detailByRunId: { [RUN_B.run_id]: RUN_B_DETAIL } });
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(screen.getByText('Full Sweep B')).toBeTruthy());
+    await act(async () => {
+      screen.getByText('Full Sweep B').closest('button')!.click();
+    });
+
+    await waitFor(() => expect(document.getElementById('run-detail-count-grid')).toBeTruthy());
+    expect(gridCellValue('TOTAL')).toBe('15');
+    expect(gridCellValue('PASSED')).toBe('4');
+    expect(gridCellValue('FAILED')).toBe('1');
+    expect(gridCellValue('BLOCKED')).toBe('0');
+    expect(gridCellValue('NEEDS REVIEW')).toBe('0');
+  });
+
+  it('item 5 — switching the selected run re-renders the grid from the newly-fetched real RunDetail, not stale prior values', async () => {
+    setApiKey(RAW_KEY);
+    mockBackend({
+      projects: [PROJECT_A],
+      runsByProjectId: { [PROJECT_A.id]: [RUN_A, RUN_B] },
+      detailByRunId: { [RUN_A.run_id]: RUN_A_DETAIL, [RUN_B.run_id]: RUN_B_DETAIL },
+    });
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(screen.getByText('Regression A')).toBeTruthy());
+
+    await act(async () => {
+      screen.getByText('Regression A').closest('button')!.click();
+    });
+    await waitFor(() => expect(document.getElementById('run-detail-count-grid')).toBeTruthy());
+    expect(gridCellValue('QUEUED')).toBe('0');
+
+    await act(async () => {
+      screen.getByText('Full Sweep B').closest('button')!.click();
+    });
+    await waitFor(() => expect(gridCellValue('QUEUED')).toBe('3'));
+    expect(gridCellValue('RUNNING')).toBe('2');
+    expect(gridCellValue('TIMEOUT')).toBe('1');
+  });
 });

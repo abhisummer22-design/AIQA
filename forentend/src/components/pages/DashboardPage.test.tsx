@@ -39,7 +39,14 @@ function dashboardFor(project: Project, overrides: Partial<DashboardResponse> = 
   };
 }
 function kpisFor(project: Project, overrides: Partial<KpisResponse> = {}): KpisResponse {
-  return { project_id: project.id, execution_reliability: null, execution_efficiency_ms: null, generated_at: '2026-08-19T10:00:00Z', ...overrides };
+  return {
+    project_id: project.id,
+    execution_reliability: null,
+    execution_efficiency_ms: null,
+    execution_avg_run_duration_ms: null,
+    generated_at: '2026-08-19T10:00:00Z',
+    ...overrides,
+  };
 }
 
 class MockWebSocket {
@@ -609,5 +616,133 @@ describe('DashboardPage (FE-10 §28 items 1-32)', () => {
     await verifyKey();
 
     await waitFor(() => expect(screen.getAllByText('Evidence Viewer').length).toBeGreaterThan(0));
+  });
+});
+
+/**
+ * FE-26 — real Average Run Duration KPI (`execution_avg_run_duration_ms`,
+ * BE-12b). No new request, no new formatter, no new realtime mechanism:
+ * this reuses the exact same `aiqaApi.dashboard.kpis` call, the exact same
+ * `formatMs` helper already proven for `execution_efficiency_ms`, and the
+ * exact same debounced-any-event resync `execution_efficiency_ms` already
+ * rides — this describe block only proves the new field rides along
+ * correctly, not that any of those mechanisms work (already covered above).
+ */
+describe('DashboardPage — FE-26 real Average Run Duration KPI', () => {
+  it('item 1 — a real execution_avg_run_duration_ms value renders using the existing formatMs convention', async () => {
+    setApiKey(RAW_KEY);
+    mockBackend({
+      projects: [PROJECT_A],
+      dashboardByProjectId: { [PROJECT_A.id]: dashboardFor(PROJECT_A) },
+      kpisByProjectId: { [PROJECT_A.id]: kpisFor(PROJECT_A, { execution_avg_run_duration_ms: 20_000 }) },
+    });
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+
+    // Same formatMs(ms >= 1000) => `${(ms/1000).toFixed(1)}s` behavior
+    // already proven for execution_efficiency_ms (item 5/6 above) — not a
+    // new formatting convention invented for this one field.
+    await waitFor(() => expect(within(dashboardRoot()).getByText('20.0s')).toBeTruthy());
+    expect(within(dashboardRoot()).getByText(/Average run duration/)).toBeTruthy();
+  });
+
+  it('item 2 — null renders the existing honest "—" convention, never a fabricated 0', async () => {
+    setApiKey(RAW_KEY);
+    mockBackend({
+      projects: [PROJECT_A],
+      dashboardByProjectId: { [PROJECT_A.id]: dashboardFor(PROJECT_A) },
+      kpisByProjectId: { [PROJECT_A.id]: kpisFor(PROJECT_A, { execution_avg_run_duration_ms: null }) },
+    });
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+
+    await waitFor(() => expect(within(dashboardRoot()).getByText(/Average run duration/)).toBeTruthy());
+    const row = within(dashboardRoot()).getByText(/Average run duration/).closest('span')!;
+    expect(row.textContent).toContain('—');
+    expect(row.textContent).not.toMatch(/0ms|0\.0s|\b0\b/);
+  });
+
+  it('item 3 — existing Execution Reliability and Execution Efficiency KPIs are unaffected by the new field', async () => {
+    setApiKey(RAW_KEY);
+    mockBackend({
+      projects: [PROJECT_A],
+      dashboardByProjectId: { [PROJECT_A.id]: dashboardFor(PROJECT_A, { task_counts: { PASSED: 5, FAILED: 3 } }) },
+      kpisByProjectId: {
+        [PROJECT_A.id]: kpisFor(PROJECT_A, { execution_reliability: 0.625, execution_efficiency_ms: 1500, execution_avg_run_duration_ms: 20_000 }),
+      },
+    });
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+
+    await waitFor(() => expect(within(kpiRow()).getByText(/62\.5% reliability/)).toBeTruthy());
+    expect(within(dashboardRoot()).getByText('1.5s')).toBeTruthy(); // execution_efficiency_ms, unchanged
+    expect(within(dashboardRoot()).getByText('20.0s')).toBeTruthy(); // execution_avg_run_duration_ms, new
+  });
+
+  it('item 4 — project switching isolation: Project A\'s duration never leaks into Project B\'s display', async () => {
+    setApiKey(RAW_KEY);
+    mockBackend({
+      projects: [PROJECT_A, PROJECT_B],
+      dashboardByProjectId: { [PROJECT_A.id]: dashboardFor(PROJECT_A), [PROJECT_B.id]: dashboardFor(PROJECT_B) },
+      kpisByProjectId: {
+        [PROJECT_A.id]: kpisFor(PROJECT_A, { execution_avg_run_duration_ms: 5_000 }),
+        [PROJECT_B.id]: kpisFor(PROJECT_B, { execution_avg_run_duration_ms: 60_000 }),
+      },
+    });
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(within(dashboardRoot()).getByText('5.0s')).toBeTruthy());
+
+    await openAndSelectProject(PROJECT_B);
+    await waitFor(() => expect(within(dashboardRoot()).getByText('60.0s')).toBeTruthy());
+    expect(screen.queryByText('5.0s')).toBeNull();
+  });
+
+  it('item 5 — the existing debounced realtime resync updates the new KPI, with no new subscription/timer/WebSocket', async () => {
+    setApiKey(RAW_KEY);
+    const fetchMock = mockBackend({
+      projects: [PROJECT_A],
+      dashboardByProjectId: { [PROJECT_A.id]: dashboardFor(PROJECT_A) },
+      kpisByProjectId: { [PROJECT_A.id]: kpisFor(PROJECT_A, { execution_avg_run_duration_ms: 5_000 }) },
+    });
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(within(dashboardRoot()).getByText('5.0s')).toBeTruthy());
+    await waitFor(() => expect(MockWebSocket.instances.length).toBe(1)); // exactly one real connection, unchanged
+    act(() => MockWebSocket.instances[0].simulateOpen());
+
+    fetchMock.mockImplementation(async (url: string) => {
+      if (String(url).includes('/dashboard')) return jsonResponse(200, dashboardFor(PROJECT_A));
+      if (String(url).includes('/kpis')) return jsonResponse(200, kpisFor(PROJECT_A, { execution_avg_run_duration_ms: 45_000 }));
+      if (String(url).includes('/executions')) return jsonResponse(200, []);
+      return jsonResponse(200, [PROJECT_A]);
+    });
+    await act(async () => {
+      MockWebSocket.instances[0].simulateMessage(realEvent({ type: 'RUN_COMPLETED', project_id: PROJECT_A.id }));
+      await new Promise((r) => setTimeout(r, 500));
+    });
+    await waitFor(() => expect(within(dashboardRoot()).getByText('45.0s')).toBeTruthy());
+    expect(screen.queryByText('5.0s')).toBeNull();
+  });
+
+  it('item 6 — the new field causes no additional /kpis request beyond the existing single fetch per load', async () => {
+    setApiKey(RAW_KEY);
+    const fetchMock = mockBackend({
+      projects: [PROJECT_A],
+      dashboardByProjectId: { [PROJECT_A.id]: dashboardFor(PROJECT_A) },
+      kpisByProjectId: { [PROJECT_A.id]: kpisFor(PROJECT_A, { execution_avg_run_duration_ms: 5_000 }) },
+    });
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(within(dashboardRoot()).getByText('5.0s')).toBeTruthy());
+
+    const kpisCalls = fetchMock.mock.calls.filter((c) => String(c[0]).includes('/kpis'));
+    expect(kpisCalls.length).toBe(1);
   });
 });

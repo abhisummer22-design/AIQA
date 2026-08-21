@@ -327,3 +327,65 @@ describe('Driven by the real FE-2 AuthContext state machine (critical rule)', ()
     expect(authRef.hasKey).toBe(true);
   });
 });
+
+describe('renderResourceErrorState (FE-12 — centralized per-resource 401/403/offline/error mapping)', () => {
+  it('401 and 403 render distinct labels, titles, and descriptions — never interchangeable', async () => {
+    const { renderResourceErrorState } = await import('./StateViews');
+    const onRetry = vi.fn();
+    const copy = { forbiddenTitle: 'Not permitted to view this widget', forbiddenDescription: 'Role too low.' };
+
+    const { unmount } = render(<>{renderResourceErrorState(new ApiError('unauthorized', 'x', 401), onRetry, copy)}</>);
+    expect(screen.getByText('AUTHENTICATION REQUIRED · 401')).toBeTruthy();
+    expect(screen.getByText('Authentication required')).toBeTruthy();
+    expect(screen.queryByText('ACCESS FORBIDDEN · 403')).toBeNull();
+    unmount();
+
+    render(<>{renderResourceErrorState(new ApiError('forbidden', 'x', 403), onRetry, copy)}</>);
+    expect(screen.getByText('ACCESS FORBIDDEN · 403')).toBeTruthy();
+    expect(screen.getByText('Not permitted to view this widget')).toBeTruthy();
+    expect(screen.getByText('Role too low.')).toBeTruthy();
+    expect(screen.queryByText('AUTHENTICATION REQUIRED · 401')).toBeNull();
+  });
+
+  it('offline uses the page-specific suffix when given, and the plain sentence when omitted', async () => {
+    const { renderResourceErrorState } = await import('./StateViews');
+    const onRetry = vi.fn();
+
+    const { unmount } = render(
+      <>{renderResourceErrorState(new ApiError('offline', 'x'), onRetry, { forbiddenTitle: 't', forbiddenDescription: 'd', offlineDescriptionSuffix: 'to load widgets.' })}</>,
+    );
+    expect(screen.getByText('Unable to reach the AIQA Orchestrator to load widgets.')).toBeTruthy();
+    unmount();
+
+    render(<>{renderResourceErrorState(new ApiError('offline', 'x'), onRetry, { forbiddenTitle: 't', forbiddenDescription: 'd' })}</>);
+    expect(screen.getByText('Unable to reach the AIQA Orchestrator.')).toBeTruthy();
+  });
+
+  it('the generic error branch uses the page-specific title when given, and a sensible default otherwise', async () => {
+    const { renderResourceErrorState } = await import('./StateViews');
+    const onRetry = vi.fn();
+
+    const { unmount } = render(
+      <>{renderResourceErrorState(new ApiError('server_error', 'db down'), onRetry, { forbiddenTitle: 't', forbiddenDescription: 'd', genericTitle: "Couldn't load widgets" })}</>,
+    );
+    expect(screen.getByText("Couldn't load widgets")).toBeTruthy();
+    expect(screen.getByText('db down')).toBeTruthy();
+    unmount();
+
+    render(<>{renderResourceErrorState(new ApiError('server_error', 'db down'), onRetry, { forbiddenTitle: 't', forbiddenDescription: 'd' })}</>);
+    expect(screen.getByText("Couldn't load this data")).toBeTruthy();
+  });
+
+  it('a real request_id renders only when the error actually carried one', async () => {
+    const { renderResourceErrorState } = await import('./StateViews');
+    const onRetry = vi.fn();
+    const copy = { forbiddenTitle: 't', forbiddenDescription: 'd' };
+
+    const { unmount } = render(<>{renderResourceErrorState(new ApiError('server_error', 'x', 500, null, null, 'req_abc123'), onRetry, copy)}</>);
+    expect(screen.getByText(/request_id: req_abc123/)).toBeTruthy();
+    unmount();
+
+    render(<>{renderResourceErrorState(new ApiError('server_error', 'x'), onRetry, copy)}</>);
+    expect(screen.queryByText(/request_id:/)).toBeNull();
+  });
+});

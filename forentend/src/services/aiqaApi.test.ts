@@ -497,6 +497,74 @@ describe('Execution endpoints (FE-8 §34 API layer, items 1-10)', () => {
   });
 });
 
+describe('aiqaApi.projects.create (FE-14 §16 — real POST /api/v1/projects, previously unused/uncovered)', () => {
+  const CREATED_PROJECT = {
+    id: 'proj-fe14-created',
+    name: 'New Real Project',
+    description: 'A real description',
+    created_at: '2026-08-19T00:00:00Z',
+    updated_at: '2026-08-19T00:00:00Z',
+  };
+
+  it('success — POSTs the exact real path/method/body and returns the real typed Project', async () => {
+    setApiKey('aiqa_fe14createtest0000');
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(201, CREATED_PROJECT));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const project = await aiqaApi.projects.create({ name: 'New Real Project', description: 'A real description' });
+
+    expect(project).toEqual(CREATED_PROJECT);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/v1/projects');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({ name: 'New Real Project', description: 'A real description' });
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer aiqa_fe14createtest0000');
+  });
+
+  it('success — description is genuinely optional (omitted from the request body when not supplied)', async () => {
+    setApiKey('aiqa_fe14createtest0000');
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(201, { ...CREATED_PROJECT, description: null }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await aiqaApi.projects.create({ name: 'New Real Project' });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({ name: 'New Real Project' });
+  });
+
+  it('error — 403 (real backend rule: project creation is Admin-only) propagates as a real forbidden ApiError, not a fake project', async () => {
+    setApiKey('aiqa_fe14createtest0000');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(jsonResponse(403, envelope('FORBIDDEN', "role 'operator' cannot perform this action"))),
+    );
+
+    const err = await expectApiError(aiqaApi.projects.create({ name: 'New Real Project' }));
+    expect(err.kind).toBe('forbidden');
+    expect(err.status).toBe(403);
+  });
+
+  it('error — 400 validation failure (real backend rule: name must not be empty) propagates as a real validation_error ApiError', async () => {
+    setApiKey('aiqa_fe14createtest0000');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(jsonResponse(400, envelope('VALIDATION_ERROR', 'project name must not be empty'))),
+    );
+
+    const err = await expectApiError(aiqaApi.projects.create({ name: '' }));
+    expect(err.kind).toBe('validation_error');
+    expect(err.message).toBe('project name must not be empty');
+  });
+
+  it('error — a network failure maps to offline, not a fake success', async () => {
+    setApiKey('aiqa_fe14createtest0000');
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
+
+    const err = await expectApiError(aiqaApi.projects.create({ name: 'New Real Project' }));
+    expect(err.kind).toBe('offline');
+  });
+});
+
 describe('No hardcoded credential in source (FE-2 §6, §18 item 11)', () => {
   it('API_BASE contains no embedded secret and defaults to the contract-shaped path', async () => {
     const mod = await import('./aiqaApi');
