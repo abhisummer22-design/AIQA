@@ -7,6 +7,8 @@
 //! the real upgrade/auth/multiplex path ran, not that an internal
 //! broadcaster was called directly the way production code never does.
 
+use crate::ai_router::test_support::{healthy_model, healthy_provider, FakeDiscovery, FakeExecutor};
+use crate::ai_router::{AiExecutor, AiInfrastructure, CapabilityLevel};
 use crate::domain::RunEvent;
 use crate::evidence::LocalEvidenceStore;
 use crate::executor::{ExecutorRegistry, SimulatedExecutor};
@@ -35,7 +37,13 @@ async fn test_state() -> (AppState, tempfile::TempDir) {
         require_approval_for: HashSet::new(),
         blocked_executors: HashSet::new(),
     };
-    (AppState::new(Arc::new(registry), store, policy, evidence), dir)
+    let mut executors: std::collections::HashMap<&'static str, Arc<dyn AiExecutor>> = std::collections::HashMap::new();
+    executors.insert("mock", Arc::new(FakeExecutor::ok("{}")));
+    let ai_infra = Arc::new(AiInfrastructure::new(
+        vec![Arc::new(FakeDiscovery(healthy_provider("mock", vec![healthy_model("mock-model", "mock", CapabilityLevel::Strong)])))],
+        executors,
+    ));
+    (AppState::new(Arc::new(registry), store, policy, evidence, ai_infra), dir)
 }
 
 async fn mint_key(state: &AppState, role: &str, project_id: Option<&str>) -> String {

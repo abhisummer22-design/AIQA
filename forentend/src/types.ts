@@ -225,6 +225,13 @@ export interface GenerationSession {
   // removed — selecting it never had any real generation effect. See the
   // FE-16 report.
   depth: 'SMOKE' | 'STANDARD' | 'EXHAUSTIVE' | 'CHAOS_EXPLORATORY';
+  /** Skills & MCP Phase 1 — real, session-only selected skill ids (see
+   *  `hooks/useSkillSelection.ts`), carried across a branch switch the same
+   *  way every other generation-config field on this session already is.
+   *  Not sent to any backend; this local template pipeline does not yet
+   *  use these to vary generated content (see `TestCaseGeneratorPage.tsx`'s
+   *  own doc comment on `handleTriggerGenerate`). */
+  selectedSkillIds?: string[];
   generatedCases: GeneratedTestCase[];
   createdAt: string;
 }

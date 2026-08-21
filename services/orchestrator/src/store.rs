@@ -675,6 +675,43 @@ impl Store {
         Ok(result.rows_affected() > 0)
     }
 
+    // -------------------------------------------------------------- AI settings
+    //
+    // Central AI Provider & Model Intelligence Layer's persisted routing
+    // settings — one real, singleton row (`id = 'global'`). `get`/`upsert`
+    // are the only two operations this needs; there is nothing to list or
+    // delete.
+
+    pub async fn get_ai_settings(&self) -> Result<Option<(String, Option<String>, Option<String>, bool)>> {
+        let row = sqlx::query("SELECT mode, preferred_provider, preferred_model, fallback_enabled FROM ai_settings WHERE id = 'global'")
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|r| {
+            let mode: String = r.get("mode");
+            let preferred_provider: Option<String> = r.get("preferred_provider");
+            let preferred_model: Option<String> = r.get("preferred_model");
+            let fallback_enabled: i64 = r.get("fallback_enabled");
+            (mode, preferred_provider, preferred_model, fallback_enabled != 0)
+        }))
+    }
+
+    pub async fn upsert_ai_settings(&self, mode: &str, preferred_provider: Option<&str>, preferred_model: Option<&str>, fallback_enabled: bool) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO ai_settings (id, mode, preferred_provider, preferred_model, fallback_enabled, updated_at)
+             VALUES ('global', ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET mode = excluded.mode, preferred_provider = excluded.preferred_provider,
+               preferred_model = excluded.preferred_model, fallback_enabled = excluded.fallback_enabled, updated_at = excluded.updated_at",
+        )
+        .bind(mode)
+        .bind(preferred_provider)
+        .bind(preferred_model)
+        .bind(fallback_enabled as i64)
+        .bind(now_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     // ------------------------------------------------------------- test cases
     //
     // AUD-005 — see `domain.rs`'s test-case section doc comment for the full

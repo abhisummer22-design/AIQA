@@ -416,6 +416,96 @@ export interface TestCaseHandoffRequest {
   simulate?: { outcome: 'pass' | 'fail' | 'timeout' | 'infra_error'; delay_ms?: number };
 }
 
+// ---------------------------------------------------- AI provider intelligence
+
+/** `ai_router.rs::ProviderType`. Extensible on the backend beyond these 4
+ *  values without a frontend change (this type is only ever read, never
+ *  matched exhaustively as a discriminated union here). */
+export type AiProviderType = 'LOCAL' | 'API' | 'OPENAI_COMPATIBLE' | 'CUSTOM';
+
+/** `ai_router.rs::ProviderStatus` — every value the real discovery pass
+ *  can honestly produce. Never collapse this to a single "Connected"
+ *  boolean in the UI (brief §13). */
+export type AiProviderStatus = 'NOT_CONFIGURED' | 'DISCOVERING' | 'AVAILABLE' | 'HEALTHY' | 'DEGRADED' | 'UNAVAILABLE' | 'ERROR';
+
+/** `ai_router.rs::ModelStatus`. `UNKNOWN` is the honest default before a
+ *  model has ever actually been health-checked — never rendered as
+ *  "Healthy" (brief §14). */
+export type AiModelStatus = 'AVAILABLE' | 'HEALTHY' | 'DEGRADED' | 'UNAVAILABLE' | 'UNKNOWN';
+
+/** `ai_router.rs::CapabilityLevel` — a real, evidenced level, never
+ *  invented. `UNKNOWN` means the discovery source gave no signal either
+ *  way (brief §5: "UNKNOWN is preferable to guessing"). */
+export type AiCapabilityLevel = 'UNKNOWN' | 'NONE' | 'BASIC' | 'STRONG';
+
+export interface AiModelCapabilities {
+  text_generation: AiCapabilityLevel | null;
+  structured_output: AiCapabilityLevel | null;
+  reasoning: AiCapabilityLevel | null;
+  vision: AiCapabilityLevel | null;
+  embedding: AiCapabilityLevel | null;
+  tool_use: AiCapabilityLevel | null;
+  long_context: AiCapabilityLevel | null;
+}
+
+/** `ai_router.rs::ModelDefinition`. `family`/`parameter_size`/
+ *  `context_window` are `null` whenever the real discovery source gave no
+ *  evidence for them — never guessed. */
+export interface AiModelDefinition {
+  id: string;
+  provider_id: string;
+  display_name: string;
+  family: string | null;
+  parameter_size: string | null;
+  context_window: number | null;
+  capabilities: AiModelCapabilities;
+  status: AiModelStatus;
+}
+
+/** `ai_router.rs::AiProviderInfo` — the real, current discovery snapshot
+ *  for one provider. Deliberately has no credential-shaped field at all
+ *  (brief §6/§22): `configured` is a boolean fact, never the secret
+ *  itself. */
+export interface AiProviderInfo {
+  id: string;
+  name: string;
+  provider_type: AiProviderType;
+  endpoint: string | null;
+  configured: boolean;
+  reachable: boolean;
+  status: AiProviderStatus;
+  models: AiModelDefinition[];
+}
+
+export type AiRoutingMode = 'AUTO' | 'MANUAL';
+
+/** `ai_router.rs::AiSettings` — the real, persisted routing configuration
+ *  (`GET`/`PUT /api/v1/ai/settings`). */
+export interface AiSettings {
+  mode: AiRoutingMode;
+  preferred_provider: string | null;
+  preferred_model: string | null;
+  fallback_enabled: boolean;
+}
+
+/** `ai_router.rs::RoutingDecision` — a documented heuristic score, not a
+ *  benchmarked accuracy metric (brief §10). */
+export interface AiRoutingDecision {
+  provider_id: string;
+  model_id: string;
+  routing_score: number;
+  reason: string;
+}
+
+/** `GET /api/v1/ai/status` response shape. `routing_preview` is `null`
+ *  when no compatible model currently exists for TEST_CASE_GENERATION —
+ *  never fabricated. */
+export interface AiStatusResponse {
+  providers: AiProviderInfo[];
+  settings: AiSettings;
+  routing_preview: AiRoutingDecision | null;
+}
+
 // ----------------------------------------------------------------------- errors
 
 /** `errors.rs::ErrorBody` — API Contract §2.5's structured envelope, which

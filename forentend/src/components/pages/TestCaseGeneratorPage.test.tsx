@@ -391,3 +391,115 @@ describe('TestCaseGeneratorPage — AUD-005 real persistence, validation, execut
     );
   });
 });
+
+// ============================================================ Skills & MCP Phase 1
+
+describe('TestCaseGeneratorPage — Skills & MCP Phase 1', () => {
+  it('renders the Skills & MCP panel with built-in skills, Add Skill, and Connect MCP', async () => {
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await goToSourcesBranch();
+
+    const panel = document.getElementById('skills-and-mcp-panel')!;
+    expect(panel).toBeTruthy();
+    expect(within(panel).getByText('Functional Testing')).toBeTruthy();
+    expect(within(panel).getByText('Edge Case Analysis')).toBeTruthy();
+    expect(within(panel).getByText('Security Testing')).toBeTruthy();
+    expect(within(panel).getByText('Performance Testing')).toBeTruthy();
+    expect(within(panel).getByText('API Testing')).toBeTruthy();
+    expect(within(panel).getByText('Database Testing')).toBeTruthy();
+    expect(within(panel).getByText('RBAC Testing')).toBeTruthy();
+    expect(within(panel).getByText('Business Case Testing')).toBeTruthy();
+    expect(document.getElementById('btn-add-skill')).toBeTruthy();
+    expect(document.getElementById('btn-connect-mcp')).toBeTruthy();
+  });
+
+  it('Functional Testing and Edge Case Analysis are selected by default; toggling a skill updates real, visible state', async () => {
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await goToSourcesBranch();
+
+    const functional = document.getElementById('skill-toggle-skill-functional-testing')!;
+    const security = document.getElementById('skill-toggle-skill-security-testing')!;
+    expect(functional.getAttribute('aria-checked')).toBe('true');
+    expect(security.getAttribute('aria-checked')).toBe('false');
+
+    await act(async () => {
+      security.click();
+    });
+    expect(document.getElementById('skill-toggle-skill-security-testing')!.getAttribute('aria-checked')).toBe('true');
+
+    await act(async () => {
+      functional.click();
+    });
+    expect(document.getElementById('skill-toggle-skill-functional-testing')!.getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('existing local generation still completes with skills selected, and selection does not break the generate flow', async () => {
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await goToSourcesBranch();
+
+    await act(async () => {
+      document.getElementById('skill-toggle-skill-security-testing')!.click();
+    });
+
+    await generate();
+
+    await waitFor(() => expect(screen.getByText(/Generated Test Suite/)).toBeTruthy());
+    expect(screen.getAllByText('Functional').length).toBeGreaterThan(0);
+  }, 15000);
+
+  it('Add Skill opens the Skill Manager; creating a custom skill is real, session-only state — never claims persistence', async () => {
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await goToSourcesBranch();
+
+    await act(async () => {
+      document.getElementById('btn-add-skill')!.click();
+    });
+    expect(document.getElementById('skill-manager-modal')).toBeTruthy();
+
+    await act(async () => {
+      document.getElementById('btn-create-custom-skill')!.click();
+    });
+    fireEvent.change(screen.getByLabelText('New skill name'), { target: { value: 'Localization Testing' } });
+    await act(async () => {
+      document.getElementById('btn-confirm-add-custom-skill')!.click();
+    });
+
+    // Truthful, not a fake "saved successfully" claim.
+    expect(screen.getByText(/added for this session only — not saved anywhere/)).toBeTruthy();
+    expect(screen.queryByText(/saved successfully/i)).toBeNull();
+
+    await act(async () => {
+      document.getElementById('skill-manager-modal')!.querySelector('button[aria-label="Close Skill Manager"]')!.dispatchEvent(
+        new MouseEvent('click', { bubbles: true }),
+      );
+    });
+
+    // The new custom skill is now real, selected state reflected on the panel itself.
+    await waitFor(() => expect(screen.getByText('Localization Testing')).toBeTruthy());
+  });
+
+  it('Connect MCP shows a truthful "Not Configured" status and never claims a live connection', async () => {
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await goToSourcesBranch();
+
+    await act(async () => {
+      document.getElementById('btn-connect-mcp')!.click();
+    });
+
+    expect(document.getElementById('mcp-connect-modal')).toBeTruthy();
+    expect(document.getElementById('mcp-status-badge')!.textContent).toContain('Not Configured');
+    expect(document.getElementById('mcp-status-badge')!.textContent).not.toContain('Connected');
+    expect(screen.getByText(/External MCP connection management is not yet configured/)).toBeTruthy();
+    expect(screen.queryByText(/^Connected$/)).toBeNull();
+  });
+});

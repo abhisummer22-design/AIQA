@@ -36,6 +36,9 @@
  */
 
 import type {
+  AiProviderInfo,
+  AiSettings,
+  AiStatusResponse,
   ApiErrorEnvelope,
   AuditRow,
   CancelRunResponse,
@@ -459,5 +462,16 @@ export const aiqaApi = {
      *  comment for why there is no default. */
     handoff: (projectId: string, id: string, body: TestCaseHandoffRequest, signal?: AbortSignal) =>
       requestJson<CreateExecutionResponse>(`/projects/${projectId}/test-cases/${id}/handoff`, { method: 'POST', body, signal }),
+  },
+
+  /** Central AI Provider & Model Intelligence Layer
+   *  (`services/orchestrator/src/ai_router.rs`) — real, platform-wide (not
+   *  project-scoped) discovery/settings, matching that backend module's
+   *  own doc comment. */
+  ai: {
+    status: (signal?: AbortSignal) => requestJson<AiStatusResponse>('/ai/status', { signal }),
+    getSettings: (signal?: AbortSignal) => requestJson<AiSettings>('/ai/settings', { signal }),
+    updateSettings: (body: AiSettings, signal?: AbortSignal) => requestJson<AiSettings>('/ai/settings', { method: 'PUT', body, signal }),
+    refresh: (signal?: AbortSignal) => requestJson<AiProviderInfo[]>('/ai/refresh', { method: 'POST', signal }),
   },
 };

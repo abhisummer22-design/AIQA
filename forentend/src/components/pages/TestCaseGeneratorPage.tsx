@@ -35,6 +35,9 @@ import { DocumentUploadSection } from '../test-generator/DocumentUploadSection';
 import { ApplicationSourceSection } from '../test-generator/ApplicationSourceSection';
 import { GenerationConfigSection, TEST_CATEGORIES } from '../test-generator/GenerationConfigSection';
 import { GeneratedTestCasesView } from '../test-generator/GeneratedTestCasesView';
+import { SkillsAndMcpPanel } from '../test-generator/SkillsAndMcpPanel';
+import { useSkillSelection } from '../../hooks/useSkillSelection';
+import { DEFAULT_SELECTED_SKILL_IDS } from '../../services/skillRegistry';
 import {
   UploadedRequirementDoc,
   AppSourceType,
@@ -197,6 +200,15 @@ export const TestCaseGeneratorPage: React.FC = () => {
   const [saveState, setSaveState] = useState<'IDLE' | 'SAVING' | 'ERROR'>('IDLE');
   const [saveErrorMessage, setSaveErrorMessage] = useState<string | null>(null);
   const [handoffError, setHandoffError] = useState<string | null>(null);
+
+  // Skills & MCP — Phase 1 (see hooks/useSkillSelection.ts). A standalone
+  // hook, not inline state here, so a future generation-engine unit can
+  // reuse the exact same selection contract without depending on this
+  // page's other internals.
+  const { skills, selectedSkillIds, toggleSkill, addCustomSkill } = useSkillSelection(
+    activeGenerationSession?.selectedSkillIds || DEFAULT_SELECTED_SKILL_IDS,
+  );
+  const isGeneratingNow = ['VALIDATING', 'PROCESSING', 'GENERATING'].includes(generationState);
 
   // Real fetch of this project's persisted test cases — same abort-on-
   // switch pattern every other real-data page in this app already uses
@@ -395,6 +407,18 @@ export const TestCaseGeneratorPage: React.FC = () => {
   };
 
   // Test Case Generation Pipeline
+  //
+  // Skills & MCP Phase 1: `selectedSkillIds` (real, in-scope state from
+  // `useSkillSelection`) is captured into `activeGenerationSession` below,
+  // exactly like `selectedCategories`/`depth` already are — architecturally
+  // available to whatever consumes this session next. This local, fixed-
+  // template pipeline does not vary its per-category output by selected
+  // skill (there is no real generation engine here to do that yet, and
+  // claiming Security Testing/an MCP "improved" this deterministic
+  // template would be exactly the kind of unproven claim this unit must
+  // not make) — selection is real, its effect on local generation is not
+  // yet implemented, and this is disclosed in the Skills & MCP panel
+  // itself, not just in this comment.
   const handleTriggerGenerate = () => {
     setGenerationState('VALIDATING');
 
@@ -668,6 +692,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
               depth,
               generatedCases: newGenerated,
               createdAt: new Date().toISOString(),
+              selectedSkillIds,
             });
           }
 
@@ -847,56 +872,83 @@ export const TestCaseGeneratorPage: React.FC = () => {
 
       {/* Main Content Body */}
       {activeBranch === 'SOURCES_AND_GENERATION' ? (
-        /* Branch 1: Source & Generation Workspace */
-        <div id="project-sources-workspace" className="space-y-6">
-          {/* Section Banner: Project Sources */}
-          <div className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 space-y-1">
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] font-mono text-cyan-400 uppercase font-bold bg-cyan-950/60 px-1.5 py-0.5 rounded border border-cyan-800/60">
-                SOURCE WORKSPACE
-              </span>
-              <h2 className="text-sm font-bold text-slate-100 font-sans">
-                Project Sources
-              </h2>
+        /* Branch 1: Source & Generation Workspace.
+           Skills & MCP Phase 1: a 70/30 grid (`lg:grid-cols-10`,
+           `col-span-7`/`col-span-3` — the same 12/10-column grid idiom
+           `GeneratedTestCasesView.tsx`'s own detail layout already uses,
+           not a new ratio system) puts the Skills & MCP panel beside this
+           existing input area on desktop, and stacks it below on
+           tablet/mobile via the default `grid-cols-1`. Nothing inside
+           either column below was redesigned — only re-parented. */
+        <div id="project-sources-workspace" className="grid grid-cols-1 lg:grid-cols-10 gap-4 items-start">
+          <div className="lg:col-span-7 space-y-6 min-w-0">
+            {/* Section Banner: Project Sources */}
+            <div className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-mono text-cyan-400 uppercase font-bold bg-cyan-950/60 px-1.5 py-0.5 rounded border border-cyan-800/60">
+                  SOURCE WORKSPACE
+                </span>
+                <h2 className="text-sm font-bold text-slate-100 font-sans">
+                  Project Sources
+                </h2>
+              </div>
+              <p className="text-xs text-slate-400 font-sans">
+                Upload product documentation and connect application sources before generating test cases.
+              </p>
             </div>
-            <p className="text-xs text-slate-400 font-sans">
-              Upload product documentation and connect application sources before generating test cases.
-            </p>
+
+            {/* 1. Document Upload Section (5 slots) */}
+            <div className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm">
+              <DocumentUploadSection
+                documents={documents}
+                onDocumentsChange={setDocuments}
+                disabled={isGeneratingNow}
+              />
+            </div>
+
+            {/* 2. Application Source Section (4 channels) */}
+            <div className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm">
+              <ApplicationSourceSection
+                appSources={appSources}
+                onAppSourcesChange={setAppSources}
+                disabled={isGeneratingNow}
+              />
+            </div>
+
+            {/* 3. Test Generation Configuration (14 Categories & CTA).
+                Note: the "Generate Test Cases" action stays embedded here
+                (not hoisted below both grid columns) — it shares this
+                section's own validation logic
+                (`GenerationConfigSection::handleGenerateClick`), and
+                duplicating that logic at the page level purely to relocate
+                one button was judged a worse trade than this one, disclosed,
+                minor deviation from the layout mock's literal button
+                placement. See the Phase 1 implementation report. */}
+            <div className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm">
+              <GenerationConfigSection
+                selectedCategories={selectedCategories}
+                onToggleCategory={handleToggleCategory}
+                onSelectAllCategories={handleSelectAllCategories}
+                onDeselectAllCategories={handleDeselectAllCategories}
+                requirementNotes={requirementNotes}
+                onRequirementNotesChange={setRequirementNotes}
+                depth={depth}
+                onDepthChange={setDepth}
+                generationState={generationState}
+                onTriggerGenerate={handleTriggerGenerate}
+                documents={documents}
+                appSources={appSources}
+              />
+            </div>
           </div>
 
-          {/* 1. Document Upload Section (5 slots) */}
-          <div className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm">
-            <DocumentUploadSection
-              documents={documents}
-              onDocumentsChange={setDocuments}
-              disabled={['VALIDATING', 'PROCESSING', 'GENERATING'].includes(generationState)}
-            />
-          </div>
-
-          {/* 2. Application Source Section (4 channels) */}
-          <div className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm">
-            <ApplicationSourceSection
-              appSources={appSources}
-              onAppSourcesChange={setAppSources}
-              disabled={['VALIDATING', 'PROCESSING', 'GENERATING'].includes(generationState)}
-            />
-          </div>
-
-          {/* 3. Test Generation Configuration (14 Categories & CTA) */}
-          <div className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm">
-            <GenerationConfigSection
-              selectedCategories={selectedCategories}
-              onToggleCategory={handleToggleCategory}
-              onSelectAllCategories={handleSelectAllCategories}
-              onDeselectAllCategories={handleDeselectAllCategories}
-              requirementNotes={requirementNotes}
-              onRequirementNotesChange={setRequirementNotes}
-              depth={depth}
-              onDepthChange={setDepth}
-              generationState={generationState}
-              onTriggerGenerate={handleTriggerGenerate}
-              documents={documents}
-              appSources={appSources}
+          <div className="lg:col-span-3 min-w-0">
+            <SkillsAndMcpPanel
+              skills={skills}
+              selectedSkillIds={selectedSkillIds}
+              onToggleSkill={toggleSkill}
+              onAddCustomSkill={addCustomSkill}
+              disabled={isGeneratingNow}
             />
           </div>
         </div>

@@ -1,3 +1,4 @@
+use crate::ai_router::AiInfrastructure;
 use crate::domain::RunId;
 use crate::engine::{ProjectStream, RunRecord};
 use crate::evidence::LocalEvidenceStore;
@@ -27,6 +28,12 @@ pub struct AppState {
     /// `GET /api/v1/projects/{id}/events` WS subscriber sees that
     /// project's activity across all of its runs, not just one.
     pub project_streams: Arc<RwLock<HashMap<String, Arc<ProjectStream>>>>,
+    /// Central AI Provider & Model Intelligence Layer (`ai_router.rs`).
+    /// Constructed once (real `reqwest::Client` reuse per discovery/
+    /// executor, same reasoning as `registry`/`store`), threaded through
+    /// so every AI-consuming handler shares one discovery cache/settings
+    /// store rather than each building its own.
+    pub ai_infra: Arc<AiInfrastructure>,
 }
 
 impl AppState {
@@ -35,6 +42,7 @@ impl AppState {
         store: Store,
         policy: PolicyConfig,
         evidence: LocalEvidenceStore,
+        ai_infra: Arc<AiInfrastructure>,
     ) -> Self {
         Self {
             runs: Arc::new(RwLock::new(HashMap::new())),
@@ -43,6 +51,7 @@ impl AppState {
             policy: Arc::new(policy),
             evidence: Arc::new(evidence),
             project_streams: Arc::new(RwLock::new(HashMap::new())),
+            ai_infra,
         }
     }
 

@@ -84,6 +84,18 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/projects/:project_id/test-cases/:id/approve", post(approve_test_case_scoped))
         .route("/api/v1/projects/:project_id/test-cases/:id/reject", post(reject_test_case_scoped))
         .route("/api/v1/projects/:project_id/test-cases/:id/handoff", post(handoff_test_case_scoped))
+        // Phase 2 — real, skill-aware AI test case generation. Produces
+        // drafts only (never persists) — the caller then uses the existing
+        // `POST .../test-cases` (above) to save whichever drafts it wants,
+        // exactly like the pre-existing local-template drafts already do.
+        .route("/api/v1/projects/:project_id/test-cases/generate-ai", post(generate_ai_test_cases_scoped))
+        // Central AI Provider & Model Intelligence Layer — platform-wide,
+        // not project-scoped (the router itself is one shared instance
+        // across the whole deployment, exactly like `/admin/api-keys`
+        // below is a platform-wide, not project-scoped, resource).
+        .route("/api/v1/ai/status", get(get_ai_status))
+        .route("/api/v1/ai/settings", get(get_ai_settings_handler).put(put_ai_settings_handler))
+        .route("/api/v1/ai/refresh", post(refresh_ai_providers))
         // Legacy, flat, unscoped routes — kept fully functional (Step 6: no
         // document calls for removing or redirecting them; see the report's
         // "Route Compatibility" section for the explicit reasoning).
@@ -646,6 +658,168 @@ async fn handoff_test_case_scoped(
     audit(&state, &ctx, "test_case.handoff", Some(&id.to_string()), Some(&created.run_id.to_string()), "ok").await;
 
     Ok((status_code, Json(CreateExecutionResponse { run_id: created.run_id, status: created.state, policy_notes: created.policy_notes })))
+}
+
+#[derive(Debug, Deserialize)]
+struct SkillInputBody {
+    id: String,
+    name: String,
+    #[serde(default)]
+    description: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GenerateAiTestCasesBody {
+    requirement_text: String,
+    #[serde(default)]
+    skills: Vec<SkillInputBody>,
+}
+
+/// `generation_method` is always exactly `"ai"` or `"fallback"` — never
+/// anything implying success when `ai_router.generate` actually returned
+/// `GenerationOutcome::Failed`. `provider`/`model` are only ever `Some`
+/// alongside `generation_method: "ai"`; `fallback_reason` only alongside
+/// `"fallback"` — a client cannot receive a shape that claims both or
+/// neither.
+#[derive(Debug, Serialize)]
+struct GenerateAiTestCasesResponse {
+    test_cases: Vec<crate::ai_generation::GeneratedTestCaseDraft>,
+    generation_method: String,
+    provider: Option<String>,
+    model: Option<String>,
+    fallback_reason: Option<String>,
+}
+
+/// POST .../test-cases/generate-ai — Phase 2. Real, skill-aware AI
+/// generation (`ai_generation::AiModelRouter`). Produces drafts only, never
+/// persists them — the frontend uses the existing
+/// `POST .../test-cases` to save whichever drafts it wants, exactly like a
+/// pre-existing local-template draft already does (no second, competing
+/// persistence path). A `"fallback"` response is a normal 200, not a 5xx:
+/// the endpoint did its real job (attempted AI generation and honestly
+/// reports the outcome) — the frontend's own existing local generator is
+/// what actually produces a result in that case, honestly labeled as such,
+/// never silently presented as AI output.
+async fn generate_ai_test_cases_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiJson(body): ApiJson<GenerateAiTestCasesBody>,
+) -> Result<Json<GenerateAiTestCasesResponse>, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    require_scoped_project(&state, &ctx, project_id).await?;
+
+    if body.requirement_text.trim().is_empty() {
+        return Err(ApiError::validation("requirement_text must not be empty"));
+    }
+
+    let skills: Vec<crate::ai_generation::SkillInput> = body
+        .skills
+        .into_iter()
+        .map(|s| crate::ai_generation::SkillInput { id: s.id, name: s.name, description: s.description })
+        .collect();
+
+    let outcome = crate::ai_generation::generate_test_cases(&state.ai_infra, &body.requirement_text, &skills).await;
+
+    let response = match outcome {
+        crate::ai_generation::GenerationOutcome::Ai { cases, provider, model } => {
+            audit(
+                &state,
+                &ctx,
+                "test_case.generate_ai",
+                None,
+                Some(&format!("{} case(s) via {provider}/{model}", cases.len())),
+                "ok",
+            )
+            .await;
+            GenerateAiTestCasesResponse {
+                test_cases: cases,
+                generation_method: "ai".to_string(),
+                provider: Some(provider),
+                model: Some(model),
+                fallback_reason: None,
+            }
+        }
+        crate::ai_generation::GenerationOutcome::Failed { reason } => {
+            audit(&state, &ctx, "test_case.generate_ai", None, Some(&reason), "fallback").await;
+            GenerateAiTestCasesResponse {
+                test_cases: Vec::new(),
+                generation_method: "fallback".to_string(),
+                provider: None,
+                model: None,
+                fallback_reason: Some(reason),
+            }
+        }
+    };
+
+    Ok(Json(response))
+}
+
+// ------------------------------------------------------ AI Intelligence Layer
+
+/// GET /api/v1/ai/status — real, current discovery snapshot + active
+/// settings. Never triggers a fresh discovery pass itself (that's
+/// `POST /api/v1/ai/refresh`, an explicit action) — this returns whatever
+/// is already cached, honestly, including an empty provider list if
+/// nothing has been discovered yet.
+/// GET /api/v1/ai/status — real discovery snapshot + settings, plus a
+/// real `routing_preview`: what `AiInfrastructure::route_among` would
+/// actually select right now for this app's primary AI task
+/// (`TEST_CASE_GENERATION`), computed with the exact same scoring
+/// function real generation uses — never a separate, hand-picked "here's
+/// what looks good" summary. `null` when no compatible model currently
+/// exists, exactly like a real generation attempt would honestly fail.
+async fn get_ai_status(State(state): State<AppState>, Extension(_ctx): Extension<AuthContext>) -> Json<serde_json::Value> {
+    let providers = state.ai_infra.providers_snapshot().await;
+    let settings = state.ai_infra.settings().await;
+    let routing_preview = crate::ai_router::AiInfrastructure::route_among(
+        &providers,
+        crate::ai_router::AiTask::TestCaseGeneration,
+        &settings,
+        None,
+        None,
+    )
+    .ok();
+    Json(serde_json::json!({ "providers": providers, "settings": settings, "routing_preview": routing_preview }))
+}
+
+async fn get_ai_settings_handler(State(state): State<AppState>, Extension(_ctx): Extension<AuthContext>) -> Json<crate::ai_router::AiSettings> {
+    Json(state.ai_infra.settings().await)
+}
+
+/// PUT /api/v1/ai/settings — the only mutating route in this layer.
+/// Persists for real (`ai_settings`, a real singleton row) and updates the
+/// in-memory router in the same request, so the very next generation call
+/// already reflects the new mode/preference — never a setting that "looks"
+/// saved but doesn't actually change routing behavior.
+async fn put_ai_settings_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiJson(body): ApiJson<crate::ai_router::AiSettings>,
+) -> Result<Json<crate::ai_router::AiSettings>, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    let mode_str = match body.mode {
+        crate::ai_router::RoutingMode::Auto => "AUTO",
+        crate::ai_router::RoutingMode::Manual => "MANUAL",
+    };
+    state
+        .store
+        .upsert_ai_settings(mode_str, body.preferred_provider.as_deref(), body.preferred_model.as_deref(), body.fallback_enabled)
+        .await
+        .map_err(to_500)?;
+    state.ai_infra.set_settings(body.clone()).await;
+    audit(&state, &ctx, "ai.settings.update", None, Some(mode_str), "ok").await;
+    Ok(Json(body))
+}
+
+/// POST /api/v1/ai/refresh — the explicit, on-demand re-discovery brief
+/// §15 calls for ("Manual refresh"), distinct from the TTL-bounded lazy
+/// refresh `generate` itself uses.
+async fn refresh_ai_providers(State(state): State<AppState>, Extension(ctx): Extension<AuthContext>) -> Result<Json<Vec<crate::ai_router::AiProviderInfo>>, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    let providers = state.ai_infra.discover_all().await;
+    audit(&state, &ctx, "ai.providers.refresh", None, Some(&format!("{} provider(s)", providers.len())), "ok").await;
+    Ok(Json(providers))
 }
 
 // -------------------------------------------------------------- run create

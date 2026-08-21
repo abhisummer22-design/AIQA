@@ -6,6 +6,8 @@
 //! the *HTTP response body* — status code alone proves nothing about
 //! whether the JSON envelope shape is actually correct.
 
+use crate::ai_router::test_support::{healthy_model, healthy_provider, FakeDiscovery, FakeExecutor};
+use crate::ai_router::{AiExecutor, AiInfrastructure, CapabilityLevel};
 use crate::api::router;
 use crate::domain::RunState;
 use crate::evidence::LocalEvidenceStore;
@@ -23,6 +25,29 @@ use std::sync::Arc;
 use tower::ServiceExt;
 use uuid::Uuid;
 
+/// Builds an `AiInfrastructure` with exactly one fake provider/model whose
+/// executor returns `response_or_none` (`Ok`) or the given error (`Err`) —
+/// no real network call, ever, in any test using this. `response = "{}"`
+/// (the default via `inert_ai_router`) deliberately fails structured-output
+/// parsing if the AI path is ever accidentally exercised, so an unrelated
+/// test gets a real, honest `Failed` outcome rather than a panic.
+fn ai_infra_with(result: Result<&str, crate::ai_router::ExecutionError>) -> Arc<AiInfrastructure> {
+    let executor: Arc<dyn AiExecutor> = match result {
+        Ok(text) => Arc::new(FakeExecutor::ok(text)),
+        Err(e) => Arc::new(FakeExecutor::err(e)),
+    };
+    let mut executors: std::collections::HashMap<&'static str, Arc<dyn AiExecutor>> = std::collections::HashMap::new();
+    executors.insert("mock", executor);
+    Arc::new(AiInfrastructure::new(
+        vec![Arc::new(FakeDiscovery(healthy_provider("mock", vec![healthy_model("mock-model", "mock", CapabilityLevel::Strong)])))],
+        executors,
+    ))
+}
+
+fn inert_ai_router() -> Arc<AiInfrastructure> {
+    ai_infra_with(Ok("{}"))
+}
+
 async fn test_state() -> (AppState, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = Store::connect(&dir.path().join("api.sqlite3")).await.expect("connect");
@@ -37,7 +62,25 @@ async fn test_state() -> (AppState, tempfile::TempDir) {
         require_approval_for: ["maestro".to_string()].into_iter().collect(),
         blocked_executors: HashSet::new(),
     };
-    (AppState::new(Arc::new(registry), store, policy, evidence), dir)
+    (AppState::new(Arc::new(registry), store, policy, evidence, inert_ai_router()), dir)
+}
+
+/// Phase 2 — same setup as `test_state()`, but with a caller-supplied AI
+/// infrastructure (typically via `ai_infra_with(...)`), so an AI-generation
+/// test can inject a controllable provider/executor and assert on the
+/// real HTTP response the endpoint produces for that outcome — without
+/// ever making a real network call.
+async fn test_state_with_ai_router(ai_router: Arc<AiInfrastructure>) -> (AppState, tempfile::TempDir) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = Store::connect(&dir.path().join("api.sqlite3")).await.expect("connect");
+    let evidence = LocalEvidenceStore::new(dir.path().join("evidence")).expect("evidence store");
+    let registry = ExecutorRegistry::new(Arc::new(SimulatedExecutor));
+    let policy = PolicyConfig {
+        max_concurrency: 8,
+        require_approval_for: ["maestro".to_string()].into_iter().collect(),
+        blocked_executors: HashSet::new(),
+    };
+    (AppState::new(Arc::new(registry), store, policy, evidence, ai_router), dir)
 }
 
 /// Mints a real, durably persisted API key and returns its plaintext.
@@ -2437,4 +2480,331 @@ async fn aud005_handoff_run_is_a_real_execution_hub_run() {
         listed_runs.as_array().unwrap().iter().any(|r| r["run_id"] == run_id),
         "the handoff-created run must appear in the real Execution Hub's own list; rows={listed_runs:?}"
     );
+}
+
+// ============================================================ Phase 2 — AI generation
+
+fn valid_ai_response() -> &'static str {
+    r#"{"test_cases":[{"title":"Reject short password","category":"Security","skill_id":"skill-security-testing",
+        "preconditions":[],"steps":[{"action":"Submit a 7-character password","expected_result":"Validation error shown"}],
+        "expected_result":"Validation error shown","priority":"HIGH","severity":"MAJOR",
+        "evidence":"evidenced","source_reference":"must be at least 8 characters"}]}"#
+}
+
+#[tokio::test]
+async fn phase2_generate_ai_returns_real_structured_cases_on_success() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    let project = make_project(&state, "Phase2 AI Success").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/generate-ai"),
+            Some(&owner),
+            Some(serde_json::json!({
+                "requirement_text": "Password must be at least 8 characters.",
+                "skills": [{"id": "skill-security-testing", "name": "Security Testing", "description": ""}]
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["generation_method"], "ai", "body={body}");
+    assert_eq!(body["provider"], "mock", "body={body}");
+    assert_eq!(body["model"], "mock-model", "body={body}");
+    assert!(body["fallback_reason"].is_null(), "body={body}");
+    let cases = body["test_cases"].as_array().unwrap();
+    assert_eq!(cases.len(), 1, "body={body}");
+    assert_eq!(cases[0]["title"], "Reject short password");
+    assert_eq!(cases[0]["evidence"], "evidenced");
+    assert_eq!(cases[0]["source_reference"], "must be at least 8 characters");
+}
+
+/// The core truthfulness requirement: a provider failure must be reported
+/// as `generation_method: "fallback"` with a real reason — never as a
+/// fabricated `"ai"` success, and never as an opaque 500 that hides why.
+#[tokio::test]
+async fn phase2_generate_ai_reports_truthful_fallback_on_provider_failure() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Err(crate::ai_router::ExecutionError::Timeout))).await;
+    let project = make_project(&state, "Phase2 AI Failure").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/generate-ai"),
+            Some(&owner),
+            Some(serde_json::json!({"requirement_text": "Users can log in.", "skills": []})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "a real, honest fallback report is not an HTTP error; body={body}");
+    assert_eq!(body["generation_method"], "fallback", "body={body}");
+    assert!(body["provider"].is_null(), "body={body}");
+    assert!(body["model"].is_null(), "body={body}");
+    assert!(body["test_cases"].as_array().unwrap().is_empty(), "body={body}");
+    let reason = body["fallback_reason"].as_str().expect("a real reason must be present");
+    assert!(reason.contains("TIMEOUT"), "reason must be the real, specific failure, not generic; reason={reason}");
+}
+
+#[tokio::test]
+async fn phase2_generate_ai_reports_truthful_fallback_on_invalid_structured_output() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok("not json at all"))).await;
+    let project = make_project(&state, "Phase2 AI Garbage").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/generate-ai"),
+            Some(&owner),
+            Some(serde_json::json!({"requirement_text": "Users can log in.", "skills": []})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["generation_method"], "fallback", "body={body}");
+    assert!(body["fallback_reason"].as_str().unwrap().contains("invalid structured output"), "body={body}");
+}
+
+#[tokio::test]
+async fn phase2_generate_ai_rejects_empty_requirement_text() {
+    let (state, _dir) = test_state_with_ai_router(inert_ai_router()).await;
+    let project = make_project(&state, "Phase2 AI Empty Input").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/generate-ai"),
+            Some(&owner),
+            Some(serde_json::json!({"requirement_text": "   ", "skills": []})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+}
+
+#[tokio::test]
+async fn phase2_generate_ai_rbac_viewer_forbidden_operator_allowed() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    let project = make_project(&state, "Phase2 AI RBAC").await;
+    let viewer = mint_key(&state, "viewer", Some(&project.to_string())).await;
+    let operator = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let request_body = serde_json::json!({"requirement_text": "Users can log in.", "skills": []});
+
+    let (status, body) = send(
+        &state,
+        req("POST", &format!("/api/v1/projects/{project}/test-cases/generate-ai"), Some(&viewer), Some(request_body.clone())),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+
+    let (status, body) =
+        send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/generate-ai"), Some(&operator), Some(request_body))).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+}
+
+#[tokio::test]
+async fn phase2_generate_ai_project_isolation_enforced() {
+    let (state, _dir) = test_state_with_ai_router(inert_ai_router()).await;
+    let project_a = make_project(&state, "Phase2 AI Isolation A").await;
+    let project_b = make_project(&state, "Phase2 AI Isolation B").await;
+    let owner_b = mint_key(&state, "operator", Some(&project_b.to_string())).await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_a}/test-cases/generate-ai"),
+            Some(&owner_b),
+            Some(serde_json::json!({"requirement_text": "Anything.", "skills": []})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+    assert_eq!(body["error"]["code"], "FORBIDDEN");
+}
+
+/// End-to-end proof that a generated draft can be saved for real via the
+/// pre-existing AUD-005 persistence path — the AI endpoint's own contract
+/// (title/category/preconditions/steps/expected_result/priority/severity)
+/// is a strict subset of `CreateTestCaseRequest`'s fields, so this is a
+/// real compatibility fact, not an assumption.
+#[tokio::test]
+async fn phase2_ai_generated_draft_can_be_saved_via_existing_test_case_persistence() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    let project = make_project(&state, "Phase2 AI Save").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (_, gen_body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/generate-ai"),
+            Some(&owner),
+            Some(serde_json::json!({"requirement_text": "Password must be at least 8 characters.", "skills": []})),
+        ),
+    )
+    .await;
+    let draft = &gen_body["test_cases"][0];
+
+    let (status, saved) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(&owner),
+            Some(serde_json::json!({
+                "title": draft["title"],
+                "description": draft["expected_result"],
+                "category": draft["category"],
+                "priority": draft["priority"],
+                "severity": draft["severity"],
+                "preconditions": draft["preconditions"],
+                "steps": [{"step_number": 1, "action": draft["steps"][0]["action"], "expected_result": draft["steps"][0]["expected_result"]}],
+                "expected_result": draft["expected_result"],
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "an AI-generated draft must be persistable via the existing real test-case store; body={saved}");
+    assert_eq!(saved["status"], "GENERATED");
+}
+
+// ================================================ AI Intelligence Layer (settings/status)
+
+#[tokio::test]
+async fn ai_status_returns_real_provider_snapshot_and_settings() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    state.ai_infra.discover_all().await;
+    let admin = mint_key(&state, "admin", None).await;
+
+    let (status, body) = send(&state, req("GET", "/api/v1/ai/status", Some(&admin), None)).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let providers = body["providers"].as_array().unwrap();
+    assert_eq!(providers.len(), 1, "body={body}");
+    assert_eq!(providers[0]["id"], "mock");
+    assert_eq!(body["settings"]["mode"], "AUTO", "body={body}");
+    assert_eq!(body["settings"]["fallback_enabled"], true, "body={body}");
+}
+
+#[tokio::test]
+async fn ai_settings_put_persists_for_real_and_changes_routing_behavior() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    state.ai_infra.discover_all().await;
+    let operator = mint_key(&state, "operator", None).await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "PUT",
+            "/api/v1/ai/settings",
+            Some(&operator),
+            Some(serde_json::json!({"mode": "MANUAL", "preferred_provider": "mock", "preferred_model": "mock-model", "fallback_enabled": false})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["mode"], "MANUAL", "body={body}");
+
+    // A fresh, independent GET (not just an echo of the PUT body) must show the real, persisted setting.
+    let (status, refetched) = send(&state, req("GET", "/api/v1/ai/settings", Some(&operator), None)).await;
+    assert_eq!(status, StatusCode::OK, "body={refetched}");
+    assert_eq!(refetched["mode"], "MANUAL");
+    assert_eq!(refetched["preferred_model"], "mock-model");
+    assert_eq!(refetched["fallback_enabled"], false);
+
+    // The in-memory router used for real generation must reflect it too —
+    // not just the settings row.
+    let live_settings = state.ai_infra.settings().await;
+    assert_eq!(live_settings.mode, crate::ai_router::RoutingMode::Manual);
+}
+
+#[tokio::test]
+async fn ai_settings_survive_a_fresh_store_reload_real_durable_persistence() {
+    let (state, dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    let operator = mint_key(&state, "operator", None).await;
+    send(
+        &state,
+        req(
+            "PUT",
+            "/api/v1/ai/settings",
+            Some(&operator),
+            Some(serde_json::json!({"mode": "MANUAL", "preferred_provider": "mock", "preferred_model": "mock-model", "fallback_enabled": true})),
+        ),
+    )
+    .await;
+
+    // A completely independent `Store` connection against the same real
+    // sqlite file — proves this is durable, on-disk persistence, not an
+    // in-memory echo of the request that set it.
+    let reloaded = crate::store::Store::connect(&dir.path().join("api.sqlite3")).await.expect("reconnect");
+    let (mode, preferred_provider, preferred_model, fallback_enabled) = reloaded.get_ai_settings().await.expect("query").expect("a row must exist");
+    assert_eq!(mode, "MANUAL");
+    assert_eq!(preferred_provider.as_deref(), Some("mock"));
+    assert_eq!(preferred_model.as_deref(), Some("mock-model"));
+    assert!(fallback_enabled);
+}
+
+#[tokio::test]
+async fn ai_settings_rbac_viewer_cannot_mutate_but_can_read() {
+    let (state, _dir) = test_state_with_ai_router(inert_ai_router()).await;
+    let viewer = mint_key(&state, "viewer", None).await;
+
+    let (status, body) = send(
+        &state,
+        req("PUT", "/api/v1/ai/settings", Some(&viewer), Some(serde_json::json!({"mode": "AUTO", "fallback_enabled": true}))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+
+    let (status, _) = send(&state, req("GET", "/api/v1/ai/settings", Some(&viewer), None)).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn ai_refresh_requires_operator_and_returns_real_providers() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    let viewer = mint_key(&state, "viewer", None).await;
+    let operator = mint_key(&state, "operator", None).await;
+
+    let (status, _) = send(&state, req("POST", "/api/v1/ai/refresh", Some(&viewer), None)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, body) = send(&state, req("POST", "/api/v1/ai/refresh", Some(&operator), None)).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let providers = body.as_array().unwrap();
+    assert_eq!(providers.len(), 1);
+    assert_eq!(providers[0]["id"], "mock");
+}
+
+/// Security (brief §22/§25): the real HTTP response for AI status/settings
+/// must never carry a credential-shaped value anywhere in its JSON — even
+/// when a real, non-empty credential env var is genuinely present and
+/// genuinely discovered (a real `ApiKeyProviderDiscovery`, not a fake).
+#[tokio::test]
+async fn ai_status_response_never_exposes_a_credential_shaped_value() {
+    std::env::set_var("GEMINI_API_KEY", "sk-should-never-leak-1234567890");
+    let discoveries: Vec<Arc<dyn crate::ai_router::ProviderDiscovery>> = vec![Arc::new(
+        crate::ai_router::ApiKeyProviderDiscovery { id: "gemini", name: "Gemini", env_var: "GEMINI_API_KEY" },
+    )];
+    let ai_infra = Arc::new(AiInfrastructure::new(discoveries, std::collections::HashMap::new()));
+    let (state, _dir) = test_state_with_ai_router(ai_infra).await;
+    state.ai_infra.discover_all().await;
+    let admin = mint_key(&state, "admin", None).await;
+
+    let (status, body) = send(&state, req("GET", "/api/v1/ai/status", Some(&admin), None)).await;
+    std::env::remove_var("GEMINI_API_KEY");
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["providers"][0]["configured"], true, "the real key's presence must genuinely be detected; body={body}");
+    let raw = body.to_string();
+    assert!(!raw.contains("sk-should-never-leak"), "the real credential value must never appear in this response; body={body}");
 }
