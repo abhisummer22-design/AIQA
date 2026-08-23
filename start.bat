@@ -3,7 +3,7 @@ REM AIQA local startup.
 REM
 REM Two processes are required, and the UI is useless without both:
 REM   1. the Rust orchestrator on :8080  - the actual backend
-REM   2. the Vite dev server on :5173    - the UI, which proxies /api to :8080
+REM   2. the Vite dev server on :3000    - forentend, the real UI, which proxies /api to :8080
 REM
 REM The UI has no data of its own. If the orchestrator is not running it will
 REM say "Orchestrator unreachable" rather than showing placeholder numbers.
@@ -19,12 +19,12 @@ start "AIQA Orchestrator" cmd /k "cd /d "%~dp0services\orchestrator" && cargo ru
 REM Give the orchestrator a head start so the UI's first health check succeeds.
 timeout /t 3 /nobreak >nul
 
-echo [2/2] Starting web UI on http://localhost:5173 ...
-start "AIQA Web UI" cmd /k "cd /d "%~dp0apps\web" && npm run dev"
+echo [2/2] Starting web UI on http://localhost:3000 ...
+start "AIQA Web UI" cmd /k "cd /d "%~dp0forentend" && npm run dev"
 
 echo.
 echo ========================================
-echo   Web UI:       http://localhost:5173
+echo   Web UI:       http://localhost:3000
 echo   Orchestrator: http://127.0.0.1:8080
 echo ========================================
 echo.

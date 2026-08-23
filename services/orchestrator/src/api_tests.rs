@@ -2679,6 +2679,165 @@ async fn phase2_ai_generated_draft_can_be_saved_via_existing_test_case_persisten
     assert_eq!(saved["status"], "GENERATED");
 }
 
+// ============================= Build order item 4 — AI-assisted BugAnalysis
+
+fn ai_hypothesis_response() -> &'static str {
+    r#"{"hypothesis":"The target dependency's readiness probe likely had not yet succeeded when this run started, independent of any code change in the system under test."}"#
+}
+
+/// Real routing to `AiTask::BugAnalysis`, a real successful AI outcome, and
+/// — the explicit requirement — proof the AI hypothesis is genuinely
+/// additive: the pre-existing, real, deterministic `root_cause_hypothesis`/
+/// `confidence`/`occurrence_count` (`intelligence.rs::classify_failure`,
+/// unrelated to this call) are read *before* the AI call and asserted
+/// byte-for-byte unchanged *after* it, alongside the new, separately-named
+/// `ai_hypothesis`/`ai_hypothesis_provider`/`ai_hypothesis_model` fields.
+#[tokio::test]
+async fn be18_finding_ai_hypothesis_returns_real_outcome_and_never_overwrites_deterministic_cluster_data() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(ai_hypothesis_response()))).await;
+    let project = make_project(&state, "AI Hypothesis Success").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let finding_id = make_real_finding(&state, project, &owner, "flaky-refund-check").await;
+
+    let (_, before) = send(
+        &state,
+        req("POST", &format!("/api/v1/projects/{project}/findings/{finding_id}/analysis"), Some(&owner), None),
+    )
+    .await;
+    let real_deterministic_hypothesis = before["failure_cluster"]["root_cause_hypothesis"].as_str().unwrap().to_string();
+    let real_confidence = before["failure_cluster"]["confidence"].clone();
+    let real_occurrence_count = before["failure_cluster"]["occurrence_count"].clone();
+    assert!(before["failure_cluster"]["ai_hypothesis"].is_null(), "no AI hypothesis has been requested yet; before={before}");
+
+    let (status, after) = send(
+        &state,
+        req("POST", &format!("/api/v1/projects/{project}/findings/{finding_id}/ai-hypothesis"), Some(&owner), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={after}");
+    assert_eq!(after["generation_method"], "ai", "body={after}");
+    assert_eq!(after["provider"], "mock", "body={after}");
+    assert_eq!(after["model"], "mock-model", "body={after}");
+    assert!(after["fallback_reason"].is_null(), "body={after}");
+    assert_eq!(
+        after["failure_cluster"]["ai_hypothesis"].as_str().unwrap(),
+        "The target dependency's readiness probe likely had not yet succeeded when this run started, independent of any code change in the system under test.",
+        "body={after}"
+    );
+    assert_eq!(after["failure_cluster"]["ai_hypothesis_provider"], "mock", "body={after}");
+    assert_eq!(after["failure_cluster"]["ai_hypothesis_model"], "mock-model", "body={after}");
+    assert!(after["failure_cluster"]["ai_hypothesis_generated_at"].is_string(), "body={after}");
+
+    // The real, pre-existing deterministic fields must be exactly what
+    // they were before the AI call — additive, never overwritten.
+    assert_eq!(after["failure_cluster"]["root_cause_hypothesis"], real_deterministic_hypothesis, "body={after}");
+    assert_eq!(after["failure_cluster"]["confidence"], real_confidence, "body={after}");
+    assert_eq!(after["failure_cluster"]["occurrence_count"], real_occurrence_count, "body={after}");
+
+    let audit = state.store.list_audit(None, 50).await.expect("list_audit");
+    assert!(
+        audit.iter().any(|a| a.action == "finding.ai_hypothesis" && a.target.as_deref() == Some(finding_id.to_string().as_str()) && a.outcome == "ok"),
+        "audit_log must record the AI hypothesis request"
+    );
+}
+
+/// ACC-018 Failure Behavior: "Model/provider failure must result in:
+/// controlled fallback, or NEEDS_REVIEW. Never fabricated output." A real
+/// timeout must report `generation_method: "fallback"` (a normal 200, same
+/// established convention as `generate-ai`) with a real reason, and must
+/// leave the failure cluster exactly as it already was — `ai_hypothesis`
+/// stays null, `review_state` stays the real, pre-existing `NEEDS_REVIEW`,
+/// never a fabricated hypothesis or a falsely-advanced review state.
+#[tokio::test]
+async fn be18_finding_ai_hypothesis_reports_truthful_fallback_on_provider_timeout_never_fabricated() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Err(crate::ai_router::ExecutionError::Timeout))).await;
+    let project = make_project(&state, "AI Hypothesis Timeout").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let finding_id = make_real_finding(&state, project, &owner, "flaky-shipping-check").await;
+
+    let (status, body) = send(
+        &state,
+        req("POST", &format!("/api/v1/projects/{project}/findings/{finding_id}/ai-hypothesis"), Some(&owner), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "a real, honest fallback report is not an HTTP error; body={body}");
+    assert_eq!(body["generation_method"], "fallback", "body={body}");
+    assert!(body["provider"].is_null(), "body={body}");
+    assert!(body["model"].is_null(), "body={body}");
+    let reason = body["fallback_reason"].as_str().expect("a real reason must be present");
+    assert!(reason.contains("TIMEOUT"), "reason must be the real, specific failure; reason={reason}");
+
+    // Never fabricated output: no AI hypothesis was written, and the real
+    // deterministic data (including review_state) is untouched.
+    assert!(body["failure_cluster"]["ai_hypothesis"].is_null(), "body={body}");
+    assert!(body["failure_cluster"]["ai_hypothesis_provider"].is_null(), "body={body}");
+    assert_eq!(body["failure_cluster"]["review_state"], "NEEDS_REVIEW", "body={body}");
+    assert!(body["failure_cluster"]["root_cause_hypothesis"].is_string(), "the real deterministic hypothesis must still be present; body={body}");
+
+    let audit = state.store.list_audit(None, 50).await.expect("list_audit");
+    assert!(
+        audit.iter().any(|a| a.action == "finding.ai_hypothesis" && a.outcome == "fallback"),
+        "a fallback outcome must still be audited, honestly labeled"
+    );
+}
+
+#[tokio::test]
+async fn be18_finding_ai_hypothesis_rbac_viewer_forbidden_operator_allowed() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(ai_hypothesis_response()))).await;
+    let project = make_project(&state, "AI Hypothesis RBAC").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let finding_id = make_real_finding(&state, project, &owner, "flaky-invoice-check").await;
+    let viewer = mint_key(&state, "viewer", Some(&project.to_string())).await;
+
+    let (status, body) = send(
+        &state,
+        req("POST", &format!("/api/v1/projects/{project}/findings/{finding_id}/ai-hypothesis"), Some(&viewer), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+
+    let (status, body) = send(
+        &state,
+        req("POST", &format!("/api/v1/projects/{project}/findings/{finding_id}/ai-hypothesis"), Some(&owner), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+}
+
+#[tokio::test]
+async fn be18_finding_ai_hypothesis_project_isolation_enforced() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(ai_hypothesis_response()))).await;
+    let project_a = make_project(&state, "AI Hypothesis Isolation A").await;
+    let project_b = make_project(&state, "AI Hypothesis Isolation B").await;
+    let owner_a = mint_key(&state, "operator", Some(&project_a.to_string())).await;
+    let owner_b = mint_key(&state, "operator", Some(&project_b.to_string())).await;
+    let finding_id = make_real_finding(&state, project_a, &owner_a, "flaky-tax-check").await;
+
+    let (status, body) = send(
+        &state,
+        req("POST", &format!("/api/v1/projects/{project_a}/findings/{finding_id}/ai-hypothesis"), Some(&owner_b), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+    assert_eq!(body["error"]["code"], "FORBIDDEN");
+}
+
+#[tokio::test]
+async fn be18_finding_ai_hypothesis_missing_finding_returns_structured_not_found() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(ai_hypothesis_response()))).await;
+    let project = make_project(&state, "AI Hypothesis Not Found").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let phantom_finding = Uuid::new_v4();
+
+    let (status, body) = send(
+        &state,
+        req("POST", &format!("/api/v1/projects/{project}/findings/{phantom_finding}/ai-hypothesis"), Some(&owner), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
+    assert_eq!(body["error"]["code"], "RESOURCE_NOT_FOUND");
+}
+
 // ================================================ AI Intelligence Layer (settings/status)
 
 #[tokio::test]
@@ -2807,4 +2966,187 @@ async fn ai_status_response_never_exposes_a_credential_shaped_value() {
     assert_eq!(body["providers"][0]["configured"], true, "the real key's presence must genuinely be detected; body={body}");
     let raw = body.to_string();
     assert!(!raw.contains("sk-should-never-leak"), "the real credential value must never appear in this response; body={body}");
+}
+
+// ======================================================== B12 — CORS allow-list
+
+/// B12 remediation. The old `allow_origin(Any)` would echo back *any*
+/// `Origin` header; a real allow-list must not. Drives a real request
+/// through the real router wrapped in the real `CorsLayer` construction
+/// (`cors_layer_for_origins` — the same function `main.rs` calls, via
+/// `cors_layer_from_env`, minus the env-var indirection so this test is
+/// deterministic under `cargo test`'s parallelism) and inspects the actual
+/// `Access-Control-Allow-Origin` response header — CORS is enforced by the
+/// browser reading that header, not by the server returning a non-2xx
+/// status, so the header is the only real thing to assert on here.
+#[tokio::test]
+async fn cors_rejects_a_disallowed_origin() {
+    let (state, _dir) = test_state().await;
+    let app = router(state).layer(crate::api::cors_layer_for_origins(&["http://localhost:3000".to_string()]));
+
+    let request = Request::builder()
+        .method("GET")
+        .uri("/health")
+        .header("Origin", "http://evil.example")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(request).await.expect("router call");
+
+    assert_eq!(resp.status(), StatusCode::OK, "the request itself still succeeds — CORS is a browser-enforced header, not a server-side block");
+    let cors_header = resp.headers().get("access-control-allow-origin");
+    assert!(
+        cors_header.is_none() || cors_header.unwrap() != "http://evil.example",
+        "a disallowed origin must never be echoed back in Access-Control-Allow-Origin, got: {cors_header:?}"
+    );
+}
+
+#[tokio::test]
+async fn cors_allows_the_configured_origin() {
+    let (state, _dir) = test_state().await;
+    let app = router(state).layer(crate::api::cors_layer_for_origins(&["http://localhost:3000".to_string()]));
+
+    let request = Request::builder()
+        .method("GET")
+        .uri("/health")
+        .header("Origin", "http://localhost:3000")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(request).await.expect("router call");
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let cors_header = resp.headers().get("access-control-allow-origin").expect("an allowed origin must receive the CORS header");
+    assert_eq!(cors_header, "http://localhost:3000");
+}
+
+// ================================================ B11/L4 — approval durability
+
+fn restart_test_policy() -> PolicyConfig {
+    PolicyConfig {
+        max_concurrency: 8,
+        require_approval_for: ["maestro".to_string()].into_iter().collect(),
+        blocked_executors: HashSet::new(),
+    }
+}
+
+async fn restart_test_state(db_path: &std::path::Path, evidence_dir: std::path::PathBuf) -> AppState {
+    let store = Store::connect(db_path).await.expect("connect");
+    let evidence = LocalEvidenceStore::new(evidence_dir).expect("evidence store");
+    let registry = ExecutorRegistry::new(Arc::new(SimulatedExecutor));
+    AppState::new(Arc::new(registry), store, restart_test_policy(), evidence, inert_ai_router())
+}
+
+fn gated_plan(name: &str) -> Value {
+    serde_json::json!({
+        "name": name,
+        "concurrency": 1,
+        "tasks": [{"id": "t1", "name": "t1", "executor": "maestro", "simulate": {"outcome": "pass", "delay_ms": 0}}],
+    })
+}
+
+/// B11/L4 remediation — the exact scenario the finding named: request
+/// approval, restart the process, confirm the approval is still pending
+/// and can still be acted on. "Restart" here means what it means for every
+/// other durability test in this file (`ai_settings_survive_a_fresh_store_reload_real_durable_persistence`):
+/// a completely independent `AppState`/`Store`/registry reconnected to the
+/// same real sqlite file, with a fresh, empty `state.runs` — exactly what
+/// a real restarted process has, without needing to actually exec a second
+/// OS process to prove it. Also exercises the real startup recovery pass
+/// in between, to prove the more severe bug found alongside the documented
+/// one (`recover_incomplete_runs` used to force every `PENDING_APPROVAL`
+/// run to `FAILED` on *every* restart, clean or not — see that function's
+/// doc comment) is actually fixed, not just the in-memory-lookup half.
+#[tokio::test]
+async fn approval_survives_a_process_restart_and_can_still_be_approved() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("api.sqlite3");
+    let run_id;
+    let project;
+
+    {
+        let state = restart_test_state(&db_path, dir.path().join("evidence")).await;
+        project = make_project(&state, "Restart Durability").await;
+        let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+        let (status, created) = send(
+            &state,
+            req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&owner), Some(gated_plan("gated-run"))),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "body={created}");
+        assert_eq!(created["status"], "PENDING_APPROVAL");
+        run_id = created["run_id"].as_str().unwrap().to_string();
+        // `state` (and its in-memory `state.runs`) is dropped here — the
+        // run now exists only in the sqlite file, same as after a real
+        // process exit.
+    }
+
+    {
+        // The real startup recovery pass, against the same file, run the
+        // same way `main.rs` runs it — must leave a genuinely pending
+        // approval untouched, not force it to a terminal state.
+        let store = Store::connect(&db_path).await.expect("connect");
+        crate::engine::recover_incomplete_runs(&store).await.expect("recovery");
+        let summary = store
+            .get_run_summary(Uuid::parse_str(&run_id).unwrap())
+            .await
+            .expect("query")
+            .expect("run must still exist");
+        assert_eq!(summary.state, RunState::PendingApproval, "startup recovery must not touch a run that is genuinely still awaiting approval");
+    }
+
+    {
+        let state = restart_test_state(&db_path, dir.path().join("evidence")).await;
+        let owner2 = mint_key(&state, "operator", Some(&project.to_string())).await;
+        assert!(
+            state.runs.read().await.get(&Uuid::parse_str(&run_id).unwrap()).is_none(),
+            "sanity check: the new process must not already have this run in memory"
+        );
+
+        let (status, approved) = send(
+            &state,
+            req("POST", &format!("/api/v1/projects/{project}/executions/{run_id}/approve"), Some(&owner2), None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "a pending approval must survive a restart and remain approvable; body={approved}");
+        assert_eq!(approved["state"], "RUNNING");
+    }
+}
+
+/// The other half of the same finding: reject, not approve, must also
+/// still work against a rehydrated run.
+#[tokio::test]
+async fn rejection_survives_a_process_restart_and_can_still_be_rejected() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("api.sqlite3");
+    let run_id;
+    let project;
+
+    {
+        let state = restart_test_state(&db_path, dir.path().join("evidence")).await;
+        project = make_project(&state, "Restart Durability Reject").await;
+        let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+        let (status, created) = send(
+            &state,
+            req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&owner), Some(gated_plan("gated-run-reject"))),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "body={created}");
+        run_id = created["run_id"].as_str().unwrap().to_string();
+    }
+
+    {
+        let state = restart_test_state(&db_path, dir.path().join("evidence")).await;
+        let owner2 = mint_key(&state, "operator", Some(&project.to_string())).await;
+        let (status, rejected) = send(
+            &state,
+            req(
+                "POST",
+                &format!("/api/v1/projects/{project}/executions/{run_id}/reject"),
+                Some(&owner2),
+                Some(serde_json::json!({"reason": "no longer needed"})),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "a pending approval must survive a restart and remain rejectable; body={rejected}");
+        assert_eq!(rejected["state"], "REJECTED");
+    }
 }

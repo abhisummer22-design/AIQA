@@ -44,16 +44,73 @@
  * `ReviewFindingRequest`) but never wired to any page until now — zero new
  * transport code.
  *
- * **Deliberately out of scope** (no real backend/library support for
- * either, and re-inventing them client-side would mean fabricating data the
- * backend does not compute): a separate per-run "Test Report" / "Final
- * Audit Report" view (Dashboard and Execution Hub already show the real
- * run-level pass/fail summary this would duplicate) and PDF/Excel export
- * (only a real JSON export of the exact fetched Findings/FailureCluster
- * data is offered below). The previous version of this page's "Evidence
- * Coverage: 100%" stat and two hardcoded `DefectDraft` objects (`DEF-881`/
- * `DEF-882`) are removed entirely, not replaced with a fake equivalent — no
- * "evidence coverage percentage" concept exists in the backend.
+ * The previous version of this page's "Evidence Coverage: 100%" stat and
+ * two hardcoded `DefectDraft` objects (`DEF-881`/`DEF-882`) are removed
+ * entirely, not replaced with a fake equivalent — no "evidence coverage
+ * percentage" concept exists in the backend.
+ *
+ * **Build order item 3 (22 Aug 2026) — ACC-016 PDF/Excel export, and what
+ * "Bug Report" / "Test Report" / "Final Audit Report" actually resolve
+ * to.** ACC-016 names three report types and requires export that
+ * "reconcile[s] with durable execution state" and "compare[s] totals/
+ * statuses with authoritative run data." Investigated before building: none
+ * of the three needed a new data domain, and no fourth was invented for the
+ * gaps below — each maps onto real data this backend already computes.
+ *
+ *   - **Bug Report** → `Finding[]` (`findings` state below) — the exact
+ *     same real rows already fetched and rendered on this page. No new
+ *     fetch for this section.
+ *   - **Test Report** → `DashboardResponse`/`KpisResponse`
+ *     (`aiqaApi.dashboard.get`/`.kpis`, BE-12/BE-12b): real project-scoped
+ *     execution/task counts and pass/fail totals, fetched fresh at export
+ *     time (`handleExportPDF`/`handleExportExcel`) since this page does not
+ *     otherwise keep them in state — Dashboard/FE-26 already renders them
+ *     live, and re-fetching them into a generated, downloadable document is
+ *     a different concern from the "don't duplicate a live on-page view"
+ *     call this file's previous version made, not a reversal of it.
+ *   - **Final Audit Report** → not a fourth data source. A computed
+ *     reconciliation of the two above (`buildFinalAuditRows`): total
+ *     findings vs. total failed tasks vs. total runs, directly matching
+ *     ACC-016's own "reconcile" / "compare totals ... with authoritative
+ *     run data" wording. Deliberately **not** the real Audit Trail
+ *     (`AuditPage.tsx`'s `AuditRow` actor-action log) — that is a genuinely
+ *     different real concept (who did what, not QA totals), and reusing it
+ *     here would have been a name collision, not an honest match.
+ *
+ * "module-specific report" (ACC-016's own Verification bullet): no
+ * `module` entity exists anywhere in this backend's schema — `Finding`,
+ * `FailureCluster`, `DashboardResponse`, and every other real record here
+ * is scoped only by `project_id` (re-confirmed against `types/contract.ts`
+ * before writing this unit). Rather than fabricate a module filter, the
+ * export states this plainly (`buildFinalAuditRows`'s "Report Scope" row)
+ * and reuses the one real scoping boundary this whole app already has —
+ * the selected project.
+ *
+ * **Deliberately deferred, not included in this export:** per-finding
+ * `FailureCluster` detail (signature, root-cause hypothesis, occurrence
+ * count). It is real, but the backend only exposes it via a per-finding,
+ * on-demand `POST .../findings/:id/analysis` call
+ * (`aiqaApi.findings.analysis`, used above by this page's own detail view)
+ * — there is no bulk list endpoint. Bulk-fetching it here would mean one
+ * POST per finding at export time, a materially larger change than
+ * "export the data already fetched for this page." Left for a later unit
+ * if wanted; not silently reinterpreted as already covered.
+ *
+ * PDF via `jspdf` + `jspdf-autotable`, Excel via `xlsx` (SheetJS Community
+ * Edition) — both pure client-side (no backend change), chosen because
+ * every section here is structured tabular data, not graphical layout,
+ * which is exactly what both libraries are built for. All three are
+ * dynamically imported inside `handleExportPDF`/`handleExportExcel`, not
+ * imported statically at the top of this file — a real `vite build`
+ * comparison before/after this unit showed they (plus jsPDF's own
+ * transitive `html2canvas`/DOMPurify code, pulled in regardless of which
+ * jsPDF features this file actually uses) add roughly 250 modules and a
+ * multi-hundred-KB gzipped chunk; loading them only when a user actually
+ * clicks Export PDF/Export Excel keeps that weight out of every other
+ * page's initial load. See `AIQA_ACC016_REPORT_EXPORT_REPORT.md` for the
+ * `xlsx` package's one known advisory (a parse-path prototype-pollution/
+ * ReDoS issue that does not apply to this write-only usage) and why it was
+ * accepted as-is rather than pulled from a non-registry source.
  *
  * List/detail/error-state visual language follows the same real-page
  * pattern established by `AuditPage.tsx`/`EvidencePage.tsx`/
@@ -90,6 +147,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   CheckCircle2,
   Download,
+  FileDown,
+  FileSpreadsheet,
   FolderOpen,
   Gauge,
   Inbox,
@@ -105,7 +164,7 @@ import { SectionHeader } from '../common/SectionHeader';
 import { EmptyState } from '../common/EmptyState';
 import { StateCard, renderResourceErrorState } from '../state/StateViews';
 import { formatStatusLabel } from '../../utils/statusLabel';
-import type { Finding, FindingAnalysis, ReviewState, TestIntelRow } from '../../types/contract';
+import type { DashboardResponse, Finding, FindingAnalysis, KpisResponse, ReviewState, TestIntelRow } from '../../types/contract';
 
 /** FE-9: no real event type "is" a finding event (`domain.rs::EventType`
  *  has no such variant — findings are drafted server-side inside the same
@@ -195,6 +254,132 @@ const reviewStateBadgeClass = (state: ReviewState): string => {
       return 'bg-indigo-950 text-indigo-300 border-indigo-800';
   }
 };
+
+// ------------------------------------------------------ report export (ACC-016)
+//
+// Pure row-builders, deliberately kept free of `jspdf`/`xlsx` calls so they
+// can be unit-tested directly (same convention as
+// `TelemetryPage.tsx::parsePrometheusText`) and so the PDF and Excel
+// exports below are provably built from the exact same numbers — neither
+// format can silently drift from the other. See this file's module doc
+// comment for why these three sections are the honest resolution of
+// ACC-016's "Bug Report"/"Test Report"/"Final Audit Report".
+
+export const BUG_REPORT_HEADERS = [
+  'ID',
+  'Title',
+  'Severity',
+  'Review State',
+  'Confidence',
+  'Created At',
+  'Promoted At',
+  'Promoted By',
+];
+
+/** Bug Report rows — the real `Finding` fields already fetched for this
+ *  page (`findings` state), reshaped for `autoTable`/`xlsx`. Never reaches
+ *  for `FailureCluster` data — see the module doc comment for why that is
+ *  deliberately deferred rather than bulk-fetched here. */
+export function buildBugReportRows(findings: Finding[]): (string | number)[][] {
+  return findings.map((f) => [
+    f.id,
+    f.title,
+    f.severity,
+    f.review_state,
+    `${(f.confidence * 100).toFixed(1)}%`,
+    formatTimestamp(f.created_at),
+    f.promoted_at ? formatTimestamp(f.promoted_at) : '—',
+    f.promoted_by ?? '—',
+  ]);
+}
+
+export const TEST_REPORT_HEADERS = ['Metric', 'Value'];
+
+/** Test Report rows — real `DashboardResponse`/`KpisResponse` fields
+ *  (BE-12/BE-12b), fetched fresh at export time (`fetchExportReportData`
+ *  below) since this page does not otherwise keep them in state. `null`
+ *  here only ever means "the fetch had not resolved" — a real, successful
+ *  response with genuinely zero counts is a non-null `DashboardResponse`
+ *  and produces real zero rows below, never a `null`-triggered empty
+ *  array standing in for it. */
+export function buildTestReportRows(
+  dashboard: DashboardResponse | null,
+  kpis: KpisResponse | null,
+): (string | number)[][] {
+  if (!dashboard) return [];
+  const rows: (string | number)[][] = [
+    ['Total Tests', dashboard.test_count],
+    ['Passed', dashboard.pass_fail.passed],
+    ['Failed', dashboard.pass_fail.failed],
+  ];
+  Object.entries(dashboard.execution_counts).forEach(([state, count]) => {
+    rows.push([`Runs — ${formatStatusLabel(state)}`, count]);
+  });
+  Object.entries(dashboard.task_counts).forEach(([status, count]) => {
+    rows.push([`Tasks — ${formatStatusLabel(status)}`, count]);
+  });
+  if (kpis) {
+    rows.push(['Execution Reliability', formatPct(kpis.execution_reliability)]);
+    rows.push(['Avg. Task Duration', formatMs(kpis.execution_efficiency_ms)]);
+    rows.push(['Avg. Run Duration', formatMs(kpis.execution_avg_run_duration_ms)]);
+  }
+  return rows;
+}
+
+export const FINAL_AUDIT_HEADERS = ['Reconciliation Item', 'Value'];
+
+/** Final Audit Report rows — ACC-016's own "reconcile ... compare
+ *  totals/statuses with authoritative run data" wording, computed purely
+ *  from the Bug Report + Test Report data above (no third fetch, no new
+ *  field — see the module doc comment for why this is not the real Audit
+ *  Trail and why "module-specific" collapses to project-scoped here). */
+export function buildFinalAuditRows(
+  findings: Finding[] | null,
+  dashboard: DashboardResponse | null,
+  projectLabel: string,
+): (string | number)[][] {
+  const totalFindings = findings?.length ?? 0;
+  const totalFailedTasks = dashboard?.pass_fail.failed ?? 0;
+  const totalRuns = dashboard ? Object.values(dashboard.execution_counts).reduce((a, b) => a + b, 0) : 0;
+  const totalTasks = dashboard ? Object.values(dashboard.task_counts).reduce((a, b) => a + b, 0) : 0;
+  return [
+    ['Report Scope', `Project: ${projectLabel} (project-level — no "module" entity exists in this backend's schema)`],
+    ['Total Findings (Bug Report)', totalFindings],
+    ['Total Runs (Test Report)', totalRuns],
+    ['Total Tasks (Test Report)', totalTasks],
+    ['Total Failed Tasks (Test Report)', totalFailedTasks],
+    [
+      'Findings vs. Failed Tasks',
+      `${totalFindings} finding${totalFindings === 1 ? '' : 's'} recorded against ${totalFailedTasks} failed task${totalFailedTasks === 1 ? '' : 's'} — a Finding is only auto-drafted once a failure signature recurs across >= 2 task executions, so fewer findings than failed tasks is expected, not an inconsistency.`,
+    ],
+  ];
+}
+
+/** jsPDF's built-in standard fonts (Helvetica/Times/Courier — no custom
+ *  font is embedded here) only render WinAnsi-encoded text. Verified
+ *  empirically before writing this, not assumed: a literal "≥" made
+ *  `autoTable` fall back to per-character glyph positioning for that
+ *  whole cell (each letter its own draw call, un-joinable back into real
+ *  words), and a real em dash silently vanished. Rather than embed a
+ *  Unicode font just to render a handful of punctuation marks, this is
+ *  applied only at the jsPDF boundary (`handleExportPDF` below) —
+ *  `buildBugReportRows`/`buildTestReportRows`/`buildFinalAuditRows` stay
+ *  presentation-neutral and keep their normal punctuation (this file's
+ *  existing "—" null-placeholder convention included) for the Excel path
+ *  and for direct unit testing, since neither has this constraint. */
+function toPdfSafeText(value: string | number): string | number {
+  if (typeof value !== 'string') return value;
+  return value
+    .replace(/[–—]/g, '-') // en dash / em dash
+    .replace(/≥/g, '>=')
+    .replace(/[‘’]/g, "'")
+    .replace(/[“”]/g, '"')
+    .replace(/…/g, '...');
+}
+
+function toPdfSafeRows(rows: (string | number)[][]): (string | number)[][] {
+  return rows.map((row) => row.map(toPdfSafeText));
+}
 
 export const ReportsPage: React.FC = () => {
   const { selectedProjectId, selectedProject } = useProject();
@@ -467,6 +652,143 @@ export const ReportsPage: React.FC = () => {
     downloadAnchor.click();
     downloadAnchor.remove();
   }, [findings, selectedProjectId, selectedProject]);
+
+  // ACC-016 — PDF/Excel export. `null` = not attempted this export cycle;
+  // 'pdf'/'excel' = a real generation is in flight (both real network
+  // fetches below, not instantaneous like Export JSON's reuse of already-
+  // loaded state) — mirrors `reviewingId`'s null-vs-value convention above.
+  const [exporting, setExporting] = useState<'pdf' | 'excel' | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  /** Fetches the real Test Report data fresh, at export time (see module
+   *  doc comment for why this page does not otherwise keep it in state).
+   *  Shared by both PDF and Excel export so the two formats can never
+   *  disagree about what "the real data at export time" was. */
+  const fetchExportReportData = useCallback(
+    async (projectId: string): Promise<{ dashboard: DashboardResponse; kpis: KpisResponse }> => {
+      const [dashboard, kpis] = await Promise.all([aiqaApi.dashboard.get(projectId), aiqaApi.dashboard.kpis(projectId)]);
+      return { dashboard, kpis };
+    },
+    [],
+  );
+
+  const handleExportPDF = useCallback(async () => {
+    if (!selectedProjectId) return;
+    setExporting('pdf');
+    setExportError(null);
+    try {
+      // Dynamic import — `jspdf`/`jspdf-autotable` (plus their own
+      // transitive `html2canvas`/DOMPurify code, pulled in regardless of
+      // whether this app uses those features) added ~250 modules and a
+      // measurable chunk of gzipped size to a full `vite build` when
+      // imported statically at module load. Loading them only when a user
+      // actually clicks Export PDF keeps that weight out of every other
+      // page's initial load — Vite code-splits this into its own chunk
+      // automatically.
+      const [{ default: jsPDF }, { default: autoTable }] = await Promise.all([import('jspdf'), import('jspdf-autotable')]);
+      const { dashboard, kpis } = await fetchExportReportData(selectedProjectId);
+      const projectLabel = selectedProject?.name ?? selectedProjectId;
+      const generatedAt = new Date().toISOString();
+
+      const doc = new jsPDF();
+      doc.setFontSize(16);
+      doc.text('AIQA Quality Report', 14, 18);
+      doc.setFontSize(10);
+      doc.text(`Project: ${projectLabel}`, 14, 26);
+      doc.text(`Generated: ${generatedAt}`, 14, 32);
+
+      doc.setFontSize(13);
+      doc.text('1. Bug Report - Findings', 14, 44);
+      const bugRows = buildBugReportRows(findings ?? []);
+      autoTable(doc, {
+        startY: 48,
+        head: [BUG_REPORT_HEADERS],
+        body: toPdfSafeRows(bugRows.length > 0 ? bugRows : [['No findings recorded for this project.', '', '', '', '', '', '', '']]),
+        styles: { fontSize: 7 },
+        headStyles: { fillColor: [79, 70, 229] },
+      });
+
+      const afterBugY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 10;
+      doc.setFontSize(13);
+      doc.text('2. Test Report - Execution Summary', 14, afterBugY);
+      // `dashboard` here is always the real, non-null `DashboardResponse`
+      // `fetchExportReportData` just resolved (a failed fetch throws and is
+      // caught below, before this line ever runs) — `buildTestReportRows`
+      // therefore never takes its `[]` branch here, so unlike Bug Report
+      // above there is no reachable "no rows" case to placeholder for. A
+      // real, successful response with genuinely zero counts still
+      // produces real rows (`Total Tests 0`, etc.) — accurate, not a
+      // fabricated non-zero placeholder, and not the same case as "no
+      // fetch result" (see `buildTestReportRows`'s own unit tests for that
+      // case, which this handler cannot reach).
+      const testRows = buildTestReportRows(dashboard, kpis);
+      autoTable(doc, {
+        startY: afterBugY + 4,
+        head: [TEST_REPORT_HEADERS],
+        body: toPdfSafeRows(testRows),
+        styles: { fontSize: 8 },
+        headStyles: { fillColor: [79, 70, 229] },
+      });
+
+      const afterTestY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 10;
+      doc.setFontSize(13);
+      doc.text('3. Final Audit Report - Reconciliation', 14, afterTestY);
+      autoTable(doc, {
+        startY: afterTestY + 4,
+        head: [FINAL_AUDIT_HEADERS],
+        body: toPdfSafeRows(buildFinalAuditRows(findings, dashboard, projectLabel)),
+        styles: { fontSize: 8 },
+        headStyles: { fillColor: [79, 70, 229] },
+      });
+
+      doc.save(`aiqa_report_${selectedProjectId}.pdf`);
+    } catch (err) {
+      const apiErr = err instanceof ApiError ? err : null;
+      setExportError(apiErr ? `Could not build the report: ${apiErr.message}` : 'Could not build the report — try again.');
+    } finally {
+      setExporting(null);
+    }
+  }, [selectedProjectId, selectedProject, findings, fetchExportReportData]);
+
+  const handleExportExcel = useCallback(async () => {
+    if (!selectedProjectId) return;
+    setExporting('excel');
+    setExportError(null);
+    try {
+      // Dynamic import — see handleExportPDF's own comment above; same
+      // reasoning applies to `xlsx`.
+      const XLSX = await import('xlsx');
+      const { dashboard, kpis } = await fetchExportReportData(selectedProjectId);
+      const projectLabel = selectedProject?.name ?? selectedProjectId;
+
+      const bugRows = buildBugReportRows(findings ?? []);
+      const testRows = buildTestReportRows(dashboard, kpis);
+      const auditRows = buildFinalAuditRows(findings, dashboard, projectLabel);
+
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(
+        wb,
+        XLSX.utils.aoa_to_sheet([
+          BUG_REPORT_HEADERS,
+          ...(bugRows.length > 0 ? bugRows : [['No findings recorded for this project.']]),
+        ]),
+        'Bug Report',
+      );
+      // See handleExportPDF's own comment: `dashboard` is always the real,
+      // non-null response here too, so `testRows` is never empty in
+      // practice — a genuinely all-zero response still produces real zero
+      // rows, not a "no data" placeholder.
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([TEST_REPORT_HEADERS, ...testRows]), 'Test Report');
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([FINAL_AUDIT_HEADERS, ...auditRows]), 'Final Audit Report');
+
+      XLSX.writeFile(wb, `aiqa_report_${selectedProjectId}.xlsx`);
+    } catch (err) {
+      const apiErr = err instanceof ApiError ? err : null;
+      setExportError(apiErr ? `Could not build the report: ${apiErr.message}` : 'Could not build the report — try again.');
+    } finally {
+      setExporting(null);
+    }
+  }, [selectedProjectId, selectedProject, findings, fetchExportReportData]);
 
   const visibleFindings = useMemo(() => {
     if (!findings) return [];
@@ -779,9 +1101,38 @@ export const ReportsPage: React.FC = () => {
               <Download className="w-3.5 h-3.5" />
               <span>Export JSON</span>
             </button>
+            {/* ACC-016 — Bug Report + Test Report + Final Audit Report
+                combined into one PDF / one Excel workbook (see module doc
+                comment). Gated on a selected project, not on `findings`
+                having rows — unlike Export JSON above, a project with zero
+                findings but real execution history still has a real,
+                honest report to generate (this is also what the
+                empty-project test below exercises). */}
+            <button
+              type="button"
+              onClick={() => void handleExportPDF()}
+              disabled={!selectedProjectId || exporting !== null}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#020617] hover:bg-slate-800 text-slate-200 text-xs font-medium border border-slate-800 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <FileDown className={`w-3.5 h-3.5 ${exporting === 'pdf' ? 'animate-spin' : ''}`} />
+              <span>{exporting === 'pdf' ? 'Building…' : 'Export PDF'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleExportExcel()}
+              disabled={!selectedProjectId || exporting !== null}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#020617] hover:bg-slate-800 text-slate-200 text-xs font-medium border border-slate-800 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <FileSpreadsheet className={`w-3.5 h-3.5 ${exporting === 'excel' ? 'animate-spin' : ''}`} />
+              <span>{exporting === 'excel' ? 'Building…' : 'Export Excel'}</span>
+            </button>
           </div>
         }
       />
+
+      {exportError && (
+        <div className="p-2.5 rounded bg-rose-950/40 border border-rose-800/60 text-xs text-rose-300">{exportError}</div>
+      )}
 
       {selectedProjectId && findings && findings.length > 0 && (
         <div className="flex items-center gap-2 p-2.5 rounded-lg border border-slate-800 bg-[#0B1120]">

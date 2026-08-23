@@ -416,6 +416,39 @@ impl Store {
         }))
     }
 
+    /// B11/L4 remediation. Everything needed to rebuild a live
+    /// `Arc<RunRecord>` (`engine::RunRecord::new`) for a run that is not
+    /// held in this process's memory — the one case that actually needs
+    /// it is a `PENDING_APPROVAL` run whose creating process has since
+    /// restarted (see `api.rs::rehydrate_run_record`). This is possible at
+    /// all only because `insert_run` already persists the *entire* plan
+    /// verbatim as JSON in the `plan` column, not just a summary of it —
+    /// reconstruction is a deserialize, not a re-derivation from
+    /// normalized task/dependency rows. Returns `None` if the run doesn't
+    /// exist; returns `Some` for a run in *any* state (the caller — not
+    /// this function — decides whether the current state is actually
+    /// valid to act on, exactly like `get_run_summary` above does for
+    /// reads).
+    pub async fn get_run_for_rehydration(
+        &self,
+        run_id: RunId,
+    ) -> Result<Option<(RunPlan, Option<String>, Option<String>, Option<String>, RunState)>> {
+        let row = sqlx::query("SELECT plan, project_id, requested_by, policy_notes, state FROM runs WHERE id = ?")
+            .bind(run_id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+        let Some(row) = row else { return Ok(None) };
+        let plan_json: String = row.get("plan");
+        let plan: RunPlan = serde_json::from_str(&plan_json)?;
+        Ok(Some((
+            plan,
+            row.get("project_id"),
+            row.get("requested_by"),
+            row.get("policy_notes"),
+            RunState::from_db_str(&row.get::<String, _>("state")),
+        )))
+    }
+
     pub async fn list_tasks_for_run(&self, run_id: RunId) -> Result<Vec<TaskState>> {
         let rows = sqlx::query(
             "SELECT id, name, status, reason, started_at, finished_at FROM tasks WHERE run_id = ? ORDER BY id",
@@ -1388,7 +1421,8 @@ impl Store {
     pub async fn list_failure_clusters(&self, project_filter: Option<&str>) -> Result<Vec<FailureClusterRow>> {
         let pid = project_filter.unwrap_or("default");
         let rows = sqlx::query(
-            "SELECT id, signature, first_seen_at, last_seen_at, occurrence_count, root_cause_hypothesis, confidence, reproducibility, review_state
+            "SELECT id, signature, first_seen_at, last_seen_at, occurrence_count, root_cause_hypothesis, confidence, reproducibility, review_state,
+                    ai_hypothesis, ai_hypothesis_provider, ai_hypothesis_model, ai_hypothesis_generated_at
              FROM failure_clusters WHERE project_id = ? ORDER BY occurrence_count DESC",
         )
         .bind(pid)
@@ -1406,6 +1440,10 @@ impl Store {
                 confidence: r.get("confidence"),
                 reproducibility: r.get("reproducibility"),
                 review_state: r.get("review_state"),
+                ai_hypothesis: r.get("ai_hypothesis"),
+                ai_hypothesis_provider: r.get("ai_hypothesis_provider"),
+                ai_hypothesis_model: r.get("ai_hypothesis_model"),
+                ai_hypothesis_generated_at: parse_ts_opt(r.get("ai_hypothesis_generated_at")),
             })
             .collect())
     }
@@ -1416,7 +1454,8 @@ impl Store {
     /// cluster's own id.
     pub async fn get_failure_cluster_by_id(&self, id: Uuid) -> Result<Option<FailureClusterRow>> {
         let row = sqlx::query(
-            "SELECT id, signature, first_seen_at, last_seen_at, occurrence_count, root_cause_hypothesis, confidence, reproducibility, review_state
+            "SELECT id, signature, first_seen_at, last_seen_at, occurrence_count, root_cause_hypothesis, confidence, reproducibility, review_state,
+                    ai_hypothesis, ai_hypothesis_provider, ai_hypothesis_model, ai_hypothesis_generated_at
              FROM failure_clusters WHERE id = ?",
         )
         .bind(id.to_string())
@@ -1432,7 +1471,35 @@ impl Store {
             confidence: r.get("confidence"),
             reproducibility: r.get("reproducibility"),
             review_state: r.get("review_state"),
+            ai_hypothesis: r.get("ai_hypothesis"),
+            ai_hypothesis_provider: r.get("ai_hypothesis_provider"),
+            ai_hypothesis_model: r.get("ai_hypothesis_model"),
+            ai_hypothesis_generated_at: parse_ts_opt(r.get("ai_hypothesis_generated_at")),
         }))
+    }
+
+    /// Build order item 4 — persists an on-demand AI-assisted hypothesis
+    /// onto an existing failure cluster. Additive only: never touches
+    /// `root_cause_hypothesis`/`confidence`/`occurrence_count`/any
+    /// deterministic column `intelligence.rs::classify_failure`/
+    /// `record_failure` already wrote. Only ever called on a genuine AI
+    /// success (`intelligence::generate_ai_hypothesis`'s `Ai` outcome) — a
+    /// failed/unavailable attempt never calls this, so the four AI columns
+    /// stay exactly as they were (`NULL` if never generated before) rather
+    /// than being overwritten with a fabricated value. See ACC-018's
+    /// Failure Behavior criteria ("Never fabricated output").
+    pub async fn set_ai_hypothesis(&self, cluster_id: Uuid, hypothesis: &str, provider: &str, model: &str) -> Result<()> {
+        sqlx::query(
+            "UPDATE failure_clusters SET ai_hypothesis = ?, ai_hypothesis_provider = ?, ai_hypothesis_model = ?, ai_hypothesis_generated_at = ? WHERE id = ?",
+        )
+        .bind(hypothesis)
+        .bind(provider)
+        .bind(model)
+        .bind(now_rfc3339())
+        .bind(cluster_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     pub async fn has_bug_draft_for_cluster(&self, cluster_id: Uuid) -> Result<bool> {
@@ -1764,6 +1831,14 @@ pub struct FailureClusterRow {
     pub confidence: Option<f64>,
     pub reproducibility: Option<f64>,
     pub review_state: String,
+    /// Build order item 4 — an on-demand, AI-assisted hypothesis, additive
+    /// to (never a replacement for) `root_cause_hypothesis` above. `None`
+    /// until `POST .../findings/:id/ai-hypothesis` is explicitly called and
+    /// genuinely succeeds — see `intelligence.rs::generate_ai_hypothesis`.
+    pub ai_hypothesis: Option<String>,
+    pub ai_hypothesis_provider: Option<String>,
+    pub ai_hypothesis_model: Option<String>,
+    pub ai_hypothesis_generated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]

@@ -1,26 +1,31 @@
 /**
- * FE-11 — API Testing & Protocol Adapters: truthful "not implemented" page
- * (Case C).
+ * API Testing & Protocol Adapters — honest redirect to the real capability.
  *
- * The previous version rendered a fully client-side, fabricated API test
- * harness: hardcoded `APIEndpointTest` records, a fake multi-protocol
- * adapter selector (REST/GraphQL/gRPC/WebSocket) with no real dispatch
- * behind any of them, and "Execute Endpoint"/"Send" buttons that only
- * mutated local demo state with a canned response body.
+ * FE-11 (Case C) replaced this page's original, fully fabricated client-side
+ * request harness (hardcoded `APIEndpointTest` records, a fake REST/GraphQL/
+ * gRPC/WebSocket adapter selector with no real dispatch behind any of it)
+ * with a "not implemented" state. That was correct about *this page's own*
+ * capability — there is still no dedicated `APITestDefinition` entity or
+ * generic HTTP/GraphQL/gRPC/WebSocket dispatch endpoint on the backend — but
+ * phrasing it as "API testing is not implemented" overclaimed: real API
+ * testing already shipped, just on a different page.
  *
- * Re-verified against the real backend route table at the start of this
- * sprint: there is no API-test-definition entity and no endpoint that
- * dispatches an arbitrary HTTP/GraphQL/gRPC/WebSocket request on the
- * backend's behalf — a page named "API Testing" is not evidence such a
- * capability exists (brief §9). The backend's own real API surface is the
- * one already fully typed and exercised by this frontend's own real pages
- * (`aiqaApi.ts`) — there is nothing to "test" through a second, generic
- * request-builder UI that this app doesn't already call directly and
- * correctly.
+ * `AIQA_PRODUCT_DECISIONS_RECORD.md` decision #3 (ACC-012, 22 Aug 2026)
+ * closes this, in the product owner's own words: "The underlying capability
+ * is real — Newman/Pytest/Schemathesis run via the Execution Hub, this is
+ * real API testing... update that page so it clearly says 'this capability
+ * is in the Execution Hub, go there' — remove the 'not implemented'
+ * message." Verified for real against `services/orchestrator/src/
+ * executor.rs` and the repo root `README.md`: `PytestExecutor`,
+ * `NewmanExecutor`, and `SchemathesisExecutor` each shell out to their real
+ * CLI tool and are verified end-to-end against the orchestrator's own
+ * running server — a task's `executor` field (set on the Execution Hub's own
+ * task form, not here) is how you choose one.
  *
- * Per this sprint's Case C rule: replace the fabricated request builder
- * with a truthful "not implemented" state rather than inventing a
- * fallback multi-protocol dispatch layer.
+ * What this does not change (same decision, explicitly deferred): whether a
+ * dedicated, rich API-testing authoring UI (collections, environments,
+ * request history) is ever built. This page stays a truthful pointer to the
+ * Execution Hub, not a new feature of its own.
  */
 
 import React from 'react';
@@ -36,19 +41,19 @@ export const APITestingPage: React.FC = () => {
     <div id="api-testing-page" className="space-y-4 animate-in fade-in duration-150">
       <SectionHeader
         title="API Testing & Protocol Adapters"
-        subtitle="Multi-protocol request/response test harness"
-        badge="NOT IMPLEMENTED"
+        subtitle="Real API testing runs through the Execution Hub, not a separate screen here"
+        badge="VIA EXECUTION HUB"
         icon={Network}
       />
 
       <EmptyState
         icon={Network}
-        badge="NO BACKEND CAPABILITY"
-        title="API test harness is not implemented"
-        description="The backend has no API-test-definition entity or generic HTTP/GraphQL/gRPC/WebSocket dispatch endpoint — this page previously showed a fabricated request builder instead of a real feature. Real API tasks are scheduled and their results reviewed through the Execution Hub."
+        badge="IMPLEMENTED ELSEWHERE"
+        title="API testing runs through the Execution Hub"
+        description="This page has no dedicated request-builder UI, and the previous version's one was fabricated demo data rather than a real feature. Real API tests run as Execution Hub tasks — create or open a run there and set a task's executor to pytest, Newman, or Schemathesis."
         actionLabel="Go to Execution Hub"
         onAction={() => navigate('/execution')}
-        codeHint="No corresponding route exists in services/orchestrator/src/api.rs"
+        codeHint="TaskDef.executor = 'pytest' | 'newman' | 'schemathesis'"
       />
     </div>
   );

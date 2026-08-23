@@ -49,6 +49,7 @@ import {
   FileText,
   ScrollText,
   FileSearch,
+  Activity,
   Settings,
 } from 'lucide-react';
 import { DashboardPage } from '../components/pages/DashboardPage';
@@ -64,6 +65,7 @@ import { FeatureMapFlowPage } from '../components/pages/FeatureMapFlowPage';
 import { ReportsPage } from '../components/pages/ReportsPage';
 import { AuditPage } from '../components/pages/AuditPage';
 import { EvidencePage } from '../components/pages/EvidencePage';
+import { TelemetryPage } from '../components/pages/TelemetryPage';
 import { SettingsPage } from '../components/pages/SettingsPage';
 import type { NavPage } from '../types';
 
@@ -259,6 +261,20 @@ export const routeDefs: RouteDef[] = [
     label: 'Evidence Viewer',
     icon: FileSearch,
     Component: EvidencePage,
+    designStatus: 'new-follows-approved-language',
+    protectedRoute: true,
+  },
+  {
+    id: 'telemetry',
+    path: '/telemetry',
+    label: 'System Telemetry',
+    icon: Activity,
+    Component: TelemetryPage,
+    // Build order item 2 (22 Aug 2026) — a genuinely new page (no prior
+    // stub existed for this; ACC-013 was never one of FE-11's 7 Case-C
+    // pages), built directly onto the real `GET /metrics` route. Follows
+    // Dashboard/Test Generator's visual language, same bucket as
+    // Audit/Evidence/ExecutionHub/Reports.
     designStatus: 'new-follows-approved-language',
     protectedRoute: true,
   },

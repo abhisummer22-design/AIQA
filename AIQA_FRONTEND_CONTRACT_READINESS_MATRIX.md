@@ -1,5 +1,16 @@
 # AIQA Frontend Contract Readiness Matrix
 
+> **⚠ SUPERSEDED — 22 August 2026.** `apps/web/` is confirmed **not** the shipping frontend. Every unit
+> from FE-1 through FE-26, the central AI Model Auto-Discovery/Smart-Routing work, and the 22 August
+> Security Remediation work all landed in `forentend/` instead — `apps/web/` has had no real commit
+> since 18 August (`556c5cc`) and was again explicitly excluded from that same week's CORS default
+> allow-list for being unmaintained. The "Frontend Host: `apps/web/`" line below, and every CONNECTED/
+> PARTIAL/MISSING_BACKEND classification that follows, describes `apps/web/` as it stood on 17 August and
+> is **historical**, not current readiness guidance — none of it has been re-derived against `forentend/`.
+> See `AIQA_DOCUMENT_INDEX.md` for the full corpus status and `AIQA_PRODUCT_DECISIONS_RECORD.md` for the
+> decision trail. `apps/web/` itself has **not** been archived or deleted — no product decision to do so
+> has been made.
+
 **Document Version:** 1.0  
 **Date:** 17 August 2026  
 **Reference API Contract:** `AIQA_API_CONTRACT_v1.0.md`  

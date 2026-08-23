@@ -12,7 +12,7 @@ use axum::{
     // (see `errors.rs`'s module doc comment; G-WS is out of scope). Every
     // other handler below uses `ApiPath`/`ApiQuery`/`ApiJson` instead.
     extract::{Extension, Path, Query, State},
-    http::StatusCode,
+    http::{HeaderValue, StatusCode},
     response::{IntoResponse, Json, Response},
     routing::{delete, get, post},
     Router,
@@ -20,6 +20,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::broadcast;
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use uuid::Uuid;
 
 /// `/health` is intentionally the only route outside the auth layer (see
@@ -69,6 +70,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/projects/:project_id/findings", get(list_findings_scoped))
         .route("/api/v1/projects/:project_id/findings/:finding_id", get(get_finding_detail_scoped))
         .route("/api/v1/projects/:project_id/findings/:finding_id/analysis", post(get_finding_analysis_scoped))
+        // Build order item 4 — on-demand AI-assisted hypothesis, additive
+        // to the real, deterministic `.../analysis` above (never a
+        // replacement for it). See `generate_finding_ai_hypothesis_scoped`.
+        .route("/api/v1/projects/:project_id/findings/:finding_id/ai-hypothesis", post(generate_finding_ai_hypothesis_scoped))
         .route("/api/v1/projects/:project_id/findings/:finding_id/review", post(review_finding_scoped))
         .route("/api/v1/projects/:project_id/audit", get(get_audit_log_scoped))
         // Phase 4 BE-10 — see `list_test_intelligence_scoped`'s doc comment.
@@ -127,6 +132,54 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/projects/:project_id/events", get(project_events_ws_handler))
         .merge(protected)
         .with_state(state)
+}
+
+/// B12 remediation. Was `CorsLayer::new().allow_origin(Any)` in `main.rs` —
+/// flagged Medium by the Backend Plan/Deep Audit §15.2: not directly
+/// exploitable on its own (every route above is still Bearer-gated by
+/// `require_auth`), but a real widening of the browser attack surface
+/// (any site could read a response *if* it ever got a caller to hand it a
+/// valid key) and explicitly called out as something to fix "before any
+/// non-local deployment." A real, explicit allow-list, not a second
+/// wildcard dressed up as a list.
+///
+/// `AIQA_CORS_ALLOWED_ORIGINS` (comma-separated origins) overrides the
+/// default entirely when set and non-empty — this is the "ask the user
+/// directly rather than guessing" path for any real deployment origin.
+/// Unset, it defaults to this project's own documented local dev
+/// origin: `forentend`'s Vite dev server (`vite --port=3000`, see
+/// `forentend/package.json`'s `dev` script), on both `localhost` and
+/// `127.0.0.1` since browsers treat those as distinct origins. `apps/web`
+/// (default Vite port, unmaintained since 18 Aug — see
+/// AIQA_CONSOLIDATED_DOCUMENTATION_REVIEW.md §6.1) is deliberately not in
+/// the default list; add it via the env var if it's ever needed again.
+pub fn cors_layer_from_env() -> CorsLayer {
+    let origins = std::env::var("AIQA_CORS_ALLOWED_ORIGINS")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.split(',').map(|o| o.trim().to_string()).collect::<Vec<_>>())
+        .unwrap_or_else(|| {
+            vec![
+                "http://localhost:3000".to_string(),
+                "http://127.0.0.1:3000".to_string(),
+            ]
+        });
+    cors_layer_for_origins(&origins)
+}
+
+/// The actual allow-list construction, split out from `cors_layer_from_env`
+/// so a test can exercise real enforcement against a known, fixed origin
+/// list without mutating process-wide environment state (which `cargo
+/// test`'s default parallelism makes inherently racy across tests).
+/// `pub(crate)` rather than private: `api_tests.rs` is a sibling module
+/// (declared in `lib.rs`), not a child of this one, so it needs at least
+/// crate-visibility to call this directly.
+pub(crate) fn cors_layer_for_origins(origins: &[String]) -> CorsLayer {
+    let headers: Vec<HeaderValue> = origins.iter().filter_map(|o| HeaderValue::from_str(o).ok()).collect();
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::list(headers))
+        .allow_methods(Any)
+        .allow_headers(Any)
 }
 
 async fn health() -> &'static str {
@@ -1043,25 +1096,56 @@ async fn get_events(
 
 // ------------------------------------------------------------- governance
 
+/// B11/L4 remediation. Rebuilds a live `Arc<RunRecord>` for a run that
+/// exists durably in the store (its full `RunPlan` is persisted verbatim —
+/// `store.rs::insert_run`) but is not held in *this* process's memory —
+/// exactly the situation a restart leaves a still-`PENDING_APPROVAL` run
+/// in, now that `recover_incomplete_runs` no longer destroys it (see that
+/// function's doc comment). Inserts the rebuilt record into `state.runs`
+/// so every subsequent lookup — this request's own state check, a later
+/// `GET`, cancellation, WS subscription once it starts running — sees it
+/// exactly as if this process had created it. `Ok(None)` (not an error)
+/// when the run simply doesn't exist in the store at all.
+async fn rehydrate_run_record(state: &AppState, run_id: Uuid) -> Result<Option<Arc<RunRecord>>, ApiError> {
+    let Some((plan, project_id, requested_by, policy_notes, run_state)) =
+        state.store.get_run_for_rehydration(run_id).await.map_err(to_500)?
+    else {
+        return Ok(None);
+    };
+    let project_stream = match &project_id {
+        Some(pid) => Some(state.project_stream(pid).await),
+        None => None,
+    };
+    let record = RunRecord::new(run_id, &plan, project_id, requested_by, run_state, policy_notes, project_stream);
+    state.runs.write().await.insert(run_id, record.clone());
+    Ok(Some(record))
+}
+
+/// Shared by all four approve/reject handlers (flat + scoped): in-memory
+/// lookup first (the common, same-process case), falling back to
+/// rehydration from the store (B11/L4). A 404 here means the run genuinely
+/// does not exist anywhere, not merely that this process hasn't seen it.
+async fn find_or_rehydrate_run(state: &AppState, run_id: Uuid) -> Result<Arc<RunRecord>, ApiError> {
+    if let Some(record) = state.runs.read().await.get(&run_id).cloned() {
+        return Ok(record);
+    }
+    rehydrate_run_record(state, run_id).await?.ok_or_else(|| ApiError::not_found("run not found"))
+}
+
 /// POST /runs/:id/approve — releases a run the policy engine held for
-/// review (see `policy.rs`). Only works against the process that currently
-/// holds the run's `RunRecord` in memory: approving a run created by a
-/// different (or since-restarted) orchestrator process isn't supported in
-/// this slice (there's no cross-process work queue — see README
-/// "Distributed workers / Redis").
+/// review (see `policy.rs`). B11/L4: works against a run created by a
+/// different (or since-restarted) orchestrator process too, via
+/// `find_or_rehydrate_run` above — there is still no cross-process *work
+/// queue* (see README "Distributed workers / Redis"), but a durable,
+/// still-pending approval is no longer lost to a restart the way it used
+/// to be.
 async fn approve_run(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath(id): ApiPath<Uuid>,
 ) -> Result<Json<RunSummary>, ApiError> {
     auth::require_role(&ctx, Role::Operator)?;
-    let record = state
-        .runs
-        .read()
-        .await
-        .get(&id)
-        .cloned()
-        .ok_or_else(|| ApiError::not_found("run not held in this process's memory (see README)"))?;
+    let record = find_or_rehydrate_run(&state, id).await?;
     auth::require_project_access(&ctx, record.project_id.as_deref())?;
     {
         let cur = *record.state.read().await;
@@ -1098,13 +1182,7 @@ async fn reject_run(
     body: Option<ApiJson<RejectBody>>,
 ) -> Result<Json<RunSummary>, ApiError> {
     auth::require_role(&ctx, Role::Operator)?;
-    let record = state
-        .runs
-        .read()
-        .await
-        .get(&id)
-        .cloned()
-        .ok_or_else(|| ApiError::not_found("run not held in this process's memory (see README)"))?;
+    let record = find_or_rehydrate_run(&state, id).await?;
     auth::require_project_access(&ctx, record.project_id.as_deref())?;
     {
         let cur = *record.state.read().await;
@@ -1559,13 +1637,7 @@ async fn approve_run_scoped(
 ) -> Result<Json<RunSummary>, ApiError> {
     auth::require_role(&ctx, Role::Operator)?;
     require_scoped_project(&state, &ctx, project_id).await?;
-    let record = state
-        .runs
-        .read()
-        .await
-        .get(&run_id)
-        .cloned()
-        .ok_or_else(|| ApiError::not_found("run not held in this process's memory (see README)"))?;
+    let record = find_or_rehydrate_run(&state, run_id).await?;
     require_resource_in_project(record.project_id.as_deref(), project_id)?;
     {
         let cur = *record.state.read().await;
@@ -1598,13 +1670,7 @@ async fn reject_run_scoped(
 ) -> Result<Json<RunSummary>, ApiError> {
     auth::require_role(&ctx, Role::Operator)?;
     require_scoped_project(&state, &ctx, project_id).await?;
-    let record = state
-        .runs
-        .read()
-        .await
-        .get(&run_id)
-        .cloned()
-        .ok_or_else(|| ApiError::not_found("run not held in this process's memory (see README)"))?;
+    let record = find_or_rehydrate_run(&state, run_id).await?;
     require_resource_in_project(record.project_id.as_deref(), project_id)?;
     {
         let cur = *record.state.read().await;
@@ -1790,6 +1856,108 @@ async fn get_finding_analysis_scoped(
         .ok_or_else(|| ApiError::internal("finding references a failure cluster that no longer exists"))?;
     audit(&state, &ctx, "finding.analysis", Some(&finding_id.to_string()), None, "ok").await;
     Ok(Json(FindingAnalysisResponse { finding, failure_cluster }))
+}
+
+/// POST /api/v1/projects/:project_id/findings/:finding_id/ai-hypothesis —
+/// build order item 4 (22 August 2026). Not a Contract §16 endpoint (same
+/// footing as `.../review` above) — real, on-demand AI-assisted root-cause
+/// analysis, layered on top of the real, already-computed failure cluster
+/// `.../analysis` above already returns. Reuses the exact `generation_method`/
+/// `provider`/`model`/`fallback_reason` response shape
+/// `generate_ai_test_cases_scoped` established for `AiTask::TestCaseGeneration`
+/// — a `"fallback"` outcome is a normal 200 here too, per ACC-018's own
+/// Failure Behavior criteria ("controlled fallback, or NEEDS_REVIEW — never
+/// fabricated output"): the endpoint did its real job (attempted the AI call
+/// and honestly reports what happened), and the failure cluster's real,
+/// pre-existing deterministic data is untouched and still returned. Gated on
+/// `Role::Operator`, same bar as `.../review` and `generate-ai` — this
+/// triggers a real, potentially slow model call, not a cheap read.
+#[derive(Serialize)]
+struct FindingAiHypothesisResponse {
+    finding: crate::store::BugDraftRow,
+    failure_cluster: crate::store::FailureClusterRow,
+    generation_method: String,
+    provider: Option<String>,
+    model: Option<String>,
+    fallback_reason: Option<String>,
+}
+
+async fn generate_finding_ai_hypothesis_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, finding_id)): ApiPath<(Uuid, Uuid)>,
+) -> Result<Json<FindingAiHypothesisResponse>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    auth::require_role(&ctx, Role::Operator)?;
+    require_finding_in_project(&state, finding_id, project_id).await?;
+
+    let finding = state
+        .store
+        .get_bug_draft_by_id(finding_id)
+        .await
+        .map_err(to_500)?
+        .ok_or_else(|| ApiError::not_found("finding not found"))?;
+    let failure_cluster = state
+        .store
+        .get_failure_cluster_by_id(finding.failure_cluster_id)
+        .await
+        .map_err(to_500)?
+        .ok_or_else(|| ApiError::internal("finding references a failure cluster that no longer exists"))?;
+
+    let rule_based_hypothesis = failure_cluster.root_cause_hypothesis.clone().unwrap_or_default();
+    let outcome = crate::intelligence::generate_ai_hypothesis(
+        &state.ai_infra,
+        &failure_cluster.signature,
+        &rule_based_hypothesis,
+        failure_cluster.occurrence_count,
+    )
+    .await;
+
+    let response = match outcome {
+        crate::intelligence::AiHypothesisOutcome::Ai { hypothesis, provider, model } => {
+            state
+                .store
+                .set_ai_hypothesis(failure_cluster.id, &hypothesis, &provider, &model)
+                .await
+                .map_err(to_500)?;
+            let refreshed = state
+                .store
+                .get_failure_cluster_by_id(failure_cluster.id)
+                .await
+                .map_err(to_500)?
+                .ok_or_else(|| ApiError::internal("failure cluster vanished immediately after being updated"))?;
+            audit(
+                &state,
+                &ctx,
+                "finding.ai_hypothesis",
+                Some(&finding_id.to_string()),
+                Some(&format!("via {provider}/{model}")),
+                "ok",
+            )
+            .await;
+            FindingAiHypothesisResponse {
+                finding,
+                failure_cluster: refreshed,
+                generation_method: "ai".to_string(),
+                provider: Some(provider),
+                model: Some(model),
+                fallback_reason: None,
+            }
+        }
+        crate::intelligence::AiHypothesisOutcome::Failed { reason } => {
+            audit(&state, &ctx, "finding.ai_hypothesis", Some(&finding_id.to_string()), Some(&reason), "fallback").await;
+            FindingAiHypothesisResponse {
+                finding,
+                failure_cluster,
+                generation_method: "fallback".to_string(),
+                provider: None,
+                model: None,
+                fallback_reason: Some(reason),
+            }
+        }
+    };
+
+    Ok(Json(response))
 }
 
 /// POST /api/v1/projects/:project_id/findings/:finding_id/review — not a

@@ -391,10 +391,29 @@ pub async fn reject_run(
 /// way to leave one non-terminal), so it's marked INFRA_ERROR/FAILED with a
 /// reason that says exactly that, rather than silently staying QUEUED
 /// forever or being re-run blind.
+///
+/// B11/L4 remediation, and the more severe half of it: a `PENDING_APPROVAL`
+/// run's tasks sit `QUEUED` *by design* — they were never spawned, because
+/// the run is waiting on a human decision, not because a shutdown
+/// interrupted them. `list_incomplete_runs` (correctly) surfaces these runs
+/// too, since `QUEUED` tasks make them look non-terminal — but this loop
+/// used to treat that exactly like an orphaned in-flight run and force
+/// every one of those tasks to `INFRA_ERROR`, which flipped the whole run
+/// FAILED. That meant *every* clean restart silently destroyed *every*
+/// pending approval, which is a strictly worse outcome than the documented
+/// finding ("a restart voids pending approvals," implying merely
+/// inaccessible, not actively converted to a failure). Skipped here,
+/// entirely untouched; `api.rs::rehydrate_run_record` is what makes a
+/// still-`PENDING_APPROVAL` run reachable again after a restart.
 pub async fn recover_incomplete_runs(store: &Store) -> anyhow::Result<usize> {
     let ids = store.list_incomplete_runs().await?;
     let reason = "orchestrator process restarted while this task was queued/running; execution state was not durable enough to resume, so it is marked INFRA_ERROR rather than left QUEUED forever";
     for run_id in &ids {
+        if let Some(summary) = store.get_run_summary(*run_id).await? {
+            if summary.state == RunState::PendingApproval {
+                continue;
+            }
+        }
         let tasks = store.list_tasks_for_run(*run_id).await?;
         let mut touched_any = false;
         for t in &tasks {

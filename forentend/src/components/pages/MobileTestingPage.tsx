@@ -14,9 +14,21 @@
  * capability exists (brief §9). Nothing about device farms, physical or
  * virtual, exists in this system.
  *
- * Per this sprint's Case C rule: replace the fabricated device farm with a
- * truthful "not implemented" state rather than inventing a fallback
+ * Per that sprint's Case C rule, the fabricated device farm was replaced
+ * with a truthful "not implemented" state rather than a fallback
  * device-inventory model.
+ *
+ * **Copy updated 22 August 2026** (a second, later, copy-only pass — no
+ * backend/frontend behavior changed): `AIQA_PRD_FRD_SRD_v6.1_SCOPE_
+ * CORRECTIONS.md` §2 has since recorded real device/emulator dispatch
+ * (ACC-014) as a direct product-owner decision — real, intended future
+ * scope, deliberately *deferred* pending a real budget decision, not an
+ * unexplained gap and not descoped. "Not implemented" was accurate but
+ * generic; the copy below now names the actual, recorded revisit
+ * condition instead of leaving a reader to guess. Still no
+ * device-inventory, device-lock/reservation, or mobile-coverage-dispatch
+ * entity exists in the backend today — that underlying fact is unchanged,
+ * only how plainly it's explained.
  */
 
 import React from 'react';
@@ -33,18 +45,18 @@ export const MobileTestingPage: React.FC = () => {
       <SectionHeader
         title="Mobile Testing Hub"
         subtitle="Device fleet selection and non-UI mobile coverage execution"
-        badge="NOT IMPLEMENTED"
+        badge="DEFERRED — REAL FUTURE SCOPE"
         icon={Smartphone}
       />
 
       <EmptyState
         icon={Smartphone}
-        badge="NO BACKEND CAPABILITY"
-        title="Mobile device testing is not implemented"
-        description="The backend has no device-inventory, device-lock/reservation, or mobile-coverage-dispatch entity — this page previously showed a fabricated device farm instead of a real feature. Real test execution is scheduled and run through the Execution Hub."
+        badge="DEFERRED, NOT DESCOPED"
+        title="Mobile device testing is real, deferred scope — pending a device-farm budget decision"
+        description="Real device/emulator dispatch remains real, intended product scope — deliberately deferred, not rejected, per a direct product-owner decision (AIQA_PRD_FRD_SRD_v6.1_SCOPE_CORRECTIONS.md §2, 22 August 2026). Revisit condition: a real device-farm budget decision, separate from that document — matching the PRD's own existing 'post-MVP' precedent for adjacent mobile tooling (Appium/Strix). No device-inventory, device-lock/reservation, or mobile-coverage-dispatch entity exists in the backend today."
         actionLabel="Go to Execution Hub"
         onAction={() => navigate('/execution')}
-        codeHint="No corresponding route exists in services/orchestrator/src/api.rs"
+        codeHint="ACC-014 — AIQA_PRD_FRD_SRD_v6.1_SCOPE_CORRECTIONS.md §2"
       />
     </div>
   );

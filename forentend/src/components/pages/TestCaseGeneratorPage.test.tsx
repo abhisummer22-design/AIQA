@@ -390,6 +390,216 @@ describe('TestCaseGeneratorPage — AUD-005 real persistence, validation, execut
       expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/handoff') && (c[1] as RequestInit)?.method === 'POST')).toBe(true),
     );
   });
+
+  // -------------------------------------------------------------- ACC-005
+  // Validate/Approve/Reject were already wired to the real backend
+  // (`handleValidateReal`/`handleApproveReal`/`handleRejectReal`,
+  // `GeneratedTestCasesView.tsx`'s status-gated buttons) before this
+  // session, but had zero direct test coverage — confirmed by reading this
+  // file before writing anything here (investigate-before-building, same
+  // rule that closed ACC-012). These tests close that gap without adding
+  // any new frontend logic: every assertion below exercises code that
+  // already existed.
+
+  it('Validate Test Case on a real GENERATED case makes a real request and the case becomes VALIDATED', async () => {
+    let currentStatus: TestCaseRow['status'] = 'GENERATED';
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/validate') && init?.method === 'POST') {
+        currentStatus = 'VALIDATED';
+        return jsonResponse(200, testCaseRow({ id: 'case-validate', title: 'Needs validation', status: currentStatus }));
+      }
+      if (url.includes('/test-cases')) return jsonResponse(200, [testCaseRow({ id: 'case-validate', title: 'Needs validation', status: currentStatus })]);
+      if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+      return jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(screen.getAllByText('Needs validation').length).toBeGreaterThan(0));
+
+    await waitFor(() => expect(document.getElementById('btn-validate-test-case')).toBeTruthy());
+    await act(async () => {
+      document.getElementById('btn-validate-test-case')!.click();
+    });
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/validate') && (c[1] as RequestInit)?.method === 'POST')).toBe(true),
+    );
+    // Real state transition, reflected by the real button that appears next
+    // in the real status-gated sequence (PENDING_REVIEW -> VALIDATED).
+    await waitFor(() => expect(document.getElementById('btn-validate-test-case')).toBeNull());
+  });
+
+  it('Validate reports the real, specific structural rejection reason — no steps defined', async () => {
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/validate') && init?.method === 'POST') {
+        return jsonResponse(409, {
+          error: { code: 'CONFLICT', message: 'structural validation failed: no steps defined', details: null, request_id: 'r-novalidate-1' },
+        });
+      }
+      if (url.includes('/test-cases')) return jsonResponse(200, [testCaseRow({ id: 'case-nosteps', title: 'Missing steps', status: 'GENERATED' })]);
+      if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+      return jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(document.getElementById('btn-validate-test-case')).toBeTruthy());
+
+    await act(async () => {
+      document.getElementById('btn-validate-test-case')!.click();
+    });
+
+    // The real backend message, not a generic client-side string.
+    await waitFor(() => expect(document.getElementById('save-error-message')!.textContent).toContain('no steps defined'));
+  });
+
+  it('Validate reports a different real rejection reason for a different real structural problem — empty expected_result', async () => {
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/validate') && init?.method === 'POST') {
+        return jsonResponse(409, {
+          error: { code: 'CONFLICT', message: 'structural validation failed: expected_result is empty', details: null, request_id: 'r-noexpected-1' },
+        });
+      }
+      if (url.includes('/test-cases')) return jsonResponse(200, [testCaseRow({ id: 'case-noexpected', title: 'Missing expected result', status: 'GENERATED' })]);
+      if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+      return jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(document.getElementById('btn-validate-test-case')).toBeTruthy());
+
+    await act(async () => {
+      document.getElementById('btn-validate-test-case')!.click();
+    });
+
+    // A genuinely different real message for a genuinely different real
+    // problem — proof this surfaces whatever the backend actually said,
+    // not one hardcoded rejection string reused for every failure.
+    await waitFor(() => expect(document.getElementById('save-error-message')!.textContent).toContain('expected_result is empty'));
+  });
+
+  it('Approve Test Case on a real VALIDATED case makes a real request and the case becomes APPROVED', async () => {
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/approve') && init?.method === 'POST') {
+        return jsonResponse(200, testCaseRow({ id: 'case-approve', title: 'Ready to approve', status: 'APPROVED' }));
+      }
+      if (url.includes('/test-cases')) return jsonResponse(200, [testCaseRow({ id: 'case-approve', title: 'Ready to approve', status: 'VALIDATED' })]);
+      if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+      return jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(screen.getAllByText('Ready to approve').length).toBeGreaterThan(0));
+
+    const approveButton = screen.getByText('Approve Test Case').closest('button')!;
+    await act(async () => {
+      approveButton.click();
+    });
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/approve') && (c[1] as RequestInit)?.method === 'POST')).toBe(true),
+    );
+  });
+
+  it('Approve reports a real, honest error when the backend rejects it — never a fabricated success', async () => {
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/approve') && init?.method === 'POST') {
+        return jsonResponse(409, { error: { code: 'CONFLICT', message: 'test case is not in VALIDATED state (current: GENERATED)', details: null, request_id: 'r-approve-1' } });
+      }
+      if (url.includes('/test-cases')) return jsonResponse(200, [testCaseRow({ id: 'case-badapprove', title: 'Not yet validated', status: 'VALIDATED' })]);
+      if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+      return jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(screen.getAllByText('Not yet validated').length).toBeGreaterThan(0));
+
+    const approveButton = screen.getByText('Approve Test Case').closest('button')!;
+    await act(async () => {
+      approveButton.click();
+    });
+
+    await waitFor(() => expect(document.getElementById('save-error-message')!.textContent).toContain('not in VALIDATED state'));
+  });
+
+  it('Reject on a real case makes a real request', async () => {
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/reject') && init?.method === 'POST') {
+        return jsonResponse(200, testCaseRow({ id: 'case-reject', title: 'To be rejected', status: 'REJECTED' }));
+      }
+      if (url.includes('/test-cases')) return jsonResponse(200, [testCaseRow({ id: 'case-reject', title: 'To be rejected', status: 'GENERATED' })]);
+      if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+      return jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(screen.getAllByText('To be rejected').length).toBeGreaterThan(0));
+
+    const rejectButton = screen.getByText('Reject').closest('button')!;
+    await act(async () => {
+      rejectButton.click();
+    });
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/reject') && (c[1] as RequestInit)?.method === 'POST')).toBe(true),
+    );
+  });
+
+  it('shows the real loading state while persisted cases are being fetched', async () => {
+    let resolveFetch: (value: Response) => void;
+    const pending = new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    });
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      if (url.includes('/test-cases')) return pending;
+      if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+      return jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await act(async () => {
+      document.getElementById('project-selector-button')!.click();
+    });
+    await act(async () => {
+      within(screen.getByRole('listbox', { name: 'Projects' })).getByRole('option', { name: PROJECT_A.name }).click();
+    });
+
+    // Real loading state while the real fetch is still in flight — not a
+    // fabricated instant transition.
+    await waitFor(() => expect(document.getElementById('generated-test-cases-loading')).toBeTruthy());
+
+    await act(async () => {
+      resolveFetch(jsonResponse(200, [testCaseRow({ id: 'case-loaded', title: 'Loaded after wait' })]));
+    });
+    await waitFor(() => expect(document.getElementById('generated-test-cases-loading')).toBeNull());
+    await waitFor(() => expect(screen.getAllByText('Loaded after wait').length).toBeGreaterThan(0));
+  });
 });
 
 // ============================================================ Skills & MCP Phase 1

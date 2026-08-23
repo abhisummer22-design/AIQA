@@ -1,5 +1,15 @@
 # AIQA Frontend Phase 2 Integration Readiness Report
 
+> **⚠ SUPERSEDED — 22 August 2026.** `apps/web/` is confirmed **not** the shipping frontend. Every unit
+> from FE-1 through FE-26, the central AI Model Auto-Discovery/Smart-Routing work, and the 22 August
+> Security Remediation work all landed in `forentend/` instead — `apps/web/` has had no real commit
+> since 18 August (`556c5cc`) and was again explicitly excluded from that same week's CORS default
+> allow-list for being unmaintained. This report's "Phase 2 prepares `apps/web/`..." framing and its
+> endpoint-mapping table below describe `apps/web/` as it stood on 17 August and are **historical**, not
+> current guidance. See `AIQA_DOCUMENT_INDEX.md` for the full corpus status and
+> `AIQA_PRODUCT_DECISIONS_RECORD.md` for the decision trail. `apps/web/` itself has **not** been archived
+> or deleted — no product decision to do so has been made.
+
 **Date:** 17 August 2026  
 **Agent:** AIQA Frontend Integration Readiness Agent  
 **Contract Version Verified:** `AIQA_API_CONTRACT_v1.0.md` (v1.0)  

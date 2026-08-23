@@ -239,10 +239,16 @@ interface RequestOptions {
   body?: unknown;
   query?: Record<string, string | number | boolean | undefined>;
   signal?: AbortSignal;
+  /** Build order item 2 (22 Aug 2026) — skips the `API_BASE` (`/api/v1`)
+   *  prefix. Only `/metrics` needs this today: a real, flat, legacy-style
+   *  route (`main.rs`'s un-prefixed router block, alongside
+   *  `/admin/api-keys`), not one of the `/api/v1/...` contract routes
+   *  every other call in this file targets. */
+  skipBase?: boolean;
 }
 
-function buildUrl(path: string, query?: RequestOptions['query']): string {
-  const url = `${API_BASE}${path}`;
+function buildUrl(path: string, query?: RequestOptions['query'], skipBase?: boolean): string {
+  const url = skipBase ? path : `${API_BASE}${path}`;
   if (!query) return url;
   const params = new URLSearchParams();
   for (const [k, v] of Object.entries(query)) {
@@ -253,7 +259,7 @@ function buildUrl(path: string, query?: RequestOptions['query']): string {
 }
 
 async function rawRequest(path: string, opts: RequestOptions = {}): Promise<Response> {
-  const { method = 'GET', body, query, signal } = opts;
+  const { method = 'GET', body, query, signal, skipBase } = opts;
 
   const key = getApiKey();
   if (!key) {
@@ -266,7 +272,7 @@ async function rawRequest(path: string, opts: RequestOptions = {}): Promise<Resp
 
   let res: Response;
   try {
-    res = await fetch(buildUrl(path, query), {
+    res = await fetch(buildUrl(path, query, skipBase), {
       method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -304,6 +310,17 @@ async function requestVoid(path: string, opts: RequestOptions = {}): Promise<voi
 async function requestBlob(path: string, opts: RequestOptions = {}): Promise<Blob> {
   const res = await rawRequest(path, opts);
   return res.blob();
+}
+
+/** Raw text — `/metrics`'s real Prometheus text-exposition body
+ *  (`Content-Type: text/plain; version=0.0.4`, `services/orchestrator/
+ *  src/metrics.rs::render`), not JSON. Parsed client-side by
+ *  `parsePrometheusText` in `TelemetryPage.tsx` — no backend JSON adapter
+ *  exists or is needed; the real format is simple enough to parse directly
+ *  (build order item 2, 22 Aug 2026). */
+async function requestText(path: string, opts: RequestOptions = {}): Promise<string> {
+  const res = await rawRequest(path, opts);
+  return res.text();
 }
 
 // ------------------------------------------------------------- realtime (WS)
@@ -473,5 +490,15 @@ export const aiqaApi = {
     getSettings: (signal?: AbortSignal) => requestJson<AiSettings>('/ai/settings', { signal }),
     updateSettings: (body: AiSettings, signal?: AbortSignal) => requestJson<AiSettings>('/ai/settings', { method: 'PUT', body, signal }),
     refresh: (signal?: AbortSignal) => requestJson<AiProviderInfo[]>('/ai/refresh', { method: 'POST', signal }),
+  },
+
+  /** Build order item 2 (22 Aug 2026, System Telemetry) — `GET /metrics`
+   *  (`services/orchestrator/src/metrics.rs`, `api.rs::get_metrics`), a
+   *  real, flat, platform-wide (not project-scoped) route, requiring only
+   *  authentication (no specific role). Returns real Prometheus text, not
+   *  JSON — `requestText` + `skipBase` (this route is not under
+   *  `/api/v1/...`). */
+  metrics: {
+    get: (signal?: AbortSignal) => requestText('/metrics', { signal, skipBase: true }),
   },
 };

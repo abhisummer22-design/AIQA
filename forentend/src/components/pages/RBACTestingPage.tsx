@@ -21,9 +21,24 @@
  * onto (brief §9: a page's name is not evidence a backend capability
  * exists).
  *
- * Per this sprint's Case C rule: replace the fabricated matrix with a
- * truthful "not implemented" state rather than inventing a fallback
- * evaluation engine.
+ * Per that sprint's Case C rule, the fabricated matrix was replaced with a
+ * truthful "not implemented" state rather than a fallback evaluation
+ * engine.
+ *
+ * **Copy updated 22 August 2026** (a second, later, copy-only pass — no
+ * backend/frontend behavior changed): `AIQA_PRD_FRD_SRD_v6.1_SCOPE_
+ * CORRECTIONS.md` §2 has since recorded the dedicated scenario-matrix
+ * *tool* (ACC-011) as a direct product-owner decision — real, intended
+ * future scope, deliberately *deferred*, not an unexplained gap and not
+ * descoped. Sharpened distinction, carried over from this file's original
+ * doc comment above and now also stated in the rendered copy: only the
+ * dedicated evaluation *tool* is deferred — real RBAC *enforcement* is a
+ * different thing, already fully committed and already shipped
+ * (`auth::require_role` on every protected route). "Not implemented" was
+ * accurate but generic and did not make that distinction visible on the
+ * page itself; the copy below now does. Still no role-permission-matrix
+ * entity or evaluation endpoint exists in the backend today — that
+ * underlying fact is unchanged, only how plainly it's explained.
  */
 
 import React from 'react';
@@ -40,18 +55,18 @@ export const RBACTestingPage: React.FC = () => {
       <SectionHeader
         title="RBAC Security Testing Matrix"
         subtitle="Role-permission authorization boundary auditing"
-        badge="NOT IMPLEMENTED"
+        badge="DEFERRED — REAL FUTURE SCOPE"
         icon={ShieldCheck}
       />
 
       <EmptyState
         icon={ShieldCheck}
-        badge="NO BACKEND CAPABILITY"
-        title="RBAC matrix testing is not implemented"
-        description="The backend has no role-permission-matrix entity or endpoint that evaluates authorization scenarios — this page previously showed a fabricated audit matrix instead of a real feature. The backend's real RBAC is enforced inline on each protected route (Operator/Admin-gated actions genuinely return 401/403 to an under-privileged key); the closest real evidence of that enforcement is the project's Audit Trail."
+        badge="DEFERRED, NOT DESCOPED"
+        title="The RBAC scenario-matrix tool is real, deferred scope — enforcement itself already ships"
+        description="A dedicated systematic role×permission×action evaluation tool remains real, intended product scope — deliberately deferred, not rejected, per a direct product-owner decision (AIQA_PRD_FRD_SRD_v6.1_SCOPE_CORRECTIONS.md §2, 22 August 2026). Revisit condition: no fixed trigger — real RBAC enforcement remains fully committed and already shipped (auth::require_role on every protected route); only this dedicated evaluation tool is deferred. No role-permission-matrix entity or evaluation endpoint exists in the backend today; the closest real evidence of enforcement is the project's Audit Trail."
         actionLabel="Go to Audit Trail"
         onAction={() => navigate('/audit')}
-        codeHint="No role-matrix route exists in services/orchestrator/src/api.rs — see auth::require_role call sites for real, per-route enforcement"
+        codeHint="ACC-011 (scenario-matrix tool) — AIQA_PRD_FRD_SRD_v6.1_SCOPE_CORRECTIONS.md §2"
       />
     </div>
   );

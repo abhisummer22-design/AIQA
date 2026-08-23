@@ -39,6 +39,17 @@ export default defineConfig(() => {
       // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
       proxy: {
+        // Build order item 2 (22 Aug 2026, System Telemetry): `/metrics` is
+        // a real, flat, legacy-style route (`main.rs`'s un-prefixed router
+        // block, alongside `/admin/api-keys`) — NOT under `/api/v1/...` —
+        // so it needs its own proxy entry; without this, a dev-mode fetch
+        // to `/metrics` hits Vite's own dev server (no such route, 404)
+        // instead of the real orchestrator. Same target/changeOrigin as the
+        // `/api/v1` block below, no new backend capability involved.
+        '/metrics': {
+          target: ORCHESTRATOR_URL,
+          changeOrigin: true,
+        },
         '/api/v1': {
           target: ORCHESTRATOR_URL,
           changeOrigin: true,

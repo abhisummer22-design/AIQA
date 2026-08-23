@@ -13,7 +13,6 @@ use aiqa_orchestrator::{
 };
 use std::path::PathBuf;
 use std::sync::Arc;
-use tower_http::cors::{Any, CorsLayer};
 use tracing_subscriber::EnvFilter;
 
 /// `services/orchestrator` -> repo root -> `executors/<name>`.
@@ -124,12 +123,10 @@ async fn main() {
         });
     }
     let state = AppState::new(Arc::new(registry), store, policy, evidence, ai_infra);
-    let app = api::router(state).layer(
-        CorsLayer::new()
-            .allow_origin(Any)
-            .allow_methods(Any)
-            .allow_headers(Any),
-    );
+    // B12 — explicit origin allow-list, not a wildcard. See
+    // `api::cors_layer_from_env`'s doc comment for the default and the
+    // `AIQA_CORS_ALLOWED_ORIGINS` override.
+    let app = api::router(state).layer(api::cors_layer_from_env());
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 8080));
     tracing::info!("AIQA orchestrator listening on http://{addr}");

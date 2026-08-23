@@ -22,6 +22,23 @@ anyhow = "1.0.104"
 regex = "1.13.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
+# Critical-finding remediation (Architecture Audit "PRIORITY 1" — executor
+# isolation). No container runtime is available in this dev environment
+# (docker/podman/wsl all absent, checked fresh — see executor.rs's
+# `job_containment` module doc comment), so real process containment is
+# built directly on the Win32 Job Object API instead: the entire process
+# tree an executor spawns is guaranteed to die together, with hard
+# process-count and memory ceilings, when the job handle closes. Windows
+# target only — every other platform already has no executors wired at all
+# (see executor_project_dir's Windows-only callers in main.rs).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 # Phase 1 regression tests need a real, disposable SQLite file per test:
 # the defects being pinned (WAL/busy-timeout config, transactional inserts,

@@ -9,9 +9,64 @@ import React from 'react';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import jsPDF from 'jspdf';
+import * as XLSX from 'xlsx';
 import { AppShell } from '../../App';
 import { setApiKey } from '../../services/aiqaApi';
-import type { Finding, FailureCluster, Project, TestIntelRow } from '../../types/contract';
+import { buildBugReportRows, buildFinalAuditRows, buildTestReportRows } from './ReportsPage';
+import type { DashboardResponse, Finding, FailureCluster, KpisResponse, Project, TestIntelRow } from '../../types/contract';
+
+// ACC-016 — real `jsPDF` instances assign `save` as an own instance
+// property inside their own constructor (confirmed by direct inspection of
+// the installed `jspdf` package before writing this — it is not on
+// `jsPDF.prototype`, so `vi.spyOn(jsPDF.prototype, 'save')` cannot see it).
+// `vi.mock` intercepts the whole module instead: a real subclass still
+// runs the real constructor (so `.text()`/`.setFontSize()`/`autoTable()`/
+// `.output()` all stay 100% real), and only re-points the one
+// browser-download-triggering method afterward — mirroring this file's
+// `fetch`-mocked-only-at-the-transport-boundary rule, applied to the
+// export boundary. Must live at module top level (not inside a
+// `describe`/`beforeEach`) — Vitest hoists `vi.mock` above all imports.
+const { capturedPdfDocs, pdfSaveCalls } = vi.hoisted(() => ({
+  capturedPdfDocs: [] as unknown[],
+  pdfSaveCalls: [] as unknown[][],
+}));
+vi.mock('jspdf', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('jspdf')>();
+  class TestJsPDF extends actual.default {
+    constructor(...args: ConstructorParameters<typeof actual.default>) {
+      super(...args);
+      capturedPdfDocs.push(this);
+      (this as unknown as { save: (...a: unknown[]) => unknown }).save = (...saveArgs: unknown[]) => {
+        pdfSaveCalls.push(saveArgs);
+        return this;
+      };
+    }
+  }
+  return { ...actual, default: TestJsPDF };
+});
+
+// Same reasoning as the `jspdf` mock above, for a different underlying
+// cause: `xlsx`'s synthetic ESM namespace defines `writeFile` as a
+// non-configurable property (confirmed by `vi.spyOn(XLSX, 'writeFile')`
+// throwing "Cannot redefine property: writeFile" when first tried), so it
+// cannot be spied on directly. `vi.mock` sidesteps this by building the
+// mocked module from scratch: every real export (`utils.book_new`,
+// `.aoa_to_sheet`, `.book_append_sheet`, `.sheet_to_csv`, etc.) is spread
+// through unchanged from the real module — only `writeFile`, the one
+// browser-download-triggering call, is replaced.
+const { xlsxWriteFileCalls } = vi.hoisted(() => ({
+  xlsxWriteFileCalls: [] as unknown[][],
+}));
+vi.mock('xlsx', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('xlsx')>();
+  return {
+    ...actual,
+    writeFile: (...args: unknown[]) => {
+      xlsxWriteFileCalls.push(args);
+    },
+  };
+});
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(status === 204 ? null : JSON.stringify(body), {
@@ -887,5 +942,345 @@ describe('ReportsPage — FE-25 Test Intelligence realtime auto-refresh', () => 
     });
     const intelCallsAfter = fetchMock.mock.calls.filter(([url]: [string]) => String(url).includes('/intelligence/tests')).length;
     expect(intelCallsAfter).toBe(intelCallsBefore);
+  });
+});
+
+/**
+ * Build order item 3 (22 Aug 2026) — ACC-016 PDF/Excel export. See
+ * `ReportsPage.tsx`'s module doc comment for why "Bug Report" / "Test
+ * Report" / "Final Audit Report" resolve to `Finding[]` /
+ * `DashboardResponse`+`KpisResponse` / a computed reconciliation of the
+ * two, and why no fourth ("module") data source was invented.
+ *
+ * The pure row-builders are unit-tested directly first (no rendering, no
+ * library calls — same convention as `TelemetryPage.test.tsx`'s direct
+ * `parsePrometheusText` tests), then a smaller set of component tests
+ * verify the real generated PDF/Excel bytes actually contain real data.
+ * `jsPDF`/`xlsx` are both real, unmodified libraries up to the one call
+ * each would use to trigger a real browser download (`save`/`writeFile`)
+ * — only that boundary is intercepted (mirroring this codebase's "mock
+ * only at the transport boundary" rule, applied here to the export
+ * boundary instead of `fetch`; see the two `vi.mock` calls above), so
+ * everything upstream (real fetched data → real row-building → real
+ * jsPDF/xlsx document construction) runs for real.
+ *
+ * jsPDF's default (uncompressed) content stream means the real text placed
+ * on the page is genuinely present in `doc.output()` — confirmed directly
+ * against the installed `jspdf` package before writing these assertions —
+ * but `autoTable` legitimately word-wraps long cell content across
+ * multiple lines/draw calls (real, correct rendering, not a bug), which
+ * splits one sentence into several separate `Tj`/`TJ` operators. A plain
+ * `doc.output().includes(longSentence)` check would then wrongly fail on
+ * wrapped content even though every word is genuinely on the page —
+ * empirically confirmed against a real generated table before writing
+ * `extractPdfText` below, not assumed. `extractPdfText` reconstructs the
+ * visible text by joining every text-showing operator's string operand in
+ * document order, so assertions check what a reader would actually see,
+ * independent of exactly where `autoTable` happened to wrap a line.
+ */
+function extractPdfText(raw: string): string {
+  const runs: string[] = [];
+  const unescape = (s: string) => s.replace(/\\([()\\])/g, '$1').replace(/\\n/g, ' ').replace(/\\r/g, '');
+  // Single show-text operator: (text) Tj
+  for (const m of raw.matchAll(/\(((?:\\.|[^\\()])*)\)\s*Tj/g)) runs.push(unescape(m[1]));
+  // Kerned/spaced show-text operator: [ (text) num (text) ... ] TJ
+  for (const m of raw.matchAll(/\[((?:\\.|[^\\[\]])*)\]\s*TJ/g)) {
+    for (const inner of m[1].matchAll(/\(((?:\\.|[^\\()])*)\)/g)) runs.push(unescape(inner[1]));
+  }
+  return runs.join(' ');
+}
+describe('ReportsPage — ACC-016 report-builder pure functions (unit)', () => {
+  it('buildBugReportRows maps every real Finding field for an unreviewed and a reviewed finding, inventing none', () => {
+    const rows = buildBugReportRows([FINDING_A, FINDING_B]);
+    expect(rows).toHaveLength(2);
+    const [rowA, rowB] = rows;
+
+    expect(rowA[0]).toBe(FINDING_A.id);
+    expect(rowA[1]).toBe(FINDING_A.title);
+    expect(rowA[2]).toBe(FINDING_A.severity);
+    expect(rowA[3]).toBe(FINDING_A.review_state);
+    expect(rowA[4]).toBe('55.0%');
+    expect(String(rowA[5])).toContain('2026'); // Created At — locale-formatted, real year
+    // FINDING_A was never promoted — honest '—', not a fabricated date/actor.
+    expect(rowA[6]).toBe('—');
+    expect(rowA[7]).toBe('—');
+
+    expect(rowB[0]).toBe(FINDING_B.id);
+    expect(rowB[3]).toBe('CONFIRMED');
+    expect(rowB[4]).toBe('40.0%');
+    // FINDING_B has a real promoted_at/promoted_by — both must appear, not '—'.
+    expect(String(rowB[6])).toContain('2026');
+    expect(rowB[7]).toBe(FINDING_B.promoted_by);
+  });
+
+  it('buildBugReportRows on a real, empty findings list produces zero rows, not a placeholder row', () => {
+    expect(buildBugReportRows([])).toEqual([]);
+  });
+
+  it('buildTestReportRows maps real DashboardResponse/KpisResponse fields, formatting a genuinely null KPI honestly', () => {
+    const dashboard: DashboardResponse = {
+      project_id: 'proj-a',
+      project_name: 'Project Alpha',
+      execution_counts: { COMPLETED: 4, FAILED: 1 },
+      task_counts: { PASSED: 20, FAILED: 3 },
+      pass_fail: { passed: 20, failed: 3 },
+      test_count: 23,
+      generated_at: '2026-08-20T00:00:00Z',
+    };
+    const kpis: KpisResponse = {
+      project_id: 'proj-a',
+      execution_reliability: 0.87,
+      execution_efficiency_ms: 1500,
+      execution_avg_run_duration_ms: null,
+      generated_at: '2026-08-20T00:00:00Z',
+    };
+    const rows = buildTestReportRows(dashboard, kpis);
+    expect(rows).toContainEqual(['Total Tests', 23]);
+    expect(rows).toContainEqual(['Passed', 20]);
+    expect(rows).toContainEqual(['Failed', 3]);
+    expect(rows).toContainEqual(['Execution Reliability', '87.0%']);
+    expect(rows).toContainEqual(['Avg. Task Duration', '1.5s']);
+    // execution_avg_run_duration_ms is genuinely null — never a fabricated 0/0ms.
+    expect(rows).toContainEqual(['Avg. Run Duration', '—']);
+  });
+
+  it('buildTestReportRows on a null dashboard (fetch not yet resolved) produces zero rows, not a fabricated zero-count table', () => {
+    expect(buildTestReportRows(null, null)).toEqual([]);
+  });
+
+  it('buildFinalAuditRows reconciles real totals and states the project-level scope honestly', () => {
+    const dashboard: DashboardResponse = {
+      project_id: 'proj-a',
+      project_name: 'Project Alpha',
+      execution_counts: { COMPLETED: 4, FAILED: 1 },
+      task_counts: { PASSED: 20, FAILED: 3 },
+      pass_fail: { passed: 20, failed: 3 },
+      test_count: 23,
+      generated_at: '2026-08-20T00:00:00Z',
+    };
+    const rows = buildFinalAuditRows([FINDING_A, FINDING_B], dashboard, 'Project Alpha');
+    expect(rows).toContainEqual(['Total Findings (Bug Report)', 2]);
+    expect(rows).toContainEqual(['Total Failed Tasks (Test Report)', 3]);
+    expect(rows).toContainEqual(['Total Runs (Test Report)', 5]);
+    expect(rows).toContainEqual(['Total Tasks (Test Report)', 23]);
+    expect(
+      rows.some(
+        (r) => String(r[0]) === 'Report Scope' && String(r[1]).includes('Project Alpha') && String(r[1]).includes('no "module" entity'),
+      ),
+    ).toBe(true);
+    expect(rows.some((r) => String(r[1]).includes('2 findings recorded against 3 failed tasks'))).toBe(true);
+  });
+
+  it('buildFinalAuditRows on null findings/dashboard reconciles to real zeros, not fabricated placeholders', () => {
+    const rows = buildFinalAuditRows(null, null, 'Empty Project');
+    expect(rows).toContainEqual(['Total Findings (Bug Report)', 0]);
+    expect(rows).toContainEqual(['Total Failed Tasks (Test Report)', 0]);
+    expect(rows).toContainEqual(['Total Runs (Test Report)', 0]);
+    expect(rows).toContainEqual(['Total Tasks (Test Report)', 0]);
+  });
+});
+
+describe('ReportsPage — ACC-016 real PDF/Excel report export', () => {
+  const DASHBOARD_NONEMPTY = {
+    project_id: PROJECT_A.id,
+    project_name: PROJECT_A.name,
+    execution_counts: { COMPLETED: 4, FAILED: 1 },
+    task_counts: { PASSED: 20, FAILED: 3 },
+    pass_fail: { passed: 20, failed: 3 },
+    test_count: 23,
+    generated_at: '2026-08-21T00:00:00Z',
+  };
+  const KPIS_NONEMPTY = {
+    project_id: PROJECT_A.id,
+    execution_reliability: 0.87,
+    execution_efficiency_ms: 1500,
+    execution_avg_run_duration_ms: 42000,
+    generated_at: '2026-08-21T00:00:00Z',
+  };
+  const DASHBOARD_EMPTY = {
+    project_id: PROJECT_A.id,
+    project_name: PROJECT_A.name,
+    execution_counts: {},
+    task_counts: {},
+    pass_fail: { passed: 0, failed: 0 },
+    test_count: 0,
+    generated_at: '2026-08-21T00:00:00Z',
+  };
+  const KPIS_EMPTY = {
+    project_id: PROJECT_A.id,
+    execution_reliability: null,
+    execution_efficiency_ms: null,
+    execution_avg_run_duration_ms: null,
+    generated_at: '2026-08-21T00:00:00Z',
+  };
+
+  function mockExportBackend(opts: {
+    findings: Finding[] | { status: number; body: unknown };
+    dashboard?: unknown | { status: number; body: unknown };
+    kpis?: unknown | { status: number; body: unknown };
+  }) {
+    const dashboard = opts.dashboard ?? DASHBOARD_NONEMPTY;
+    const kpis = opts.kpis ?? KPIS_NONEMPTY;
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      const u = String(url);
+      if (u.includes('/findings') && !u.includes('/analysis') && !u.includes('/review')) {
+        if (Array.isArray(opts.findings)) return jsonResponse(200, opts.findings);
+        return jsonResponse(opts.findings.status, opts.findings.body);
+      }
+      if (u.includes('/intelligence/tests')) return jsonResponse(200, []);
+      if (u.includes('/dashboard')) {
+        if (dashboard && typeof dashboard === 'object' && 'status' in (dashboard as Record<string, unknown>)) {
+          const d = dashboard as { status: number; body: unknown };
+          return jsonResponse(d.status, d.body);
+        }
+        return jsonResponse(200, dashboard);
+      }
+      if (u.includes('/kpis')) {
+        if (kpis && typeof kpis === 'object' && 'status' in (kpis as Record<string, unknown>)) {
+          const k = kpis as { status: number; body: unknown };
+          return jsonResponse(k.status, k.body);
+        }
+        return jsonResponse(200, kpis);
+      }
+      if (u.includes('/executions')) return jsonResponse(200, []);
+      return jsonResponse(200, [PROJECT_A]);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  beforeEach(() => {
+    // `jspdf` and `xlsx` are both mocked at module top level (see this
+    // file's own top-of-file doc comments) — only reset the capture
+    // arrays here.
+    capturedPdfDocs.length = 0;
+    pdfSaveCalls.length = 0;
+    xlsxWriteFileCalls.length = 0;
+  });
+
+  it('Export PDF and Export Excel stay disabled until a project is selected', async () => {
+    setApiKey(RAW_KEY);
+    mockExportBackend({ findings: [] });
+    renderApp();
+    await verifyKey();
+
+    await waitFor(() => expect(screen.getByText('Export PDF').closest('button')).toBeTruthy());
+    expect((screen.getByText('Export PDF').closest('button') as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByText('Export Excel').closest('button') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('Export PDF generates a real PDF containing a real finding title, real execution counts, and the real reconciliation', async () => {
+    setApiKey(RAW_KEY);
+    mockExportBackend({ findings: [FINDING_A, FINDING_B] });
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(screen.getByText(FINDING_A.title)).toBeTruthy());
+
+    await act(async () => {
+      screen.getByText('Export PDF').closest('button')!.click();
+    });
+
+    await waitFor(() => expect(pdfSaveCalls).toHaveLength(1));
+    expect(pdfSaveCalls[0][0]).toBe(`aiqa_report_${PROJECT_A.id}.pdf`);
+    expect(capturedPdfDocs).toHaveLength(1);
+    const raw = extractPdfText((capturedPdfDocs[0] as InstanceType<typeof jsPDF>).output());
+    // Real Bug Report content — an actual finding's real title.
+    expect(raw).toContain(FINDING_A.title);
+    // Real Test Report content — the real test_count from the mock backend.
+    expect(raw).toContain('23');
+    // Real Final Audit Report reconciliation, not a fabricated statement.
+    expect(raw).toContain('2 findings recorded against 3 failed tasks');
+  });
+
+  it('Export Excel generates a real workbook — Bug Report / Test Report / Final Audit Report sheets, each with real data', async () => {
+    setApiKey(RAW_KEY);
+    mockExportBackend({ findings: [FINDING_A, FINDING_B] });
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(screen.getByText(FINDING_A.title)).toBeTruthy());
+
+    await act(async () => {
+      screen.getByText('Export Excel').closest('button')!.click();
+    });
+
+    await waitFor(() => expect(xlsxWriteFileCalls).toHaveLength(1));
+    expect(xlsxWriteFileCalls[0][1]).toBe(`aiqa_report_${PROJECT_A.id}.xlsx`);
+    const wb = xlsxWriteFileCalls[0][0] as XLSX.WorkBook;
+    expect(wb.SheetNames).toEqual(['Bug Report', 'Test Report', 'Final Audit Report']);
+
+    const bugCsv = XLSX.utils.sheet_to_csv(wb.Sheets['Bug Report']);
+    expect(bugCsv).toContain(FINDING_A.title);
+    expect(bugCsv).toContain(FINDING_B.id);
+
+    const testCsv = XLSX.utils.sheet_to_csv(wb.Sheets['Test Report']);
+    expect(testCsv).toContain('23');
+    expect(testCsv).toContain('Failed');
+
+    const auditCsv = XLSX.utils.sheet_to_csv(wb.Sheets['Final Audit Report']);
+    expect(auditCsv).toContain('Report Scope');
+    expect(auditCsv).toContain(PROJECT_A.name);
+  });
+
+  it('an empty project (zero findings, zero execution data) produces an honest report in both formats — no fabricated placeholder rows', async () => {
+    setApiKey(RAW_KEY);
+    mockExportBackend({ findings: [], dashboard: DASHBOARD_EMPTY, kpis: KPIS_EMPTY });
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(screen.getByText('No findings recorded')).toBeTruthy());
+
+    await act(async () => {
+      screen.getByText('Export PDF').closest('button')!.click();
+    });
+    await waitFor(() => expect(pdfSaveCalls).toHaveLength(1));
+    const raw = extractPdfText((capturedPdfDocs[capturedPdfDocs.length - 1] as InstanceType<typeof jsPDF>).output());
+    // Bug Report: zero findings is a real empty list — the honest
+    // "no findings" message, never a fabricated placeholder row.
+    expect(raw).toContain('No findings recorded for this project.');
+    // Test Report: DASHBOARD_EMPTY is a real, *successful* response whose
+    // counts are genuinely zero — this is a different case from "no fetch
+    // result" (covered by buildTestReportRows's own null-dashboard unit
+    // test above) and correctly renders real zero rows, not a "no data"
+    // placeholder — asserting the real zero values, not a fabricated
+    // non-zero number, is what actually proves this case is handled
+    // honestly.
+    expect(raw).toContain('Total Tests 0');
+    expect(raw).toContain('Passed 0');
+    expect(raw).toContain('Failed 0');
+    // Real zero reconciliation, not a fabricated non-zero placeholder.
+    expect(raw).toContain('0 findings recorded against 0 failed tasks');
+    // Known previous-version fake strings must never appear here either.
+    expect(raw).not.toContain('DEF-881');
+
+    await act(async () => {
+      screen.getByText('Export Excel').closest('button')!.click();
+    });
+    await waitFor(() => expect(xlsxWriteFileCalls).toHaveLength(1));
+    const wb = xlsxWriteFileCalls[0][0] as XLSX.WorkBook;
+    expect(XLSX.utils.sheet_to_csv(wb.Sheets['Bug Report'])).toContain('No findings recorded for this project.');
+    const testCsv = XLSX.utils.sheet_to_csv(wb.Sheets['Test Report']);
+    expect(testCsv).toContain('Total Tests,0');
+    expect(testCsv).toContain('Passed,0');
+  });
+
+  it('a real failure fetching Test Report data at export time shows a real error, never a partial or fabricated report', async () => {
+    setApiKey(RAW_KEY);
+    mockExportBackend({
+      findings: [FINDING_A],
+      dashboard: { status: 500, body: envelope('INTERNAL_ERROR', 'boom') },
+    });
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(screen.getByText(FINDING_A.title)).toBeTruthy());
+
+    await act(async () => {
+      screen.getByText('Export PDF').closest('button')!.click();
+    });
+
+    await waitFor(() => expect(screen.getByText(/Could not build the report/)).toBeTruthy());
+    expect(pdfSaveCalls).toHaveLength(0);
   });
 });
