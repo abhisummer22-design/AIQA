@@ -48,6 +48,33 @@ fn inert_ai_router() -> Arc<AiInfrastructure> {
     ai_infra_with(Ok("{}"))
 }
 
+/// Phase 3 — two independently-scripted real providers, deterministically
+/// routed by the real capability-scoring mechanism
+/// (`ai_router.rs::score_model`): a model with `long_context: None` is
+/// disqualified from `AiTask::RequirementAnalysis` (which requires
+/// `LongContext`) but fully eligible for `AiTask::TestCaseGeneration`
+/// (which never requires it) — the same lever `custom_testing.rs`'s own
+/// unit tests use, applied here at the HTTP layer so a genuine end-to-end
+/// `REAL_AI` response (real analysis AND real cases, not the same fixed
+/// text satisfying both) can be observed on the wire.
+fn custom_testing_ai_infra_two_calls(analysis_response: &str, cases_response: &str) -> Arc<AiInfrastructure> {
+    let analysis_model = healthy_model("analysis-model", "analysis-only", CapabilityLevel::Basic);
+    let mut cases_model = healthy_model("cases-model", "cases-only", CapabilityLevel::Strong);
+    cases_model.capabilities.long_context = Some(CapabilityLevel::None);
+
+    let mut executors: std::collections::HashMap<&'static str, Arc<dyn AiExecutor>> = std::collections::HashMap::new();
+    executors.insert("analysis-only", Arc::new(FakeExecutor::ok(analysis_response)));
+    executors.insert("cases-only", Arc::new(FakeExecutor::ok(cases_response)));
+
+    Arc::new(AiInfrastructure::new(
+        vec![
+            Arc::new(FakeDiscovery(healthy_provider("analysis-only", vec![analysis_model]))),
+            Arc::new(FakeDiscovery(healthy_provider("cases-only", vec![cases_model]))),
+        ],
+        executors,
+    ))
+}
+
 async fn test_state() -> (AppState, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = Store::connect(&dir.path().join("api.sqlite3")).await.expect("connect");
@@ -59,6 +86,24 @@ async fn test_state() -> (AppState, tempfile::TempDir) {
         // documented default is "maestro") so a plan naming that executor
         // genuinely lands in PENDING_APPROVAL, exactly like the real
         // deployed policy gate — needed by the Execution-category test.
+        require_approval_for: ["maestro".to_string()].into_iter().collect(),
+        blocked_executors: HashSet::new(),
+    };
+    (AppState::new(Arc::new(registry), store, policy, evidence, inert_ai_router()), dir)
+}
+
+/// Phase 4 — same setup as `test_state()`, but with the real, unmodified
+/// `CompiledApiExecutor` registered under `"compiled-api"`, exactly like
+/// `main.rs`'s own real production registration — so an API Testing page
+/// integration test genuinely dispatches to the same executor a real
+/// deployment uses, not a double.
+async fn test_state_with_compiled_api() -> (AppState, tempfile::TempDir) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = Store::connect(&dir.path().join("api.sqlite3")).await.expect("connect");
+    let evidence = LocalEvidenceStore::new(dir.path().join("evidence")).expect("evidence store");
+    let registry = ExecutorRegistry::new(Arc::new(SimulatedExecutor)).register("compiled-api", Arc::new(crate::executor::CompiledApiExecutor::from_env()));
+    let policy = PolicyConfig {
+        max_concurrency: 8,
         require_approval_for: ["maestro".to_string()].into_iter().collect(),
         blocked_executors: HashSet::new(),
     };
@@ -2482,6 +2527,138 @@ async fn aud005_handoff_run_is_a_real_execution_hub_run() {
     );
 }
 
+// ============================================================ Execution Handoff — real executor routing
+//
+// Note on naming: this codebase's own pre-existing section marker below
+// ("Phase 2 — AI generation") uses "Phase 2" for an earlier, unrelated unit
+// of work already in this file before this session. The tests in this
+// section are from a *different* "Phase 2" (this session's own execution-
+// handoff task) — deliberately not labeled "Phase 2" here too, to avoid
+// implying they're the same phase as the section immediately below.
+
+/// Test-only marker executor (legitimate per this repo's own fake/stub
+/// audit rules — a controlled test fixture, never reachable from production
+/// code). Its entire purpose is to return a fixed, distinctive outcome that
+/// could not be confused with `SimulatedExecutor`'s own default (`Passed`,
+/// no reason) — proof that a specific value of `TestCaseHandoffRequest
+/// .executor`, sent as real JSON over the real HTTP handoff endpoint,
+/// genuinely determines which registered `Executor` impl actually runs,
+/// not merely that *a* run gets created. Mirrors the exact pattern already
+/// used for this purpose in `engine_tests.rs` (`EvidenceProducingExecutor`,
+/// `HangingExecutor`), applied here to the HTTP handoff endpoint
+/// specifically, which no existing test exercised with a real (non-
+/// "simulate") executor field.
+struct MarkerExecutor;
+
+#[async_trait::async_trait]
+impl crate::executor::Executor for MarkerExecutor {
+    async fn execute(&self, _task: &crate::domain::TaskDef) -> crate::executor::ExecutionOutcome {
+        crate::executor::ExecutionOutcome {
+            status: crate::domain::TaskStatus::Failed,
+            reason: Some("phase2-marker-executor-actually-ran".to_string()),
+            evidence: Some("marker executor evidence — proves this specific executor, not SimulatedExecutor, produced this outcome".to_string()),
+        }
+    }
+}
+
+fn test_state_with_marker_executor() -> impl std::future::Future<Output = (AppState, tempfile::TempDir)> {
+    async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Store::connect(&dir.path().join("api.sqlite3")).await.expect("connect");
+        let evidence = LocalEvidenceStore::new(dir.path().join("evidence")).expect("evidence store");
+        let registry = ExecutorRegistry::new(Arc::new(SimulatedExecutor)).register("marker", Arc::new(MarkerExecutor));
+        let policy = PolicyConfig { max_concurrency: 8, require_approval_for: ["maestro".to_string()].into_iter().collect(), blocked_executors: HashSet::new() };
+        (AppState::new(Arc::new(registry), store, policy, evidence, inert_ai_router()), dir)
+    }
+}
+
+/// The core Phase 2 backend proof: `POST .../handoff` with a real
+/// `executor` field (no `simulate`) dispatches to *that specific* real,
+/// registered `Executor` — not always `SimulatedExecutor`'s default `Pass`.
+/// If this test used `test_state()` (every other test in this file, and
+/// every test in `engine_tests.rs`) it would prove nothing here: that
+/// harness registers no executor other than `SimulatedExecutor`, so any
+/// `executor` name — real or not — silently falls back to it (see the next
+/// test, which documents that exact fallback deliberately). This is why a
+/// dedicated `MarkerExecutor` registered under a real key is used instead.
+#[tokio::test]
+async fn phase2_handoff_with_a_real_executor_field_dispatches_to_that_specific_registered_executor() {
+    let (state, _dir) = test_state_with_marker_executor().await;
+    let project = make_project(&state, "Phase 2 Real Executor Routing").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (_, created) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&owner), Some(sample_test_case_body("Routed to marker executor")))).await;
+    let id = created["id"].as_str().unwrap().to_string();
+    send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/validate"), Some(&owner), None)).await;
+    send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/approve"), Some(&owner), None)).await;
+
+    // Real JSON body, exactly what `GeneratedTestCasesView.tsx`'s new
+    // "Executor" dropdown sends for a real choice — `executor` only, no
+    // `simulate`, no `params` (see `HandoffChoice`'s own doc comment for
+    // why no params: no per-case params UI exists anywhere in this app).
+    let (status, handoff) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/handoff"), Some(&owner), Some(serde_json::json!({"executor": "marker"})))).await;
+    assert_eq!(status, StatusCode::CREATED, "body={handoff}");
+    let run_id = handoff["run_id"].as_str().expect("run_id").to_string();
+
+    // A single always-Failed task resolves the run itself to FAILED (see
+    // `be12b_mixed_terminal_states_all_counted_rejected_naturally_excluded`
+    // for the same real state-machine fact with a different executor).
+    let final_run = poll_run_state(&state, project, &run_id, &owner, "FAILED").await;
+    // SimulatedExecutor would report 0 failed (its own default is Pass).
+    // `MarkerExecutor` always reports Failed — this specific, distinctive
+    // outcome is only reachable if the real `executor: "marker"` field
+    // really was threaded from the HTTP body through `TaskDef.executor`
+    // through `ExecutorRegistry::resolve` to this exact executor.
+    assert_eq!(final_run["failed"], 1, "the marker executor's distinctive FAILED outcome must appear; final_run={final_run}");
+
+    let (status, run_detail) = send(&state, req("GET", &format!("/api/v1/projects/{project}/executions/{run_id}"), Some(&owner), None)).await;
+    assert_eq!(status, StatusCode::OK, "body={run_detail}");
+    let tasks = run_detail["tasks"].as_array().expect("tasks");
+    let task = tasks.iter().find(|t| t["id"] == id).expect("the handed-off task must exist in the real run");
+    assert_eq!(task["status"], "FAILED", "task={task}");
+    assert_eq!(task["reason"], "phase2-marker-executor-actually-ran", "task={task}");
+}
+
+/// Phase 2.1 (brief §13) fix, superseding the Phase 2-era finding this test
+/// used to document (`ExecutorRegistry::resolve` used to have no allowlist
+/// and silently substituted `SimulatedExecutor` for any unrecognized
+/// `executor` name — see `executor.rs::ExecutorRegistry::resolve`'s own doc
+/// comment for the full before/after). The endpoint itself still accepts
+/// any string (validating executor names against the registry at the HTTP
+/// layer would require this handler to know the registry's live contents,
+/// which it deliberately does not — the real rejection now happens one
+/// layer down, in the engine, at real dispatch time), but the run this
+/// produces must now genuinely fail with a real, honest reason — never a
+/// silently-simulated `PASSED`.
+#[tokio::test]
+async fn phase2_1_handoff_with_an_unregistered_executor_name_is_a_real_honest_infra_error_not_a_silent_simulate() {
+    let (state, _dir) = test_state().await; // only SimulatedExecutor is registered here
+    let project = make_project(&state, "Phase 2.1 Unregistered Executor Safety").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (_, created) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&owner), Some(sample_test_case_body("Unregistered executor name")))).await;
+    let id = created["id"].as_str().unwrap().to_string();
+    send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/validate"), Some(&owner), None)).await;
+    send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/approve"), Some(&owner), None)).await;
+
+    let (status, handoff) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/handoff"), Some(&owner), Some(serde_json::json!({"executor": "totally-unregistered-tool"})))).await;
+    assert_eq!(status, StatusCode::CREATED, "body={handoff}");
+    let run_id = handoff["run_id"].as_str().expect("run_id").to_string();
+
+    // A single always-InfraError task resolves the run itself to PARTIAL
+    // (the existing, real, pre-existing state-machine rule for a real
+    // infrastructure failure — see `be12b_mixed_terminal_states_...`).
+    let final_run = poll_run_state(&state, project, &run_id, &owner, "PARTIAL").await;
+    assert_eq!(final_run["infra_error"], 1, "an unrecognized executor name must be a real, honest infra error, never a silently-simulated PASSED; final_run={final_run}");
+    assert_eq!(final_run["passed"], 0, "final_run={final_run}");
+
+    let (status, run_detail) = send(&state, req("GET", &format!("/api/v1/projects/{project}/executions/{run_id}"), Some(&owner), None)).await;
+    assert_eq!(status, StatusCode::OK, "body={run_detail}");
+    let task = run_detail["tasks"].as_array().unwrap().iter().find(|t| t["id"] == id).expect("task must exist");
+    assert_eq!(task["status"], "INFRA_ERROR", "task={task}");
+    assert!(task["reason"].as_str().unwrap().contains("NO_COMPATIBLE_EXECUTOR"), "task={task}");
+}
+
 // ============================================================ Phase 2 — AI generation
 
 fn valid_ai_response() -> &'static str {
@@ -2678,6 +2855,448 @@ async fn phase2_ai_generated_draft_can_be_saved_via_existing_test_case_persisten
     assert_eq!(status, StatusCode::CREATED, "an AI-generated draft must be persistable via the existing real test-case store; body={saved}");
     assert_eq!(saved["status"], "GENERATED");
 }
+
+// ============================================================ Phase 3 — Custom Testing
+
+fn valid_custom_testing_analysis_response() -> &'static str {
+    r#"{"objective":"Verify login lockout after repeated invalid attempts","normalized_scope":"Authentication",
+        "recommended_skills":["Security Testing","Edge Case Analysis"],"recommended_testing_types":["Negative","Security"],
+        "risk_areas":["Account takeover via brute force"],"assumptions":["Lockout threshold is a fixed number of attempts"],
+        "prerequisites":["A valid test account"],"limitations":["Exact lockout threshold not stated in the requirement"],
+        "generation_approach":"Deterministic negative-path scenarios around repeated invalid attempts","diagnostics":[]}"#
+}
+
+fn valid_custom_testing_cases_response() -> &'static str {
+    r#"{"test_cases":[{"title":"Lockout after 5 invalid attempts","category":"Security","skill_id":"skill-security-testing",
+        "preconditions":[],"steps":[{"action":"Submit 5 invalid passwords in a row","expected_result":"Account is locked"}],
+        "expected_result":"Account is locked","priority":"HIGH","severity":"MAJOR",
+        "evidence":"evidenced","source_reference":"repeated invalid password attempts"}]}"#
+}
+
+#[tokio::test]
+async fn phase3_custom_testing_returns_real_analysis_and_real_cases_on_success() {
+    let (state, _dir) =
+        test_state_with_ai_router(custom_testing_ai_infra_two_calls(valid_custom_testing_analysis_response(), valid_custom_testing_cases_response())).await;
+    let project = make_project(&state, "Phase3 Custom Testing Success").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/custom-testing/generate"),
+            Some(&owner),
+            Some(serde_json::json!({
+                "requirement_text": "Test login lockout after repeated invalid password attempts.",
+                "scope": "Authentication",
+                "skills": [{"id": "skill-security-testing", "name": "Security Testing", "description": ""}]
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["generation_source"], "REAL_AI", "body={body}");
+    assert_eq!(body["provider"], "cases-only", "the reported provider must be whichever real call produced the persisted cases; body={body}");
+    assert_eq!(body["model"], "cases-model", "body={body}");
+    assert!(body["failure_reason"].is_null(), "body={body}");
+
+    let analysis = &body["analysis"];
+    assert_eq!(analysis["objective"], "Verify login lockout after repeated invalid attempts", "body={body}");
+    assert_eq!(analysis["normalized_scope"], "Authentication", "body={body}");
+    assert!(analysis["recommended_skills"].as_array().unwrap().iter().any(|s| s == "Security Testing"), "body={body}");
+
+    let cases = body["test_cases"].as_array().unwrap();
+    assert_eq!(cases.len(), 1, "body={body}");
+    assert_eq!(cases[0]["title"], "Lockout after 5 invalid attempts");
+}
+
+/// The core truthfulness requirement, mirrored from Phase 1/2's own
+/// `generate-ai` tests: a real provider failure must be reported as
+/// `generation_source: "UNAVAILABLE"` with a real reason — never fabricated
+/// `REAL_AI` output, and never an opaque 500.
+#[tokio::test]
+async fn phase3_custom_testing_reports_truthful_unavailable_on_provider_failure() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Err(crate::ai_router::ExecutionError::Timeout))).await;
+    let project = make_project(&state, "Phase3 Custom Testing Failure").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/custom-testing/generate"),
+            Some(&owner),
+            Some(serde_json::json!({"requirement_text": "Test login lockout.", "skills": []})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "a real, honest unavailable report is not an HTTP error; body={body}");
+    assert_eq!(body["generation_source"], "UNAVAILABLE", "body={body}");
+    assert!(body["analysis"].is_null(), "no real provider was reachable at all, so no real analysis could have been produced; body={body}");
+    assert!(body["test_cases"].as_array().unwrap().is_empty(), "body={body}");
+    assert!(body["provider"].is_null(), "body={body}");
+    let reason = body["failure_reason"].as_str().expect("a real reason must be present");
+    assert!(reason.contains("TIMEOUT"), "reason must be the real, specific failure, not generic; reason={reason}");
+}
+
+/// A genuinely-produced analysis must survive even when the *subsequent*
+/// case-generation call fails — proven at the HTTP layer with a single
+/// provider whose fixed response satisfies the analysis schema but not the
+/// (different) test-case schema.
+#[tokio::test]
+async fn phase3_custom_testing_preserves_a_real_analysis_when_case_generation_subsequently_fails() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_custom_testing_analysis_response()))).await;
+    let project = make_project(&state, "Phase3 Custom Testing Partial").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/custom-testing/generate"),
+            Some(&owner),
+            Some(serde_json::json!({"requirement_text": "Test login lockout.", "skills": []})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["generation_source"], "UNAVAILABLE", "body={body}");
+    assert!(body["test_cases"].as_array().unwrap().is_empty(), "body={body}");
+    assert_eq!(body["analysis"]["objective"], "Verify login lockout after repeated invalid attempts", "a real, successfully-produced analysis must not be discarded; body={body}");
+    assert!(body["failure_reason"].as_str().unwrap().contains("invalid structured output"), "body={body}");
+}
+
+#[tokio::test]
+async fn phase3_custom_testing_rejects_empty_requirement_text() {
+    let (state, _dir) = test_state_with_ai_router(inert_ai_router()).await;
+    let project = make_project(&state, "Phase3 Custom Testing Empty Input").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/custom-testing/generate"),
+            Some(&owner),
+            Some(serde_json::json!({"requirement_text": "   ", "skills": []})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+}
+
+#[tokio::test]
+async fn phase3_custom_testing_rbac_viewer_forbidden_operator_allowed() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_custom_testing_analysis_response()))).await;
+    let project = make_project(&state, "Phase3 Custom Testing RBAC").await;
+    let viewer = mint_key(&state, "viewer", Some(&project.to_string())).await;
+    let operator = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let request_body = serde_json::json!({"requirement_text": "Test login lockout.", "skills": []});
+
+    let (status, body) = send(
+        &state,
+        req("POST", &format!("/api/v1/projects/{project}/custom-testing/generate"), Some(&viewer), Some(request_body.clone())),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+
+    let (status, body) =
+        send(&state, req("POST", &format!("/api/v1/projects/{project}/custom-testing/generate"), Some(&operator), Some(request_body))).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+}
+
+#[tokio::test]
+async fn phase3_custom_testing_project_isolation_enforced() {
+    let (state, _dir) = test_state_with_ai_router(inert_ai_router()).await;
+    let project_a = make_project(&state, "Phase3 Custom Testing Isolation A").await;
+    let project_b = make_project(&state, "Phase3 Custom Testing Isolation B").await;
+    let owner_b = mint_key(&state, "operator", Some(&project_b.to_string())).await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_a}/custom-testing/generate"),
+            Some(&owner_b),
+            Some(serde_json::json!({"requirement_text": "Anything.", "skills": []})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+    assert_eq!(body["error"]["code"], "FORBIDDEN");
+}
+
+/// End-to-end proof that a Custom-Testing-generated draft integrates with
+/// the existing AUD-005 persistence path with zero new backend code: the
+/// same `POST .../test-cases` used by Phase 1's drafts, with this
+/// requirement's own real, honest traceability (`requirement_reference`,
+/// `traceability`) — both pre-existing, generic fields, not new columns
+/// invented for this phase.
+#[tokio::test]
+async fn phase3_custom_testing_generated_draft_can_be_saved_via_existing_test_case_persistence_with_real_traceability() {
+    let (state, _dir) =
+        test_state_with_ai_router(custom_testing_ai_infra_two_calls(valid_custom_testing_analysis_response(), valid_custom_testing_cases_response())).await;
+    let project = make_project(&state, "Phase3 Custom Testing Save").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (_, gen_body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/custom-testing/generate"),
+            Some(&owner),
+            Some(serde_json::json!({
+                "requirement_text": "Test login lockout after repeated invalid password attempts.",
+                "scope": "Authentication",
+                "skills": []
+            })),
+        ),
+    )
+    .await;
+    let draft = &gen_body["test_cases"][0];
+
+    let (status, saved) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(&owner),
+            Some(serde_json::json!({
+                "title": draft["title"],
+                "description": draft["expected_result"],
+                "category": draft["category"],
+                "priority": draft["priority"],
+                "severity": draft["severity"],
+                "preconditions": draft["preconditions"],
+                "steps": [{"step_number": 1, "action": draft["steps"][0]["action"], "expected_result": draft["steps"][0]["expected_result"]}],
+                "expected_result": draft["expected_result"],
+                "requirement_reference": "Custom Testing: Test login lockout after repeated invalid password attempts.",
+                "traceability": {
+                    "source": "custom_testing",
+                    "scope": "Authentication",
+                    "custom_requirement": "Test login lockout after repeated invalid password attempts.",
+                    "analysis_objective": gen_body["analysis"]["objective"],
+                },
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "a Custom-Testing-generated draft must be persistable via the existing real test-case store; body={saved}");
+    assert_eq!(saved["status"], "GENERATED");
+    assert_eq!(saved["requirement_reference"], "Custom Testing: Test login lockout after repeated invalid password attempts.", "body={saved}");
+    assert_eq!(saved["traceability"]["source"], "custom_testing", "body={saved}");
+    assert_eq!(saved["traceability"]["scope"], "Authentication", "body={saved}");
+
+    // Once persisted, this is an ordinary TestCaseRow — the existing
+    // validate/approve/handoff/compile pipeline applies with zero new code,
+    // proven by exercising the very next real lifecycle step for real.
+    let id = saved["id"].as_str().unwrap();
+    let (status, validated) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/validate"), Some(&owner), None)).await;
+    assert_eq!(status, StatusCode::OK, "body={validated}");
+    assert_eq!(validated["status"], "VALIDATED", "body={validated}");
+}
+
+// ============================================================ Phase 4 — API Testing
+
+/// The orchestrator's own real, always-reachable `/health` endpoint — the
+/// exact same "no separate product-under-test in this dev environment"
+/// convention `PytestExecutor`/`SchemathesisExecutor`/`execution_plan::
+/// DEFAULT_TARGET` already established, reused here rather than reaching
+/// out to any third-party service from a test.
+const HEALTH_URL: &str = "http://127.0.0.1:8080/health";
+
+#[tokio::test]
+async fn phase4_api_test_executes_a_real_request_and_passes_a_real_status_assertion() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Phase4 API Testing Success").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/api-testing/execute"),
+            Some(&owner),
+            Some(serde_json::json!({
+                "method": "GET",
+                "url": HEALTH_URL,
+                "assertions": [{"type": "ASSERT_STATUS", "status": 200}]
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["task_status"], "PASSED", "a real, matching status assertion must genuinely pass; body={body}");
+    assert!(body["run_id"].is_string());
+    assert!(body["finished_at"].is_string(), "body={body}");
+    let result = &body["result"];
+    assert_eq!(result["status"], 200, "body={body}");
+    assert!(result["request_duration_ms"].as_u64().is_some(), "a real, measured latency must be present; body={body}");
+    let assertions = result["assertions"].as_array().unwrap();
+    assert_eq!(assertions.len(), 1);
+    assert_eq!(assertions[0]["passed"], true, "body={body}");
+    assert_eq!(body["response_body_preview"], "ok", "the real /health response body must be captured verbatim; body={body}");
+}
+
+/// The core truthfulness requirement: an assertion that genuinely does not
+/// match the real response must report FAILED — never a fabricated PASS.
+#[tokio::test]
+async fn phase4_api_test_assertion_mismatch_genuinely_fails_not_a_fake_pass() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Phase4 API Testing Assertion Fail").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/api-testing/execute"),
+            Some(&owner),
+            Some(serde_json::json!({
+                "method": "GET",
+                "url": HEALTH_URL,
+                "assertions": [{"type": "ASSERT_STATUS", "status": 404}]
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "a real, honest FAILED result is not itself an HTTP error; body={body}");
+    assert_eq!(body["task_status"], "FAILED", "body={body}");
+    let assertions = body["result"]["assertions"].as_array().unwrap();
+    assert_eq!(assertions[0]["passed"], false, "body={body}");
+    assert_eq!(assertions[0]["actual"], "200 OK", "the real observed status (reqwest's own Display, incl. reason phrase) must be reported, not the expected one; body={body}");
+}
+
+#[tokio::test]
+async fn phase4_api_test_rejects_an_invalid_url_before_any_execution() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Phase4 API Testing Invalid URL").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, body) = send(
+        &state,
+        req("POST", &format!("/api/v1/projects/{project}/api-testing/execute"), Some(&owner), Some(serde_json::json!({"method": "GET", "url": "not a url"}))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+    assert!(body["error"]["message"].as_str().unwrap().starts_with("INVALID_URL"), "body={body}");
+}
+
+#[tokio::test]
+async fn phase4_api_test_rejects_an_unsupported_http_method() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Phase4 API Testing Bad Method").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, body) = send(
+        &state,
+        req("POST", &format!("/api/v1/projects/{project}/api-testing/execute"), Some(&owner), Some(serde_json::json!({"method": "TRACE", "url": HEALTH_URL}))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert!(body["error"]["message"].as_str().unwrap().starts_with("UNSUPPORTED_HTTP_METHOD"), "body={body}");
+}
+
+/// Reuses the exact, pre-existing, real SSRF guard (`execution_plan::
+/// validate_plan` -> `executor::validate_target_url`) — the same one
+/// Phase 2.1 already proved rejects the real cloud-metadata address — not
+/// a second, weaker check invented for this page.
+#[tokio::test]
+async fn phase4_api_test_rejects_a_disallowed_ssrf_target_via_the_existing_real_guard() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Phase4 API Testing SSRF").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/api-testing/execute"),
+            Some(&owner),
+            Some(serde_json::json!({"method": "GET", "url": "http://169.254.169.254/latest/meta-data/"})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert!(body["error"]["message"].as_str().unwrap().starts_with("TARGET_NOT_ALLOWED"), "body={body}");
+    assert!(body["error"]["message"].as_str().unwrap().contains("disallowed"), "body={body}");
+}
+
+#[tokio::test]
+async fn phase4_api_test_query_parameters_and_headers_genuinely_reach_the_real_request() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Phase4 API Testing Query/Headers").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    // /health ignores query params/headers, but a real request that
+    // includes them must still genuinely succeed (proving they reached a
+    // real reqwest call without breaking it) — the plan-construction
+    // level already proves the values themselves propagate correctly
+    // (api_testing::tests), so this proves the *live* request tolerates
+    // and sends them for real.
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/api-testing/execute"),
+            Some(&owner),
+            Some(serde_json::json!({
+                "method": "GET",
+                "url": HEALTH_URL,
+                "query_params": [["debug", "true"]],
+                "headers": {"X-Test-Header": "real-value"},
+                "assertions": [{"type": "ASSERT_STATUS", "status": 200}]
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["task_status"], "PASSED", "body={body}");
+}
+
+#[tokio::test]
+async fn phase4_api_test_rbac_viewer_forbidden_operator_allowed() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Phase4 API Testing RBAC").await;
+    let viewer = mint_key(&state, "viewer", Some(&project.to_string())).await;
+    let operator = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let request_body = serde_json::json!({"method": "GET", "url": HEALTH_URL});
+
+    let (status, body) = send(&state, req("POST", &format!("/api/v1/projects/{project}/api-testing/execute"), Some(&viewer), Some(request_body.clone()))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+
+    let (status, body) = send(&state, req("POST", &format!("/api/v1/projects/{project}/api-testing/execute"), Some(&operator), Some(request_body))).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+}
+
+#[tokio::test]
+async fn phase4_api_test_project_isolation_enforced() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project_a = make_project(&state, "Phase4 API Testing Isolation A").await;
+    let project_b = make_project(&state, "Phase4 API Testing Isolation B").await;
+    let owner_b = mint_key(&state, "operator", Some(&project_b.to_string())).await;
+
+    let (status, body) = send(
+        &state,
+        req("POST", &format!("/api/v1/projects/{project_a}/api-testing/execute"), Some(&owner_b), Some(serde_json::json!({"method": "GET", "url": HEALTH_URL}))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+    assert_eq!(body["error"]["code"], "FORBIDDEN");
+}
+
+// Note: a dedicated "real connection failure -> INFRA_ERROR" integration
+// test was deliberately not added here — the pre-existing, unmodified SSRF
+// guard (`validate_target_url_rejects_loopback_on_a_non_orchestrator_port`,
+// `execution_plan.rs`) rejects every loopback target except the
+// orchestrator's own :8080, so this harness has no real, allowed-but-
+// genuinely-unreachable target to construct one against honestly. Real
+// connection-failure classification (`classify_reqwest_error`) is unit-
+// tested directly in `executor.rs` and live-verified in the Phase 4 report
+// §38 against a real, external, closed port.
 
 // ============================= Build order item 4 — AI-assisted BugAnalysis
 

@@ -35,6 +35,20 @@ import {
 } from '../../types';
 import { TraceabilityGraph } from './TraceabilityGraph';
 import { TEST_CATEGORIES } from './GenerationConfigSection';
+import { EXECUTOR_OPTIONS, SIMULATE_OUTCOMES } from '../pages/ExecutionHubPage';
+import type { HandoffChoice } from '../pages/TestCaseGeneratorPage';
+import type { CompilationOutcome } from '../../types/contract';
+
+/** Phase 2.1 — the one non-real-executor addition to the handoff dropdown:
+ *  compiles this specific case's own actual content into a structured plan
+ *  instead of running a fixed reference fixture. Kept out of
+ *  `EXECUTOR_OPTIONS` itself (that list is shared with the Execution Hub's
+ *  manual, no-test-case task creation, which has nothing to compile). */
+const COMPILE_OPTION_VALUE = '__compile__';
+const HANDOFF_OPTIONS = [
+  { value: COMPILE_OPTION_VALUE, label: 'Compile & Execute (real, from this case’s own content)' },
+  ...EXECUTOR_OPTIONS,
+];
 
 interface GeneratedTestCasesViewProps {
   testCases: GeneratedTestCase[];
@@ -57,8 +71,25 @@ interface GeneratedTestCasesViewProps {
   casesLoading?: boolean;
   casesError?: string | null;
   onValidateTestCase?: (id: string) => void;
-  onHandoffTestCase?: (id: string, outcome: 'pass' | 'fail' | 'timeout' | 'infra_error') => void;
+  /** Phase 2 — `choice` is either a real executor (`{ mode: 'executor',
+   *  executor }`, dispatched via `TestCaseHandoffRequest.executor` with no
+   *  params, exactly like the Execution Hub's own manually-created tasks —
+   *  no per-case params UI exists anywhere in this app, and none is
+   *  invented here) or an explicit simulated outcome (`{ mode: 'simulate',
+   *  outcome }`, unchanged from before this phase). See
+   *  `TestCaseGeneratorPage.tsx::handleHandoffReal`. */
+  onHandoffTestCase?: (id: string, choice: HandoffChoice) => void;
   handoffError?: string | null;
+  /** Phase 2.1 — read-only compile preview (`POST .../compile`, never
+   *  mutates anything). `compilePreviewForId` disambiguates which test
+   *  case `compilePreview`/`compilePreviewLoading`/`compilePreviewError`
+   *  actually belong to, since the parent owns this as single shared
+   *  state, not per-row state. */
+  onCompilePreview?: (id: string) => void;
+  compilePreview?: CompilationOutcome | null;
+  compilePreviewLoading?: boolean;
+  compilePreviewForId?: string | null;
+  compilePreviewError?: string | null;
 }
 
 export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
@@ -78,8 +109,16 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
   onValidateTestCase,
   onHandoffTestCase,
   handoffError = null,
+  onCompilePreview,
+  compilePreview = null,
+  compilePreviewLoading = false,
+  compilePreviewForId = null,
+  compilePreviewError = null,
 }) => {
   const [handoffOutcome, setHandoffOutcome] = useState<'pass' | 'fail' | 'timeout' | 'infra_error'>('pass');
+  // Phase 2 — '' means Simulate (matches `EXECUTOR_OPTIONS`'s own '' entry),
+  // any other value is a real, registered executor name.
+  const [handoffExecutor, setHandoffExecutor] = useState<string>('');
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
   const [selectedTestCaseId, setSelectedTestCaseId] = useState<string | null>(
     testCases.length > 0 ? testCases[0].id : null
@@ -987,31 +1026,135 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                       )}
 
                       {activeTestCase.status === 'APPROVED' && (
-                        <div className="flex items-center gap-2">
-                          <label className="text-[10px] font-mono text-slate-400" htmlFor="handoff-outcome-select">
-                            Simulated outcome
-                          </label>
-                          <select
-                            id="handoff-outcome-select"
-                            value={handoffOutcome}
-                            onChange={(e) => setHandoffOutcome(e.target.value as typeof handoffOutcome)}
-                            className="px-2 py-1.5 rounded bg-[#020617] border border-slate-700 text-xs font-mono text-slate-200 cursor-pointer"
-                          >
-                            <option value="pass">pass</option>
-                            <option value="fail">fail</option>
-                            <option value="timeout">timeout</option>
-                            <option value="infra_error">infra_error</option>
-                          </select>
-                          <button
-                            type="button"
-                            id="btn-handoff-test-case"
-                            onClick={() => onHandoffTestCase?.(activeTestCase.id, handoffOutcome)}
-                            title="No real automation script exists yet for a generated case — this dispatches through the real Execution Hub with the simulated outcome selected above."
-                            className="flex items-center gap-1.5 px-5 py-2 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white font-mono text-xs font-bold cursor-pointer transition-colors shadow-md"
-                          >
-                            <Play className="w-4 h-4 fill-current" />
-                            <span>Hand Off to Execution</span>
-                          </button>
+                        <div className="flex flex-col items-end gap-2">
+                          <div className="flex items-center gap-2">
+                            <label className="text-[10px] font-mono text-slate-400" htmlFor="handoff-executor-select">
+                              Executor
+                            </label>
+                            <select
+                              id="handoff-executor-select"
+                              value={handoffExecutor}
+                              onChange={(e) => setHandoffExecutor(e.target.value)}
+                              className="px-2 py-1.5 rounded bg-[#020617] border border-slate-700 text-xs font-mono text-slate-200 cursor-pointer"
+                            >
+                              {HANDOFF_OPTIONS.map((o) => (
+                                <option key={o.value} value={o.value}>
+                                  {o.label}
+                                </option>
+                              ))}
+                            </select>
+                            {handoffExecutor === COMPILE_OPTION_VALUE && (
+                              <button
+                                type="button"
+                                id="btn-preview-compilation"
+                                onClick={() => onCompilePreview?.(activeTestCase.id)}
+                                disabled={compilePreviewLoading}
+                                className="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-200 font-mono text-[11px] font-bold cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                              >
+                                {compilePreviewLoading && compilePreviewForId === activeTestCase.id ? 'Compiling…' : 'Preview Compilation'}
+                              </button>
+                            )}
+                            {handoffExecutor === '' && (
+                              <>
+                                <label className="text-[10px] font-mono text-slate-400" htmlFor="handoff-outcome-select">
+                                  Simulated outcome
+                                </label>
+                                <select
+                                  id="handoff-outcome-select"
+                                  value={handoffOutcome}
+                                  onChange={(e) => setHandoffOutcome(e.target.value as typeof handoffOutcome)}
+                                  className="px-2 py-1.5 rounded bg-[#020617] border border-slate-700 text-xs font-mono text-slate-200 cursor-pointer"
+                                >
+                                  {SIMULATE_OUTCOMES.map((o) => (
+                                    <option key={o.value} value={o.value}>
+                                      {o.label}
+                                    </option>
+                                  ))}
+                                </select>
+                              </>
+                            )}
+                            {(() => {
+                              const isCompileMode = handoffExecutor === COMPILE_OPTION_VALUE;
+                              const previewIsForThisCase = compilePreviewForId === activeTestCase.id;
+                              const isReady = isCompileMode && previewIsForThisCase && compilePreview?.status === 'READY';
+                              const compileBlocked = isCompileMode && !isReady;
+                              return (
+                                <button
+                                  type="button"
+                                  id="btn-handoff-test-case"
+                                  disabled={compileBlocked}
+                                  onClick={() =>
+                                    onHandoffTestCase?.(
+                                      activeTestCase.id,
+                                      handoffExecutor === ''
+                                        ? { mode: 'simulate', outcome: handoffOutcome }
+                                        : isCompileMode
+                                          ? { mode: 'compile' }
+                                          : { mode: 'executor', executor: handoffExecutor },
+                                    )
+                                  }
+                                  title={
+                                    handoffExecutor === ''
+                                      ? 'Dispatches through the real Execution Hub with the explicit simulated outcome selected above — no real automation runs.'
+                                      : isCompileMode
+                                        ? isReady
+                                          ? 'Runs the real compiled plan (this case’s own actual content) through a compatible real executor.'
+                                          : 'Run "Preview Compilation" first — this case must compile to READY before it can actually execute.'
+                                        : `Dispatches a real ${handoffExecutor} run through the real Execution Hub — its own default reference check, not a bespoke script for this case's specific steps.`
+                                  }
+                                  className="flex items-center gap-1.5 px-5 py-2 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white font-mono text-xs font-bold cursor-pointer transition-colors shadow-md disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-indigo-600"
+                                >
+                                  <Play className="w-4 h-4 fill-current" />
+                                  <span>Hand Off to Execution</span>
+                                </button>
+                              );
+                            })()}
+                          </div>
+                          {handoffExecutor === COMPILE_OPTION_VALUE && compilePreviewForId === activeTestCase.id && (
+                            <div id="compile-preview-panel" className="max-w-md text-right">
+                              {compilePreviewLoading ? (
+                                <p className="text-[10px] font-mono text-slate-400">Compiling this case's own content into a real execution plan…</p>
+                              ) : compilePreviewError ? (
+                                <p className="text-[10px] font-mono text-rose-300/90">Compilation preview failed: {compilePreviewError}</p>
+                              ) : compilePreview?.status === 'READY' ? (
+                                <div className="text-[10px] font-mono text-emerald-300/90 space-y-0.5">
+                                  <p>
+                                    READY — {compilePreview.execution_type} plan, {compilePreview.actions.length} action{compilePreview.actions.length === 1 ? '' : 's'}
+                                    {compilePreview.target ? `, target ${compilePreview.target}` : ''}.
+                                  </p>
+                                  <p className="text-slate-400">
+                                    Compiled {compilePreview.compiler === 'AI' ? `by AI (${compilePreview.provider ?? 'unknown provider'}/${compilePreview.model ?? 'unknown model'})` : 'deterministically'} from this case's own steps/expected result.
+                                  </p>
+                                </div>
+                              ) : compilePreview?.status === 'NOT_EXECUTABLE' ? (
+                                <div className="text-[10px] font-mono text-amber-300/90">
+                                  <p>NOT_EXECUTABLE — this case's own content does not state enough to compile a real plan:</p>
+                                  <ul className="list-disc list-inside">
+                                    {compilePreview.reasons.map((r, i) => (
+                                      <li key={i}>{r}</li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              ) : compilePreview?.status === 'COMPILATION_FAILED' ? (
+                                <div className="text-[10px] font-mono text-rose-300/90">
+                                  <p>COMPILATION_FAILED:</p>
+                                  <ul className="list-disc list-inside">
+                                    {compilePreview.reasons.map((r, i) => (
+                                      <li key={i}>{r}</li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              ) : compilePreview?.status === 'COMPILATION_UNAVAILABLE' ? (
+                                <p className="text-[10px] font-mono text-amber-300/90">COMPILATION_UNAVAILABLE: {compilePreview.reason}</p>
+                              ) : null}
+                            </div>
+                          )}
+                          {handoffExecutor !== '' && handoffExecutor !== COMPILE_OPTION_VALUE && (
+                            <p className="text-[10px] font-mono text-amber-300/90 max-w-md text-right">
+                              Runs {handoffExecutor}'s own default reference check (not this case's specific steps translated into a script)
+                              {handoffExecutor === 'maestro' ? ' — requires operator approval before it runs.' : '.'}
+                            </p>
+                          )}
                         </div>
                       )}
                     </>
@@ -1021,7 +1164,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
 
               {hasPersisted && (activeTestCase.status === 'APPROVED' || activeTestCase.status === 'EXECUTED') && (
                 <p className="xl:col-span-12 text-[11px] font-mono text-slate-500 -mt-2">
-                  No real automation script exists for a generated case yet — its execution outcome is an explicit, disclosed simulated result, not a genuine verification of the steps above.
+                  Real-executor handoffs run that tool's own default reference check, not a bespoke script for this case's specific steps; "Compile &amp; Execute" instead compiles this case's own actual steps/expected result into a real plan and runs that; simulated handoffs report an explicit, disclosed placeholder result. Either way, the real outcome is shown on the Execution Hub page you're taken to next.
                 </p>
               )}
 

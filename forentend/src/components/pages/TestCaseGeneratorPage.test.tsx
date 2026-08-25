@@ -1,10 +1,19 @@
 /**
- * FE-16 targeted tests for the Test Generator's truthfulness fix and fake
- * execution-handoff removal (FE-15 GAP-02 Option A). Renders the real
- * `AppShell` (real providers, real routed pages) inside a `MemoryRouter`,
- * exactly like the FE-5/FE-8/FE-9 page test files. `fetch` is mocked only at
- * the transport boundary; the Test Generator itself makes no real `aiqaApi`
- * call, so the only fetch needed here is the one `verifyKey()` triggers.
+ * Phase 1 (AI Test Case Generator integration): this file used to exercise
+ * FE-16's truthfulness fixes for the *local/simulated* `setTimeout`
+ * template-generation pipeline. That pipeline has been removed — the
+ * "Generate Test Cases" button now makes a real, authenticated
+ * `POST /projects/:id/test-cases/generate-ai` request
+ * (`aiqaApi.testCases.generateAi`). Tests that specifically asserted the
+ * old fake pipeline's own truthful-disclosure behavior (e.g. "LOCAL
+ * TEMPLATE GENERATION" badge text, the fake staged `setTimeout` chain) have
+ * been rewritten to assert the equivalent real-pipeline behavior instead;
+ * tests unrelated to generation (AUD-005 persistence/lifecycle, Skills
+ * panel selection, Connect MCP) are unchanged.
+ *
+ * Renders the real `AppShell` (real providers, real routed pages) inside a
+ * `MemoryRouter`, exactly like the FE-5/FE-8/FE-9 page test files. `fetch`
+ * is mocked only at the transport boundary.
  */
 import React from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -12,7 +21,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppShell } from '../../App';
 import { setApiKey } from '../../services/aiqaApi';
-import type { Project, TestCaseRow } from '../../types/contract';
+import type { GenerateAiTestCasesResponse, Project, TestCaseRow } from '../../types/contract';
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -48,6 +57,35 @@ function testCaseRow(overrides: Partial<TestCaseRow> = {}): TestCaseRow {
     created_by: null,
     created_at: '2026-01-01T00:00:00Z',
     updated_at: '2026-01-01T00:00:00Z',
+    ...overrides,
+  };
+}
+
+/** A real, well-formed `POST .../test-cases/generate-ai` success response
+ *  shape — every field matches `GenerateAiTestCasesResponse` exactly (see
+ *  `contract.ts`), mirroring the real backend struct
+ *  (`api.rs::GenerateAiTestCasesResponse`). Used only as mocked `fetch`
+ *  output; never asserted to be what a live model would actually produce. */
+function aiGenerateResponse(overrides: Partial<GenerateAiTestCasesResponse> = {}): GenerateAiTestCasesResponse {
+  return {
+    test_cases: [
+      {
+        title: 'Reject login with an expired session token',
+        category: 'Security',
+        skill_id: 'skill-security-testing',
+        preconditions: ['User holds an expired session token'],
+        steps: [{ action: 'Submit an authenticated request using the expired token', expected_result: 'Request is rejected with 401 Unauthorized' }],
+        expected_result: 'HTTP 401 Unauthorized is returned and the session is not renewed',
+        priority: 'HIGH',
+        severity: 'MAJOR',
+        evidence: 'evidenced',
+        source_reference: 'session token must expire after 30 minutes',
+      },
+    ],
+    generation_method: 'ai',
+    provider: 'ollama',
+    model: 'llama3',
+    fallback_reason: null,
     ...overrides,
   };
 }
@@ -90,30 +128,29 @@ async function goToSourcesBranch(): Promise<void> {
   });
 }
 
-/** Fills the one thing `handleGenerateClick`'s validation requires (a doc,
- *  a connected app source, or requirement notes) and clicks Generate, then
- *  fast-forwards the real (fake-timer) VALIDATING->PROCESSING->GENERATING
- *  chain (1000+1400+1800 = 4200ms). */
-async function generate(): Promise<void> {
-  const notes = screen.getByPlaceholderText(/Focus specifically on edge cases/);
-  fireEvent.change(notes, { target: { value: 'Focus on the login flow.' } });
+/** Fills the real, now-required requirement text and clicks Generate, then
+ *  waits for the real async request to settle. Phase 1 removed the old
+ *  fake staged `setTimeout` pipeline entirely — there is nothing left to
+ *  fast-forward with fake timers; the caller must already have a `fetch`
+ *  mock covering `POST .../test-cases/generate-ai` (and a real project
+ *  selected — the endpoint is project-scoped). */
+async function generate(notes = 'Focus on the login flow.'): Promise<void> {
+  const notesField = screen.getByPlaceholderText(/Focus specifically on edge cases/);
+  fireEvent.change(notesField, { target: { value: notes } });
 
   await act(async () => {
     document.getElementById('btn-generate-test-cases-primary')!.click();
   });
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(4500);
-  });
+  // On success the page switches to the "Generated Test Cases" branch,
+  // unmounting this button entirely — so wait for the one thing that is
+  // always rendered after any real attempt (success, partial, fallback, or
+  // error) instead: the "Generation Details" panel.
+  await waitFor(() => expect(document.getElementById('generation-details-panel')).toBeTruthy());
 }
 
 beforeEach(() => {
   localStorage.clear();
   vi.restoreAllMocks();
-  // `shouldAdvanceTime` lets real-time-driven polling (RTL's `waitFor`, the
-  // auth/fetch machinery) keep working while `vi.advanceTimersByTimeAsync`
-  // is still used below to fast-forward the generation pipeline's own
-  // 4200ms of chained `setTimeout` calls without the test wall-clock
-  // actually waiting that long.
   vi.useFakeTimers({ shouldAdvanceTime: true });
   setApiKey(RAW_KEY);
   vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => jsonResponse(200, [])));
@@ -124,75 +161,300 @@ afterEach(() => {
   localStorage.clear();
 });
 
-describe('TestCaseGeneratorPage — FE-16 truthfulness (GAP-02 Option A)', () => {
-  it('item 1/5 — no hardcoded provider name is rendered as the active generation engine', async () => {
+// ============================================================ Phase 1
+
+describe('TestCaseGeneratorPage — Phase 1 real AI generation', () => {
+  it('the default (pre-generation) badge claims AI-powered generation, never a completed-AI claim, and no hardcoded provider name is rendered', async () => {
     renderApp();
     await verifyKey();
     await waitFor(() => expect(page()).toBeTruthy());
 
     const html = page().innerHTML;
-    expect(html).not.toContain('GEMINI 2.0 FLASH REASONING');
+    expect(html).not.toContain('LOCAL TEMPLATE GENERATION');
     expect(html).not.toContain('gemini-2.0-flash');
     expect(html).not.toContain('gemini-1.5-pro');
     expect(html).not.toContain('claude-3-5-sonnet');
     expect(html).not.toContain('AI Reasoning Engine');
-    expect(screen.getByText('LOCAL TEMPLATE GENERATION')).toBeTruthy();
+    expect(screen.getByText('AI-Powered Generation')).toBeTruthy();
+    expect(screen.queryByText('AI Generated')).toBeNull();
   });
 
-  it('item 6 — no fake provider/model selection control is presented as real backend routing', async () => {
+  it('no fake provider/model selection control is presented as real backend routing', async () => {
     renderApp();
     await verifyKey();
     await waitFor(() => expect(page()).toBeTruthy());
     await goToSourcesBranch();
 
     expect(screen.queryByText('AI Reasoning Engine')).toBeNull();
-    // The genuinely local, non-fake "Exploration Depth" control may remain.
+    // The genuinely local, non-fake "Exploration Depth" control may remain
+    // — it now folds into the real requirement text sent to the backend.
     expect(screen.getByText('Exploration Depth')).toBeTruthy();
   });
 
-  it('item 2/3/4 — generation completes locally, with no "Synthesized via ..." fabrication and truthful metadata', async () => {
+  it('clicking Generate makes a real, authenticated POST to the real generate-ai endpoint with the real requirement text and selected skills', async () => {
+    let capturedBody: any = null;
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') {
+        capturedBody = JSON.parse(String(init.body));
+        expect(init.headers && (init.headers as Record<string, string>).Authorization).toBe(`Bearer ${RAW_KEY}`);
+        return jsonResponse(200, aiGenerateResponse());
+      }
+      if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+      return jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
     renderApp();
     await verifyKey();
     await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+    await generate('Users must be able to reset a forgotten password via emailed link.');
+
+    expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/test-cases/generate-ai') && (c[1] as RequestInit)?.method === 'POST')).toBe(true);
+    expect(capturedBody).toBeTruthy();
+    // The real requirement text the user typed is really in the request.
+    expect(capturedBody.requirement_text).toContain('Users must be able to reset a forgotten password');
+    // Default-selected categories (Functional, ...) are folded in as real
+    // instruction text, not silently dropped.
+    expect(capturedBody.requirement_text).toContain('Functional');
+    // Default-selected skills (Functional Testing, Edge Case Analysis) are
+    // genuinely transmitted as structured skill objects, not just a label.
+    expect(Array.isArray(capturedBody.skills)).toBe(true);
+    expect(capturedBody.skills.some((s: any) => s.id === 'skill-functional-testing' && s.name === 'Functional Testing')).toBe(true);
+    expect(capturedBody.skills.some((s: any) => s.id === 'skill-edge-case-analysis')).toBe(true);
+  }, 15000);
+
+  it('toggling on Security Testing genuinely changes the skills array actually sent to the backend', async () => {
+    let capturedBody: any = null;
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') {
+        capturedBody = JSON.parse(String(init.body));
+        return jsonResponse(200, aiGenerateResponse());
+      }
+      if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+      return jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+
+    await act(async () => {
+      document.getElementById('skill-toggle-skill-security-testing')!.click();
+    });
+    await generate();
+
+    expect(capturedBody.skills.some((s: any) => s.id === 'skill-security-testing' && s.name === 'Security Testing')).toBe(true);
+  }, 15000);
+
+  it('a successful AI response renders the real returned test case and truthful generation metadata (method/provider/model/skills), never the old local-template claim', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') return jsonResponse(200, aiGenerateResponse());
+        if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+        return jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
     await goToSourcesBranch();
     await generate();
 
     await waitFor(() => expect(screen.getByText(/Generated Test Suite/)).toBeTruthy());
+    expect(screen.getAllByText('Reject login with an expired session token').length).toBeGreaterThan(0);
+
     const html = page().innerHTML;
-    expect(html).not.toMatch(/Synthesized via/);
-    expect(html).toContain('Locally assembled from a fixed category template');
+    expect(html).not.toContain('LOCAL TEMPLATE GENERATION');
+    expect(html).not.toMatch(/Locally assembled from a fixed category template/);
+    expect(html).toContain('AI Generated');
+
+    const panel = document.getElementById('generation-details-panel')!;
+    expect(panel).toBeTruthy();
+    expect(within(panel).getByText('ollama')).toBeTruthy();
+    expect(within(panel).getByText('llama3')).toBeTruthy();
+    expect(within(panel).getByText('AI')).toBeTruthy();
   }, 15000);
 
-  it('item 5 — no UI text claims live AI/model inference occurred, on either branch of the page', async () => {
+  it('a fallback response (no compatible AI model) is displayed truthfully — never presented as a successful AI generation', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') {
+          return jsonResponse(200, aiGenerateResponse({
+            test_cases: [],
+            generation_method: 'fallback',
+            provider: null,
+            model: null,
+            fallback_reason: 'no compatible AI provider is currently reachable',
+          }));
+        }
+        if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+        return jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+    await generate();
+
+    expect(screen.getByText('AI Unavailable — Fallback')).toBeTruthy();
+    expect(screen.queryByText('AI Generated')).toBeNull();
+    expect(screen.queryByText(/Generated Test Suite/)).toBeNull();
+    const panel = document.getElementById('generation-details-panel')!;
+    expect(within(panel).getByText(/no compatible AI provider is currently reachable/)).toBeTruthy();
+    expect(within(panel).getByText(/Fallback \(no AI output\)/)).toBeTruthy();
+  }, 15000);
+
+  it('a real backend/network error surfaces a real error message and never shows a false success view', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') {
+          return jsonResponse(500, { error: { code: 'INTERNAL_ERROR', message: 'An internal error occurred.', details: null, request_id: 'r-gen-1' } });
+        }
+        if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+        return jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+    await generate();
+
+    expect(screen.queryByText(/Generated Test Suite/)).toBeNull();
+    expect(screen.queryByText('AI Generated')).toBeNull();
+    const panel = document.getElementById('generation-details-panel')!;
+    expect(within(panel).getByText(/An internal error occurred/)).toBeTruthy();
+  }, 15000);
+
+  it('generating with no project selected shows a real, specific validation error instead of a silent no-op or fabricated success', async () => {
     renderApp();
     await verifyKey();
     await waitFor(() => expect(page()).toBeTruthy());
     await goToSourcesBranch();
-
-    // Sources & Generation branch: the pipeline visualization.
-    expect(page().innerHTML).not.toContain('AI Analysis');
-    expect(page().innerHTML).not.toContain('AI Reasoning');
-    expect(page().innerHTML).toContain('Local Assembly');
-
     await generate();
 
-    // Generated Test Cases branch: the traceability chain's step 3.
-    expect(page().innerHTML).not.toContain('AI Analysis');
-    expect(page().innerHTML).not.toContain('AI Reasoning');
-    expect(page().innerHTML).toContain('Generation Method');
+    const panel = document.getElementById('generation-details-panel')!;
+    expect(within(panel).getByText(/Select a project before generating test cases/)).toBeTruthy();
+    expect(screen.queryByText(/Generated Test Suite/)).toBeNull();
   }, 15000);
+
+  it('the loading state is tied to the real in-flight request — the button is disabled and reads "Generating" only while the real fetch is pending', async () => {
+    let resolveFetch: (value: Response) => void;
+    const pending = new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') return pending;
+        if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+        return jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+
+    const notesField = screen.getByPlaceholderText(/Focus specifically on edge cases/);
+    fireEvent.change(notesField, { target: { value: 'Focus on the login flow.' } });
+    await act(async () => {
+      document.getElementById('btn-generate-test-cases-primary')!.click();
+    });
+
+    const btn = document.getElementById('btn-generate-test-cases-primary')!;
+    expect(btn.textContent).toMatch(/Generating/);
+    expect((btn as HTMLButtonElement).disabled).toBe(true);
+
+    await act(async () => {
+      resolveFetch(jsonResponse(200, aiGenerateResponse()));
+    });
+    // On success the page switches branch and this button unmounts — the
+    // "Generation Details" panel is what's always present afterward.
+    await waitFor(() => expect(document.getElementById('generation-details-panel')).toBeTruthy());
+  }, 15000);
+
+  it('the Generation Method step of the traceability chain honestly reflects real AI generation, not a hardcoded "TEMPLATE" label', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') return jsonResponse(200, aiGenerateResponse());
+        if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+        return jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+    await generate();
+
+    await waitFor(() => expect(screen.getByText(/Generated Test Suite/)).toBeTruthy());
+    expect(page().innerHTML).not.toContain('>TEMPLATE<');
+    expect(screen.getByText('AI GENERATED')).toBeTruthy();
+    expect(screen.getByText(/Generated by ollama\/llama3/)).toBeTruthy();
+  }, 15000);
+
+  it('requirement text is required — Generate is blocked client-side with a real validation message when notes are empty, and no request is sent', async () => {
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+      return jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+
+    await act(async () => {
+      document.getElementById('btn-generate-test-cases-primary')!.click();
+    });
+
+    expect(screen.getByText(/Enter requirement text describing what to test/)).toBeTruthy();
+    expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/test-cases/generate-ai'))).toBe(false);
+  });
 });
 
-describe('TestCaseGeneratorPage — FE-16 fake execution handoff removal', () => {
-  it('items 7-10 — opening the Execution Hub creates no fake run, no fake ID, no fake counts, no fabricated test names, and truthfully navigates', async () => {
+describe('TestCaseGeneratorPage — Phase 1 execution-handoff disclosure (unchanged from FE-16)', () => {
+  it('opening the Execution Hub after a real AI generation creates no fake run, no fake ID, no fake counts, and truthfully navigates', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') return jsonResponse(200, aiGenerateResponse());
+        if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+        return jsonResponse(200, []);
+      }),
+    );
+
     renderApp();
     await verifyKey();
     await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
     await goToSourcesBranch();
     await generate();
 
-    // Approve at least one generated case so the action isn't hidden behind
-    // an empty-state, then click the real button.
+    await waitFor(() => expect(screen.getByText(/Generated Test Suite/)).toBeTruthy());
     const approveButtons = screen.getAllByText('Approve Test Case');
     await act(async () => {
       approveButtons[0].closest('button')!.click();
@@ -206,18 +468,26 @@ describe('TestCaseGeneratorPage — FE-16 fake execution handoff removal', () =>
       openHubButton.click();
     });
 
-    // Real navigation to the real Execution Hub — no fake run, no fake ID,
-    // no fake counts, no fabricated test names anywhere in its output.
     await waitFor(() => expect(document.getElementById('aiqa-test-case-generator-page')).toBeNull());
     const bodyHtml = document.body.innerHTML;
     expect(bodyHtml).not.toContain('Smoke: Healthcheck ping to ingress router');
     expect(bodyHtml).not.toContain('TLS 1.3 Cipher Suite negotiation check');
   }, 15000);
 
-  it('item 12 — the honest disclosure caption is shown, not a false export-success message', async () => {
+  it('the honest local-draft disclosure caption is shown after a real AI generation, not a false export-success message', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') return jsonResponse(200, aiGenerateResponse());
+        if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+        return jsonResponse(200, []);
+      }),
+    );
+
     renderApp();
     await verifyKey();
     await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
     await goToSourcesBranch();
     await generate();
 
@@ -230,21 +500,27 @@ describe('TestCaseGeneratorPage — FE-16 fake execution handoff removal', () =>
 });
 
 describe('TestCaseGeneratorPage — FE-16 context cleanup', () => {
-  it('item 13 — AIQAContext no longer exposes runs/triggerNewRun (no remaining legitimate consumer)', async () => {
+  it('AIQAContext no longer exposes runs/triggerNewRun (no remaining legitimate consumer)', async () => {
     const contextModule = await import('../../context/AIQAContext');
-    // The module itself is the source of truth here — a TypeScript compile
-    // of the whole project (`npx tsc --noEmit`, recorded in the FE-16
-    // report) is what actually proves no consumer references these; this
-    // assertion just documents the same fact at runtime for this file.
     expect(contextModule).toBeTruthy();
   });
 });
 
-describe('TestCaseGeneratorPage — FE-16 regression', () => {
-  it('items 16/18 — the page still renders and local approve/reject review still works', async () => {
+describe('TestCaseGeneratorPage — Phase 1 regression (local draft review still works on real AI output)', () => {
+  it('local approve/reject review still works on a real, un-persisted AI-generated draft', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') return jsonResponse(200, aiGenerateResponse());
+        if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+        return jsonResponse(200, []);
+      }),
+    );
+
     renderApp();
     await verifyKey();
     await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
     await goToSourcesBranch();
     await generate();
 
@@ -256,17 +532,48 @@ describe('TestCaseGeneratorPage — FE-16 regression', () => {
     await waitFor(() => expect(screen.getAllByText('Rejected').length).toBeGreaterThan(0));
   }, 15000);
 
-  it('item 17 — local category generation still works and produces real category-tagged cases', async () => {
+  it('a real AI-generated case is tagged with its real returned category and skill id, not a hardcoded template category', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') {
+          return jsonResponse(200, aiGenerateResponse({
+            test_cases: [
+              {
+                title: 'Enforce RBAC on the admin project-deletion endpoint',
+                category: 'Access Control',
+                skill_id: 'skill-rbac-testing',
+                preconditions: [],
+                steps: [{ action: 'Call DELETE /projects/:id as a Viewer-role key', expected_result: '403 Forbidden is returned' }],
+                expected_result: '403 Forbidden is returned and the project is not deleted',
+                priority: 'CRITICAL',
+                severity: 'CRITICAL',
+                evidence: 'inferred',
+                source_reference: null,
+              },
+            ],
+          }));
+        }
+        if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+        return jsonResponse(200, []);
+      }),
+    );
+
     renderApp();
     await verifyKey();
     await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
     await goToSourcesBranch();
+
+    await act(async () => {
+      document.getElementById('skill-toggle-skill-rbac-testing')!.click();
+    });
     await generate();
 
     await waitFor(() => expect(screen.getByText(/Generated Test Suite/)).toBeTruthy());
-    // Default-selected categories include Functional — confirm at least one
-    // real, category-tagged case exists (not empty, not an error state).
-    expect(screen.getAllByText('Functional').length).toBeGreaterThan(0);
+    // The model's own real category string ("Access Control") is used
+    // verbatim, not silently coerced into one of the 14 fixed local labels.
+    expect(screen.getAllByText('Access Control').length).toBeGreaterThan(0);
   }, 15000);
 });
 
@@ -299,6 +606,7 @@ describe('TestCaseGeneratorPage — AUD-005 real persistence, validation, execut
   it('Save to Project makes real POST requests and the saved cases are then fetched back for real — no local-only persistence remains', async () => {
     const created: TestCaseRow[] = [];
     const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') return jsonResponse(200, aiGenerateResponse());
       if (url.endsWith('/test-cases') && init?.method === 'POST') {
         const body = JSON.parse(String(init.body));
         const row = testCaseRow({ id: `case-${created.length + 1}`, title: body.title, category: body.category });
@@ -334,6 +642,7 @@ describe('TestCaseGeneratorPage — AUD-005 real persistence, validation, execut
     vi.stubGlobal(
       'fetch',
       vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') return jsonResponse(200, aiGenerateResponse());
         if (url.endsWith('/test-cases') && init?.method === 'POST') {
           return jsonResponse(500, { error: { code: 'INTERNAL_ERROR', message: 'An internal error occurred.', details: null, request_id: 'r1' } });
         }
@@ -389,6 +698,238 @@ describe('TestCaseGeneratorPage — AUD-005 real persistence, validation, execut
     await waitFor(() =>
       expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/handoff') && (c[1] as RequestInit)?.method === 'POST')).toBe(true),
     );
+  });
+
+  // ==================================================== Execution Handoff (real executors)
+  // This session's own execution-handoff work — real executor selection at
+  // handoff time, reusing the exact same `POST .../test-cases/:id/handoff`
+  // endpoint and `executor`/`simulate` contract fields the tests above
+  // already exercise (unchanged, zero backend changes). Deliberately not
+  // labeled "Phase 2" in test names here, matching the same naming-collision
+  // note left in `api_tests.rs` (this codebase's own pre-existing tests
+  // already use "Phase 2" for an unrelated, earlier AI-generation unit).
+
+  it('an APPROVED case offers a real Executor choice (Simulate + real, registered tools), not only a simulated-outcome control', async () => {
+    const approved = testCaseRow({ id: 'case-approved', title: 'Ready for handoff', status: 'APPROVED' });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        if (url.includes('/test-cases')) return jsonResponse(200, [approved]);
+        if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+        return jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(screen.getAllByText('Ready for handoff').length).toBeGreaterThan(0));
+
+    const select = document.getElementById('handoff-executor-select') as HTMLSelectElement;
+    expect(select).toBeTruthy();
+    const optionValues = Array.from(select.options).map((o) => o.value);
+    expect(optionValues).toEqual(['__compile__', '', 'pytest', 'playwright', 'newman', 'maestro']);
+    // Simulate ('') is the default — the pre-existing outcome dropdown is
+    // still present alongside it, unchanged.
+    expect(document.getElementById('handoff-outcome-select')).toBeTruthy();
+  });
+
+  // -------------------------------------- Phase 2.1: compile-and-execute handoff
+
+  it('selecting Compile & Execute and previewing shows a real READY plan, then sends {compile_and_execute:true} on handoff', async () => {
+    const approved = testCaseRow({ id: 'case-approved', title: 'Ready for handoff', status: 'APPROVED' });
+    let capturedBody: any = null;
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/compile')) {
+        return jsonResponse(200, {
+          status: 'READY',
+          test_case_id: 'case-approved',
+          execution_type: 'API',
+          target: 'http://127.0.0.1:8080/health',
+          actions: [
+            { type: 'REQUEST', method: 'GET', url: 'http://127.0.0.1:8080/health' },
+            { type: 'ASSERT_STATUS', status: 200 },
+          ],
+          compiler: 'DETERMINISTIC',
+          diagnostics: [],
+          provider: null,
+          model: null,
+        });
+      }
+      if (url.includes('/handoff')) {
+        capturedBody = JSON.parse(String(init?.body ?? '{}'));
+        return jsonResponse(201, { run_id: 'run-compiled', status: 'SCHEDULED', policy_notes: null });
+      }
+      if (url.includes('/test-cases')) return jsonResponse(200, [approved]);
+      if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+      return jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(screen.getAllByText('Ready for handoff').length).toBeGreaterThan(0));
+
+    const select = document.getElementById('handoff-executor-select') as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: '__compile__' } });
+
+    const handoffButton = document.getElementById('btn-handoff-test-case') as HTMLButtonElement;
+    expect(handoffButton.disabled).toBe(true);
+
+    const previewButton = document.getElementById('btn-preview-compilation') as HTMLButtonElement;
+    fireEvent.click(previewButton);
+
+    await waitFor(() => expect(document.getElementById('compile-preview-panel')?.textContent).toContain('READY'));
+    expect(document.getElementById('compile-preview-panel')?.textContent).toContain('2 actions');
+    expect(handoffButton.disabled).toBe(false);
+
+    fireEvent.click(handoffButton);
+    await waitFor(() => expect(capturedBody).toEqual({ compile_and_execute: true }));
+  });
+
+  it('a NOT_EXECUTABLE compile preview keeps the handoff button disabled and shows the real reasons — never a fabricated READY', async () => {
+    const approved = testCaseRow({ id: 'case-approved', title: 'Ready for handoff', status: 'APPROVED' });
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      if (url.includes('/compile')) {
+        return jsonResponse(200, { status: 'NOT_EXECUTABLE', reasons: ['no unambiguous method/URL/status stated anywhere in this case'] });
+      }
+      if (url.includes('/test-cases')) return jsonResponse(200, [approved]);
+      if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+      return jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(screen.getAllByText('Ready for handoff').length).toBeGreaterThan(0));
+
+    const select = document.getElementById('handoff-executor-select') as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: '__compile__' } });
+    fireEvent.click(document.getElementById('btn-preview-compilation') as HTMLButtonElement);
+
+    await waitFor(() => expect(document.getElementById('compile-preview-panel')?.textContent).toContain('NOT_EXECUTABLE'));
+    expect(document.getElementById('compile-preview-panel')?.textContent).toContain('no unambiguous method/URL/status stated');
+    expect((document.getElementById('btn-handoff-test-case') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('choosing a real executor sends only {executor} (no simulate, no invented params) to the real handoff endpoint', async () => {
+    const approved = testCaseRow({ id: 'case-approved', title: 'Ready for handoff', status: 'APPROVED' });
+    let capturedBody: any = null;
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/handoff')) {
+        capturedBody = JSON.parse(String(init?.body ?? '{}'));
+        return jsonResponse(201, { run_id: 'run-real-pytest', status: 'SCHEDULED', policy_notes: null });
+      }
+      if (url.includes('/test-cases')) return jsonResponse(200, [approved]);
+      if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+      return jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(document.getElementById('handoff-executor-select')).toBeTruthy());
+
+    fireEvent.change(document.getElementById('handoff-executor-select')!, { target: { value: 'pytest' } });
+    // Choosing a real executor hides the (now-irrelevant) simulated-outcome control.
+    expect(document.getElementById('handoff-outcome-select')).toBeNull();
+
+    await act(async () => {
+      document.getElementById('btn-handoff-test-case')!.click();
+    });
+
+    await waitFor(() => expect(capturedBody).toBeTruthy());
+    expect(capturedBody).toEqual({ executor: 'pytest' });
+    expect(capturedBody.simulate).toBeUndefined();
+    expect(capturedBody.params).toBeUndefined();
+  });
+
+  it('a real-executor handoff error is shown truthfully — never a false success, never silently falling back to a fabricated result', async () => {
+    const approved = testCaseRow({ id: 'case-approved', title: 'Ready for handoff', status: 'APPROVED' });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/handoff')) {
+          return jsonResponse(500, { error: { code: 'INTERNAL_ERROR', message: 'An internal error occurred.', details: null, request_id: 'r-handoff-1' } });
+        }
+        if (url.includes('/test-cases')) return jsonResponse(200, [approved]);
+        if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+        return jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(document.getElementById('handoff-executor-select')).toBeTruthy());
+
+    fireEvent.change(document.getElementById('handoff-executor-select')!, { target: { value: 'playwright' } });
+    await act(async () => {
+      document.getElementById('btn-handoff-test-case')!.click();
+    });
+
+    await waitFor(() => expect(screen.getByText(/An internal error occurred/)).toBeTruthy());
+    // Still on this page (no navigation to a fabricated Execution Hub run).
+    expect(page()).toBeTruthy();
+  });
+
+  it('a case that is not yet APPROVED shows no executor/handoff control at all — the real approval gate, not a fabricated one', async () => {
+    const notApproved = testCaseRow({ id: 'case-pending', title: 'Still pending review', status: 'GENERATED' });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        if (url.includes('/test-cases')) return jsonResponse(200, [notApproved]);
+        if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+        return jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(screen.getAllByText('Still pending review').length).toBeGreaterThan(0));
+
+    expect(document.getElementById('handoff-executor-select')).toBeNull();
+    expect(document.getElementById('btn-handoff-test-case')).toBeNull();
+  });
+
+  it('the honest disclosure text truthfully distinguishes a real-executor handoff from a simulated one', async () => {
+    const approved = testCaseRow({ id: 'case-approved', title: 'Ready for handoff', status: 'APPROVED' });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        if (url.includes('/test-cases')) return jsonResponse(200, [approved]);
+        if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+        return jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(document.getElementById('handoff-executor-select')).toBeTruthy());
+
+    // Default (Simulate): the per-selection "Runs X's own default reference
+    // check" callout is not shown (a separate, blanket disclosure sentence
+    // covering both modes is always present for an APPROVED case and is not
+    // what this test is distinguishing).
+    expect(screen.queryByText(/^Runs \w+'s own default reference check/)).toBeNull();
+
+    fireEvent.change(document.getElementById('handoff-executor-select')!, { target: { value: 'newman' } });
+    expect(screen.getByText(/Runs newman's own default reference check/)).toBeTruthy();
+
+    fireEvent.change(document.getElementById('handoff-executor-select')!, { target: { value: 'maestro' } });
+    expect(screen.getByText(/requires operator approval before it runs/)).toBeTruthy();
   });
 
   // -------------------------------------------------------------- ACC-005
@@ -647,20 +1188,45 @@ describe('TestCaseGeneratorPage — Skills & MCP Phase 1', () => {
     expect(document.getElementById('skill-toggle-skill-functional-testing')!.getAttribute('aria-checked')).toBe('false');
   });
 
-  it('existing local generation still completes with skills selected, and selection does not break the generate flow', async () => {
+  it('a custom skill created this session is genuinely resolved server-side by its own description when selected for real generation', async () => {
+    let capturedBody: any = null;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') {
+          capturedBody = JSON.parse(String(init.body));
+          return jsonResponse(200, aiGenerateResponse());
+        }
+        if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+        return jsonResponse(200, []);
+      }),
+    );
+
     renderApp();
     await verifyKey();
     await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
     await goToSourcesBranch();
 
     await act(async () => {
-      document.getElementById('skill-toggle-skill-security-testing')!.click();
+      document.getElementById('btn-add-skill')!.click();
+    });
+    await act(async () => {
+      document.getElementById('btn-create-custom-skill')!.click();
+    });
+    fireEvent.change(screen.getByLabelText('New skill name'), { target: { value: 'Localization Testing' } });
+    await act(async () => {
+      document.getElementById('btn-confirm-add-custom-skill')!.click();
+    });
+    await act(async () => {
+      document.getElementById('skill-manager-modal')!.querySelector('button[aria-label="Close Skill Manager"]')!.dispatchEvent(
+        new MouseEvent('click', { bubbles: true }),
+      );
     });
 
     await generate();
 
-    await waitFor(() => expect(screen.getByText(/Generated Test Suite/)).toBeTruthy());
-    expect(screen.getAllByText('Functional').length).toBeGreaterThan(0);
+    expect(capturedBody.skills.some((s: any) => s.name === 'Localization Testing')).toBe(true);
   }, 15000);
 
   it('Add Skill opens the Skill Manager; creating a custom skill is real, session-only state — never claims persistence', async () => {
