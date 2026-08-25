@@ -4,8 +4,8 @@ use aiqa_orchestrator::{
     engine::recover_incomplete_runs,
     evidence::{default_root, LocalEvidenceStore},
     executor::{
-        ExecutorRegistry, MaestroExecutor, NewmanExecutor, PlaywrightExecutor, PytestExecutor,
-        SchemathesisExecutor, SimulatedExecutor,
+        CompiledApiExecutor, ExecutorRegistry, MaestroExecutor, NewmanExecutor, PlaywrightExecutor,
+        PytestExecutor, SchemathesisExecutor, SimulatedExecutor,
     },
     policy::PolicyConfig,
     state::AppState,
@@ -95,7 +95,12 @@ async fn main() {
             Arc::new(SchemathesisExecutor {
                 project_dir: executor_project_dir("schemathesis"),
             }),
-        );
+        )
+        // Phase 2.1 — real, native (no subprocess) executor for a compiled
+        // ExecutionPlan (`execution_plan::materialize_task_def`'s Api arm).
+        // No `project_dir` needed: it makes real HTTP calls directly via
+        // `reqwest`, it does not shell out to a fixture project.
+        .register("compiled-api", Arc::new(CompiledApiExecutor::from_env()));
 
     // Central AI Provider & Model Intelligence Layer. Real discovery
     // (Ollama + any API provider with a real, non-empty credential env

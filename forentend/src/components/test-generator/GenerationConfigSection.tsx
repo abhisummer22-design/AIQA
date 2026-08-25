@@ -175,22 +175,23 @@ export const GenerationConfigSection: React.FC<GenerationConfigSectionProps> = (
   const allSelected = selectedCategories.length === TEST_CATEGORIES.length;
   const isGenerating = ['VALIDATING', 'PROCESSING', 'GENERATING'].includes(generationState);
 
-  // Validate before triggering generate
+  // Phase 1 (AI Test Case Generator integration) — validation now reflects
+  // what the real backend contract (`POST .../test-cases/generate-ai`)
+  // actually requires: a non-empty `requirement_text`. Uploaded documents
+  // and connected application sources do not, on their own, provide any
+  // analyzable content to that endpoint today (their content is never
+  // extracted/fetched — see `DocumentUploadSection`/`ApplicationSourceSection`),
+  // so they can no longer substitute for requirement text the way the old
+  // local-template generator allowed.
   const handleGenerateClick = () => {
     if (selectedCategories.length === 0) {
-      setValidationWarning('Please select at least one test category to generate.');
+      setValidationWarning('Please select at least one test category to focus on.');
       return;
     }
 
-    const hasDocs = documents.length > 0;
-    const hasApps = Object.values(appSources).some(
-      (a: AppSourceConnection) => a?.status === 'CONNECTED'
-    );
-    const hasPrompt = requirementNotes.trim().length > 0;
-
-    if (!hasDocs && !hasApps && !hasPrompt) {
+    if (requirementNotes.trim().length === 0) {
       setValidationWarning(
-        'Please provide at least one product document, connect an application source, or enter specific requirement notes.'
+        'Enter requirement text describing what to test. AI generation needs real written requirements — uploading a document or connecting a source alone does not provide analyzable content yet.'
       );
       return;
     }
@@ -214,7 +215,7 @@ export const GenerationConfigSection: React.FC<GenerationConfigSectionProps> = (
             </span>
           </div>
           <p className="text-xs text-slate-400 font-sans mt-0.5">
-            Select the test categories and depth for local template-based generation.
+            Selected categories and depth are sent to the AI model as focus instructions alongside your requirement text.
           </p>
         </div>
 
@@ -286,7 +287,7 @@ export const GenerationConfigSection: React.FC<GenerationConfigSectionProps> = (
         {/* Specific Requirement Focus / Context Input (8 Cols) */}
         <div className="lg:col-span-8 p-3 rounded-lg bg-[#0B1120] border border-slate-800 space-y-1.5">
           <label className="block text-xs font-bold font-mono text-slate-300">
-            Requirement Focus & Generation Notes (Optional)
+            Requirement Text (Required)
           </label>
           <textarea
             rows={3}
@@ -297,7 +298,7 @@ export const GenerationConfigSection: React.FC<GenerationConfigSectionProps> = (
             className="w-full p-2.5 rounded bg-[#020617] border border-slate-700 hover:border-slate-600 focus:border-indigo-500 text-xs font-mono text-slate-100 placeholder-slate-500 focus:outline-none resize-none"
           />
           <div className="flex items-center justify-between text-[10px] font-mono text-slate-500">
-            <span>Augments document context with targeted engineering instructions</span>
+            <span>The actual text sent to the AI model — uploaded documents and connected sources are referenced by name only, not analyzed</span>
             <span>{requirementNotes.length} chars</span>
           </div>
         </div>
@@ -339,21 +340,24 @@ export const GenerationConfigSection: React.FC<GenerationConfigSectionProps> = (
 
       {/* Primary CTA Area with Visual Pipeline Communication */}
       <div className="p-4 rounded-lg bg-gradient-to-r from-[#020617] via-[#0B1120] to-[#020617] border border-indigo-900/60 shadow-lg flex flex-col md:flex-row md:items-center justify-between gap-4">
-        {/* Pipeline Flow Visualization: Sources -> Local Assembly -> Test Generation */}
+        {/* Pipeline Flow Visualization: Skills+Requirement -> AI Model Router -> Validated Test Cases.
+            Phase 1: reflects the real backend pipeline (`ai_generation.rs` ->
+            `ai_router.rs`) this button now actually calls — not a decorative
+            label for local template assembly. */}
         <div className="flex items-center gap-2 text-xs font-mono text-slate-300">
           <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#020617] border border-slate-800">
             <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
-            <span className="font-semibold text-cyan-300">Sources</span>
+            <span className="font-semibold text-cyan-300">Requirement + Skills</span>
           </div>
           <ArrowRight className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
           <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#020617] border border-slate-800">
             <span className="w-1.5 h-1.5 rounded-full bg-purple-400" />
-            <span className="font-semibold text-purple-300">Local Assembly</span>
+            <span className="font-semibold text-purple-300">AI Model Router</span>
           </div>
           <ArrowRight className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
           <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#020617] border border-slate-800">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-            <span className="font-semibold text-emerald-300">Test Generation</span>
+            <span className="font-semibold text-emerald-300">Validated Test Cases</span>
           </div>
         </div>
 

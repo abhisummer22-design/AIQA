@@ -400,6 +400,18 @@ pub struct TestCaseHandoffRequest {
     pub params: serde_json::Value,
     #[serde(default)]
     pub simulate: Option<SimSpec>,
+    /// Phase 2.1 — when `true`, `executor`/`params`/`simulate` above are
+    /// ignored and the real compiler (`execution_plan::compile`) runs
+    /// server-side instead: the test case's own actual `steps`/
+    /// `expected_result`/`assertions` are compiled into a real
+    /// `ExecutionPlan`, which — only if genuinely `Ready` — determines the
+    /// real executor and its real, plan-derived params. A `false`/absent
+    /// value preserves the exact Phase 2 behavior (an explicit, caller-
+    /// chosen executor or simulated outcome, no compilation), so existing
+    /// callers (including the Execution Hub's own manual task creation,
+    /// which never goes through this endpoint at all) are unaffected.
+    #[serde(default)]
+    pub compile_and_execute: bool,
 }
 
 /// SRD §5 Event Ordering & Idempotency: every event carries event_id, run_id,

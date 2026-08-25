@@ -89,11 +89,25 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/projects/:project_id/test-cases/:id/approve", post(approve_test_case_scoped))
         .route("/api/v1/projects/:project_id/test-cases/:id/reject", post(reject_test_case_scoped))
         .route("/api/v1/projects/:project_id/test-cases/:id/handoff", post(handoff_test_case_scoped))
+        // Phase 2.1 — real, read-only compilation preview (no state mutation).
+        .route("/api/v1/projects/:project_id/test-cases/:id/compile", post(compile_test_case_scoped))
         // Phase 2 — real, skill-aware AI test case generation. Produces
         // drafts only (never persists) — the caller then uses the existing
         // `POST .../test-cases` (above) to save whichever drafts it wants,
         // exactly like the pre-existing local-template drafts already do.
         .route("/api/v1/projects/:project_id/test-cases/generate-ai", post(generate_ai_test_cases_scoped))
+        // Phase 3 — Custom Testing: real requirement -> AI strategy ->
+        // test cases (`custom_testing.rs`). Produces drafts only, exactly
+        // like `generate-ai` above — the caller saves whichever drafts it
+        // wants via the same existing `POST .../test-cases`, no second
+        // persistence path.
+        .route("/api/v1/projects/:project_id/custom-testing/generate", post(generate_custom_testing_scoped))
+        // Phase 4 — API Testing page: real, ad-hoc HTTP request execution
+        // (`api_testing.rs`). Reuses the exact Phase 2.1 execution pipeline
+        // (ExecutionPlan -> validate_plan -> materialize_task_def ->
+        // create_run_core -> CompiledApiExecutor) — no new executor, no new
+        // execution engine.
+        .route("/api/v1/projects/:project_id/api-testing/execute", post(execute_api_test_scoped))
         // Central AI Provider & Model Intelligence Layer — platform-wide,
         // not project-scoped (the router itself is one shared instance
         // across the whole deployment, exactly like `/admin/api-keys`
@@ -652,6 +666,26 @@ async fn reject_test_case_scoped(
     Ok(Json(row))
 }
 
+/// POST .../test-cases/:id/compile — Phase 2.1. Real, read-only preview of
+/// what `execution_plan::compile` would produce for this exact, real,
+/// persisted test case right now — deterministic compilation first, the
+/// real central AI router only if that finds nothing. Never mutates
+/// anything (no run, no status change) — safe to call before a case is
+/// even APPROVED, so the frontend can show READY/NOT_EXECUTABLE/
+/// COMPILATION_UNAVAILABLE (and why) before a user commits to approving
+/// and handing it off.
+async fn compile_test_case_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
+) -> Result<Json<crate::execution_plan::CompilationOutcome>, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let row = scoped_test_case(&state, &ctx, project_id, id).await?;
+    let outcome = crate::execution_plan::compile(&state.ai_infra, &row).await;
+    Ok(Json(outcome))
+}
+
 /// POST .../test-cases/:id/handoff — the real bridge into the existing
 /// execution engine (FRD-EXE-11). Requires `APPROVED`. Builds a real,
 /// single-task `RunPlan` — the task's id is this test case's own id, so
@@ -663,9 +697,10 @@ async fn reject_test_case_scoped(
 /// execution engine.
 ///
 /// Honest disclosure (see `TestCaseHandoffRequest`'s own doc comment): the
-/// caller must explicitly supply either a real `executor` or an explicit
-/// `simulate` outcome. There is no default here that would silently report
-/// a fabricated "passed" result for steps nothing has actually run.
+/// caller must explicitly supply either a real `executor`, an explicit
+/// `simulate` outcome, or `compile_and_execute: true` (Phase 2.1). There is
+/// no default here that would silently report a fabricated "passed" result
+/// for steps nothing has actually run.
 async fn handoff_test_case_scoped(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -680,25 +715,47 @@ async fn handoff_test_case_scoped(
         return Err(ApiError::conflict(format!("test case must be APPROVED before handoff (current: {})", row.status.as_db_str())));
     }
 
-    let ApiJson(body) = body.unwrap_or(ApiJson(TestCaseHandoffRequest { executor: None, params: serde_json::Value::Null, simulate: None }));
-    if body.executor.is_none() && body.simulate.is_none() {
-        return Err(ApiError::validation(
-            "handoff requires either a real executor or an explicit simulate outcome — there is no default that fabricates a result",
-        ));
-    }
+    let ApiJson(body) = body.unwrap_or(ApiJson(TestCaseHandoffRequest { executor: None, params: serde_json::Value::Null, simulate: None, compile_and_execute: false }));
 
     let task_id = id.to_string();
-    let task = TaskDef {
-        id: task_id.clone(),
-        name: row.title.clone(),
-        prerequisites: Vec::new(),
-        simulate: body.simulate.clone(),
-        executor: body.executor.clone(),
-        params: body.params.clone(),
+    let task = if body.compile_and_execute {
+        // Phase 2.1 — the real compiler, not the caller, determines the
+        // real executor/params; any `executor`/`params`/`simulate` also
+        // sent alongside `compile_and_execute: true` is ignored (see
+        // `TestCaseHandoffRequest`'s own doc comment) rather than silently
+        // mixed with compiled output.
+        match crate::execution_plan::compile(&state.ai_infra, &row).await {
+            crate::execution_plan::CompilationOutcome::Ready(plan) => {
+                crate::execution_plan::materialize_task_def(task_id.clone(), row.title.clone(), &plan).map_err(ApiError::validation)?
+            }
+            crate::execution_plan::CompilationOutcome::NotExecutable { reasons } => {
+                return Err(ApiError::validation(format!("NOT_EXECUTABLE: {}", reasons.join("; "))));
+            }
+            crate::execution_plan::CompilationOutcome::CompilationFailed { reasons } => {
+                return Err(ApiError::validation(format!("COMPILATION_FAILED: {}", reasons.join("; "))));
+            }
+            crate::execution_plan::CompilationOutcome::CompilationUnavailable { reason } => {
+                return Err(ApiError::validation(format!("COMPILATION_UNAVAILABLE: {reason}")));
+            }
+        }
+    } else {
+        if body.executor.is_none() && body.simulate.is_none() {
+            return Err(ApiError::validation(
+                "handoff requires either a real executor, an explicit simulate outcome, or compile_and_execute: true — there is no default that fabricates a result",
+            ));
+        }
+        TaskDef {
+            id: task_id.clone(),
+            name: row.title.clone(),
+            prerequisites: Vec::new(),
+            simulate: body.simulate.clone(),
+            executor: body.executor.clone(),
+            params: body.params.clone(),
+        }
     };
-    let plan = RunPlan { name: format!("Test Case: {}", row.title), tasks: vec![task], concurrency: 1 };
+    let run_plan = RunPlan { name: format!("Test Case: {}", row.title), tasks: vec![task], concurrency: 1 };
 
-    let (status_code, Json(created)) = create_run_core(&state, &ctx, Some(project_id.to_string()), plan).await?;
+    let (status_code, Json(created)) = create_run_core(&state, &ctx, Some(project_id.to_string()), run_plan).await?;
 
     let marked = state.store.mark_test_case_executed(id, created.run_id, &task_id).await.map_err(to_500)?;
     if !marked {
@@ -806,6 +863,205 @@ async fn generate_ai_test_cases_scoped(
     };
 
     Ok(Json(response))
+}
+
+// ---------------------------------------------------------- Custom Testing
+
+#[derive(Debug, Deserialize)]
+struct CustomTestingGenerateBody {
+    requirement_text: String,
+    #[serde(default)]
+    scope: Option<String>,
+    #[serde(default)]
+    skills: Vec<SkillInputBody>,
+}
+
+/// `generation_source` is always exactly `"REAL_AI"` or `"UNAVAILABLE"` —
+/// there is no deterministic local-fallback strategy generator in this
+/// codebase, so a `"LOCAL_FALLBACK"` value is never produced (brief §6: do
+/// not invent a fallback path that does not genuinely exist). `analysis` is
+/// present whenever the real strategy analysis call succeeded, even if the
+/// subsequent case-generation call then failed — see
+/// `custom_testing::CustomTestingOutcome`'s own doc comment.
+#[derive(Debug, Serialize)]
+struct CustomTestingGenerateResponse {
+    generation_source: String,
+    analysis: Option<crate::custom_testing::CustomTestingAnalysis>,
+    test_cases: Vec<crate::ai_generation::GeneratedTestCaseDraft>,
+    provider: Option<String>,
+    model: Option<String>,
+    failure_reason: Option<String>,
+}
+
+/// POST .../custom-testing/generate — Phase 3. Real requirement -> AI
+/// strategy -> test cases, reusing the exact existing central AI router
+/// (`AiTask::RequirementAnalysis`, `AiTask::TestCaseGeneration` — both
+/// already-existing task variants, the first newly wired up here for the
+/// first time, the second reused byte-for-byte from `generate_ai_test_
+/// cases_scoped` above via `ai_generation::generate_test_cases`) and the
+/// same skill-resolution/quality/traceability/dedup gates. Produces drafts
+/// only, never persists — the caller uses the existing `POST .../test-cases`
+/// to save whichever drafts it wants, exactly like `generate-ai`'s own
+/// drafts, so a saved custom-testing case is an ordinary `TestCaseRow`
+/// indistinguishable from any other — it automatically gets the existing
+/// validate/approve/handoff/compile pipeline with no new backend code.
+async fn generate_custom_testing_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiJson(body): ApiJson<CustomTestingGenerateBody>,
+) -> Result<Json<CustomTestingGenerateResponse>, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    require_scoped_project(&state, &ctx, project_id).await?;
+
+    if body.requirement_text.trim().is_empty() {
+        return Err(ApiError::validation("requirement_text must not be empty"));
+    }
+
+    let skills: Vec<crate::ai_generation::SkillInput> = body
+        .skills
+        .into_iter()
+        .map(|s| crate::ai_generation::SkillInput { id: s.id, name: s.name, description: s.description })
+        .collect();
+
+    let outcome = crate::custom_testing::run(&state.ai_infra, &body.requirement_text, body.scope.as_deref(), &skills).await;
+
+    let response = match outcome {
+        crate::custom_testing::CustomTestingOutcome::Ready { analysis, cases, provider, model } => {
+            audit(
+                &state,
+                &ctx,
+                "custom_testing.generate",
+                None,
+                Some(&format!("{} case(s) via {provider}/{model}", cases.len())),
+                "ok",
+            )
+            .await;
+            CustomTestingGenerateResponse {
+                generation_source: "REAL_AI".to_string(),
+                analysis: Some(analysis),
+                test_cases: cases,
+                provider: Some(provider),
+                model: Some(model),
+                failure_reason: None,
+            }
+        }
+        crate::custom_testing::CustomTestingOutcome::Failed { reason, analysis } => {
+            audit(&state, &ctx, "custom_testing.generate", None, Some(&reason), "unavailable").await;
+            CustomTestingGenerateResponse {
+                generation_source: "UNAVAILABLE".to_string(),
+                analysis,
+                test_cases: Vec::new(),
+                provider: None,
+                model: None,
+                failure_reason: Some(reason),
+            }
+        }
+    };
+
+    Ok(Json(response))
+}
+
+// -------------------------------------------------------------- API Testing
+
+/// `task_status` is `TaskStatus` directly (real `SCREAMING_SNAKE_CASE`
+/// serde, e.g. `"PASSED"`/`"FAILED"`/`"INFRA_ERROR"`) — the exact same real
+/// vocabulary every other execution result in this app already uses, not a
+/// second status string invented for this one page. `result` is `None`
+/// only when the task's own evidence log genuinely couldn't be read/parsed
+/// (never a placeholder standing in for a real one).
+#[derive(Debug, Serialize)]
+struct ApiTestExecutionResponse {
+    run_id: Uuid,
+    task_status: crate::domain::TaskStatus,
+    reason: Option<String>,
+    started_at: Option<chrono::DateTime<chrono::Utc>>,
+    finished_at: Option<chrono::DateTime<chrono::Utc>>,
+    result: Option<crate::executor::ApiResultSummary>,
+    response_body_preview: Option<String>,
+    evidence_id: Option<Uuid>,
+}
+
+/// POST .../api-testing/execute — Phase 4. Real, ad-hoc HTTP request
+/// execution. Builds an `ExecutionPlan` directly from the caller's own
+/// explicit method/URL/headers/query/body/assertions
+/// (`api_testing::validate_and_build_plan`), then reuses the exact Phase
+/// 2.1 pipeline unmodified: `execution_plan::validate_plan` (real SSRF
+/// guard) -> `execution_plan::materialize_task_def` -> `create_run_core`
+/// (the same function every other run-creating endpoint calls) ->
+/// `engine::spawn_run` -> `CompiledApiExecutor` -> a real, live HTTP
+/// request. No new executor, no new execution engine, no new persistence
+/// path. Waits (bounded, `API_TEST_WAIT_CEILING_SECS`, default 45s) for the
+/// real run this same request just created to reach a terminal state — the
+/// endpoint itself is the "poll", server-side, over this process's own
+/// in-memory run record; the frontend receives one real, complete result,
+/// not a second polling contract to implement.
+async fn execute_api_test_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiJson(body): ApiJson<crate::api_testing::AdHocApiRequest>,
+) -> Result<Json<ApiTestExecutionResponse>, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    require_scoped_project(&state, &ctx, project_id).await?;
+
+    let task_id = Uuid::new_v4().to_string();
+    let task_name = format!("API Test: {} {}", body.method.trim().to_uppercase(), body.url);
+
+    let plan = crate::api_testing::validate_and_build_plan(task_id.clone(), &body).map_err(|(code, msg)| ApiError::validation(format!("{code}: {msg}")))?;
+
+    // The real SSRF/structural guard — reused unmodified. A disallowed
+    // target (private IP, cloud metadata address, non-http(s) scheme that
+    // slipped past the earlier scheme check, etc.) is rejected here, before
+    // any run is created and before any real network call happens.
+    if let Err(reasons) = crate::execution_plan::validate_plan(&plan).await {
+        return Err(ApiError::validation(format!("TARGET_NOT_ALLOWED: {}", reasons.join("; "))));
+    }
+
+    let task = crate::execution_plan::materialize_task_def(task_id.clone(), task_name.clone(), &plan).map_err(ApiError::validation)?;
+    let run_plan = RunPlan { name: task_name, tasks: vec![task], concurrency: 1 };
+
+    let (_, Json(created)) = create_run_core(&state, &ctx, Some(project_id.to_string()), run_plan).await?;
+
+    let wait_ceiling_secs: u64 = std::env::var("API_TEST_WAIT_CEILING_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(45);
+    let terminal = crate::api_testing::run_to_completion(&state, created.run_id, std::time::Duration::from_secs(wait_ceiling_secs)).await;
+
+    let Some(task_state) = terminal else {
+        audit(&state, &ctx, "api_testing.execute", None, Some("did not reach a terminal state within the wait ceiling"), "still_running").await;
+        return Ok(Json(ApiTestExecutionResponse {
+            run_id: created.run_id,
+            task_status: crate::domain::TaskStatus::Running,
+            reason: Some(format!(
+                "Execution is still running past this endpoint's own {wait_ceiling_secs}s wait ceiling — the real run continues; check the Execution Hub (run {}) for its eventual real result.",
+                created.run_id
+            )),
+            started_at: None,
+            finished_at: None,
+            result: None,
+            response_body_preview: None,
+            evidence_id: None,
+        }));
+    };
+
+    let (evidence_id, log) = match crate::api_testing::read_task_evidence(&state, created.run_id, &task_id).await {
+        Some((id, content)) => (Some(id), Some(content)),
+        None => (None, None),
+    };
+    let result = log.as_deref().and_then(crate::api_testing::parse_result_summary);
+    let response_body_preview = log.as_deref().and_then(crate::api_testing::parse_response_body_preview);
+
+    audit(&state, &ctx, "api_testing.execute", None, Some(&format!("{} {} -> {:?}", body.method.trim().to_uppercase(), body.url, task_state.status)), "ok").await;
+
+    Ok(Json(ApiTestExecutionResponse {
+        run_id: created.run_id,
+        task_status: task_state.status,
+        reason: task_state.reason,
+        started_at: task_state.started_at,
+        finished_at: task_state.finished_at,
+        result,
+        response_body_preview,
+        evidence_id,
+    }))
 }
 
 // ------------------------------------------------------ AI Intelligence Layer

@@ -1,12 +1,15 @@
 pub mod ai_generation;
 pub mod ai_router;
 pub mod api;
+pub mod api_testing;
 pub mod auth;
+pub mod custom_testing;
 pub mod domain;
 pub mod engine;
 pub mod errors;
 pub mod evidence;
 pub mod executor;
+pub mod execution_plan;
 pub mod intelligence;
 pub mod metrics;
 pub mod policy;
