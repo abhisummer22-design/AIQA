@@ -133,6 +133,12 @@ pub enum RequiredCapability {
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum AiTask {
     TestCaseGeneration,
+    /// Phase 2.1 — LEVEL 3 of `execution_plan::compile`: only reached when
+    /// deterministic compilation cannot unambiguously resolve a test case.
+    /// Same capability shape as `TestCaseGeneration` (real structured JSON
+    /// output, real reasoning about ambiguous prose) — a real, distinct
+    /// task in this router's existing taxonomy, not a second router.
+    TestCaseCompilation,
     RequirementAnalysis,
     DocumentAnalysis,
     BugAnalysis,
@@ -152,6 +158,7 @@ pub fn required_capabilities(task: AiTask) -> Vec<RequiredCapability> {
     use RequiredCapability::*;
     match task {
         AiTask::TestCaseGeneration => vec![TextGeneration, StructuredOutput, Reasoning],
+        AiTask::TestCaseCompilation => vec![TextGeneration, StructuredOutput, Reasoning],
         AiTask::RequirementAnalysis => vec![TextGeneration, Reasoning, LongContext],
         AiTask::DocumentAnalysis => vec![TextGeneration, LongContext],
         AiTask::BugAnalysis => vec![TextGeneration, Reasoning],
@@ -968,6 +975,58 @@ mod tests {
     fn document_analysis_requires_long_context_capability() {
         let required = required_capabilities(AiTask::DocumentAnalysis);
         assert!(required.contains(&RequiredCapability::LongContext));
+    }
+
+    /// Phase 3 root-cause regression: `RequirementAnalysis` (Custom
+    /// Testing's own analysis task) also requires `LongContext` — a model
+    /// that explicitly reports `long_context: None` (structurally
+    /// disqualifying, not merely low-scoring) must be excluded from
+    /// `RequirementAnalysis` routing, exactly like `UiAnalysis` excludes a
+    /// non-vision model. This is the specific mechanism that produced the
+    /// original `NoCompatibleModel { task: RequirementAnalysis }` blocker
+    /// when zero providers were reachable at all — see the Phase 3 Real AI
+    /// Provider & Model Routing Fix report §5 for the actual root cause
+    /// (no code defect here; the router's own exclusion logic is correct
+    /// and unchanged by that fix).
+    #[test]
+    fn requirement_analysis_requires_long_context_capability_and_a_none_model_is_excluded() {
+        let required = required_capabilities(AiTask::RequirementAnalysis);
+        assert!(required.contains(&RequiredCapability::LongContext));
+
+        let mut no_long_context = healthy_model("m", "p", CapabilityLevel::Strong);
+        no_long_context.capabilities.long_context = Some(CapabilityLevel::None);
+        let provider = healthy_provider("p", vec![no_long_context]);
+        let score = score_model(&provider.models[0], &provider, &required, None);
+        assert_eq!(score, None, "a model with an explicit, evidenced long_context: None must never be routed RequirementAnalysis");
+    }
+
+    /// Phase 3 root-cause regression: a model whose capabilities genuinely
+    /// mirror what real Ollama discovery reports for a real, working local
+    /// model (`capabilities_from_ollama`'s own output for a model that
+    /// lists `"completion"`: `text_generation: Strong, structured_output:
+    /// Basic, reasoning: Basic, long_context: Unknown` — confirmed live
+    /// against a real, running Ollama instance serving `gemma3:12b` during
+    /// this fix's own verification) IS a valid `RequirementAnalysis`
+    /// candidate — `Unknown` scores low but is never disqualifying. This
+    /// locks in the exact real-world shape that resolved the blocker as a
+    /// named regression, not just an inference from unrelated test doubles.
+    #[test]
+    fn a_real_ollama_shaped_healthy_model_is_a_valid_requirement_analysis_candidate() {
+        let required = required_capabilities(AiTask::RequirementAnalysis);
+        let ollama_shaped = capabilities_from_ollama(&["completion".to_string()], Some("gemma3"));
+        let model = ModelDefinition {
+            id: "gemma3:12b".to_string(),
+            provider_id: "ollama".to_string(),
+            display_name: "gemma3:12b".to_string(),
+            family: Some("gemma3".to_string()),
+            parameter_size: Some("12.2B".to_string()),
+            context_window: None,
+            capabilities: ollama_shaped,
+            status: ModelStatus::Available,
+        };
+        let provider = healthy_provider("ollama", vec![model]);
+        let score = score_model(&provider.models[0], &provider, &required, None);
+        assert!(score.is_some(), "a real, Ollama-discovered model reporting the 'completion' capability must be a valid RequirementAnalysis candidate, not excluded");
     }
 
     #[test]

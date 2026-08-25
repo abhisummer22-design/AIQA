@@ -111,7 +111,17 @@ export const AIQAProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Generator Session
   const [activeGenerationSession, setActiveGenerationSession] = useState<GenerationSession | null>({
     id: 'gen-4401',
-    requirementText: 'User initiates OAuth 2.0 PKCE login with multi-factor authentication, then attempts profile update without SMS verification challenge step.',
+    // Phase 1 (AI Test Case Generator integration) — this used to pre-fill
+    // the real Requirement Text field with a fabricated scenario on every
+    // fresh page load. That field is now the literal text sent to the real
+    // AI backend on Generate; leaving it pre-filled with invented content
+    // risked a user unknowingly submitting fake seed text as their own
+    // real requirement to a real, authenticated generation call. Left
+    // empty so a real generation always starts from what a user actually
+    // typed. The `generatedCases` demo content below this remains
+    // unchanged — it is pre-existing, disclosed-in-repo-audit sample
+    // dashboard content, not itself part of this phase's generation path.
+    requirementText: '',
     specType: 'NATURAL_LANGUAGE',
     targetAppUrl: 'https://staging.enterprise.com/auth/login',
     currentStep: 'GENERATED_CASES',

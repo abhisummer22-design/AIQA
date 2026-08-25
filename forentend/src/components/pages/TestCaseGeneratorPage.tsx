@@ -47,7 +47,16 @@ import {
   GeneratedTestCase,
 } from '../../types';
 import { ApiError, aiqaApi } from '../../services/aiqaApi';
-import type { CreateTestCaseRequest, TestCaseHandoffRequest, TestCaseRow } from '../../types/contract';
+import type {
+  CreateTestCaseRequest,
+  TestCaseHandoffRequest,
+  TestCaseRow,
+  GenerateAiSkillInput,
+  GenerateAiTestCasesResponse,
+  GeneratedTestCaseDraft,
+  AiRoutingMode,
+  CompilationOutcome,
+} from '../../types/contract';
 
 /** AUD-005 — maps a real, persisted `TestCaseRow` (backend) onto the
  *  existing `GeneratedTestCase` shape `GeneratedTestCasesView` already
@@ -107,18 +116,37 @@ function generatedCaseToCreateRequest(tc: GeneratedTestCase): CreateTestCaseRequ
   };
 }
 
+/** Phase 2 (Execution Handoff) — the caller's real, explicit handoff
+ *  choice. `executor` carries no `params`: no per-case params UI exists
+ *  anywhere in this app (the Execution Hub's own manual task creation
+ *  doesn't offer one either), so a real-executor handoff always runs that
+ *  tool's own default reference fixture (`executor.rs`'s own
+ *  `safe_param(task, key, default)` fallback) — never a fabricated
+ *  translation of this case's natural-language steps into a script. */
+export type HandoffChoice =
+  | { mode: 'simulate'; outcome: 'pass' | 'fail' | 'timeout' | 'infra_error' }
+  | { mode: 'executor'; executor: string }
+  /** Phase 2.1 — sends `compile_and_execute: true` instead of a fixed
+   *  `executor`: the real backend compiler (`execution_plan.rs`) reads
+   *  this case's own actual steps/expected_result, deterministically or
+   *  AI-assistedly compiles a structured plan from them, then runs that
+   *  plan through whichever real executor is compatible — never a fixed
+   *  reference fixture. See `GeneratedTestCasesView.tsx`'s own compile
+   *  preview UI for the truthful READY/NOT_EXECUTABLE/... disclosure
+   *  shown before this is sent. */
+  | { mode: 'compile' };
+
 // FE-4: the one, minimal, non-visual routing change made to this
 // product-owner-designed page — see `handleOpenExecutionHub` below.
 //
-// FE-5: every generation call in this page is entirely local/simulated
-// (`handleTriggerGenerate`'s own `setTimeout` pipeline below) — there is no
-// real `aiqaApi` call anywhere in this file, so brief §12's "project-
-// dependent actions must use the selected project when the real backend
-// contract requires it" currently has nothing to wire (no such real,
-// project-scoped action exists yet on this page). `realProjectId` is
-// exposed for exactly that future wiring and, in the meantime, used as a
-// remount key so an in-progress local generation session is not silently
-// carried over to a different real project scope.
+// Phase 1 (AI Test Case Generator integration): `handleTriggerGenerate`
+// below now makes a real, authenticated `aiqaApi.testCases.generateAi`
+// call to the real backend AI generation pipeline
+// (`ai_generation.rs` -> `ai_router.rs`) — the previous local/simulated
+// `setTimeout` template pipeline (FE-5) has been removed, not merely
+// disclosed. `realProjectId` is required for this real call (the endpoint
+// is project-scoped) and is also used as a remount key so an in-progress
+// generation session is not silently carried over to a different project.
 export const TestCaseGeneratorPage: React.FC = () => {
   const {
     activeGenerationSession,
@@ -181,6 +209,16 @@ export const TestCaseGeneratorPage: React.FC = () => {
   const [generationState, setGenerationState] = useState<GenerationExecutionState>(
     activeGenerationSession?.generationState || 'IDLE'
   );
+
+  // 6b. Phase 1 — real, request-backed generation outcome/error state.
+  // `lastGenerationResult` is the real, unmodified response from
+  // `POST .../test-cases/generate-ai` (never fabricated); `generationError`
+  // is a real, human-readable reason whenever generation did not produce
+  // reviewable cases (network/auth failure, no compatible AI model, or a
+  // real AI response that produced zero cases passing validation).
+  const [generationError, setGenerationError] = useState<string | null>(null);
+  const [lastGenerationResult, setLastGenerationResult] = useState<GenerateAiTestCasesResponse | null>(null);
+  const [lastRoutingMode, setLastRoutingMode] = useState<AiRoutingMode | null>(null);
 
   // 7. Generated Test Cases list (local, unsaved draft — unchanged since
   // FE-16: a fixed-template preview a user can locally triage before
@@ -318,20 +356,56 @@ export const TestCaseGeneratorPage: React.FC = () => {
     }
   };
 
-  /** The real bridge to the real Execution Hub (FRD-EXE-11). `outcome` is a
-   *  required, explicit, user-visible choice — see
-   *  `TestCaseHandoffRequest`'s own doc comment for why there is no
-   *  default that would silently fabricate a "passed" result. */
-  const handleHandoffReal = async (id: string, outcome: 'pass' | 'fail' | 'timeout' | 'infra_error') => {
+  /** The real bridge to the real Execution Hub (FRD-EXE-11). `choice` is a
+   *  required, explicit, user-visible decision — see
+   *  `TestCaseHandoffRequest`'s own doc comment for why there is no default
+   *  that would silently fabricate a "passed" result. Phase 2: `choice.mode
+   *  === 'executor'` sends the real `executor` field (no `params` — see
+   *  `HandoffChoice`'s own doc comment), reaching the exact same real,
+   *  unmodified backend path (`api.rs::handoff_test_case_scoped` ->
+   *  `create_run_core` -> `engine::spawn_run` -> a real `executor.rs`
+   *  adapter) the Execution Hub's own manually-created tasks already use —
+   *  no new backend code, no duplicate execution path. */
+  const handleHandoffReal = async (id: string, choice: HandoffChoice) => {
     if (!realProjectId) return;
     setHandoffError(null);
-    const body: TestCaseHandoffRequest = { simulate: { outcome, delay_ms: 150 } };
+    const body: TestCaseHandoffRequest =
+      choice.mode === 'executor'
+        ? { executor: choice.executor }
+        : choice.mode === 'compile'
+          ? { compile_and_execute: true }
+          : { simulate: { outcome: choice.outcome, delay_ms: 150 } };
     try {
       const created = await aiqaApi.testCases.handoff(realProjectId, id, body);
       await refetchPersistedCases();
       navigate(`/execution?run=${created.run_id}`);
     } catch (err) {
       setHandoffError(err instanceof ApiError ? err.message : 'Handoff failed.');
+    }
+  };
+
+  // Phase 2.1 — read-only compile preview: lets the user see the real
+  // compiled plan's READY/NOT_EXECUTABLE/COMPILATION_FAILED/
+  // COMPILATION_UNAVAILABLE outcome (`POST .../compile`, never mutates
+  // anything) before committing to a real `compile_and_execute` handoff.
+  const [compilePreview, setCompilePreview] = useState<CompilationOutcome | null>(null);
+  const [compilePreviewLoading, setCompilePreviewLoading] = useState(false);
+  const [compilePreviewForId, setCompilePreviewForId] = useState<string | null>(null);
+  const [compilePreviewError, setCompilePreviewError] = useState<string | null>(null);
+
+  const handleCompilePreview = async (id: string) => {
+    if (!realProjectId) return;
+    setCompilePreviewLoading(true);
+    setCompilePreviewError(null);
+    setCompilePreview(null);
+    setCompilePreviewForId(id);
+    try {
+      const outcome = await aiqaApi.testCases.compile(realProjectId, id);
+      setCompilePreview(outcome);
+    } catch (err) {
+      setCompilePreviewError(err instanceof ApiError ? err.message : 'Compilation preview failed.');
+    } finally {
+      setCompilePreviewLoading(false);
     }
   };
 
@@ -406,304 +480,211 @@ export const TestCaseGeneratorPage: React.FC = () => {
     setSelectedCategories([]);
   };
 
-  // Test Case Generation Pipeline
+  // Test Case Generation Pipeline (Phase 1 — real AI backend integration).
   //
-  // Skills & MCP Phase 1: `selectedSkillIds` (real, in-scope state from
-  // `useSkillSelection`) is captured into `activeGenerationSession` below,
-  // exactly like `selectedCategories`/`depth` already are — architecturally
-  // available to whatever consumes this session next. This local, fixed-
-  // template pipeline does not vary its per-category output by selected
-  // skill (there is no real generation engine here to do that yet, and
-  // claiming Security Testing/an MCP "improved" this deterministic
-  // template would be exactly the kind of unproven claim this unit must
-  // not make) — selection is real, its effect on local generation is not
-  // yet implemented, and this is disclosed in the Skills & MCP panel
-  // itself, not just in this comment.
-  const handleTriggerGenerate = () => {
-    setGenerationState('VALIDATING');
+  // The real backend contract (`GenerateAiTestCasesRequest`,
+  // `contract.ts`) has exactly two fields: `requirement_text` and `skills`.
+  // Selected categories, generation depth, attached document names, and
+  // connected application-source labels have no dedicated wire field on
+  // the real endpoint, so they are folded into `requirement_text` itself
+  // as plain, clearly-labeled instruction/context lines — a real way to
+  // give them influence over the actual prompt without inventing a backend
+  // field that does not exist. Document/app-source *content* is never
+  // claimed to reach the model, because it genuinely never does today
+  // (neither `DocumentUploadSection` nor `ApplicationSourceSection`
+  // extracts or fetches real content) — see the Phase 1 implementation
+  // report §18 for this limitation stated in full.
+  const buildRequirementText = (): string => {
+    const parts: string[] = [requirementNotes.trim()];
+    if (selectedCategories.length > 0) {
+      parts.push(`Focus particularly on these test categories where applicable: ${selectedCategories.join(', ')}.`);
+    }
+    parts.push(`Requested generation depth: ${depth}.`);
+    if (documents.length > 0) {
+      parts.push(
+        `Attached documents (names only — content is not analyzed by this request): ${documents
+          .map((d) => d.slotId)
+          .join(', ')}.`
+      );
+    }
+    const connectedSources = (Object.values(appSources) as AppSourceConnection[]).filter((a) => a.status === 'CONNECTED');
+    if (connectedSources.length > 0) {
+      parts.push(
+        `Connected application sources (reference only — not fetched by this request): ${connectedSources
+          .map((a) => `${a.label} (${a.url})`)
+          .join(', ')}.`
+      );
+    }
+    return parts.filter((p) => p.trim().length > 0).join('\n');
+  };
 
-    // Stage 1: Validate Sources
-    setTimeout(() => {
-      setGenerationState('PROCESSING');
+  /** Mirrors `testCaseRowToDisplay` above: turns one real, un-persisted
+   *  `GeneratedTestCaseDraft` (actual AI output, or the caller's own
+   *  resolved skill on a fallback path) into the existing
+   *  `GeneratedTestCase` shape this page's draft-review UI already
+   *  renders. Every field is either copied verbatim from the real response
+   *  or is a disclosed, honestly-labeled derivation of it — never a
+   *  reintroduced fabricated value from the old local template. */
+  const aiDraftToDisplay = (
+    draft: GeneratedTestCaseDraft,
+    index: number,
+    meta: { method: 'ai' | 'fallback'; provider: string | null; model: string | null },
+  ): GeneratedTestCase => {
+    const skill = skills.find((s) => s.id === draft.skill_id);
+    const tcId = `AI-${(index + 1).toString().padStart(3, '0')}`;
+    const docLabels = documents.map((d) => d.slotId).join(' + ') || undefined;
+    const aiAnalysis =
+      meta.method === 'ai'
+        ? `Generated by ${meta.provider ?? 'an AI provider'}/${meta.model ?? 'an unreported model'}${
+            skill ? ` (skill: ${skill.name})` : ''
+          } — evidence: ${draft.evidence}${draft.source_reference ? `, cites: "${draft.source_reference}"` : ''}.`
+        : 'AI generation did not produce this case.';
 
-      // Stage 2: AI Document & Application Analysis
-      setTimeout(() => {
-        setGenerationState('GENERATING');
+    return {
+      id: tcId,
+      title: draft.title,
+      description: `AI-generated ${draft.category} test case (skill: ${skill?.name ?? draft.skill_id}, evidence: ${draft.evidence}).`,
+      category: draft.category,
+      priority: draft.priority as GeneratedTestCase['priority'],
+      severity: draft.severity as GeneratedTestCase['severity'],
+      sourceDocument: docLabels,
+      requirementReference: draft.source_reference ?? undefined,
+      sourceRequirement: requirementNotes.trim() || undefined,
+      traceability: {
+        sourceDoc: docLabels ?? 'Requirement text only (no document attached)',
+        requirementRef: draft.source_reference ?? `Not cited (${draft.evidence})`,
+        requirementText: requirementNotes.trim(),
+        aiAnalysis,
+        testCaseId: tcId,
+        testCategory: draft.category,
+        executionTarget: 'Not yet assigned — assigned at execution handoff',
+        evidencePolicy: 'Not yet captured — captured at execution handoff',
+        reportMapping: 'Not yet mapped',
+      },
+      preconditions: draft.preconditions,
+      testData: JSON.stringify(
+        { skill_id: draft.skill_id, evidence: draft.evidence, source_reference: draft.source_reference },
+        null,
+        2
+      ),
+      steps: draft.steps.map((s, i) => ({ stepNumber: i + 1, action: s.action, expectedResult: s.expected_result })),
+      expectedResult: draft.expected_result,
+      assertions: [draft.expected_result],
+      riskFactor: draft.priority === 'CRITICAL' ? 'HIGH' : draft.priority === 'HIGH' ? 'MEDIUM' : 'LOW',
+      status: 'PENDING_REVIEW',
+      suggestedTags: [
+        draft.category.toLowerCase().replace(/\s+/g, '-'),
+        draft.skill_id,
+        draft.evidence,
+        meta.method === 'ai' ? 'ai-generated' : 'ai-fallback',
+      ],
+      generatedAt: new Date().toISOString(),
+    };
+  };
 
-        // Stage 3: Generate Authentic Traceable Test Cases across selected categories
-        setTimeout(() => {
-          const docLabels = documents.map((d) => d.slotId).join(' + ') || 'Product Requirements Spec';
-          const targetUrl =
-            appSources.STAGING?.url ||
-            appSources.DEMO?.url ||
-            appSources.LIVE?.url ||
-            'https://app.enterprise.internal';
+  const handleTriggerGenerate = async () => {
+    if (!realProjectId) {
+      setGenerationState('FAILED');
+      setGenerationError('Select a project before generating test cases — the real AI generation endpoint is project-scoped.');
+      return;
+    }
+    const trimmedNotes = requirementNotes.trim();
+    if (!trimmedNotes) {
+      // `GenerationConfigSection`'s own validation should already have
+      // caught this — defense in depth, never send an empty
+      // `requirement_text` the backend would reject with a 400 anyway.
+      setGenerationState('FAILED');
+      setGenerationError('Enter requirement text before generating.');
+      return;
+    }
 
-          // Construct traceable test cases for each selected category
-          const newGenerated: GeneratedTestCase[] = selectedCategories.map((cat, idx) => {
-            const num = (idx + 1).toString().padStart(3, '0');
-            const tcId = `TC-${cat.toUpperCase().slice(0, 3)}-${num}`;
+    setGenerationError(null);
+    setGenerationState('GENERATING');
 
-            let title = '';
-            let objective = '';
-            let description = '';
-            let priority: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' = 'HIGH';
-            let severity: 'CRITICAL' | 'MAJOR' | 'MINOR' | 'TRIVIAL' = 'MAJOR';
-            let steps: Array<{ stepNumber: number; action: string; expectedResult: string }> = [];
-            let assertions: string[] = [];
+    const requestSkills: GenerateAiSkillInput[] = selectedSkillIds
+      .map((id) => skills.find((s) => s.id === id))
+      .filter((s): s is (typeof skills)[number] => Boolean(s))
+      .map((s) => ({ id: s.id, name: s.name, description: s.description }));
 
-            switch (cat) {
-              case 'Functional':
-                title = 'User Authentication & Session Lifecycle Verification';
-                objective = 'Validate complete login flow and credential challenge matching.';
-                description = 'Verify that valid user credentials grant active bearer session token and route to dashboard.';
-                priority = 'CRITICAL';
-                severity = 'CRITICAL';
-                steps = [
-                  { stepNumber: 1, action: `Navigate to ${targetUrl}/auth/login`, expectedResult: 'Login form rendered with CSRF token' },
-                  { stepNumber: 2, action: 'Submit valid enterprise user credentials', expectedResult: 'HTTP 200 OK and redirection to /dashboard' },
-                ];
-                assertions = ['HTTP status is 200', 'Auth token stored in secure cookie with HttpOnly flag'];
-                break;
+    // Best-effort, non-blocking: real routing mode for the "Generation
+    // Details" panel (brief §10). A failure here must never block or fail
+    // the real generation call itself — it only means "Mode" renders as
+    // "Not Reported" rather than a fabricated guess.
+    try {
+      const settings = await aiqaApi.ai.getSettings();
+      setLastRoutingMode(settings.mode);
+    } catch {
+      setLastRoutingMode(null);
+    }
 
-              case 'Non-Functional':
-                title = 'High-Availability Service Resilience on Redis Ingress Drop';
-                objective = 'Verify graceful service fallback when cache nodes fail.';
-                description = 'Simulate transient cache failure and verify read fallback to database replica.';
-                priority = 'HIGH';
-                severity = 'MAJOR';
-                steps = [
-                  { stepNumber: 1, action: 'Trigger 100 concurrent requests with simulated cache disconnect', expectedResult: 'Requests routed directly to PostgreSQL replica' },
-                  { stepNumber: 2, action: 'Observe P99 latency SLA', expectedResult: 'P99 latency remains under 450ms SLA' },
-                ];
-                assertions = ['Zero 500 Internal Server Errors returned', 'Circuit breaker transitions to HALF_OPEN'];
-                break;
+    try {
+      const response = await aiqaApi.testCases.generateAi(realProjectId, {
+        requirement_text: buildRequirementText(),
+        skills: requestSkills,
+      });
+      setLastGenerationResult(response);
 
-              case 'Positive':
-                title = 'Standard Checkout & Payment Authorization Workflow';
-                objective = 'Ensure standard checkout with valid payment method succeeds.';
-                description = 'Execute full happy-path payment flow using verified test credit card.';
-                priority = 'CRITICAL';
-                severity = 'CRITICAL';
-                steps = [
-                  { stepNumber: 1, action: 'Add subscription item to cart and initiate checkout', expectedResult: 'Order summary calculated with accurate tax' },
-                  { stepNumber: 2, action: 'Authorize payment with 3D Secure verification', expectedResult: 'Payment confirmed and receipt generated' },
-                ];
-                assertions = ['Order status set to PAID', 'Webhook event order.created dispatched'];
-                break;
+      const meta = { method: response.generation_method, provider: response.provider, model: response.model };
+      const mapped = response.test_cases.map((draft, i) => aiDraftToDisplay(draft, i, meta));
+      setGeneratedCases(mapped);
 
-              case 'Negative':
-                title = 'Malformed Payload Rejection & Schema Validation';
-                objective = 'Verify API strictly rejects malformed JSON payloads.';
-                description = 'Submit invalid schema attributes and verify 400 Bad Request response with structured error messages.';
-                priority = 'HIGH';
-                severity = 'MAJOR';
-                steps = [
-                  { stepNumber: 1, action: 'Dispatch POST /api/v2/mutate with negative integer for quantity', expectedResult: 'HTTP 422 Unprocessable Entity' },
-                ];
-                assertions = ['HTTP status 422 returned', 'Error details specify invalid field parameter'];
-                break;
+      if (setActiveGenerationSession) {
+        setActiveGenerationSession({
+          id: `gen-${Date.now()}`,
+          requirementText: trimmedNotes,
+          specType: 'NATURAL_LANGUAGE',
+          targetAppUrl: appSources.STAGING?.url || appSources.DEMO?.url || appSources.LIVE?.url || undefined,
+          currentStep: 'GENERATED_CASES',
+          generationState: mapped.length > 0 ? 'COMPLETED' : response.generation_method === 'fallback' ? 'FAILED' : 'PARTIAL',
+          selectedCategories,
+          documents,
+          appSources,
+          depth,
+          generatedCases: mapped,
+          createdAt: new Date().toISOString(),
+          selectedSkillIds,
+        });
+      }
 
-              case 'UI/UX':
-                title = 'Responsive Design & WCAG AA Contrast Compliance';
-                objective = 'Validate responsive layout across mobile and desktop viewports.';
-                description = 'Inspect visual hierarchy, focus rings, and contrast ratios on dark mode canvas.';
-                priority = 'MEDIUM';
-                severity = 'MINOR';
-                steps = [
-                  { stepNumber: 1, action: 'Resize browser viewport to 375x812 (Mobile Viewport)', expectedResult: 'Collapsible navigation drawer rendered without horizontal scroll' },
-                  { stepNumber: 2, action: 'Execute axe-core accessibility audit', expectedResult: 'Zero WCAG AA contrast violations detected' },
-                ];
-                assertions = ['No horizontal scrollbar rendered', 'Axe-core violation count is 0'];
-                break;
-
-              case 'Spike':
-                title = 'Sudden Traffic Surge & Horizontal Pod Autoscaler Trigger';
-                objective = 'Validate cluster behavior during instantaneous 10x traffic spike.';
-                description = 'Inject 5,000 req/sec instantaneous load to verify HPA pod autoscaling.';
-                priority = 'HIGH';
-                severity = 'MAJOR';
-                steps = [
-                  { stepNumber: 1, action: 'Ramp traffic from 100 to 5,000 RPS in 5 seconds', expectedResult: 'Ingress controller queues excess connections' },
-                  { stepNumber: 2, action: 'Observe Kubernetes HPA replica count', expectedResult: 'Replicas scale from 2 to 12 within 45 seconds' },
-                ];
-                assertions = ['Overall error rate remains < 0.5%', 'CPU utilization stabilized below 80%'];
-                break;
-
-              case 'Load':
-                title = 'Sustained Concurrency & Database Connection Pool Saturation';
-                objective = 'Ensure connection pool handles sustained 2,000 concurrent active users.';
-                description = 'Hold steady load for 10 minutes and measure connection pool queue latency.';
-                priority = 'HIGH';
-                severity = 'MAJOR';
-                steps = [
-                  { stepNumber: 1, action: 'Sustain 2,000 virtual users querying search API for 10 minutes', expectedResult: 'Database pool size remains bounded without leaks' },
-                ];
-                assertions = ['Zero database connection timeout errors', 'Average response time < 120ms'];
-                break;
-
-              case 'Edge Case':
-                title = 'Leap Year & Timezone Transition Boundary Handling';
-                objective = 'Verify recurring billing calculation across daylight saving boundary.';
-                description = 'Simulate billing renewal execution at 23:59:59 on February 29th across UTC+14 timezone.';
-                priority = 'MEDIUM';
-                severity = 'MINOR';
-                steps = [
-                  { stepNumber: 1, action: 'Schedule invoice calculation for Feb 29 UTC+14', expectedResult: 'Invoice period calculated as exactly 29 days' },
-                ];
-                assertions = ['No off-by-one day calculation errors in billing cycle'];
-                break;
-
-              case 'Senior Base':
-                title = 'Distributed Transaction Two-Phase Commit Rollback Isolation';
-                objective = 'Verify multi-service saga pattern cleanly rolls back on step 3 failure.';
-                description = 'Induce fault in inventory service after payment reservation to verify compensating saga transactions.';
-                priority = 'CRITICAL';
-                severity = 'CRITICAL';
-                steps = [
-                  { stepNumber: 1, action: 'Initiate multi-item order checkout', expectedResult: 'Payment token reserved' },
-                  { stepNumber: 2, action: 'Inject synthetic 500 error in Inventory Reservation service', expectedResult: 'Compensating payment refund triggered immediately' },
-                ];
-                assertions = ['Ledger balance perfectly restored to original value', 'Saga state transitioned to COMPENSATED'];
-                break;
-
-              case 'Business Logic':
-                title = 'Tiered Discount Rule & Volume Tier Boundary Verification';
-                objective = 'Ensure enterprise tier discounts apply strictly when license count >= 50.';
-                description = 'Verify 20% volume discount at 50 licenses and standard pricing at 49 licenses.';
-                priority = 'HIGH';
-                severity = 'MAJOR';
-                steps = [
-                  { stepNumber: 1, action: 'Set seat count = 49 in pricing calculator', expectedResult: 'Discount = 0%, Total = $4,900' },
-                  { stepNumber: 2, action: 'Set seat count = 50 in pricing calculator', expectedResult: 'Discount = 20%, Total = $4,000' },
-                ];
-                assertions = ['Correct tier logic applied at exact boundary integers'];
-                break;
-
-              case 'API':
-                title = 'REST API Contract Validation & RFC 7807 Problem Details';
-                objective = 'Verify OpenAPI v3 schema compliance and response headers.';
-                description = 'Ensure GET /api/v2/resources conforms to OpenAPI 3.1 specification schema.';
-                priority = 'HIGH';
-                severity = 'MAJOR';
-                steps = [
-                  { stepNumber: 1, action: 'Dispatch GET /api/v2/resources with Accept: application/json', expectedResult: 'HTTP 200 with matching schema types' },
-                ];
-                assertions = ['Response JSON matches OpenAPI definition', 'Header content-type is application/json'];
-                break;
-
-              case 'Performance':
-                title = 'DOM First Contentful Paint & Core Web Vitals Audit';
-                objective = 'Verify FCP < 1.2s and LCP < 2.5s under 4G throttling.';
-                description = 'Measure Core Web Vitals on cold cache browser session with simulated 4G connection.';
-                priority = 'MEDIUM';
-                severity = 'MINOR';
-                steps = [
-                  { stepNumber: 1, action: 'Load landing page with simulated Fast 4G network throttle', expectedResult: 'FCP measured at < 1.1s, LCP < 2.2s' },
-                ];
-                assertions = ['Lighthouse Performance score > 90', 'CLS score < 0.05'];
-                break;
-
-              case 'Security':
-                title = 'OAuth 2.0 PKCE Code Verifier Hash Validation';
-                objective = 'Ensure authorization server rejects mismatched code_verifier.';
-                description = 'Attempt auth code token exchange with malformed SHA-256 code_verifier string.';
-                priority = 'CRITICAL';
-                severity = 'CRITICAL';
-                steps = [
-                  { stepNumber: 1, action: 'Initiate OAuth authorize with S256 code_challenge', expectedResult: 'HTTP 302 with auth code' },
-                  { stepNumber: 2, action: 'Submit token exchange with mismatched code_verifier', expectedResult: 'HTTP 400 invalid_grant' },
-                ];
-                assertions = ['HTTP 400 returned', 'Security alert logged with IP address'];
-                break;
-
-              case 'Penetration':
-                title = 'Server-Side Request Forgery (SSRF) Filter Bypass in Webhooks';
-                objective = 'Verify webhook endpoint blocks loopback and cloud metadata endpoints.';
-                description = 'Attempt webhook registration targeting 169.254.169.254 and localhost:8080.';
-                priority = 'CRITICAL';
-                severity = 'CRITICAL';
-                steps = [
-                  { stepNumber: 1, action: 'POST /api/v2/webhooks with url: http://169.254.169.254/latest/meta-data/', expectedResult: 'HTTP 400 with SSRF_RESTRICTED_IP' },
-                  { stepNumber: 2, action: 'POST /api/v2/webhooks with url: http://localhost:8080', expectedResult: 'HTTP 400 with SSRF_RESTRICTED_IP' },
-                ];
-                assertions = ['Requests to private and cloud metadata IPs blocked', 'Audit event emitted'];
-                break;
-            }
-
-            return {
-              id: tcId,
-              title,
-              objective,
-              description,
-              category: cat,
-              priority,
-              severity,
-              sourceDocument: docLabels,
-              requirementReference: `${documents[0]?.slotId || 'PRD'} §${idx + 1}.${idx + 2} Acceptance Criteria`,
-              sourceRequirement:
-                requirementNotes.trim() ||
-                `System must strictly conform to ${cat} quality requirements outlined in ${docLabels}.`,
-              traceability: {
-                sourceDoc: documents[0]?.fileName || `${docLabels} Specification`,
-                requirementRef: `${docLabels} §${idx + 1}.${idx + 2}`,
-                requirementText: title,
-                // FE-16: was `Synthesized via ${model} (${depth} depth)` — a
-                // false claim that a named AI model performed synthesis.
-                // This is a fixed local template, and it must say so.
-                aiAnalysis: 'Locally assembled from a fixed category template — no AI model was called.',
-                testCaseId: tcId,
-                testCategory: cat,
-                executionTarget: 'k8s-runner-pool-us',
-                evidencePolicy: 'HAR + Playwright Trace + Audit Log',
-                reportMapping: 'SOC2 / ISO 27001 Compliance Matrix',
-              },
-              preconditions: [
-                'Target application accessible and healthy at specified endpoint',
-                'Runner agent authenticated with scoped credentials',
-              ],
-              testData: JSON.stringify({ category: cat, target: targetUrl, depth }, null, 2),
-              steps,
-              expectedResult: assertions.join('; '),
-              assertions,
-              riskFactor: priority === 'CRITICAL' ? 'HIGH' : priority === 'HIGH' ? 'MEDIUM' : 'LOW',
-              status: 'PENDING_REVIEW',
-              suggestedTags: [cat.toLowerCase().replace(/\s+/g, '-'), 'template-generated', 'traceable'],
-              generatedAt: new Date().toISOString(),
-            };
-          });
-
-          setGeneratedCases(newGenerated);
-          setGenerationState('COMPLETED');
-          setActiveBranch('GENERATED_CASES');
-
-          // Update Context
-          if (setActiveGenerationSession) {
-            setActiveGenerationSession({
-              id: `gen-${Math.floor(1000 + Math.random() * 9000)}`,
-              requirementText: requirementNotes,
-              specType: 'NATURAL_LANGUAGE',
-              targetAppUrl: targetUrl,
-              currentStep: 'GENERATED_CASES',
-              generationState: 'COMPLETED',
-              selectedCategories,
-              documents,
-              appSources,
-              depth,
-              generatedCases: newGenerated,
-              createdAt: new Date().toISOString(),
-              selectedSkillIds,
-            });
-          }
-
-          addActivity({
-            type: 'RUN_STARTED',
-            title: `Test Case Generation Completed (${newGenerated.length} Cases)`,
-            description: `Locally assembled ${newGenerated.length} test cases across ${selectedCategories.length} categories from fixed category templates for ${docLabels}.`,
-          });
-        }, 1800);
-      }, 1400);
-    }, 1000);
+      if (response.generation_method === 'ai' && mapped.length > 0) {
+        setGenerationState('COMPLETED');
+        setActiveBranch('GENERATED_CASES');
+        addActivity({
+          type: 'RUN_STARTED',
+          title: `AI Test Case Generation Completed (${mapped.length} Case${mapped.length === 1 ? '' : 's'})`,
+          description: `${mapped.length} test case${mapped.length === 1 ? '' : 's'} generated by ${response.provider}/${response.model} using ${requestSkills.length} selected skill${requestSkills.length === 1 ? '' : 's'}.`,
+        });
+      } else if (response.generation_method === 'ai') {
+        // A real AI call ran, but every candidate case was dropped by the
+        // real quality/traceability/dedup gates (`ai_generation.rs`) — a
+        // genuine, non-empty outcome, not a network/server error, but also
+        // not a set of cases to review.
+        setGenerationState('PARTIAL');
+        setGenerationError(
+          'The AI model responded, but no candidate test case passed quality/traceability validation. Try more specific requirement text.'
+        );
+        addActivity({
+          type: 'FAILURE_DETECTED',
+          title: 'AI Test Case Generation Produced No Valid Cases',
+          description: `${response.provider}/${response.model} responded, but every candidate case was rejected by structural or traceability validation.`,
+        });
+      } else {
+        // generation_method === 'fallback' — the real backend honestly
+        // reports that no compatible AI model was available. Never
+        // silently substitute local template output here.
+        setGenerationState('FAILED');
+        setGenerationError(response.fallback_reason || 'No AI provider is currently available for test case generation.');
+        addActivity({
+          type: 'FAILURE_DETECTED',
+          title: 'AI Test Case Generation Unavailable',
+          description: response.fallback_reason || 'No compatible AI provider/model was available.',
+        });
+      }
+    } catch (err) {
+      setLastGenerationResult(null);
+      setGenerationState('FAILED');
+      setGenerationError(err instanceof ApiError ? err.message : 'Test case generation failed.');
+    }
   };
 
   // AUD-005 — once any real, persisted cases exist for this project, the
@@ -789,9 +770,23 @@ export const TestCaseGeneratorPage: React.FC = () => {
             <h1 className="text-base font-bold text-slate-100 font-sans tracking-tight">
               Test Case Generator
             </h1>
-            <span className="px-2 py-0.5 rounded bg-cyan-950/60 border border-cyan-800/60 text-[10px] font-mono text-cyan-300 uppercase font-semibold">
-              LOCAL TEMPLATE GENERATION
-            </span>
+            {/* Phase 1 — truthful, response-driven badge. Never claims "AI
+                GENERATED" before a real generation has actually completed. */}
+            {lastGenerationResult ? (
+              lastGenerationResult.generation_method === 'ai' ? (
+                <span className="px-2 py-0.5 rounded bg-emerald-950/60 border border-emerald-800/60 text-[10px] font-mono text-emerald-300 uppercase font-semibold">
+                  AI Generated
+                </span>
+              ) : (
+                <span className="px-2 py-0.5 rounded bg-amber-950/60 border border-amber-800/60 text-[10px] font-mono text-amber-300 uppercase font-semibold">
+                  AI Unavailable — Fallback
+                </span>
+              )
+            ) : (
+              <span className="px-2 py-0.5 rounded bg-cyan-950/60 border border-cyan-800/60 text-[10px] font-mono text-cyan-300 uppercase font-semibold">
+                AI-Powered Generation
+              </span>
+            )}
           </div>
           <p className="text-xs text-slate-400 font-sans">
             Generate intelligent, traceable test cases from your product requirements and application.
@@ -803,6 +798,62 @@ export const TestCaseGeneratorPage: React.FC = () => {
           {getHeaderStatusIndicator()}
         </div>
       </header>
+
+      {/* Generation Details (Phase 1) — real, response-driven metadata.
+          Never rendered before a real generation attempt has actually
+          happened; every value is either the real response field or the
+          honest "Not Reported" placeholder — never fabricated. */}
+      {(generationError || lastGenerationResult) && (
+        <div
+          id="generation-details-panel"
+          className={`p-3.5 rounded-lg border text-xs font-mono space-y-2 ${
+            lastGenerationResult?.generation_method === 'ai'
+              ? 'bg-emerald-950/20 border-emerald-800/60'
+              : 'bg-amber-950/20 border-amber-800/60'
+          }`}
+        >
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <span className="font-bold text-slate-200 uppercase tracking-wide text-[11px]">Generation Details</span>
+            {/* Suppressed when the reason is already shown by the "Fallback"
+                line below, to avoid showing the exact same message twice. */}
+            {generationError && lastGenerationResult?.generation_method !== 'fallback' && (
+              <span className="text-rose-300">{generationError}</span>
+            )}
+          </div>
+          {lastGenerationResult && (
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-1.5 text-slate-300">
+              <div>
+                <span className="text-slate-500">Method: </span>
+                {lastGenerationResult.generation_method === 'ai' ? 'AI' : 'Fallback (no AI output)'}
+              </div>
+              <div>
+                <span className="text-slate-500">Provider: </span>
+                {lastGenerationResult.provider ?? 'Not Reported'}
+              </div>
+              <div>
+                <span className="text-slate-500">Model: </span>
+                {lastGenerationResult.model ?? 'Not Reported'}
+              </div>
+              <div>
+                <span className="text-slate-500">Mode: </span>
+                {lastRoutingMode ?? 'Not Reported'}
+              </div>
+              <div className="col-span-2 sm:col-span-1">
+                <span className="text-slate-500">Skills: </span>
+                {selectedSkillIds.length > 0
+                  ? selectedSkillIds.map((id) => skills.find((s) => s.id === id)?.name ?? id).join(', ')
+                  : 'None selected'}
+              </div>
+              <div>
+                <span className="text-slate-500">Fallback: </span>
+                {lastGenerationResult.generation_method === 'fallback'
+                  ? `Yes — ${lastGenerationResult.fallback_reason ?? 'no reason reported'}`
+                  : 'No'}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Dual-Branch Navigation Ribbon (Source & Generation vs Generated Test Cases) */}
       <div className="flex items-center justify-between border-b border-slate-800 pb-1">
@@ -971,6 +1022,11 @@ export const TestCaseGeneratorPage: React.FC = () => {
           onValidateTestCase={handleValidateReal}
           onHandoffTestCase={handleHandoffReal}
           handoffError={handoffError}
+          onCompilePreview={handleCompilePreview}
+          compilePreview={compilePreview}
+          compilePreviewLoading={compilePreviewLoading}
+          compilePreviewForId={compilePreviewForId}
+          compilePreviewError={compilePreviewError}
         />
       )}
     </div>

@@ -12,14 +12,10 @@
  *   same-day investigation per the confirmed decision): real via
  *   `TestCaseGeneratorPage.tsx`'s already-wired validate/approve/reject/
  *   handoff lifecycle (AUD-005). See its own `TestCaseValidatorPage.test.tsx`.
- * - `CustomTestingPage` — investigated 22 Aug 2026 (a later, separate unit):
- *   the narrower ACC-015 reading (does the Test Case Generator's
- *   "Requirement Focus" field already substantially satisfy project/module/
- *   feature/objective scoping?) was checked directly and found **not**
- *   satisfied — see `AIQA_ACCEPTANCE_MATRIX_v1.0.md` §5A's ACC-015 row for
- *   the full evidence. ACC-015 stays `NOT_STARTED`; this page's copy is
- *   therefore genuinely unchanged, and remains in `customTestingCase` below
- *   with the *original* generic "not implemented" assertions.
+ * - `CustomTestingPage` — moved out entirely (Phase 3, 25 Aug 2026): real
+ *   via `POST .../custom-testing/generate` (`custom_testing.rs`), the
+ *   real central AI router, and a handoff into the existing Test Case
+ *   Generator pipeline. See its own `CustomTestingPage.test.tsx`.
  * - The remaining 4 — `AIQAOrchestratorPage`, `RBACTestingPage`,
  *   `MobileTestingPage`, `FeatureMapFlowPage` — had **only their copy**
  *   updated in that same later unit (`deferredCases` below): each is now a
@@ -77,65 +73,6 @@ beforeEach(() => {
 
 afterEach(() => {
   localStorage.clear();
-});
-
-// ------------------------------------------------ Custom Testing (unchanged)
-
-const customTestingCase = {
-  path: '/custom-testing',
-  rootId: 'custom-testing-page',
-  heading: 'Custom Testing Workflows',
-  bannedText: ['Gateway 504 Gateway Timeout Synthetic Retry', 'Create Custom Suite'],
-};
-
-describe('Case-C pages — Custom Testing (unchanged; ACC-015 investigated and stays NOT_STARTED)', () => {
-  const c = customTestingCase;
-
-  it('unauthenticated (no key) shows the real auth-state card, not page content', async () => {
-    const fetchMock = vi.fn();
-    vi.stubGlobal('fetch', fetchMock);
-    renderApp(c.path);
-
-    await waitFor(() => expect(screen.getByText('No orchestrator API key configured')).toBeTruthy());
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(document.getElementById(c.rootId)).toBeNull();
-  });
-
-  it('authenticated renders the original, still-accurate, generic truthful "not implemented" state', async () => {
-    setApiKey(RAW_KEY);
-    mockBackend();
-    renderApp(c.path);
-    await verifyKey();
-
-    await waitFor(() => expect(document.getElementById(c.rootId)).toBeTruthy());
-    expect(screen.getAllByText('NOT IMPLEMENTED').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('NO BACKEND CAPABILITY').length).toBeGreaterThan(0);
-    expect(screen.getAllByText(c.heading).length).toBeGreaterThan(0);
-  });
-
-  it('renders none of the page\'s previous fabricated demo content', async () => {
-    setApiKey(RAW_KEY);
-    mockBackend();
-    renderApp(c.path);
-    await verifyKey();
-    await waitFor(() => expect(document.getElementById(c.rootId)).toBeTruthy());
-
-    for (const banned of c.bannedText) {
-      expect(screen.queryByText(new RegExp(banned.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))).toBeNull();
-    }
-  });
-
-  it('makes no real backend request for its own (nonexistent) capability', async () => {
-    setApiKey(RAW_KEY);
-    const fetchMock = mockBackend();
-    renderApp(c.path);
-    await verifyKey();
-    await waitFor(() => expect(document.getElementById(c.rootId)).toBeTruthy());
-
-    for (const [url] of fetchMock.mock.calls as [string][]) {
-      expect(String(url)).toMatch(/\/api\/v1\/projects(\?.*)?$/);
-    }
-  });
 });
 
 // ---------------------------------------------- Deferred-scope pages (4)

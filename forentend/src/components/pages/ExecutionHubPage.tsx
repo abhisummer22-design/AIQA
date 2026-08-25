@@ -116,7 +116,11 @@ const EVENT_RESYNC_DEBOUNCE_MS = 250;
  *  cancel/approve/reject call and is the only authority that matters). */
 const TERMINAL_RUN_STATES = new Set<RunState>(['REJECTED', 'PARTIAL', 'COMPLETED', 'CANCELLED', 'FAILED']);
 
-const EXECUTOR_OPTIONS: Array<{ value: string; label: string }> = [
+// Phase 2 (Execution Handoff) — exported so the Test Case Generator's own
+// handoff UI (`GeneratedTestCasesView.tsx`) offers the exact same real
+// executor choices as this page, rather than a second, possibly-diverging
+// list. `''` still means "Simulate (no real executor)" everywhere it's used.
+export const EXECUTOR_OPTIONS: Array<{ value: string; label: string }> = [
   { value: '', label: 'Simulate (no real executor)' },
   { value: 'pytest', label: 'pytest — API' },
   { value: 'playwright', label: 'Playwright — Browser' },
@@ -128,7 +132,7 @@ const EXECUTOR_OPTIONS: Array<{ value: string; label: string }> = [
 // enum's own variant names (`'Pass'`, ...) was genuinely rejected by the
 // backend with a 422 before this was fixed (see `types/contract.ts`'s own
 // note on this same finding). `label` is display-only.
-const SIMULATE_OUTCOMES: Array<{ value: 'pass' | 'fail' | 'timeout' | 'infra_error'; label: string }> = [
+export const SIMULATE_OUTCOMES: Array<{ value: 'pass' | 'fail' | 'timeout' | 'infra_error'; label: string }> = [
   { value: 'pass', label: 'Pass' },
   { value: 'fail', label: 'Fail' },
   { value: 'timeout', label: 'Timeout' },

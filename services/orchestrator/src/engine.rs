@@ -570,7 +570,13 @@ pub fn spawn_run(
 
                     in_flight += 1;
                     let task_def = task_defs[&id].clone();
-                    let exec = registry.resolve(&task_def);
+                    // Phase 2.1 (brief §13) — `resolve` now returns a real
+                    // `Err` for an unregistered `executor` name instead of
+                    // silently substituting `SimulatedExecutor`; that error
+                    // is captured here and turned into a real, honest
+                    // `InfraError` outcome below, without ever touching a
+                    // real (or simulated) executor.
+                    let resolved = registry.resolve(&task_def);
                     let done_tx = done_tx.clone();
                     // BE-13 — races the executor invocation against
                     // cancellation, the same way B5 already races it against
@@ -579,27 +585,34 @@ pub fn spawn_run(
                     // `RunRecord::cancel`'s doc comment).
                     let mut cancel_rx = record.cancel.subscribe();
                     tokio::spawn(async move {
-                        let outcome = tokio::select! {
-                            _ = cancel_rx.wait_for(|v| *v) => ExecutionOutcome {
-                                status: TaskStatus::Cancelled,
-                                reason: Some("run cancelled while this task was executing".to_string()),
+                        let outcome = match resolved {
+                            Err(msg) => ExecutionOutcome {
+                                status: TaskStatus::InfraError,
+                                reason: Some(format!("NO_COMPATIBLE_EXECUTOR: {msg}")),
                                 evidence: None,
                             },
-                            // B5 — bound every executor invocation. Without this a
-                            // hung tool (a browser waiting on a device, a fuzzer
-                            // against an unresponsive target) held its permit
-                            // forever, `in_flight` never decremented, and the run
-                            // stalled indefinitely. TaskStatus::Timeout was
-                            // unreachable for real executors.
-                            result = tokio::time::timeout(task_timeout, exec.execute(&task_def)) => match result {
-                                Ok(outcome) => outcome,
-                                Err(_) => ExecutionOutcome {
-                                    status: TaskStatus::Timeout,
-                                    reason: Some(format!(
-                                        "executor exceeded the {}s task timeout and was cancelled",
-                                        task_timeout.as_secs()
-                                    )),
+                            Ok(exec) => tokio::select! {
+                                _ = cancel_rx.wait_for(|v| *v) => ExecutionOutcome {
+                                    status: TaskStatus::Cancelled,
+                                    reason: Some("run cancelled while this task was executing".to_string()),
                                     evidence: None,
+                                },
+                                // B5 — bound every executor invocation. Without this a
+                                // hung tool (a browser waiting on a device, a fuzzer
+                                // against an unresponsive target) held its permit
+                                // forever, `in_flight` never decremented, and the run
+                                // stalled indefinitely. TaskStatus::Timeout was
+                                // unreachable for real executors.
+                                result = tokio::time::timeout(task_timeout, exec.execute(&task_def)) => match result {
+                                    Ok(outcome) => outcome,
+                                    Err(_) => ExecutionOutcome {
+                                        status: TaskStatus::Timeout,
+                                        reason: Some(format!(
+                                            "executor exceeded the {}s task timeout and was cancelled",
+                                            task_timeout.as_secs()
+                                        )),
+                                        evidence: None,
+                                    },
                                 },
                             },
                         };

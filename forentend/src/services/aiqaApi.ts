@@ -42,12 +42,19 @@ import type {
   ApiErrorEnvelope,
   AuditRow,
   CancelRunResponse,
+  AdHocApiRequest,
+  ApiTestExecutionResponse,
   CreateExecutionResponse,
   CreateProjectRequest,
+  CompilationOutcome,
+  CustomTestingGenerateRequest,
+  CustomTestingGenerateResponse,
   DashboardResponse,
   EvidenceRow,
   Finding,
   FindingAnalysis,
+  GenerateAiTestCasesRequest,
+  GenerateAiTestCasesResponse,
   KpisResponse,
   Project,
   ReviewFindingRequest,
@@ -479,6 +486,43 @@ export const aiqaApi = {
      *  comment for why there is no default. */
     handoff: (projectId: string, id: string, body: TestCaseHandoffRequest, signal?: AbortSignal) =>
       requestJson<CreateExecutionResponse>(`/projects/${projectId}/test-cases/${id}/handoff`, { method: 'POST', body, signal }),
+    /** Phase 1 (AI Test Case Generator integration) — the real, skill-aware
+     *  AI generation endpoint (`api.rs::generate_ai_test_cases_scoped`,
+     *  `ai_generation.rs`/`ai_router.rs` behind it). Produces drafts only
+     *  (never persists) — save whichever drafts the user keeps via the
+     *  existing `.create()` above, exactly like any other draft. Requires
+     *  `Role::Operator` and a real, scoped project id, same as `.create()`. */
+    generateAi: (projectId: string, body: GenerateAiTestCasesRequest, signal?: AbortSignal) =>
+      requestJson<GenerateAiTestCasesResponse>(`/projects/${projectId}/test-cases/generate-ai`, { method: 'POST', body, signal }),
+    /** Phase 2.1 — real, read-only compilation preview
+     *  (`api.rs::compile_test_case_scoped`). Never mutates anything; safe
+     *  to call to preview READY/NOT_EXECUTABLE/COMPILATION_FAILED/
+     *  COMPILATION_UNAVAILABLE before committing to a handoff. */
+    compile: (projectId: string, id: string, signal?: AbortSignal) =>
+      requestJson<CompilationOutcome>(`/projects/${projectId}/test-cases/${id}/compile`, { method: 'POST', signal }),
+  },
+
+  /** Phase 3 (Custom Testing) — real requirement -> AI strategy -> test
+   *  cases (`api.rs::generate_custom_testing_scoped`, `custom_testing.rs`
+   *  behind it). Produces drafts only (never persists) — save whichever
+   *  drafts are kept via the existing `testCases.create()` above, exactly
+   *  like a Test Case Generator draft. Requires `Role::Operator` and a
+   *  real, scoped project id, same as `testCases.generateAi()`. */
+  customTesting: {
+    generate: (projectId: string, body: CustomTestingGenerateRequest, signal?: AbortSignal) =>
+      requestJson<CustomTestingGenerateResponse>(`/projects/${projectId}/custom-testing/generate`, { method: 'POST', body, signal }),
+  },
+
+  /** Phase 4 (API Testing page) — real, ad-hoc HTTP request execution
+   *  (`api.rs::execute_api_test_scoped`, `api_testing.rs`/`executor.rs::
+   *  CompiledApiExecutor` behind it). This call genuinely waits for the
+   *  real run it creates to finish (server-side, bounded) — it is not a
+   *  fire-and-forget dispatch, so no separate client-side polling loop is
+   *  needed for the common case. Requires `Role::Operator` and a real,
+   *  scoped project id, same as every other execution-triggering call. */
+  apiTesting: {
+    execute: (projectId: string, body: AdHocApiRequest, signal?: AbortSignal) =>
+      requestJson<ApiTestExecutionResponse>(`/projects/${projectId}/api-testing/execute`, { method: 'POST', body, signal }),
   },
 
   /** Central AI Provider & Model Intelligence Layer

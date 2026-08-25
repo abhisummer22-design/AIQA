@@ -406,14 +406,243 @@ export interface UpdateTestCaseRequest {
 }
 
 /** `domain.rs::TestCaseHandoffRequest`. Deliberately requires the caller to
- *  choose either a real `executor` or an explicit `simulate` outcome — the
- *  backend rejects a handoff with neither (400), rather than silently
- *  reporting a fabricated "passed" result for steps nothing has actually
- *  run. See `store.rs`/`api.rs`'s own doc comments on why. */
+ *  choose either a real `executor`, an explicit `simulate` outcome, or
+ *  `compile_and_execute: true` (Phase 2.1) — the backend rejects a handoff
+ *  with none of the three (400), rather than silently reporting a
+ *  fabricated "passed" result for steps nothing has actually run. See
+ *  `store.rs`/`api.rs`'s own doc comments on why. */
 export interface TestCaseHandoffRequest {
   executor?: string;
   params?: unknown;
   simulate?: { outcome: 'pass' | 'fail' | 'timeout' | 'infra_error'; delay_ms?: number };
+  /** Phase 2.1 — when `true`, `executor`/`params`/`simulate` above are
+   *  ignored and the real backend compiler determines the real executor
+   *  from the test case's own actual content instead. */
+  compile_and_execute?: boolean;
+}
+
+// ---------------------------------------------------- Phase 2.1: execution plan compiler
+
+/** `execution_plan.rs::ExecutionType`. */
+export type PlanExecutionType = 'API' | 'BROWSER' | 'PYTHON';
+
+/** `execution_plan.rs::Action` — the closed, real action vocabulary the
+ *  compiler (deterministic or AI-assisted) may ever produce. There is
+ *  deliberately no "run arbitrary command" variant. */
+export type PlanAction =
+  | { type: 'NAVIGATE'; url: string }
+  | { type: 'CLICK'; selector: string }
+  | { type: 'FILL'; selector: string; value: string }
+  | { type: 'ASSERT_VISIBLE'; selector: string }
+  | { type: 'ASSERT_TEXT'; selector: string; text: string }
+  | { type: 'ASSERT_URL'; url_contains: string }
+  | { type: 'REQUEST'; method: string; url: string; headers?: Record<string, string>; body?: unknown }
+  | { type: 'ASSERT_STATUS'; status: number }
+  | { type: 'ASSERT_HEADER'; name: string; value: string }
+  | { type: 'ASSERT_BODY_FIELD'; path: string; equals: unknown };
+
+/** `execution_plan.rs::CompilerMethod`. `'MANUAL'` (Phase 4) — no
+ *  compilation happened at all; the user explicitly authored every action
+ *  via the API Testing page's own request builder. */
+export type PlanCompilerMethod = 'DETERMINISTIC' | 'AI' | 'MANUAL';
+
+/** `execution_plan.rs::ExecutionPlan` — real, validated, and (when
+ *  `compiler === 'AI'`) real-provider-attributed, exactly like Phase 1's
+ *  `GenerateAiTestCasesResponse`. */
+export interface ExecutionPlan {
+  test_case_id: string;
+  execution_type: PlanExecutionType;
+  target: string | null;
+  actions: PlanAction[];
+  compiler: PlanCompilerMethod;
+  diagnostics: string[];
+  provider: string | null;
+  model: string | null;
+}
+
+/** `execution_plan.rs::CompilationOutcome` — every truthful state the real
+ *  compiler can report. Never collapse `NOT_EXECUTABLE` and
+ *  `COMPILATION_UNAVAILABLE` into one generic "can't run" message — they
+ *  mean different real things (the case genuinely lacks information, vs.
+ *  no AI provider was reachable to even try). */
+export type CompilationOutcome =
+  | { status: 'READY'; test_case_id: string; execution_type: PlanExecutionType; target: string | null; actions: PlanAction[]; compiler: PlanCompilerMethod; diagnostics: string[]; provider: string | null; model: string | null }
+  | { status: 'NOT_EXECUTABLE'; reasons: string[] }
+  | { status: 'COMPILATION_FAILED'; reasons: string[] }
+  | { status: 'COMPILATION_UNAVAILABLE'; reason: string };
+
+// ---------------------------------------------------------- Phase 4: API Testing
+
+/** `api_testing.rs::AdHocApiRequest` — `POST .../api-testing/execute`
+ *  request. `assertions` reuses `PlanAction`'s own real, closed wire shape
+ *  directly (only the three `ASSERT_*` variants are valid here — a
+ *  `REQUEST`/browser action sent here is a real, honest
+ *  `INVALID_REQUEST_CONFIGURATION` rejection server-side, not silently
+ *  dropped). */
+export interface AdHocApiRequest {
+  method: string;
+  url: string;
+  query_params?: [string, string][];
+  headers?: Record<string, string>;
+  body?: unknown;
+  assertions?: PlanAction[];
+}
+
+/** `executor.rs::ApiAssertionResult` — one real, actually-evaluated
+ *  assertion outcome from `CompiledApiExecutor`'s own real HTTP call. */
+export interface ApiAssertionResult {
+  description: string;
+  actual: string;
+  passed: boolean;
+}
+
+/** `executor.rs::ApiResultSummary` — real, measured data from the one real
+ *  HTTP call `CompiledApiExecutor` made. `request_duration_ms` is the real
+ *  network-request-only duration (`Instant` around `.send().await` alone)
+ *  — see `ApiTestExecutionResponse`'s own doc comment for how this differs
+ *  from `started_at`/`finished_at`. `response_headers` has known-sensitive
+ *  names (Authorization/Cookie/Set-Cookie/...) already redacted server-side
+ *  — never sent to this client unredacted. */
+export interface ApiResultSummary {
+  status: number;
+  request_duration_ms: number;
+  response_headers: [string, string][];
+  assertions: ApiAssertionResult[];
+}
+
+/** `api.rs::ApiTestExecutionResponse`. `task_status` is the exact same real
+ *  `TaskStatus` vocabulary every other execution result in this app already
+ *  uses (`PASSED`/`FAILED`/`INFRA_ERROR`/...) — `RUNNING` only when the
+ *  real run genuinely didn't reach a terminal state within the backend's
+ *  own wait ceiling (a real, ongoing execution, not a failure). `started_at`/
+ *  `finished_at` are the task's real, persisted lifecycle timestamps —
+ *  "end-to-end operation duration" (includes real scheduling/dispatch
+ *  overhead), distinct from `result.request_duration_ms`'s pure network
+ *  time. `result`/`response_body_preview`/`evidence_id` are only ever
+ *  `null`/absent when the real evidence log genuinely couldn't be read —
+ *  never a placeholder standing in for real data. */
+export interface ApiTestExecutionResponse {
+  run_id: string;
+  task_status: 'QUEUED' | 'RUNNING' | 'PASSED' | 'FAILED' | 'BLOCKED' | 'SKIPPED' | 'CANCELLED' | 'TIMEOUT' | 'INFRA_ERROR' | 'NEEDS_REVIEW';
+  reason: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  result: ApiResultSummary | null;
+  response_body_preview: string | null;
+  evidence_id: string | null;
+}
+
+// ---------------------------------------------------- AI-powered test generation
+
+/** `api.rs::SkillInputBody` / `ai_generation::SkillInput` — one selected
+ *  skill sent to the real generation endpoint. `id`/`name` come from the
+ *  frontend's own skill registry (`services/skillRegistry.ts`); `description`
+ *  is only meaningful for a custom skill the backend doesn't recognize by
+ *  name (`ai_generation.rs::resolve_skill_instructions` falls back to it
+ *  verbatim) — sending it for a built-in skill too is harmless (ignored). */
+export interface GenerateAiSkillInput {
+  id: string;
+  name: string;
+  description?: string;
+}
+
+/** `api.rs::GenerateAiTestCasesBody` — `POST .../test-cases/generate-ai`
+ *  request. No other field exists on this real endpoint; category/depth/
+ *  document/app-source context is not a separate wire field (the backend
+ *  has none) — a caller that wants those to matter folds them into
+ *  `requirement_text` as plain instruction text, same as any other
+ *  requirement detail. */
+export interface GenerateAiTestCasesRequest {
+  requirement_text: string;
+  skills: GenerateAiSkillInput[];
+}
+
+/** `ai_generation.rs::DraftStep`. */
+export interface GeneratedTestCaseDraftStep {
+  action: string;
+  expected_result: string;
+}
+
+/** `ai_generation.rs::EvidenceKind` (`#[serde(rename_all = "lowercase")]`). */
+export type GenerationEvidenceKind = 'evidenced' | 'inferred' | 'exploratory';
+
+/** `ai_generation.rs::GeneratedTestCaseDraft` — one real, un-persisted AI
+ *  output case. `source_reference`, when present, is a real, backend-
+ *  verified substring of the actual `requirement_text` sent (`ai_generation.
+ *  rs::enforce_traceability` strips anything that is not) — never trust a
+ *  claim of "evidenced" without also checking this field is non-null. */
+export interface GeneratedTestCaseDraft {
+  title: string;
+  category: string;
+  skill_id: string;
+  preconditions: string[];
+  steps: GeneratedTestCaseDraftStep[];
+  expected_result: string;
+  priority: string;
+  severity: string;
+  evidence: GenerationEvidenceKind;
+  source_reference: string | null;
+}
+
+/** `api.rs::GenerateAiTestCasesResponse`. `generation_method` is always
+ *  exactly `"ai"` or `"fallback"` — `provider`/`model` are only ever
+ *  present alongside `"ai"`; `fallback_reason` only alongside `"fallback"`.
+ *  A `"fallback"` response is a normal `200`, not an error — it is the
+ *  endpoint honestly reporting that no compatible AI model produced a
+ *  result (`test_cases` is then always empty). */
+export interface GenerateAiTestCasesResponse {
+  test_cases: GeneratedTestCaseDraft[];
+  generation_method: 'ai' | 'fallback';
+  provider: string | null;
+  model: string | null;
+  fallback_reason: string | null;
+}
+
+// ---------------------------------------------------------- Phase 3: Custom Testing
+
+/** `api.rs::CustomTestingGenerateBody` — `POST .../custom-testing/generate`
+ *  request. `scope` is real, user-provided free text (the `Project`
+ *  resource has no module/feature metadata — confirmed in `store.rs`, see
+ *  the Phase 3 report §13) — never a fabricated project module. */
+export interface CustomTestingGenerateRequest {
+  requirement_text: string;
+  scope?: string;
+  skills: GenerateAiSkillInput[];
+}
+
+/** `custom_testing.rs::CustomTestingAnalysis` — a real, structured test
+ *  strategy produced by `AiTask::RequirementAnalysis` (the existing router
+ *  task, newly wired up this phase — not a new router). Every field is
+ *  real model output, schema-validated server-side; never a fabricated or
+ *  hardcoded strategy. */
+export interface CustomTestingAnalysis {
+  objective: string;
+  normalized_scope: string;
+  recommended_skills: string[];
+  recommended_testing_types: string[];
+  risk_areas: string[];
+  assumptions: string[];
+  prerequisites: string[];
+  limitations: string[];
+  generation_approach: string;
+  diagnostics: string[];
+}
+
+/** `api.rs::CustomTestingGenerateResponse`. `generation_source` is always
+ *  exactly `"REAL_AI"` or `"UNAVAILABLE"` — there is no deterministic
+ *  local-fallback strategy generator in this codebase, so a
+ *  `"LOCAL_FALLBACK"` value is never sent (see the Phase 3 report §6/§19).
+ *  `analysis` is present whenever the real strategy analysis call
+ *  succeeded, even if the subsequent case-generation call then failed — a
+ *  genuinely-produced strategy is never discarded just because case
+ *  generation didn't also succeed. */
+export interface CustomTestingGenerateResponse {
+  generation_source: 'REAL_AI' | 'UNAVAILABLE';
+  analysis: CustomTestingAnalysis | null;
+  test_cases: GeneratedTestCaseDraft[];
+  provider: string | null;
+  model: string | null;
+  failure_reason: string | null;
 }
 
 // ---------------------------------------------------- AI provider intelligence

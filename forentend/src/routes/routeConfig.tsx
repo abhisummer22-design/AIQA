@@ -92,8 +92,11 @@ export interface RouteDef {
    *  claim a product review that has not happened. Deliberately named
    *  sprint-agnostically (not `fe6-...`) so any later unit's new page can
    *  reuse it without another rename. Currently `AuditPage` (FE-6),
-   *  `EvidencePage` (FE-7), `ExecutionHubPage` (FE-8), and `ReportsPage`
-   *  (FE-11 — rebuilt onto the real Findings/FailureCluster backend).
+   *  `EvidencePage` (FE-7), `ExecutionHubPage` (FE-8), `ReportsPage`
+   *  (FE-11 — rebuilt onto the real Findings/FailureCluster backend),
+   *  `CustomTestingPage` (Phase 3 — real `custom_testing.rs` backend), and
+   *  `APITestingPage` (Phase 4 — real `api_testing.rs` backend; both moved
+   *  out of `unsupported-not-implemented` below).
    *
    *  `unsupported-not-implemented` (introduced FE-11, brief §26): a page
    *  whose previous Google-Studio-generated content was fully fabricated
@@ -104,9 +107,8 @@ export interface RouteDef {
    *  it onto. Distinct from `google-studio-not-final` (still-fake content
    *  that *could* eventually become real) — this bucket has no real
    *  backend counterpart to build toward. Currently `orchestrator`,
-   *  `validator`, `rbac`, `api-testing`, `mobile-testing`, `custom`, and
-   *  `feature-map` — see each page's own module doc comment for the
-   *  specific backend gap. */
+   *  `validator`, `rbac`, `mobile-testing`, and `feature-map` — see each
+   *  page's own module doc comment for the specific backend gap. */
   designStatus:
     | 'product-owner-approved'
     | 'google-studio-not-final'
@@ -203,8 +205,13 @@ export const routeDefs: RouteDef[] = [
     path: '/api-testing',
     label: 'API Testing',
     icon: Network,
+    // Phase 4: was 'unsupported-not-implemented' (honest redirect to the
+    // Execution Hub, no request-builder UI of its own) — now real
+    // (`api_testing.rs`, `POST .../api-testing/execute`), built following
+    // the Dashboard/Test Generator visual language, same bucket as
+    // CustomTestingPage/AuditPage/EvidencePage/ExecutionHubPage.
     Component: APITestingPage,
-    designStatus: 'unsupported-not-implemented',
+    designStatus: 'new-follows-approved-language',
     protectedRoute: true,
   },
   {
@@ -221,8 +228,12 @@ export const routeDefs: RouteDef[] = [
     path: '/custom-testing',
     label: 'Custom Testing',
     icon: Sliders,
+    // Phase 3: was 'unsupported-not-implemented' (no backend capability at
+    // all) — now real (`custom_testing.rs`, `POST .../custom-testing/
+    // generate`), built following the Dashboard/Test Generator visual
+    // language, same bucket as AuditPage/EvidencePage/ExecutionHubPage.
     Component: CustomTestingPage,
-    designStatus: 'unsupported-not-implemented',
+    designStatus: 'new-follows-approved-language',
     protectedRoute: true,
   },
   {
