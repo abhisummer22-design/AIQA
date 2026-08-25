@@ -12,6 +12,7 @@ pub mod executor;
 pub mod execution_plan;
 pub mod intelligence;
 pub mod metrics;
+pub mod performance_testing;
 pub mod policy;
 pub mod scheduler;
 pub mod state;

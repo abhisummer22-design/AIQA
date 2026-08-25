@@ -14,13 +14,13 @@
  * vocabulary (`types.ts`'s `NavPage`, `Sidebar.tsx`'s existing labels)
  * plus, from FE-6 onward, the real backend contract — not FE-4's brief's
  * own illustrative route-name list, several of which (`/analytics`,
- * `/findings`, `/ui-testing`, `/security-testing`, `/performance-testing`)
- * still have no corresponding page/backend support in `forentend` today
- * and remain NOT implemented as routes here. `/audit` and `/evidence` were
- * both on that original list too, but FE-6 and FE-7 respectively
- * implemented each for real once its own real backend endpoint was
- * confirmed to exist — see `AuditPage.tsx`'s and `EvidencePage.tsx`'s own
- * doc comments.
+ * `/findings`, `/ui-testing`, `/security-testing`) still have no
+ * corresponding page/backend support in `forentend` today and remain NOT
+ * implemented as routes here. `/audit`, `/evidence`, and `/performance-
+ * testing` were all on that original list too, but FE-6, FE-7, and Phase 6
+ * respectively implemented each for real once its own real backend
+ * endpoint was confirmed to exist — see `AuditPage.tsx`'s,
+ * `EvidencePage.tsx`'s, and `PerformanceTestingPage.tsx`'s own doc comments.
  *
  * Product-design status (brief §1, §18) — exactly two pages are
  * product-owner-designed references and were not touched beyond a single
@@ -50,6 +50,7 @@ import {
   ScrollText,
   FileSearch,
   Activity,
+  Gauge,
   Settings,
 } from 'lucide-react';
 import { DashboardPage } from '../components/pages/DashboardPage';
@@ -59,6 +60,7 @@ import { TestCaseValidatorPage } from '../components/pages/TestCaseValidatorPage
 import { ExecutionHubPage } from '../components/pages/ExecutionHubPage';
 import { RBACTestingPage } from '../components/pages/RBACTestingPage';
 import { APITestingPage } from '../components/pages/APITestingPage';
+import { PerformanceTestingPage } from '../components/pages/PerformanceTestingPage';
 import { MobileTestingPage } from '../components/pages/MobileTestingPage';
 import { CustomTestingPage } from '../components/pages/CustomTestingPage';
 import { FeatureMapFlowPage } from '../components/pages/FeatureMapFlowPage';
@@ -94,9 +96,11 @@ export interface RouteDef {
    *  reuse it without another rename. Currently `AuditPage` (FE-6),
    *  `EvidencePage` (FE-7), `ExecutionHubPage` (FE-8), `ReportsPage`
    *  (FE-11 — rebuilt onto the real Findings/FailureCluster backend),
-   *  `CustomTestingPage` (Phase 3 — real `custom_testing.rs` backend), and
+   *  `CustomTestingPage` (Phase 3 — real `custom_testing.rs` backend),
    *  `APITestingPage` (Phase 4 — real `api_testing.rs` backend; both moved
-   *  out of `unsupported-not-implemented` below).
+   *  out of `unsupported-not-implemented` below), and
+   *  `PerformanceTestingPage` (Phase 6 — real `performance_testing.rs`
+   *  backend; had no route/page/backend at all before this phase).
    *
    *  `unsupported-not-implemented` (introduced FE-11, brief §26): a page
    *  whose previous Google-Studio-generated content was fully fabricated
@@ -211,6 +215,21 @@ export const routeDefs: RouteDef[] = [
     // the Dashboard/Test Generator visual language, same bucket as
     // CustomTestingPage/AuditPage/EvidencePage/ExecutionHubPage.
     Component: APITestingPage,
+    designStatus: 'new-follows-approved-language',
+    protectedRoute: true,
+  },
+  {
+    id: 'performance-testing',
+    path: '/performance-testing',
+    label: 'Performance Testing',
+    icon: Gauge,
+    // Phase 6: was entirely absent from this file (no page, no route, no
+    // backend at all — unlike rbac/mobile-testing/feature-map below, which
+    // at least have an `unsupported-not-implemented` placeholder). Now real
+    // (`performance_testing.rs`, `POST/GET .../performance-testing/*`),
+    // built following the Dashboard/Test Generator visual language, same
+    // bucket as CustomTestingPage/APITestingPage/AuditPage/EvidencePage.
+    Component: PerformanceTestingPage,
     designStatus: 'new-follows-approved-language',
     protectedRoute: true,
   },

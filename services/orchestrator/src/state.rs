@@ -3,11 +3,13 @@ use crate::domain::RunId;
 use crate::engine::{ProjectStream, RunRecord};
 use crate::evidence::LocalEvidenceStore;
 use crate::executor::ExecutorRegistry;
+use crate::performance_testing::PerformanceRunHandle;
 use crate::policy::PolicyConfig;
 use crate::store::Store;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -34,6 +36,13 @@ pub struct AppState {
     /// so every AI-consuming handler shares one discovery cache/settings
     /// store rather than each building its own.
     pub ai_infra: Arc<AiInfrastructure>,
+    /// Phase 6 — live, in-process handles for running (or just-finished)
+    /// performance tests. Session-only, same honest limitation as `runs`
+    /// above: a handle here does not survive a restart (see
+    /// `performance_testing::recover_incomplete_performance_runs`, called
+    /// once at startup, for how an orphaned `RUNNING` DB row from a prior
+    /// process is honestly marked `INTERRUPTED` rather than left stuck).
+    pub performance_tests: Arc<RwLock<HashMap<Uuid, Arc<PerformanceRunHandle>>>>,
 }
 
 impl AppState {
@@ -52,6 +61,7 @@ impl AppState {
             evidence: Arc::new(evidence),
             project_streams: Arc::new(RwLock::new(HashMap::new())),
             ai_infra,
+            performance_tests: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 

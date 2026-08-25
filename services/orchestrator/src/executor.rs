@@ -828,48 +828,52 @@ fn classify_reqwest_error(e: &reqwest::Error) -> String {
 /// REQUEST_TIMEOUT/DNS_FAILED/CONNECTION_FAILED/TLS_FAILED requirement.
 pub struct CompiledApiExecutor {
     pub timeout: Duration,
+    /// Built once and reused across every `execute()` call — real HTTP
+    /// keep-alive connection pooling, not a fresh TCP connection (and, for
+    /// Phase 6's repeated-workload use of `execute_plan_once`, fresh local
+    /// ephemeral port) per single request. A prior version built a new
+    /// `reqwest::Client` inside `execute_plan_once` on every call; that was
+    /// harmless for one request at a time but genuinely exhausted local
+    /// ephemeral ports (`TIME_WAIT` pileup) under a real, high-volume
+    /// performance test against `127.0.0.1` — caught during this phase's
+    /// own live verification (see the report's bug log).
+    client: reqwest::Client,
 }
 
 impl CompiledApiExecutor {
     pub fn from_env() -> Self {
         let timeout_secs: u64 = std::env::var("API_TEST_TIMEOUT_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(30);
-        Self { timeout: Duration::from_secs(timeout_secs) }
+        let timeout = Duration::from_secs(timeout_secs);
+        let client = reqwest::Client::builder().timeout(timeout).build().unwrap_or_else(|_| reqwest::Client::new());
+        Self { timeout, client }
     }
 }
 
-#[async_trait]
-impl Executor for CompiledApiExecutor {
-    async fn execute(&self, task: &TaskDef) -> ExecutionOutcome {
-        let plan: crate::execution_plan::ExecutionPlan = match serde_json::from_value(task.params.clone()) {
-            Ok(p) => p,
-            Err(e) => {
-                return ExecutionOutcome {
-                    status: TaskStatus::InfraError,
-                    reason: Some(format!("compiled-api executor received a malformed execution plan: {e}")),
-                    evidence: None,
-                }
-            }
-        };
+/// Real, structured result of running every `Action` in a single API
+/// `ExecutionPlan` exactly once — the same real request/assertion logic
+/// `CompiledApiExecutor::execute` has always used, extracted so Phase 6's
+/// performance workload engine (`performance_testing.rs`) can reuse this
+/// *exact* real reqwest-calling/assertion-evaluating core as its
+/// per-request worker for many repeated samples, without re-running the
+/// (redundant, once a target is already validated and unchanging across a
+/// whole workload) structural/SSRF `validate_plan` check on every single
+/// request — that check still runs once, up front, in both callers
+/// (`CompiledApiExecutor::execute` below, and the performance orchestrator
+/// before it starts a workload).
+pub struct PlanExecutionResult {
+    pub status: TaskStatus,
+    pub reason: Option<String>,
+    pub http_status: Option<u16>,
+    pub duration_ms: u64,
+    pub response_headers: Vec<(String, String)>,
+    pub assertions: Vec<ApiAssertionResult>,
+    pub log: String,
+}
 
-        // Re-validated here, not just trusted from compile time — this
-        // executor is reachable via the exact same generic `executor`/
-        // `params` fields any direct API call can set (`TaskDef`, unchanged
-        // contract), so a plan that reached this point via a path other
-        // than `execution_plan::compile` (e.g. a replayed/tampered request)
-        // still gets the real SSRF/structural check, not an assumed-safe
-        // shortcut.
-        if let Err(reasons) = crate::execution_plan::validate_plan(&plan).await {
-            return ExecutionOutcome {
-                status: TaskStatus::InfraError,
-                reason: Some(format!("compiled plan failed re-validation at execution time: {}", reasons.join("; "))),
-                evidence: None,
-            };
-        }
-
+pub async fn execute_plan_once(client: &reqwest::Client, plan: &crate::execution_plan::ExecutionPlan) -> PlanExecutionResult {
         use crate::execution_plan::Action;
 
         let mut log = String::new();
-        let client = reqwest::Client::builder().timeout(self.timeout).build().unwrap_or_else(|_| reqwest::Client::new());
         let mut last_response: Option<(reqwest::StatusCode, reqwest::header::HeaderMap, String)> = None;
         let mut failures: Vec<String> = Vec::new();
         let mut assertion_results: Vec<ApiAssertionResult> = Vec::new();
@@ -884,7 +888,15 @@ impl Executor for CompiledApiExecutor {
                     let m = match reqwest::Method::from_bytes(method.as_bytes()) {
                         Ok(m) => m,
                         Err(_) => {
-                            return ExecutionOutcome { status: TaskStatus::InfraError, reason: Some(format!("invalid HTTP method in compiled plan: {method:?}")), evidence: Some(log) };
+                            return PlanExecutionResult {
+                                status: TaskStatus::InfraError,
+                                reason: Some(format!("invalid HTTP method in compiled plan: {method:?}")),
+                                http_status: None,
+                                duration_ms: 0,
+                                response_headers: Vec::new(),
+                                assertions: Vec::new(),
+                                log,
+                            };
                         }
                     };
                     let mut req = client.request(m, url);
@@ -912,7 +924,15 @@ impl Executor for CompiledApiExecutor {
                         Err(e) => {
                             let classified = classify_reqwest_error(&e);
                             log.push_str(&format!("REQUEST FAILED: {classified}\n"));
-                            return ExecutionOutcome { status: TaskStatus::InfraError, reason: Some(classified), evidence: Some(log) };
+                            return PlanExecutionResult {
+                                status: TaskStatus::InfraError,
+                                reason: Some(classified),
+                                http_status: None,
+                                duration_ms: 0,
+                                response_headers: Vec::new(),
+                                assertions: Vec::new(),
+                                log,
+                            };
                         }
                     }
                 }
@@ -977,22 +997,70 @@ impl Executor for CompiledApiExecutor {
             }
         }
 
-        let outcome = if failures.is_empty() {
-            ExecutionOutcome { status: TaskStatus::Passed, reason: None, evidence: None }
+        let (status, reason) = if failures.is_empty() {
+            (TaskStatus::Passed, None)
         } else {
             log.push_str(&format!("\nFAILED ASSERTIONS:\n{}\n", failures.join("\n")));
-            ExecutionOutcome { status: TaskStatus::Failed, reason: Some(tail_lines(&log, 15)), evidence: None }
+            (TaskStatus::Failed, Some(tail_lines(&log, 15)))
         };
+
+        PlanExecutionResult {
+            status,
+            reason,
+            http_status: if last_status == 0 { None } else { Some(last_status) },
+            duration_ms: last_duration_ms,
+            response_headers: last_redacted_headers,
+            assertions: assertion_results,
+            log,
+        }
+}
+
+#[async_trait]
+impl Executor for CompiledApiExecutor {
+    async fn execute(&self, task: &TaskDef) -> ExecutionOutcome {
+        let plan: crate::execution_plan::ExecutionPlan = match serde_json::from_value(task.params.clone()) {
+            Ok(p) => p,
+            Err(e) => {
+                return ExecutionOutcome {
+                    status: TaskStatus::InfraError,
+                    reason: Some(format!("compiled-api executor received a malformed execution plan: {e}")),
+                    evidence: None,
+                }
+            }
+        };
+
+        // Re-validated here, not just trusted from compile time — this
+        // executor is reachable via the exact same generic `executor`/
+        // `params` fields any direct API call can set (`TaskDef`, unchanged
+        // contract), so a plan that reached this point via a path other
+        // than `execution_plan::compile` (e.g. a replayed/tampered request)
+        // still gets the real SSRF/structural check, not an assumed-safe
+        // shortcut.
+        if let Err(reasons) = crate::execution_plan::validate_plan(&plan).await {
+            return ExecutionOutcome {
+                status: TaskStatus::InfraError,
+                reason: Some(format!("compiled plan failed re-validation at execution time: {}", reasons.join("; "))),
+                evidence: None,
+            };
+        }
+
+        let result = execute_plan_once(&self.client, &plan).await;
+        let mut log = result.log;
 
         // Appended last, deliberately after `reason` is derived above, so
         // the human-readable reason/evidence tail a task list already shows
         // is never dominated by this machine-readable summary line.
-        let summary = ApiResultSummary { status: last_status, request_duration_ms: last_duration_ms, response_headers: last_redacted_headers, assertions: assertion_results };
+        let summary = ApiResultSummary {
+            status: result.http_status.unwrap_or(0),
+            request_duration_ms: result.duration_ms,
+            response_headers: result.response_headers,
+            assertions: result.assertions,
+        };
         if let Ok(summary_json) = serde_json::to_string(&summary) {
             log.push_str(&format!("RESULT_SUMMARY_JSON:{summary_json}\n"));
         }
 
-        ExecutionOutcome { evidence: Some(log), ..outcome }
+        ExecutionOutcome { status: result.status, reason: result.reason, evidence: Some(log) }
     }
 }
 

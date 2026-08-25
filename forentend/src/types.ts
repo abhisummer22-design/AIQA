@@ -11,6 +11,7 @@ export type NavPage =
   | 'execution'
   | 'rbac'
   | 'api-testing'
+  | 'performance-testing'
   | 'mobile-testing'
   | 'custom'
   | 'feature-map'
