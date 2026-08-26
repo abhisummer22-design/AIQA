@@ -98,7 +98,7 @@ function customDraftToDisplay(
 export const CustomTestingPage: React.FC = () => {
   const navigate = useNavigate();
   const { selectedProjectId: realProjectId, selectedProject } = useProject();
-  const { setActiveGenerationSession, addActivity } = useAIQA();
+  const { setActiveGenerationSession } = useAIQA();
 
   const [scope, setScope] = useState('');
   const [requirementText, setRequirementText] = useState('');
@@ -155,13 +155,6 @@ export const CustomTestingPage: React.FC = () => {
 
       if (response.generation_source === 'REAL_AI' && response.test_cases.length > 0) {
         setStatus('GENERATED');
-        addActivity({
-          type: 'RUN_STARTED',
-          title: `Custom Testing Generated ${response.test_cases.length} Case${response.test_cases.length === 1 ? '' : 's'}`,
-          description: `${response.provider}/${response.model} produced a real strategy and ${response.test_cases.length} test case${
-            response.test_cases.length === 1 ? '' : 's'
-          } from this custom requirement.`,
-        });
       } else if (response.generation_source === 'REAL_AI') {
         setStatus('NO_GENERATED_TEST_CASES');
         setErrorMessage('The AI model produced a real strategy, but no candidate test case passed quality/traceability validation. Try more specific requirement text.');

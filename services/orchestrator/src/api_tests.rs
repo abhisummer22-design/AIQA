@@ -336,14 +336,17 @@ async fn be9_persistence_failure_returns_sanitized_internal_envelope() {
 }
 
 /// Category: Execution — a persistence failure surfaced through a
-/// *different* handler (`approve_run`, which calls `engine::approve_and_spawn`)
-/// than the Persistence test above, proving the same centralized `ApiError`
-/// path covers more than one call site uniformly rather than each handler
-/// re-implementing its own sanitization.
+/// *different* handler (`approve_run_scoped`, which calls
+/// `engine::approve_and_spawn`) than the Persistence test above, proving
+/// the same centralized `ApiError` path covers more than one call site
+/// uniformly rather than each handler re-implementing its own sanitization.
+/// (Phase B cleanup: originally exercised the legacy flat routes; now
+/// exercised through the scoped executions surface.)
 #[tokio::test]
 async fn be9_execution_persistence_failure_returns_sanitized_internal_envelope() {
     let (state, _dir) = test_state().await;
     let admin = mint_key(&state, "admin", None).await;
+    let project = make_project(&state, "BE-9 Sanitize Exec").await;
 
     // A run stuck in PENDING_APPROVAL, exactly like the policy-gate path
     // already tested end-to-end elsewhere in this codebase.
@@ -352,9 +355,13 @@ async fn be9_execution_persistence_failure_returns_sanitized_internal_envelope()
         "concurrency": 1,
         "tasks": [{"id": "t1", "name": "t1", "executor": "maestro", "simulate": {"outcome": "pass", "delay_ms": 0}}],
     });
-    let (status, created) = send(&state, req("POST", "/runs", Some(&admin), Some(plan))).await;
+    let (status, created) = send(
+        &state,
+        req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&admin), Some(plan)),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "run creation should succeed; body={created}");
-    assert_eq!(created["state"], serde_json::to_value(RunState::PendingApproval).unwrap());
+    assert_eq!(created["status"], serde_json::to_value(RunState::PendingApproval).unwrap());
     let run_id = created["run_id"].as_str().expect("run_id");
 
     sqlx::query(
@@ -365,7 +372,11 @@ async fn be9_execution_persistence_failure_returns_sanitized_internal_envelope()
     .await
     .expect("create trigger");
 
-    let (status, body) = send(&state, req("POST", &format!("/runs/{run_id}/approve"), Some(&admin), None)).await;
+    let (status, body) = send(
+        &state,
+        req("POST", &format!("/api/v1/projects/{project}/executions/{run_id}/approve"), Some(&admin), None),
+    )
+    .await;
     assert_envelope(status, &body, StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR");
     assert_eq!(body["error"]["message"], "An internal error occurred.");
     assert!(!body.to_string().contains("RAISE"), "approve_run's failure must also be sanitized, not just create_project's");
@@ -477,11 +488,14 @@ async fn be10_missing_content_type_returns_structured_envelope() {
 
 /// BE-10: a query parameter that doesn't deserialize to its declared type
 /// (`limit` must be an integer) is rejected by Axum's `Query<T>` extractor.
+/// Phase B cleanup: originally exercised the legacy flat `GET /runs`;
+/// now exercised against the surviving Admin-only audit-log route (the
+/// extractor rejection happens before any role check either way).
 #[tokio::test]
 async fn be10_invalid_query_parameter_returns_structured_envelope() {
     let (state, _dir) = test_state().await;
     let admin = mint_key(&state, "admin", None).await;
-    let (status, body) = send(&state, req("GET", "/runs?limit=notanumber", Some(&admin), None)).await;
+    let (status, body) = send(&state, req("GET", "/admin/audit-log?limit=notanumber", Some(&admin), None)).await;
     assert_envelope(status, &body, StatusCode::BAD_REQUEST, "VALIDATION_ERROR");
 }
 
@@ -508,8 +522,10 @@ async fn be10_valid_requests_through_converted_extractors_are_unaffected() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(got["name"], "Extractor Check");
 
-    // ApiQuery: a well-formed query string.
-    let (status, list) = send(&state, req("GET", "/runs?limit=5", Some(&admin), None)).await;
+    // ApiQuery: a well-formed query string (against the surviving
+    // Admin-only audit-log route — Phase B cleanup removed the legacy
+    // flat `/runs` this case used to exercise).
+    let (status, list) = send(&state, req("GET", "/admin/audit-log?limit=5", Some(&admin), None)).await;
     assert_eq!(status, StatusCode::OK);
     assert!(list.is_array());
 }
@@ -861,27 +877,6 @@ async fn actual_be9_nonexistent_project_returns_structured_not_found() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
-}
-
-/// Legacy route compatibility (Step 6): the flat, unscoped routes must
-/// remain fully functional and byte-for-byte unchanged in behavior — this
-/// is what makes "keep both, migrate nothing away" a safe, low-risk choice
-/// rather than an assumption.
-#[tokio::test]
-async fn actual_be9_legacy_flat_routes_remain_fully_functional() {
-    let (state, _dir) = test_state().await;
-    let admin = mint_key(&state, "admin", None).await;
-
-    let (status, created) = send(&state, req("POST", "/runs", Some(&admin), Some(simple_plan("legacy-run")))).await;
-    assert_eq!(status, StatusCode::CREATED);
-    let run_id = created["run_id"].as_str().unwrap();
-
-    let (status, _) = send(&state, req("GET", &format!("/runs/{run_id}"), Some(&admin), None)).await;
-    assert_eq!(status, StatusCode::OK);
-
-    let (status, list) = send(&state, req("GET", "/runs", Some(&admin), None)).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(!list.as_array().unwrap().is_empty());
 }
 
 // ============================================ BE-12 — Dashboard / KPI JSON
@@ -1550,22 +1545,10 @@ async fn be13_run_tasks_list_and_detail_endpoints() {
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
 }
 
-/// Category: legacy execution route regression. BE-13 intentionally
-/// realigned the *scoped* create response's field name (`state` ->
-/// `status`, see `CreateExecutionResponse`); the legacy, unscoped `POST
-/// /runs` response must be completely unaffected — still `state`, not
-/// `status` — since `create_run_core`'s shared `CreateRunResponse` was left
-/// untouched and only the scoped wrapper changed.
-#[tokio::test]
-async fn be13_legacy_create_response_shape_is_unchanged() {
-    let (state, _dir) = test_state().await;
-    let admin = mint_key(&state, "admin", None).await;
-
-    let (status, created) = send(&state, req("POST", "/runs", Some(&admin), Some(simple_plan("legacy-unchanged")))).await;
-    assert_eq!(status, StatusCode::CREATED, "body={created}");
-    assert!(created["state"].is_string(), "legacy response must keep its original `state` field; body={created}");
-    assert!(created["status"].is_null(), "legacy response must NOT gain the new `status` field; body={created}");
-}
+// Phase B cleanup: `be13_legacy_create_response_shape_is_unchanged` was
+// removed together with the legacy flat `POST /runs` route it pinned —
+// the scoped create response (`status` field, per BE-13) is covered by the
+// tests above.
 
 // =============================== BE-15 — Evidence/Findings/Audit contract paths
 
@@ -1876,16 +1859,24 @@ async fn be15_audit_log_scoped_to_project_and_isolated() {
     assert_envelope(status, &body, StatusCode::UNAUTHORIZED, "UNAUTHENTICATED");
 }
 
-/// Category: legacy-route regression — the pre-existing global
-/// `/admin/audit-log` (Admin-only) and `/bug-drafts`/`/bug-drafts/:id/review`
-/// must keep working exactly as before BE-15.
+/// Category: admin-route regression — the platform-wide, Admin-only
+/// `/admin/audit-log` route keeps working (Phase B cleanup removed the
+/// `/bug-drafts` flat routes this test used to also cover; the scoped
+/// findings/audit surface is covered by the tests above).
 #[tokio::test]
-async fn be15_legacy_admin_audit_log_and_bug_drafts_still_work() {
+async fn be15_legacy_admin_audit_log_still_works() {
     let (state, _dir) = test_state().await;
     let admin = mint_key(&state, "admin", None).await;
     let operator = mint_key(&state, "operator", None).await;
 
-    let (status, _) = send(&state, req("POST", "/runs", Some(&admin), Some(simple_plan("legacy-audit-seed")))).await;
+    // Seed a real audit entry through a real scoped run creation (a global
+    // key may target any existing project).
+    let project = make_project(&state, "Admin Audit Seed").await;
+    let (status, _) = send(
+        &state,
+        req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&admin), Some(simple_plan("audit-seed"))),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED);
 
     let (status, log) = send(&state, req("GET", "/admin/audit-log", Some(&admin), None)).await;
@@ -1895,10 +1886,6 @@ async fn be15_legacy_admin_audit_log_and_bug_drafts_still_work() {
     // Still admin-only, unchanged.
     let (status, body) = send(&state, req("GET", "/admin/audit-log", Some(&operator), None)).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
-
-    let (status, drafts) = send(&state, req("GET", "/bug-drafts", Some(&admin), None)).await;
-    assert_eq!(status, StatusCode::OK, "body={drafts}");
-    assert!(drafts.is_array());
 }
 
 // ============================================ Phase 4 BE-10 — project-scoped
@@ -2083,26 +2070,9 @@ async fn phase4_be10_intelligence_empty_project_returns_truthful_empty_array() {
     assert_eq!(rows.as_array().unwrap().len(), 0, "a project with no completed runs must return a truthful empty array, not fabricated rows; body={rows}");
 }
 
-/// Regression: the pre-existing legacy `/intelligence/tests` route (used by
-/// an unscoped/global key exactly as before) must keep working unmodified —
-/// Phase 4 BE-10 adds a new route, it does not touch this one.
-#[tokio::test]
-async fn phase4_be10_legacy_unscoped_intelligence_route_still_works() {
-    let (state, _dir) = test_state().await;
-    let admin = mint_key(&state, "admin", None).await;
-
-    send(&state, req("POST", "/runs", Some(&admin), Some(scored_plan("legacy-intel-run", "legacy-task", "pass")))).await;
-
-    for _ in 0..100 {
-        let (status, rows) = send(&state, req("GET", "/intelligence/tests", Some(&admin), None)).await;
-        assert_eq!(status, StatusCode::OK, "body={rows}");
-        if rows.as_array().unwrap().iter().any(|r| r["name"] == "legacy-task") {
-            return;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-    }
-    panic!("legacy /intelligence/tests never reflected the real completed run");
-}
+// Phase B cleanup: `phase4_be10_legacy_unscoped_intelligence_route_still_works`
+// was removed together with the legacy key-bound `/intelligence/tests`
+// route it pinned — the scoped route's real-data coverage above replaces it.
 
 // ============================================================ AUD-005 — test cases
 
@@ -3932,13 +3902,16 @@ async fn ai_refresh_requires_operator_and_returns_real_providers() {
 
 /// Security (brief §22/§25): the real HTTP response for AI status/settings
 /// must never carry a credential-shaped value anywhere in its JSON — even
-/// when a real, non-empty credential env var is genuinely present and
-/// genuinely discovered (a real `ApiKeyProviderDiscovery`, not a fake).
+/// when a real, non-empty credential is genuinely held and genuinely
+/// discovered (a real `MjGatewayDiscovery`, not a fake).
 #[tokio::test]
 async fn ai_status_response_never_exposes_a_credential_shaped_value() {
-    std::env::set_var("GEMINI_API_KEY", "sk-should-never-leak-1234567890");
     let discoveries: Vec<Arc<dyn crate::ai_router::ProviderDiscovery>> = vec![Arc::new(
-        crate::ai_router::ApiKeyProviderDiscovery { id: "gemini", name: "Gemini", env_var: "GEMINI_API_KEY" },
+        crate::ai_router::MjGatewayDiscovery {
+            base_url: "http://127.0.0.1:1".to_string(),
+            api_key: Some("mj_live_should_never_leak_1234567890".to_string()),
+            timeout: std::time::Duration::from_millis(100),
+        },
     )];
     let ai_infra = Arc::new(AiInfrastructure::new(discoveries, std::collections::HashMap::new()));
     let (state, _dir) = test_state_with_ai_router(ai_infra).await;
@@ -3946,11 +3919,10 @@ async fn ai_status_response_never_exposes_a_credential_shaped_value() {
     let admin = mint_key(&state, "admin", None).await;
 
     let (status, body) = send(&state, req("GET", "/api/v1/ai/status", Some(&admin), None)).await;
-    std::env::remove_var("GEMINI_API_KEY");
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(body["providers"][0]["configured"], true, "the real key's presence must genuinely be detected; body={body}");
     let raw = body.to_string();
-    assert!(!raw.contains("sk-should-never-leak"), "the real credential value must never appear in this response; body={body}");
+    assert!(!raw.contains("should_never_leak"), "the real credential value must never appear in this response; body={body}");
 }
 
 // ======================================================== B12 — CORS allow-list

@@ -119,12 +119,26 @@ function page(): HTMLElement {
   return document.getElementById('aiqa-test-case-generator-page')!;
 }
 
-/** The seeded `activeGenerationSession` (AIQAContext) already has 3 demo
- *  generated cases, so the page opens on the "Generated Test Cases" branch —
- *  switch to "Source & Generation" to reach the real generation controls. */
+/** Phase A cleanup: `activeGenerationSession` no longer pre-seeds 3 demo
+ *  cases, so the page always opens on the "Source & Generation" branch and
+ *  this helper is a no-op kept for call-site stability — if a future seed
+ *  or persisted session ever re-opens the page on the "Generated Test
+ *  Cases" branch, it clicks back to the generation controls. */
 async function goToSourcesBranch(): Promise<void> {
+  const editButton = screen.queryByText('Edit Sources & Configuration');
+  if (editButton) {
+    await act(async () => {
+      editButton.click();
+    });
+  }
+}
+
+/** Phase A cleanup: with the pre-seeded demo session gone, tests exercising
+ *  backend-persisted cases must switch to the "Generated Test Cases" branch
+ *  themselves — that is where persisted cases are listed. */
+async function goToGeneratedCasesBranch(): Promise<void> {
   await act(async () => {
-    screen.getByText('Edit Sources & Configuration').click();
+    screen.getByRole('button', { name: 'Generated Test Cases' }).click();
   });
 }
 
@@ -596,10 +610,12 @@ describe('TestCaseGeneratorPage — AUD-005 real persistence, validation, execut
     await waitFor(() => expect(page()).toBeTruthy());
     await openAndSelectProject(PROJECT_A);
 
-    // The page already opens on the Generated Test Cases branch (a seeded
-    // local draft session exists); once the real fetch resolves, it must
-    // show the real, backend-fetched case — proof this is real
-    // persistence, not an echo of local generation state.
+    // Phase A cleanup: with no pre-seeded local draft session, the page
+    // opens on the "Source & Generation" branch — switch to the "Generated
+    // Test Cases" branch where persisted cases are listed. Once the real
+    // fetch resolves, it must show the real, backend-fetched case — proof
+    // this is real persistence, not an echo of local generation state.
+    await goToGeneratedCasesBranch();
     await waitFor(() => expect(screen.getAllByText('Persisted across refresh').length).toBeGreaterThan(0));
   });
 
@@ -688,6 +704,7 @@ describe('TestCaseGeneratorPage — AUD-005 real persistence, validation, execut
     await verifyKey();
     await waitFor(() => expect(page()).toBeTruthy());
     await openAndSelectProject(PROJECT_A);
+    await goToGeneratedCasesBranch();
     await waitFor(() => expect(screen.getAllByText('Ready for handoff').length).toBeGreaterThan(0));
     await waitFor(() => expect(document.getElementById('btn-handoff-test-case')).toBeTruthy());
 
@@ -724,6 +741,7 @@ describe('TestCaseGeneratorPage — AUD-005 real persistence, validation, execut
     await verifyKey();
     await waitFor(() => expect(page()).toBeTruthy());
     await openAndSelectProject(PROJECT_A);
+    await goToGeneratedCasesBranch();
     await waitFor(() => expect(screen.getAllByText('Ready for handoff').length).toBeGreaterThan(0));
 
     const select = document.getElementById('handoff-executor-select') as HTMLSelectElement;
@@ -771,6 +789,7 @@ describe('TestCaseGeneratorPage — AUD-005 real persistence, validation, execut
     await verifyKey();
     await waitFor(() => expect(page()).toBeTruthy());
     await openAndSelectProject(PROJECT_A);
+    await goToGeneratedCasesBranch();
     await waitFor(() => expect(screen.getAllByText('Ready for handoff').length).toBeGreaterThan(0));
 
     const select = document.getElementById('handoff-executor-select') as HTMLSelectElement;
@@ -806,6 +825,7 @@ describe('TestCaseGeneratorPage — AUD-005 real persistence, validation, execut
     await verifyKey();
     await waitFor(() => expect(page()).toBeTruthy());
     await openAndSelectProject(PROJECT_A);
+    await goToGeneratedCasesBranch();
     await waitFor(() => expect(screen.getAllByText('Ready for handoff').length).toBeGreaterThan(0));
 
     const select = document.getElementById('handoff-executor-select') as HTMLSelectElement;
@@ -835,6 +855,7 @@ describe('TestCaseGeneratorPage — AUD-005 real persistence, validation, execut
     await verifyKey();
     await waitFor(() => expect(page()).toBeTruthy());
     await openAndSelectProject(PROJECT_A);
+    await goToGeneratedCasesBranch();
     await waitFor(() => expect(document.getElementById('handoff-executor-select')).toBeTruthy());
 
     fireEvent.change(document.getElementById('handoff-executor-select')!, { target: { value: 'pytest' } });
@@ -869,6 +890,7 @@ describe('TestCaseGeneratorPage — AUD-005 real persistence, validation, execut
     await verifyKey();
     await waitFor(() => expect(page()).toBeTruthy());
     await openAndSelectProject(PROJECT_A);
+    await goToGeneratedCasesBranch();
     await waitFor(() => expect(document.getElementById('handoff-executor-select')).toBeTruthy());
 
     fireEvent.change(document.getElementById('handoff-executor-select')!, { target: { value: 'playwright' } });
@@ -896,6 +918,7 @@ describe('TestCaseGeneratorPage — AUD-005 real persistence, validation, execut
     await verifyKey();
     await waitFor(() => expect(page()).toBeTruthy());
     await openAndSelectProject(PROJECT_A);
+    await goToGeneratedCasesBranch();
     await waitFor(() => expect(screen.getAllByText('Still pending review').length).toBeGreaterThan(0));
 
     expect(document.getElementById('handoff-executor-select')).toBeNull();
@@ -917,6 +940,7 @@ describe('TestCaseGeneratorPage — AUD-005 real persistence, validation, execut
     await verifyKey();
     await waitFor(() => expect(page()).toBeTruthy());
     await openAndSelectProject(PROJECT_A);
+    await goToGeneratedCasesBranch();
     await waitFor(() => expect(document.getElementById('handoff-executor-select')).toBeTruthy());
 
     // Default (Simulate): the per-selection "Runs X's own default reference
@@ -959,6 +983,7 @@ describe('TestCaseGeneratorPage — AUD-005 real persistence, validation, execut
     await verifyKey();
     await waitFor(() => expect(page()).toBeTruthy());
     await openAndSelectProject(PROJECT_A);
+    await goToGeneratedCasesBranch();
     await waitFor(() => expect(screen.getAllByText('Needs validation').length).toBeGreaterThan(0));
 
     await waitFor(() => expect(document.getElementById('btn-validate-test-case')).toBeTruthy());
@@ -991,6 +1016,7 @@ describe('TestCaseGeneratorPage — AUD-005 real persistence, validation, execut
     await verifyKey();
     await waitFor(() => expect(page()).toBeTruthy());
     await openAndSelectProject(PROJECT_A);
+    await goToGeneratedCasesBranch();
     await waitFor(() => expect(document.getElementById('btn-validate-test-case')).toBeTruthy());
 
     await act(async () => {
@@ -1018,6 +1044,7 @@ describe('TestCaseGeneratorPage — AUD-005 real persistence, validation, execut
     await verifyKey();
     await waitFor(() => expect(page()).toBeTruthy());
     await openAndSelectProject(PROJECT_A);
+    await goToGeneratedCasesBranch();
     await waitFor(() => expect(document.getElementById('btn-validate-test-case')).toBeTruthy());
 
     await act(async () => {
@@ -1045,6 +1072,7 @@ describe('TestCaseGeneratorPage — AUD-005 real persistence, validation, execut
     await verifyKey();
     await waitFor(() => expect(page()).toBeTruthy());
     await openAndSelectProject(PROJECT_A);
+    await goToGeneratedCasesBranch();
     await waitFor(() => expect(screen.getAllByText('Ready to approve').length).toBeGreaterThan(0));
 
     const approveButton = screen.getByText('Approve Test Case').closest('button')!;
@@ -1072,6 +1100,7 @@ describe('TestCaseGeneratorPage — AUD-005 real persistence, validation, execut
     await verifyKey();
     await waitFor(() => expect(page()).toBeTruthy());
     await openAndSelectProject(PROJECT_A);
+    await goToGeneratedCasesBranch();
     await waitFor(() => expect(screen.getAllByText('Not yet validated').length).toBeGreaterThan(0));
 
     const approveButton = screen.getByText('Approve Test Case').closest('button')!;
@@ -1097,6 +1126,7 @@ describe('TestCaseGeneratorPage — AUD-005 real persistence, validation, execut
     await verifyKey();
     await waitFor(() => expect(page()).toBeTruthy());
     await openAndSelectProject(PROJECT_A);
+    await goToGeneratedCasesBranch();
     await waitFor(() => expect(screen.getAllByText('To be rejected').length).toBeGreaterThan(0));
 
     const rejectButton = screen.getByText('Reject').closest('button')!;
@@ -1130,6 +1160,11 @@ describe('TestCaseGeneratorPage — AUD-005 real persistence, validation, execut
     await act(async () => {
       within(screen.getByRole('listbox', { name: 'Projects' })).getByRole('option', { name: PROJECT_A.name }).click();
     });
+
+    // Phase A cleanup: with no pre-seeded session the page opens on the
+    // "Source & Generation" branch — switch to the "Generated Test Cases"
+    // branch where the persisted-cases fetch state is displayed.
+    await goToGeneratedCasesBranch();
 
     // Real loading state while the real fetch is still in flight — not a
     // fabricated instant transition.

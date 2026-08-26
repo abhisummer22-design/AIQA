@@ -7,10 +7,11 @@ use crate::scheduler::validate_plan;
 use crate::state::AppState;
 use axum::{
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
-    // BE-10: `Path`/`Query` are kept imported for `ws_handler` only — its
-    // pre-upgrade rejections are deliberately not converted to `ApiError`
-    // (see `errors.rs`'s module doc comment; G-WS is out of scope). Every
-    // other handler below uses `ApiPath`/`ApiQuery`/`ApiJson` instead.
+    // BE-10: `Path`/`Query` are kept imported for `project_events_ws_handler`
+    // only — its pre-upgrade rejections are deliberately not converted to
+    // `ApiError` (see `errors.rs`'s module doc comment; G-WS is out of
+    // scope). Every other handler below uses `ApiPath`/`ApiQuery`/`ApiJson`
+    // instead.
     extract::{Extension, Path, Query, State},
     http::{HeaderValue, StatusCode},
     response::{IntoResponse, Json, Response},
@@ -25,11 +26,11 @@ use uuid::Uuid;
 
 /// `/health` is intentionally the only route outside the auth layer (see
 /// `router` below) — basic liveness checks stay unauthenticated, matching
-/// common orchestrator/k8s conventions. `/runs/:id/ws` is also mounted
-/// outside the header-based auth layer for a different reason: browsers
-/// cannot set an `Authorization` header on a WebSocket handshake, so it
-/// authenticates itself via a `?key=` query parameter instead (see
-/// `ws_handler`).
+/// common orchestrator/k8s conventions. The project events WebSocket is
+/// also mounted outside the header-based auth layer for a different
+/// reason: browsers cannot set an `Authorization` header on a WebSocket
+/// handshake, so it authenticates itself via a `?key=` query parameter
+/// instead (see `project_events_ws_handler`).
 pub fn router(state: AppState) -> Router {
     let protected = Router::new()
         // BE-8 — API Contract §5.1-5.4.
@@ -133,20 +134,16 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/ai/status", get(get_ai_status))
         .route("/api/v1/ai/settings", get(get_ai_settings_handler).put(put_ai_settings_handler))
         .route("/api/v1/ai/refresh", post(refresh_ai_providers))
-        // Legacy, flat, unscoped routes — kept fully functional (Step 6: no
-        // document calls for removing or redirecting them; see the report's
-        // "Route Compatibility" section for the explicit reasoning).
-        .route("/runs", post(create_run).get(list_runs))
-        .route("/runs/:id", get(get_run))
-        .route("/runs/:id/events", get(get_events))
-        .route("/runs/:id/approve", post(approve_run))
-        .route("/runs/:id/reject", post(reject_run))
-        .route("/runs/:id/evidence", get(list_evidence))
-        .route("/evidence/:id/content", get(get_evidence_content))
-        .route("/intelligence/tests", get(list_test_intelligence))
-        .route("/intelligence/failure-clusters", get(list_failure_clusters))
-        .route("/bug-drafts", get(list_bug_drafts))
-        .route("/bug-drafts/:id/review", post(review_bug_draft))
+        // Phase B cleanup — the legacy flat, unscoped routes (`/runs*`,
+        // `/evidence/:id/content`, `/intelligence/*`, `/bug-drafts*`,
+        // `/runs/:id/ws`) are removed: every caller moved to the scoped
+        // `/api/v1/projects/:project_id/...` contract above long ago and a
+        // frontend test asserts the flat paths are never called. Kept from
+        // this block: `/metrics` (a live frontend consumer reads its raw
+        // Prometheus text body) and `/admin/*` (the only API-key
+        // provisioning path in the system — FE-2's scoped admin UI is not
+        // built; removing these would leave no way to create or revoke a
+        // key).
         .route("/metrics", get(get_metrics))
         .route("/admin/api-keys", post(create_api_key).get(list_api_keys_handler))
         .route("/admin/api-keys/:id", delete(revoke_api_key_handler))
@@ -155,12 +152,11 @@ pub fn router(state: AppState) -> Router {
 
     Router::new()
         .route("/health", get(health))
-        .route("/runs/:id/ws", get(ws_handler))
         // BE-14 (API Contract §14) — project-scoped realtime stream.
-        // Mounted outside the header-based `require_auth` layer for the
-        // same reason `/runs/:id/ws` is: a WebSocket upgrade can't carry
-        // an `Authorization` header, so this authenticates itself via
-        // `?key=` instead (see `project_events_ws_handler`).
+        // Mounted outside the header-based `require_auth` layer because
+        // a WebSocket upgrade can't carry an `Authorization` header,
+        // so this authenticates itself via `?key=` instead (see
+        // `project_events_ws_handler`).
         .route("/api/v1/projects/:project_id/events", get(project_events_ws_handler))
         .merge(protected)
         .with_state(state)
@@ -1552,13 +1548,6 @@ async fn refresh_ai_providers(State(state): State<AppState>, Extension(ctx): Ext
 
 // -------------------------------------------------------------- run create
 
-#[derive(Deserialize)]
-struct CreateRunQuery {
-    /// Only consulted for a global/admin key (`ctx.project_id.is_none()`) —
-    /// a project-scoped key's runs always belong to its own project.
-    project_id: Option<String>,
-}
-
 #[derive(Serialize)]
 struct CreateRunResponse {
     run_id: Uuid,
@@ -1568,10 +1557,10 @@ struct CreateRunResponse {
 
 /// The actual run-creation logic (FRD §1 Execution Lifecycle: plan
 /// validation -> dependency graph -> policy gate -> scheduling ->
-/// persistence), shared verbatim by the legacy `POST /runs` handler and the
-/// project-scoped `POST /api/v1/projects/:project_id/executions` handler —
-/// the two differ only in *where their `project_id` comes from* (Step 7:
-/// reuse existing logic rather than duplicate it). `project_id` here is
+/// persistence), shared verbatim by the project-scoped
+/// `POST /api/v1/projects/:project_id/executions` handler (Phase B cleanup:
+/// the legacy flat `POST /runs` handler that also used to share it is
+/// removed). `project_id` here is
 /// already resolved and, for the scoped caller, already verified against a
 /// real project by `require_scoped_project`; this function does not decide
 /// it, only uses it.
@@ -1631,19 +1620,6 @@ async fn create_run_core(
     ))
 }
 
-/// POST /runs — legacy, flat, unscoped. `project_id` comes from the
-/// caller's own key scope, or (global keys only) the `?project_id=` query
-/// param — unchanged from before this unit.
-async fn create_run(
-    State(state): State<AppState>,
-    Extension(ctx): Extension<AuthContext>,
-    ApiQuery(q): ApiQuery<CreateRunQuery>,
-    ApiJson(plan): ApiJson<RunPlan>,
-) -> Result<(StatusCode, Json<CreateRunResponse>), ApiError> {
-    let project_id = ctx.project_id.clone().or_else(|| q.project_id.clone());
-    create_run_core(&state, &ctx, project_id, plan).await
-}
-
 // ---------------------------------------------------------------- listing
 
 #[derive(Serialize)]
@@ -1662,45 +1638,6 @@ struct ListRunsQuery {
     limit: Option<i64>,
 }
 
-/// GET /runs — history now survives a process restart (SRD/PRD persistence
-/// gap): every run id comes from the DB; an in-memory `RunRecord` (if this
-/// process is the one driving it) is preferred for freshness, DB summary
-/// otherwise. Scoped to the caller's project unless they hold a global key.
-async fn list_runs(
-    State(state): State<AppState>,
-    Extension(ctx): Extension<AuthContext>,
-    ApiQuery(q): ApiQuery<ListRunsQuery>,
-) -> Result<Json<Vec<RunListItem>>, ApiError> {
-    let ids = state
-        .store
-        .list_run_ids(ctx.project_id.as_deref())
-        .await
-        .map_err(to_500)?;
-    let limit = q.limit.unwrap_or(50).max(1) as usize;
-
-    let mut items = Vec::new();
-    for id in ids.into_iter().take(limit) {
-        let summary = if let Some(record) = state.runs.read().await.get(&id).cloned() {
-            record.summary().await
-        } else {
-            match state.store.get_run_summary(id).await.map_err(to_500)? {
-                Some(s) => s,
-                None => continue,
-            }
-        };
-        items.push(RunListItem {
-            run_id: summary.run_id,
-            name: summary.name,
-            state: summary.state,
-            total: summary.total,
-            passed: summary.passed,
-            failed: summary.failed,
-            project_id: summary.project_id,
-        });
-    }
-    Ok(Json(items))
-}
-
 #[derive(Serialize)]
 struct RunDetail {
     #[serde(flatten)]
@@ -1708,65 +1645,9 @@ struct RunDetail {
     tasks: Vec<TaskState>,
 }
 
-/// GET /runs/:id — FRD §7 Live Dashboard UX data source. Falls back to the
-/// DB when the run isn't (or is no longer) in this process's memory, e.g.
-/// after a restart — see README "Persistence".
-async fn get_run(
-    State(state): State<AppState>,
-    Extension(ctx): Extension<AuthContext>,
-    ApiPath(id): ApiPath<Uuid>,
-) -> Result<Json<RunDetail>, ApiError> {
-    if let Some(record) = state.runs.read().await.get(&id).cloned() {
-        let summary = record.summary().await;
-        auth::require_project_access(&ctx, summary.project_id.as_deref())?;
-        let mut tasks: Vec<TaskState> = record.engine.read().await.tasks.values().cloned().collect();
-        tasks.sort_by(|a, b| a.id.cmp(&b.id));
-        return Ok(Json(RunDetail { summary, tasks }));
-    }
-
-    let summary = state
-        .store
-        .get_run_summary(id)
-        .await
-        .map_err(to_500)?
-        .ok_or_else(|| ApiError::not_found("run not found"))?;
-    auth::require_project_access(&ctx, summary.project_id.as_deref())?;
-    let mut tasks = state.store.list_tasks_for_run(id).await.map_err(to_500)?;
-    tasks.sort_by(|a, b| a.id.cmp(&b.id));
-    Ok(Json(RunDetail { summary, tasks }))
-}
-
 #[derive(Deserialize)]
 struct EventsQuery {
     since: Option<u64>,
-}
-
-/// GET /runs/:id/events?since=N — SRD §18 reconnect path: "the client
-/// requests authoritative run state plus the last acknowledged event
-/// sequence." Now extended to survive a full process restart, not just a
-/// dropped WebSocket, by falling back to the DB.
-async fn get_events(
-    State(state): State<AppState>,
-    Extension(ctx): Extension<AuthContext>,
-    ApiPath(id): ApiPath<Uuid>,
-    ApiQuery(q): ApiQuery<EventsQuery>,
-) -> Result<Json<Vec<RunEvent>>, ApiError> {
-    let since = q.since.unwrap_or(0);
-    if let Some(record) = state.runs.read().await.get(&id).cloned() {
-        let summary = record.summary().await;
-        auth::require_project_access(&ctx, summary.project_id.as_deref())?;
-        let events: Vec<RunEvent> = record.events.read().await.iter().filter(|e| e.sequence >= since).cloned().collect();
-        return Ok(Json(events));
-    }
-    let summary = state
-        .store
-        .get_run_summary(id)
-        .await
-        .map_err(to_500)?
-        .ok_or_else(|| ApiError::not_found("run not found"))?;
-    auth::require_project_access(&ctx, summary.project_id.as_deref())?;
-    let events = state.store.list_events_since(id, since).await.map_err(to_500)?;
-    Ok(Json(events))
 }
 
 // ------------------------------------------------------------- governance
@@ -1796,7 +1677,7 @@ async fn rehydrate_run_record(state: &AppState, run_id: Uuid) -> Result<Option<A
     Ok(Some(record))
 }
 
-/// Shared by all four approve/reject handlers (flat + scoped): in-memory
+/// Shared by both approve/reject handlers (scoped): in-memory
 /// lookup first (the common, same-process case), falling back to
 /// rehydration from the store (B11/L4). A 404 here means the run genuinely
 /// does not exist anywhere, not merely that this process hasn't seen it.
@@ -1807,116 +1688,10 @@ async fn find_or_rehydrate_run(state: &AppState, run_id: Uuid) -> Result<Arc<Run
     rehydrate_run_record(state, run_id).await?.ok_or_else(|| ApiError::not_found("run not found"))
 }
 
-/// POST /runs/:id/approve — releases a run the policy engine held for
-/// review (see `policy.rs`). B11/L4: works against a run created by a
-/// different (or since-restarted) orchestrator process too, via
-/// `find_or_rehydrate_run` above — there is still no cross-process *work
-/// queue* (see README "Distributed workers / Redis"), but a durable,
-/// still-pending approval is no longer lost to a restart the way it used
-/// to be.
-async fn approve_run(
-    State(state): State<AppState>,
-    Extension(ctx): Extension<AuthContext>,
-    ApiPath(id): ApiPath<Uuid>,
-) -> Result<Json<RunSummary>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
-    let record = find_or_rehydrate_run(&state, id).await?;
-    auth::require_project_access(&ctx, record.project_id.as_deref())?;
-    {
-        let cur = *record.state.read().await;
-        if cur != RunState::PendingApproval {
-            return Err(ApiError::conflict(format!("run is in state {cur:?}, not PENDING_APPROVAL")));
-        }
-    }
-    let concurrency = record.plan.concurrency;
-    engine::approve_and_spawn(
-        record.clone(),
-        state.registry.clone(),
-        concurrency,
-        state.store.clone(),
-        state.evidence.clone(),
-        &ctx.name,
-        engine::default_task_timeout(),
-    )
-    .await
-    .map_err(to_500)?;
-    audit(&state, &ctx, "run.approve", Some(&id.to_string()), None, "ok").await;
-    Ok(Json(record.summary().await))
-}
-
 #[derive(Deserialize)]
 struct RejectBody {
     #[serde(default)]
     reason: Option<String>,
-}
-
-async fn reject_run(
-    State(state): State<AppState>,
-    Extension(ctx): Extension<AuthContext>,
-    ApiPath(id): ApiPath<Uuid>,
-    body: Option<ApiJson<RejectBody>>,
-) -> Result<Json<RunSummary>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
-    let record = find_or_rehydrate_run(&state, id).await?;
-    auth::require_project_access(&ctx, record.project_id.as_deref())?;
-    {
-        let cur = *record.state.read().await;
-        if cur != RunState::PendingApproval {
-            return Err(ApiError::conflict(format!("run is in state {cur:?}, not PENDING_APPROVAL")));
-        }
-    }
-    let reason = body.and_then(|b| b.0.reason.clone()).unwrap_or_else(|| "no reason given".to_string());
-    engine::reject_run(record.clone(), &state.store, &ctx.name, &reason)
-        .await
-        .map_err(to_500)?;
-    audit(&state, &ctx, "run.reject", Some(&id.to_string()), Some(&reason), "ok").await;
-    Ok(Json(record.summary().await))
-}
-
-// ---------------------------------------------------------------- evidence
-
-async fn list_evidence(
-    State(state): State<AppState>,
-    Extension(ctx): Extension<AuthContext>,
-    ApiPath(id): ApiPath<Uuid>,
-) -> Result<Json<Vec<crate::store::EvidenceRow>>, ApiError> {
-    let summary = state
-        .store
-        .get_run_summary(id)
-        .await
-        .map_err(to_500)?
-        .ok_or_else(|| ApiError::not_found("run not found"))?;
-    auth::require_project_access(&ctx, summary.project_id.as_deref())?;
-    let rows = state.store.list_evidence_for_run(id).await.map_err(to_500)?;
-    Ok(Json(rows))
-}
-
-async fn get_evidence_content(
-    State(state): State<AppState>,
-    Extension(ctx): Extension<AuthContext>,
-    ApiPath(id): ApiPath<Uuid>,
-) -> Result<Response, ApiError> {
-    let (object_key, content_type, run_id) = state
-        .store
-        .get_evidence_object_key(id)
-        .await
-        .map_err(to_500)?
-        .ok_or_else(|| ApiError::not_found("evidence not found"))?;
-    if let Some(run_id) = run_id.as_deref().and_then(|s| Uuid::parse_str(s).ok()) {
-        if let Some(summary) = state.store.get_run_summary(run_id).await.map_err(to_500)? {
-            auth::require_project_access(&ctx, summary.project_id.as_deref())?;
-        }
-    }
-    let bytes = state
-        .evidence
-        .read(&object_key)
-        .map_err(|e| ApiError::not_found(format!("evidence file unavailable: {e}")))?;
-    Ok((
-        StatusCode::OK,
-        [("Content-Type", content_type.unwrap_or_else(|| "text/plain".to_string()))],
-        bytes,
-    )
-        .into_response())
 }
 
 // --------------------------------------------- project-scoped executions
@@ -2694,22 +2469,23 @@ async fn get_audit_log_scoped(
 /// GET /api/v1/projects/:project_id/intelligence/tests — Phase 4 BE-10
 /// (distinct from the pre-existing Phase 2 "BE-10" in `errors.rs`/
 /// `api_tests.rs`, which is about extractor-rejection error envelopes and
-/// is unrelated to and untouched by this route). The legacy
-/// `/intelligence/tests` below scopes itself to the caller's own
-/// key-bound `ctx.project_id`, which has no URL parameter at all — safe
-/// only for a single-project key, and silently wrong (or empty, via the
-/// `"default"` tenant fallback in `store.rs::list_test_intelligence`) for
-/// an unscoped/multi-project key browsing a specific project, exactly the
-/// key pattern this frontend's project switcher relies on (see FE-21's
-/// report §3/§9). This route closes that gap the same way every other
-/// resource under `/api/v1/projects/:project_id/...` already does: the
-/// project is explicit in the URL, `require_scoped_project` confirms both
-/// that it exists and that the caller's key may access it, and the query
-/// is always given that real project id — never the caller's own
-/// (possibly different, possibly absent) bound project, never the
-/// `"default"` tenant. No new intelligence computation, no new table, no
-/// new response shape — `store.rs::list_test_intelligence`/`TestIntelRow`
-/// are reused exactly as they already exist.
+/// is unrelated to and untouched by this route). Phase B cleanup: the
+/// legacy unscoped `/intelligence/tests` route this one used to coexist
+/// with is removed — it scoped itself to the caller's own key-bound
+/// `ctx.project_id` (no URL parameter), which was silently wrong (or
+/// empty, via the `"default"` tenant fallback in
+/// `store.rs::list_test_intelligence`) for an unscoped/multi-project key
+/// browsing a specific project, exactly the key pattern this frontend's
+/// project switcher relies on (see FE-21's report §3/§9). This route does
+/// it the same way every other resource under
+/// `/api/v1/projects/:project_id/...` already does: the project is
+/// explicit in the URL, `require_scoped_project` confirms both that it
+/// exists and that the caller's key may access it, and the query is always
+/// given that real project id — never the caller's own (possibly
+/// different, possibly absent) bound project, never the `"default"`
+/// tenant. No new intelligence computation, no new table, no new response
+/// shape — `store.rs::list_test_intelligence`/`TestIntelRow` are reused
+/// exactly as they already exist.
 async fn list_test_intelligence_scoped(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -2724,94 +2500,9 @@ async fn list_test_intelligence_scoped(
     Ok(Json(rows))
 }
 
-/// GET /intelligence/tests — legacy, unscoped. Kept exactly as-is (Phase 4
-/// BE-10 does not touch this handler or its behavior); nothing in this backend
-/// or its tests depends on it changing, and the project-scoped route above
-/// coexists with it the same way every other legacy/scoped pair in this
-/// router already does (see the router's own "Legacy, flat, unscoped
-/// routes" comment).
-async fn list_test_intelligence(
-    State(state): State<AppState>,
-    Extension(ctx): Extension<AuthContext>,
-) -> Result<Json<Vec<crate::store::TestIntelRow>>, ApiError> {
-    let rows = state
-        .store
-        .list_test_intelligence(ctx.project_id.as_deref())
-        .await
-        .map_err(to_500)?;
-    Ok(Json(rows))
-}
-
-async fn list_failure_clusters(
-    State(state): State<AppState>,
-    Extension(ctx): Extension<AuthContext>,
-) -> Result<Json<Vec<crate::store::FailureClusterRow>>, ApiError> {
-    let rows = state
-        .store
-        .list_failure_clusters(ctx.project_id.as_deref())
-        .await
-        .map_err(to_500)?;
-    Ok(Json(rows))
-}
-
-/// GET /bug-drafts — B14: scoped to the caller's project.
-///
-/// This previously bound `Extension(_ctx)`, discarding the auth context
-/// entirely, and called an unfiltered query — so a project-scoped *viewer*
-/// key received every tenant's drafts. A global/admin key (`project_id:
-/// None`) still sees everything, matching `list_runs`.
-async fn list_bug_drafts(
-    State(state): State<AppState>,
-    Extension(ctx): Extension<AuthContext>,
-) -> Result<Json<Vec<crate::store::BugDraftRow>>, ApiError> {
-    let rows = state
-        .store
-        .list_bug_drafts(ctx.project_id.as_deref())
-        .await
-        .map_err(to_500)?;
-    Ok(Json(rows))
-}
-
 #[derive(Deserialize)]
 struct ReviewBody {
     action: String, // "confirm" | "dismiss"
-}
-
-/// POST /bug-drafts/:id/review — the explicit, audited, human-gated
-/// anomaly -> confirmed-defect promotion step the original PRD critique
-/// flagged as undefined (PRD §14). Never happens automatically.
-async fn review_bug_draft(
-    State(state): State<AppState>,
-    Extension(ctx): Extension<AuthContext>,
-    ApiPath(id): ApiPath<Uuid>,
-    ApiJson(body): ApiJson<ReviewBody>,
-) -> Result<StatusCode, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
-    let new_state = match body.action.as_str() {
-        "confirm" => "CONFIRMED",
-        "dismiss" => "DISMISSED",
-        other => {
-            return Err(ApiError::validation(format!(
-                "unknown action '{other}', expected 'confirm' or 'dismiss'"
-            )))
-        }
-    };
-
-    // B14 — this mutation previously performed no project check at all, so a
-    // project-scoped operator could confirm or dismiss another tenant's
-    // draft. Resolve the owning project first and reuse the same gate every
-    // other scoped resource uses.
-    let owner = state
-        .store
-        .bug_draft_project(id)
-        .await
-        .map_err(to_500)?
-        .ok_or_else(|| ApiError::not_found("bug draft not found"))?;
-    auth::require_project_access(&ctx, Some(owner.as_str()))?;
-
-    state.store.review_bug_draft(id, new_state, &ctx.name).await.map_err(to_500)?;
-    audit(&state, &ctx, "bug_draft.review", Some(&id.to_string()), Some(new_state), "ok").await;
-    Ok(StatusCode::NO_CONTENT)
 }
 
 // ------------------------------------------------------------- governance admin
@@ -2903,72 +2594,17 @@ struct WsAuthQuery {
     key: Option<String>,
 }
 
-/// GET /runs/:id/ws — SRD §6 Real-Time Data Flow. Authenticated via a `?key=`
-/// query parameter instead of the `Authorization` header the rest of the
-/// API uses, because browsers cannot set custom headers on a WebSocket
-/// handshake (`new WebSocket(url)` takes no headers argument) — this is the
-/// standard workaround, same as e.g. many streaming APIs' `?access_token=`.
-/// On connect, replays the durable event log first (so a fresh client sees
-/// everything that already happened), then forwards new events as they're
-/// broadcast.
-async fn ws_handler(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    Query(q): Query<WsAuthQuery>,
-    ws: WebSocketUpgrade,
-) -> Response {
-    let ctx = match q.key.as_deref() {
-        Some(key) => match state.store.find_api_key_by_hash(&auth::hash_key(key)).await {
-            Ok(Some(row)) => AuthContext {
-                key_id: row.id,
-                name: row.name,
-                role: Role::parse(&row.role),
-                project_id: row.project_id,
-            },
-            _ => return (StatusCode::UNAUTHORIZED, "invalid or revoked API key").into_response(),
-        },
-        None => return (StatusCode::UNAUTHORIZED, "missing ?key= query parameter").into_response(),
-    };
-
-    let record = { state.runs.read().await.get(&id).cloned() };
-    match record {
-        Some(record) => {
-            let summary = record.summary().await;
-            if auth::require_project_access(&ctx, summary.project_id.as_deref()).is_err() {
-                return (StatusCode::FORBIDDEN, "resource belongs to a different project").into_response();
-            }
-            ws.on_upgrade(move |socket| handle_socket(socket, record))
-        }
-        None => (StatusCode::NOT_FOUND, "run not found (or not held in this process's memory)").into_response(),
-    }
-}
-
-async fn handle_socket(mut socket: WebSocket, record: Arc<RunRecord>) {
-    let rx = record.tx.subscribe();
-
-    let backlog = record.events.read().await.clone();
-    for ev in backlog {
-        if socket
-            .send(Message::Text(serde_json::to_string(&ev).unwrap()))
-            .await
-            .is_err()
-        {
-            return;
-        }
-    }
-
-    drive_socket(socket, rx).await;
-}
-
-/// BE-14 — API Contract §14. Project-scoped counterpart to `/runs/:id/ws`:
-/// multiplexes every run in this project's real events onto one stream
-/// (Integration Plan §11.2 item 1), keeping the per-run socket above as
-/// internal plumbing rather than replacing it. Auth reuses the exact same
-/// `?key=` technique as the per-run socket (browsers cannot set headers on
-/// a WS upgrade; see that handler's doc comment, and G-WS in the
-/// Integration Plan for the broader, deliberately-not-resolved-here
-/// question of whether that technique should eventually change) and the
-/// same project-access model every REST scoped route already uses
+/// BE-14 — API Contract §14. The project-scoped realtime stream. Phase B
+/// cleanup removed the former per-run `/runs/:id/ws` socket this one used
+/// to be documented as a counterpart of; this is now the only WebSocket
+/// endpoint. Auth uses a `?key=` query parameter instead of the
+/// `Authorization` header the rest of the API uses, because browsers
+/// cannot set custom headers on a WebSocket handshake (`new
+/// WebSocket(url)` takes no headers argument) — this is the standard
+/// workaround, same as e.g. many streaming APIs' `?access_token=` (and
+/// G-WS in the Integration Plan is the deliberately-not-resolved-here
+/// question of whether that technique should eventually change). Project
+/// access reuses the same model every REST scoped route already uses
 /// (`auth::require_project_access`) — the project id in the URL does not
 /// itself grant access.
 async fn project_events_ws_handler(
@@ -3014,8 +2650,8 @@ async fn project_events_ws_handler(
     ws.on_upgrade(move |socket| drive_socket(socket, rx))
 }
 
-/// Shared consumption loop for both the per-run and project-scoped
-/// sockets: forward broadcast events to the client, watch for the client
+/// Shared consumption loop for the project-scoped socket: forward broadcast
+/// events to the client, watch for the client
 /// closing, and stop cleanly either way so no subscriber/task/channel is
 /// leaked (dropping `rx` on return unsubscribes it from the `broadcast`
 /// channel automatically).

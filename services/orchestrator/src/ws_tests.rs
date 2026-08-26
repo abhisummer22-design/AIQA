@@ -170,8 +170,9 @@ async fn be14_missing_key_is_rejected() {
 
 /// Category: nonexistent project is rejected with structured behavior
 /// where applicable (pre-upgrade WS responses are deliberately plain, not
-/// the JSON envelope — see `errors.rs`'s module doc comment on `ws_handler`
-/// / G-WS; this asserts the real status code that IS guaranteed).
+/// the JSON envelope — see `errors.rs`'s module doc comment on
+/// `project_events_ws_handler` / G-WS; this asserts the real status code
+/// that IS guaranteed).
 #[tokio::test]
 async fn be14_nonexistent_project_is_rejected() {
     let (state, _dir) = test_state().await;
@@ -367,22 +368,7 @@ async fn be14_lagging_subscriber_is_closed_with_distinct_code_not_silently_skipp
     }
 }
 
-/// Category: existing per-run WebSocket must not regress.
-#[tokio::test]
-async fn be14_legacy_per_run_websocket_still_works() {
-    let (state, _dir) = test_state().await;
-    let project = make_project(&state, "Legacy WS Regression").await;
-    let key = mint_key(&state, "operator", Some(&project.to_string())).await;
-    let base = spawn_server(state).await;
-    let client = reqwest::Client::new();
-
-    let run_id = create_run(&client, &base, project, &key, simple_plan("legacy-ws")).await;
-
-    let ws_base = base.replacen("http://", "ws://", 1);
-    let (mut ws, _resp) = tokio_tungstenite::connect_async(format!("{ws_base}/runs/{run_id}/ws?key={key}"))
-        .await
-        .expect("legacy per-run ws connect");
-
-    let ev = recv_event(&mut ws, Duration::from_secs(5)).await;
-    assert_eq!(ev["run_id"], run_id.to_string(), "event={ev}");
-}
+// Phase B cleanup: `be14_legacy_per_run_websocket_still_works` was removed
+// together with the legacy per-run `/runs/:id/ws` socket it pinned — the
+// project-scoped stream above (`/api/v1/projects/:id/events`) is now the
+// only WebSocket endpoint, and its coverage lives in the tests above.

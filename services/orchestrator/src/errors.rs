@@ -17,7 +17,8 @@
 //! Content-Type" vs "bad path parameter", so none of those are changed here,
 //! only their body shape).
 //!
-//! Scope note: `api.rs::ws_handler`'s pre-upgrade rejections are
+//! Scope note: `api.rs::project_events_ws_handler`'s pre-upgrade
+//! rejections are
 //! deliberately NOT converted to this envelope. A WebSocket handshake
 //! failure is not a JSON API response a browser's `WebSocket` client parses
 //! as JSON, and G-WS (WebSocket auth/transport semantics) is an explicitly

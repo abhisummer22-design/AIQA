@@ -317,44 +317,106 @@ impl ProviderDiscovery for OllamaDiscovery {
     }
 }
 
-/// Real, evidence-based (not simulated) check for a configured API
-/// provider: does the documented environment variable actually hold a
-/// non-empty value? This never makes a live authenticated call (no key is
-/// configured in this environment for any of these providers to call
-/// with), and never invents `reachable: true` for a provider with no real
-/// credential. If a real key is present, `reachable` still stays `false`
-/// until a future unit adds a real, live capability-listing call for that
-/// provider — this module does not claim more than the environment
-/// variable's presence proves.
-pub struct ApiKeyProviderDiscovery {
-    pub id: &'static str,
-    pub name: &'static str,
-    pub env_var: &'static str,
+/// Phase B cleanup: the former `ApiKeyProviderDiscovery` stubs (Gemini /
+/// OpenAI / Anthropic, "configured = env var present, reachable always
+/// false, no models, no executor") are removed entirely — they were
+/// dead configuration surface that could never execute a generation.
+/// The one externally-reachable API gateway this deployment actually uses
+/// is the MJ AI Gateway below: real discovery, real execution.
+
+/// Real MJ AI Gateway discovery (`G:\mj-ai-gateway` — an OpenAI-compatible
+/// gateway in front of a local Ollama). Configured = `MJ_AI_API_KEY` holds
+/// a non-empty key; reachable + model list come from a real, bounded,
+/// Bearer-authenticated `GET /v1/models` call, exactly like Ollama's
+/// `/api/tags` discovery above — never assumed from the env var's mere
+/// presence. A capability the gateway's model list gives no signal for is
+/// `Unknown`, not invented.
+pub struct MjGatewayDiscovery {
+    pub base_url: String,
+    pub api_key: Option<String>,
+    pub timeout: Duration,
 }
 
-#[async_trait::async_trait]
-impl ProviderDiscovery for ApiKeyProviderDiscovery {
-    async fn discover(&self) -> AiProviderInfo {
-        let configured = std::env::var(self.env_var).map(|v| !v.trim().is_empty()).unwrap_or(false);
-        AiProviderInfo {
-            id: self.id.to_string(),
-            name: self.name.to_string(),
-            provider_type: ProviderType::Api,
-            endpoint: None,
-            configured,
-            reachable: false,
-            status: if configured { ProviderStatus::Available } else { ProviderStatus::NotConfigured },
-            models: Vec::new(),
-        }
+impl MjGatewayDiscovery {
+    pub const PROVIDER_ID: &'static str = "mj-gateway";
+
+    pub fn from_env() -> Self {
+        let base_url = std::env::var("MJ_AI_ENDPOINT").unwrap_or_else(|_| "http://127.0.0.1:8000".to_string());
+        let api_key = std::env::var("MJ_AI_API_KEY").ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+        let timeout_secs: u64 = std::env::var("MJ_AI_DISCOVERY_TIMEOUT_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(3);
+        Self { base_url, api_key, timeout: Duration::from_secs(timeout_secs) }
     }
 }
 
-pub fn default_api_provider_discoveries() -> Vec<Arc<dyn ProviderDiscovery>> {
-    vec![
-        Arc::new(ApiKeyProviderDiscovery { id: "gemini", name: "Gemini", env_var: "GEMINI_API_KEY" }),
-        Arc::new(ApiKeyProviderDiscovery { id: "openai", name: "OpenAI", env_var: "OPENAI_API_KEY" }),
-        Arc::new(ApiKeyProviderDiscovery { id: "anthropic", name: "Anthropic", env_var: "ANTHROPIC_API_KEY" }),
-    ]
+#[async_trait::async_trait]
+impl ProviderDiscovery for MjGatewayDiscovery {
+    async fn discover(&self) -> AiProviderInfo {
+        let mut info = AiProviderInfo {
+            id: Self::PROVIDER_ID.to_string(),
+            name: "MJ AI Gateway".to_string(),
+            provider_type: ProviderType::OpenAiCompatible,
+            endpoint: Some(self.base_url.clone()),
+            configured: self.api_key.is_some(),
+            reachable: false,
+            status: if self.api_key.is_some() { ProviderStatus::Unavailable } else { ProviderStatus::NotConfigured },
+            models: Vec::new(),
+        };
+        let Some(key) = &self.api_key else {
+            tracing::info!("MJ gateway discovery: MJ_AI_API_KEY not set — not configured");
+            return info;
+        };
+
+        let client = reqwest::Client::new();
+        let url = format!("{}/v1/models", self.base_url.trim_end_matches('/'));
+        let resp = match client.get(&url).bearer_auth(key).timeout(self.timeout).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::info!("MJ gateway discovery: not reachable ({e})");
+                return info;
+            }
+        };
+        if !resp.status().is_success() {
+            info.status = ProviderStatus::Error;
+            tracing::warn!("MJ gateway discovery: /v1/models responded with HTTP {}", resp.status());
+            return info;
+        }
+        let body: serde_json::Value = match resp.json().await {
+            Ok(v) => v,
+            Err(e) => {
+                info.status = ProviderStatus::Error;
+                tracing::warn!("MJ gateway discovery: invalid response body ({e})");
+                return info;
+            }
+        };
+
+        info.reachable = true;
+        let entries = body.get("data").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        for m in &entries {
+            let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+            info.models.push(ModelDefinition {
+                provider_id: Self::PROVIDER_ID.to_string(),
+                id: id.clone(),
+                display_name: id,
+                family: None,          // the OpenAI-shaped list carries no family metadata
+                parameter_size: None,  // never guessed; the routing score simply forgoes that proxy
+                context_window: None,
+                capabilities: ModelCapabilities {
+                    // The gateway's documented purpose is chat completion over
+                    // these models — text generation is its one evidenced core.
+                    text_generation: Some(CapabilityLevel::Strong),
+                    structured_output: Some(CapabilityLevel::Basic), // text-out only; JSON discipline unverified
+                    reasoning: Some(CapabilityLevel::Basic),         // real text models reason to some degree; not benchmarked here
+                    vision: Some(CapabilityLevel::Unknown),          // no signal either way
+                    embedding: Some(CapabilityLevel::None),          // scope doc: embeddings are a future endpoint
+                    tool_use: Some(CapabilityLevel::Unknown),
+                    long_context: Some(CapabilityLevel::Unknown),
+                },
+                status: ModelStatus::Available, // listed by the live gateway; not yet inference-health-checked
+            });
+        }
+        info.status = if info.models.is_empty() { ProviderStatus::Available } else { ProviderStatus::Healthy };
+        info
+    }
 }
 
 // -------------------------------------------------------------- execution
@@ -429,6 +491,75 @@ impl AiExecutor for OllamaExecutor {
     }
 }
 
+/// Executes a real chat completion against the MJ AI Gateway's
+/// OpenAI-compatible `POST /v1/chat/completions` (Bearer `MJ_AI_API_KEY`,
+/// non-streaming). The prompt becomes the single user message; the reply
+/// is `choices[0].message.content` verbatim.
+pub struct MjGatewayExecutor {
+    pub base_url: String,
+    pub api_key: Option<String>,
+    pub timeout: Duration,
+    /// Explicit completion budget. Without it the gateway applies its own
+    /// small default (~512 tokens, observed live as truncated JSON at
+    /// ~2000 chars), which silently cuts structured generations short.
+    pub max_tokens: u32,
+}
+
+impl MjGatewayExecutor {
+    pub fn from_env() -> Self {
+        let base_url = std::env::var("MJ_AI_ENDPOINT").unwrap_or_else(|_| "http://127.0.0.1:8000".to_string());
+        let api_key = std::env::var("MJ_AI_API_KEY").ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+        let timeout_secs: u64 = std::env::var("MJ_AI_TIMEOUT_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(180);
+        let max_tokens: u32 = std::env::var("MJ_AI_MAX_TOKENS").ok().and_then(|s| s.parse().ok()).unwrap_or(4096);
+        Self { base_url, api_key, timeout: Duration::from_secs(timeout_secs), max_tokens }
+    }
+}
+
+#[async_trait::async_trait]
+impl AiExecutor for MjGatewayExecutor {
+    async fn execute(&self, provider_id: &str, model_id: &str, prompt: &str) -> Result<String, ExecutionError> {
+        if provider_id != MjGatewayDiscovery::PROVIDER_ID {
+            return Err(ExecutionError::ProviderUnavailable(provider_id.to_string()));
+        }
+        let Some(key) = &self.api_key else {
+            return Err(ExecutionError::ProviderUnavailable("MJ_AI_API_KEY not set".to_string()));
+        };
+
+        let client = reqwest::Client::new();
+        let url = format!("{}/v1/chat/completions", self.base_url.trim_end_matches('/'));
+        let body = serde_json::json!({
+            "model": model_id,
+            "messages": [{ "role": "user", "content": prompt }],
+            "stream": false,
+            "max_tokens": self.max_tokens,
+        });
+        let resp = client
+            .post(&url)
+            .bearer_auth(key)
+            .json(&body)
+            .timeout(self.timeout)
+            .send()
+            .await
+            .map_err(|e| if e.is_timeout() { ExecutionError::Timeout } else { ExecutionError::ProviderUnavailable(e.to_string()) })?;
+        if !resp.status().is_success() {
+            return Err(ExecutionError::NonSuccessStatus(resp.status().as_u16()));
+        }
+        let parsed: serde_json::Value = resp.json().await.map_err(|e| ExecutionError::InvalidResponse(e.to_string()))?;
+        let text = parsed
+            .get("choices")
+            .and_then(|v| v.get(0))
+            .and_then(|c| c.get("message"))
+            .and_then(|m| m.get("content"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if text.trim().is_empty() {
+            return Err(ExecutionError::InvalidResponse("empty response".to_string()));
+        }
+        Ok(text)
+    }
+}
+
 // ---------------------------------------------------------------- settings
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -447,8 +578,20 @@ pub struct AiSettings {
 }
 
 impl Default for AiSettings {
+    /// MJ AI Gateway first: AUTO mode prefers its models for the primary
+    /// attempt (`mj-default`), and if the gateway is down or errors, the
+    /// AUTO fallback loop still considers every other discovered provider
+    /// (Ollama) because fallback scoring deliberately ignores the
+    /// preference. A deployment that wants different routing PUTs new
+    /// settings; this default just makes the wired gateway the out-of-box
+    /// choice instead of an unconfigured coin flip.
     fn default() -> Self {
-        Self { mode: RoutingMode::Auto, preferred_provider: None, preferred_model: None, fallback_enabled: true }
+        Self {
+            mode: RoutingMode::Auto,
+            preferred_provider: Some(MjGatewayDiscovery::PROVIDER_ID.to_string()),
+            preferred_model: Some("mj-default".to_string()),
+            fallback_enabled: true,
+        }
     }
 }
 
@@ -576,13 +719,14 @@ impl AiInfrastructure {
         }
     }
 
-    /// Real construction wired for this deployment: Ollama (local) +
-    /// whichever API providers have a real, non-empty credential env var.
+    /// Real construction wired for this deployment: Ollama (local) + the
+    /// MJ AI Gateway (`MJ_AI_API_KEY`/`MJ_AI_ENDPOINT`).
     pub fn from_env() -> Self {
-        let mut discoveries: Vec<Arc<dyn ProviderDiscovery>> = vec![Arc::new(OllamaDiscovery::from_env())];
-        discoveries.extend(default_api_provider_discoveries());
+        let discoveries: Vec<Arc<dyn ProviderDiscovery>> =
+            vec![Arc::new(OllamaDiscovery::from_env()), Arc::new(MjGatewayDiscovery::from_env())];
         let mut executors: HashMap<&'static str, Arc<dyn AiExecutor>> = HashMap::new();
         executors.insert("ollama", Arc::new(OllamaExecutor::from_env()));
+        executors.insert(MjGatewayDiscovery::PROVIDER_ID, Arc::new(MjGatewayExecutor::from_env()));
         Self::new(discoveries, executors)
     }
 
@@ -685,7 +829,20 @@ impl AiInfrastructure {
         let providers = self.ensure_fresh().await;
         let settings = self.settings().await;
 
-        let decision = match Self::route_among(&providers, request.task, &settings, request.preferred_provider.as_deref(), request.preferred_model.as_deref()) {
+        // Preference precedence:
+        // - A per-request preference is a HARD filter (the caller asked
+        //   for that provider specifically).
+        // - The persisted/default AiSettings preference is SOFT: applied
+        //   as the model bonus (`mj-default` outscores everything else
+        //   while its gateway is healthy) so a dead or erroring gateway
+        //   degrades gracefully to the next-best provider instead of
+        //   hard-failing with NoCompatibleModel. (Before this fix,
+        //   settings.preferred_provider was read in MANUAL mode only —
+        //   AUTO mode silently ignored it.)
+        let hard_provider = request.preferred_provider.clone();
+        let soft_model = request.preferred_model.clone().or_else(|| settings.preferred_model.clone());
+
+        let decision = match Self::route_among(&providers, request.task, &settings, hard_provider.as_deref(), soft_model.as_deref()) {
             Ok(d) => d,
             Err(e) => return GenerationOutcome2::Failed { reason: format!("{e:?}") },
         };
@@ -828,26 +985,10 @@ mod tests {
         assert!(info.models.is_empty());
     }
 
-    #[tokio::test]
-    async fn discovery_reports_not_configured_when_api_key_env_var_is_absent() {
-        std::env::remove_var("AIQA_TEST_FAKE_KEY");
-        let discovery = ApiKeyProviderDiscovery { id: "fake", name: "Fake", env_var: "AIQA_TEST_FAKE_KEY" };
-        let info = discovery.discover().await;
-        assert_eq!(info.status, ProviderStatus::NotConfigured);
-        assert!(!info.configured);
-        assert!(!info.reachable, "an unconfigured API provider must never claim reachability");
-    }
-
-    #[tokio::test]
-    async fn discovery_reports_configured_when_api_key_env_var_present_but_never_reachable_without_a_live_check() {
-        std::env::set_var("AIQA_TEST_FAKE_KEY", "sk-real-looking-value");
-        let discovery = ApiKeyProviderDiscovery { id: "fake", name: "Fake", env_var: "AIQA_TEST_FAKE_KEY" };
-        let info = discovery.discover().await;
-        std::env::remove_var("AIQA_TEST_FAKE_KEY");
-        assert!(info.configured);
-        assert_eq!(info.status, ProviderStatus::Available);
-        assert!(!info.reachable, "presence of a key is not proof of a live, verified connection");
-    }
+    // Phase B cleanup: the two ApiKeyProviderDiscovery env-var tests were
+    // removed together with that stub type — the MJ gateway discovery
+    // tests below cover the same honest-status contract against a real,
+    // executing provider.
 
     // -------------------------------------------------------- model discovery
 
@@ -1052,7 +1193,9 @@ mod tests {
         let settings = infra.settings().await;
         assert_eq!(settings.mode, RoutingMode::Auto);
         assert!(settings.fallback_enabled);
-        assert!(settings.preferred_model.is_none());
+        // MJ-first default: the wired gateway is the out-of-box primary.
+        assert_eq!(settings.preferred_provider.as_deref(), Some(MjGatewayDiscovery::PROVIDER_ID));
+        assert_eq!(settings.preferred_model.as_deref(), Some("mj-default"));
     }
 
     #[tokio::test]
@@ -1147,20 +1290,155 @@ mod tests {
     }
 
     #[test]
-    fn api_key_env_var_value_never_appears_in_discovered_provider_info() {
-        // Even though ApiKeyProviderDiscovery reads the real env var, its
-        // output must carry only a boolean fact, never the value itself.
-        let info = AiProviderInfo {
-            id: "fake".to_string(),
-            name: "Fake".to_string(),
-            provider_type: ProviderType::Api,
-            endpoint: None,
-            configured: true,
-            reachable: false,
-            status: ProviderStatus::Available,
-            models: vec![],
+    fn api_key_value_never_appears_in_discovered_provider_info() {
+        // Even though MjGatewayDiscovery holds the real key internally,
+        // its output must carry only boolean facts, never the value itself.
+        let secret = "mj_live_super_secret_value_1234567890";
+        let discovery = MjGatewayDiscovery {
+            base_url: "http://127.0.0.1:1".to_string(),
+            api_key: Some(secret.to_string()),
+            timeout: Duration::from_millis(100),
         };
+        let info = tokio::runtime::Runtime::new().unwrap().block_on(discovery.discover());
+        assert!(info.configured, "the real key's presence must genuinely be detected");
         let json = serde_json::to_string(&info).unwrap();
-        assert!(!json.contains("sk-"), "no credential-shaped value must ever appear in serialized provider info");
+        assert!(!json.contains("super_secret_value"), "no credential value must ever appear in serialized provider info");
+    }
+
+    // -------------------------------------------------- MJ AI Gateway
+
+    /// Spawns a real local HTTP server (axum, already in the dependency
+    /// tree) that mimics the MJ gateway's two authenticated endpoints, and
+    /// returns its base URL. Auth mirrors the real gateway: `Authorization:
+    /// Bearer mj_test_ok` is the only accepted credential.
+    async fn spawn_mock_mj_gateway() -> String {
+        use axum::response::IntoResponse;
+        use axum::routing::{get, post as post_route};
+
+        async fn models(axum::extract::State(expected): axum::extract::State<String>, headers: axum::http::HeaderMap) -> axum::response::Response {
+            let auth = headers.get(axum::http::header::AUTHORIZATION).and_then(|v| v.to_str().ok()).unwrap_or("");
+            if auth != format!("Bearer {expected}") {
+                return (axum::http::StatusCode::UNAUTHORIZED, "invalid key").into_response();
+            }
+            axum::Json(serde_json::json!({
+                "object": "list",
+                "data": [
+                    {"id": "mj-default", "object": "model"},
+                    {"id": "qwen3:14b", "object": "model"}
+                ]
+            }))
+            .into_response()
+        }
+
+        #[derive(serde::Deserialize)]
+        struct ChatBody {
+            model: String,
+        }
+
+        async fn chat(
+            axum::extract::State(expected): axum::extract::State<String>,
+            headers: axum::http::HeaderMap,
+            axum::Json(body): axum::Json<ChatBody>,
+        ) -> axum::response::Response {
+            let auth = headers.get(axum::http::header::AUTHORIZATION).and_then(|v| v.to_str().ok()).unwrap_or("");
+            if auth != format!("Bearer {expected}") {
+                return (axum::http::StatusCode::UNAUTHORIZED, "invalid key").into_response();
+            }
+            if body.model != "mj-default" && body.model != "qwen3:14b" {
+                return (axum::http::StatusCode::BAD_REQUEST, "Model not allowed").into_response();
+            }
+            axum::Json(serde_json::json!({
+                "choices": [{"message": {"role": "assistant", "content": "real gateway reply"}, "finish_reason": "stop"}],
+                "gateway": {"model": body.model}
+            }))
+            .into_response()
+        }
+
+        let app = axum::Router::new()
+            .route("/v1/models", get(models))
+            .route("/v1/chat/completions", post_route(chat))
+            .with_state("mj_test_ok".to_string());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn mj_discovery_reports_not_configured_without_a_key() {
+        let discovery = MjGatewayDiscovery { base_url: "http://127.0.0.1:8000".to_string(), api_key: None, timeout: Duration::from_millis(500) };
+        let info = discovery.discover().await;
+        assert_eq!(info.id, MjGatewayDiscovery::PROVIDER_ID);
+        assert!(!info.configured);
+        assert_eq!(info.status, ProviderStatus::NotConfigured);
+        assert!(!info.reachable, "an unconfigured gateway must never claim reachability");
+        assert!(info.models.is_empty());
+    }
+
+    #[tokio::test]
+    async fn mj_discovery_reports_unavailable_when_gateway_is_not_reachable() {
+        // A real discoverer holding a real-looking key, pointed at a port
+        // nothing listens on — proves the honest "not reachable" path.
+        let discovery = MjGatewayDiscovery { base_url: "http://127.0.0.1:1".to_string(), api_key: Some("mj_test_ok".to_string()), timeout: Duration::from_millis(500) };
+        let info = discovery.discover().await;
+        assert!(info.configured);
+        assert_eq!(info.status, ProviderStatus::Unavailable);
+        assert!(!info.reachable);
+        assert!(info.models.is_empty(), "a model list must never be invented when the gateway is down");
+    }
+
+    #[tokio::test]
+    async fn mj_discovery_lists_real_models_from_a_live_gateway() {
+        let base_url = spawn_mock_mj_gateway().await;
+        let discovery = MjGatewayDiscovery { base_url, api_key: Some("mj_test_ok".to_string()), timeout: Duration::from_secs(2) };
+        let info = discovery.discover().await;
+
+        assert!(info.configured);
+        assert!(info.reachable);
+        assert_eq!(info.status, ProviderStatus::Healthy);
+        let ids: Vec<&str> = info.models.iter().map(|m| m.id.as_str()).collect();
+        assert!(ids.contains(&"mj-default"), "the gateway's own alias list must flow through verbatim; got {ids:?}");
+        assert!(ids.contains(&"qwen3:14b"));
+        for m in &info.models {
+            assert_eq!(m.provider_id, MjGatewayDiscovery::PROVIDER_ID);
+            assert_eq!(m.capabilities.text_generation, Some(CapabilityLevel::Strong));
+            assert_eq!(m.capabilities.embedding, Some(CapabilityLevel::None), "embeddings are not a live gateway capability — documented absence, not a guess");
+            assert_eq!(m.status, ModelStatus::Available);
+        }
+    }
+
+    #[tokio::test]
+    async fn mj_executor_returns_the_real_choices_content_from_a_live_gateway() {
+        let base_url = spawn_mock_mj_gateway().await;
+        let executor = MjGatewayExecutor { base_url, api_key: Some("mj_test_ok".to_string()), timeout: Duration::from_secs(2), max_tokens: 4096 };
+        let text = executor.execute(MjGatewayDiscovery::PROVIDER_ID, "mj-default", "hello").await.expect("execute");
+        assert_eq!(text, "real gateway reply");
+    }
+
+    #[tokio::test]
+    async fn mj_executor_rejects_a_provider_id_it_does_not_own() {
+        let executor = MjGatewayExecutor { base_url: "http://127.0.0.1:8000".to_string(), api_key: None, timeout: Duration::from_secs(1), max_tokens: 4096 };
+        let err = executor.execute("ollama", "llama3", "hi").await.unwrap_err();
+        assert!(matches!(err, ExecutionError::ProviderUnavailable(_)));
+    }
+
+    #[tokio::test]
+    async fn mj_end_to_end_routing_executes_through_the_live_gateway() {
+        let base_url = spawn_mock_mj_gateway().await;
+        let provider = MjGatewayDiscovery { base_url: base_url.clone(), api_key: Some("mj_test_ok".to_string()), timeout: Duration::from_secs(2) }.discover().await;
+        let mut executors: HashMap<&'static str, Arc<dyn AiExecutor>> = HashMap::new();
+        executors.insert(MjGatewayDiscovery::PROVIDER_ID, Arc::new(MjGatewayExecutor { base_url, api_key: Some("mj_test_ok".to_string()), timeout: Duration::from_secs(2), max_tokens: 4096 }));
+        let infra = AiInfrastructure::new(vec![Arc::new(FakeDiscovery(provider))], executors);
+
+        let outcome = infra.generate(AiRequest { task: AiTask::GeneralAi, prompt: "hi".to_string(), preferred_provider: Some(MjGatewayDiscovery::PROVIDER_ID.to_string()), preferred_model: Some("mj-default".to_string()) }).await;
+        match outcome {
+            GenerationOutcome2::Ok(result) => {
+                assert_eq!(result.text, "real gateway reply");
+                assert_eq!(result.provider, MjGatewayDiscovery::PROVIDER_ID);
+                assert_eq!(result.model, "mj-default");
+                assert!(!result.fallback_used);
+            }
+            GenerationOutcome2::Failed { reason } => panic!("expected a real end-to-end generation, got Failed: {reason}"),
+        }
     }
 }

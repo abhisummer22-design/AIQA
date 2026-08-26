@@ -87,14 +87,27 @@ export const API_BASE: string = (import.meta as any).env?.VITE_ORCHESTRATOR_BASE
 
 const API_KEY_STORAGE = 'aiqa.orchestrator.apiKey';
 
+/**
+ * Local-dev default orchestrator key, baked in at dev-server start time
+ * from the environment (`VITE_AIQA_ORCH_KEY`, loaded by `start.bat` from
+ * the repo-root `.env`, which is gitignored). This removes the manual
+ * "paste your API key" step for the standard local setup; a key saved via
+ * Settings still takes precedence, and when the variable is absent
+ * (production build, fresh clone without `.env`) behavior is exactly as
+ * before: no key, honest `no_key` auth gate.
+ */
+const ENV_DEFAULT_API_KEY: string | undefined = ((import.meta as any).env?.VITE_AIQA_ORCH_KEY as string | undefined)?.trim() || undefined;
+
 // ---------------------------------------------------------------- api key
 
 export function getApiKey(): string | null {
   try {
-    return localStorage.getItem(API_KEY_STORAGE);
+    const stored = localStorage.getItem(API_KEY_STORAGE);
+    if (stored && stored.length > 0) return stored;
   } catch {
-    return null;
+    /* storage unavailable (private mode); fall through to the env default */
   }
+  return ENV_DEFAULT_API_KEY ?? null;
 }
 
 export function setApiKey(key: string): void {

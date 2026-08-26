@@ -109,16 +109,17 @@ async fn main() {
         .register("compiled-api", Arc::new(CompiledApiExecutor::from_env()));
 
     // Central AI Provider & Model Intelligence Layer. Real discovery
-    // (Ollama + any API provider with a real, non-empty credential env
-    // var) runs in a background task, not awaited here — this app must
-    // start and serve real traffic even if no AI provider is reachable at
-    // all (brief §3: "must NOT block the entire application if no AI
-    // provider exists"); `AiInfrastructure::generate` re-discovers lazily
-    // (TTL-bounded) on first real use regardless.
+    // (Ollama + the MJ AI Gateway) runs in a background task, not awaited
+    // here — this app must start and serve real traffic even if no AI
+    // provider is reachable at all (brief §3: "must NOT block the entire
+    // application if no AI provider exists");
+    // `AiInfrastructure::generate` re-discovers lazily (TTL-bounded) on
+    // first real use regardless.
     let ai_infra = Arc::new(AiInfrastructure::from_env());
     // Real, persisted settings (brief §21) — loaded once at startup from
     // the `ai_settings` singleton row; `AiSettings::default()` (AUTO,
-    // fallback enabled) if no row exists yet.
+    // MJ-gateway-first via `mj-default`, fallback enabled) if no row
+    // exists yet.
     if let Ok(Some((mode, preferred_provider, preferred_model, fallback_enabled))) = store.get_ai_settings().await {
         let mode = if mode == "MANUAL" { aiqa_orchestrator::ai_router::RoutingMode::Manual } else { aiqa_orchestrator::ai_router::RoutingMode::Auto };
         ai_infra

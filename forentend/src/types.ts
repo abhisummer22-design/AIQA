@@ -63,25 +63,9 @@ export interface ProjectExecutionPoint {
   blocked: number;
 }
 
-export interface ActivityEvent {
-  id: string;
-  type:
-    | 'RUN_STARTED'
-    | 'TEST_COMPLETED'
-    | 'FAILURE_DETECTED'
-    | 'EVIDENCE_CAPTURED'
-    | 'REVIEW_REQUIRED'
-    | 'RUN_COMPLETED'
-    | 'INFRA_ALERT';
-  timestamp: string;
-  title: string;
-  description: string;
-  runId?: string;
-  testId?: string;
-  status?: AIQAStatus;
-  classification?: FailureClassification;
-  actor?: string;
-}
+// Phase A cleanup: `ActivityEvent` removed here together with the dead
+// `activities`/`addActivity` write-only state it typed in `AIQAContext` —
+// zero consumers remained anywhere in the app.
 
 // FE-16: `TestExecutionItem`/`ExecutionRun` (a fabricated local execution-run
 // model, fake IDs/counts/test names) removed here — their only producer was
