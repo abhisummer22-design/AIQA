@@ -108,6 +108,24 @@ pub fn router(state: AppState) -> Router {
         // create_run_core -> CompiledApiExecutor) — no new executor, no new
         // execution engine.
         .route("/api/v1/projects/:project_id/api-testing/execute", post(execute_api_test_scoped))
+        // Truthfulness Cleanup Step 1 — real Application Source connectivity
+        // verification (`app_source.rs`). Replaces the Test Case Generator's
+        // former fully client-side setTimeout+Math.random() simulation
+        // (flagged CRITICAL by the Phase 1-6 Final Consolidated Audit) with
+        // a genuine backend check reusing the same, unmodified SSRF guard
+        // and transport-error classification every other outbound target in
+        // this app already uses.
+        .route("/api/v1/projects/:project_id/verify-application-source", post(verify_application_source_scoped))
+        // Phase 6 — Performance Testing: real Load/Stress/Spike/Volume
+        // workload generation (`performance_testing.rs`). Reuses the exact
+        // Phase 4 per-request execution core (`executor::execute_plan_once`,
+        // extracted from `CompiledApiExecutor` in this same phase) as the
+        // repeated worker underneath a new, minimal concurrency-bounded
+        // scheduler — no second HTTP execution engine.
+        .route("/api/v1/projects/:project_id/performance-testing/start", post(start_performance_test_scoped))
+        .route("/api/v1/projects/:project_id/performance-testing", get(list_performance_runs_scoped))
+        .route("/api/v1/projects/:project_id/performance-testing/:run_id/status", get(get_performance_run_status_scoped))
+        .route("/api/v1/projects/:project_id/performance-testing/:run_id/cancel", post(cancel_performance_run_scoped))
         // Central AI Provider & Model Intelligence Layer — platform-wide,
         // not project-scoped (the router itself is one shared instance
         // across the whole deployment, exactly like `/admin/api-keys`
@@ -1062,6 +1080,407 @@ async fn execute_api_test_scoped(
         response_body_preview,
         evidence_id,
     }))
+}
+
+// ------------------------------ Truthfulness Cleanup Step 1 — Application Source
+
+#[derive(Debug, Deserialize)]
+struct VerifyApplicationSourceBody {
+    url: String,
+}
+
+/// POST /api/v1/projects/:project_id/verify-application-source — real,
+/// bounded connectivity verification for the Test Case Generator's
+/// "Application Sources" panel (`app_source.rs`). `Role::Operator`: this
+/// makes a real outbound network request (bounded, SSRF-guarded, redirects
+/// disabled), the same authorization bar every other real-outbound-action
+/// endpoint in this app (API Testing's `execute`, Performance Testing's
+/// `start`) already requires — never left open to a lower role just because
+/// nothing is persisted.
+async fn verify_application_source_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiJson(body): ApiJson<VerifyApplicationSourceBody>,
+) -> Result<Json<crate::app_source::VerifyApplicationSourceResponse>, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    require_scoped_project(&state, &ctx, project_id).await?;
+
+    let result = crate::app_source::verify(&body.url).await;
+    audit(&state, &ctx, "app_source.verify", None, Some(&format!("{} -> {}", body.url, result.status)), if result.reachable { "ok" } else { "not_reachable" }).await;
+    Ok(Json(result))
+}
+
+// ---------------------------------------------------- Phase 6 — Performance Testing
+
+#[derive(Debug, Serialize)]
+struct PerformanceTestStartResponse {
+    run_id: Uuid,
+    status: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct PerformanceRunStatusResponse {
+    run_id: Uuid,
+    name: String,
+    test_type: String,
+    status: String,
+    verdict: Option<String>,
+    verdict_reasons: Vec<String>,
+    /// Set only for a genuine `ERROR` result (§9 of the Phase 6 ERROR-fix
+    /// brief) — the same real, safe, sanitized message also present as
+    /// `verdict_reasons[0]` for backward-compatible rendering, exposed here
+    /// too as its own explicit field rather than requiring a caller to know
+    /// that convention. `null` for every other status.
+    error_reason: Option<String>,
+    elapsed_ms: u64,
+    current_concurrency: u32,
+    sample_count: u64,
+    metrics: Option<crate::performance_testing::PerformanceMetrics>,
+    samples: Vec<crate::performance_testing::RequestSample>,
+    config: crate::performance_testing::PerformanceTestConfig,
+    started_at: chrono::DateTime<chrono::Utc>,
+    finished_at: Option<chrono::DateTime<chrono::Utc>>,
+    evidence_id: Option<Uuid>,
+    /// `true` when this reflects the live, in-process workload handle
+    /// (real-time samples, recomputed-on-read metrics/verdict); `false`
+    /// when falling back to the durable DB row because no live handle
+    /// exists in *this* process (a different process ran it, or this
+    /// process restarted) — `samples` is honestly empty in that case; the
+    /// full raw sample set, if it was persisted, is still fetchable via the
+    /// existing `evidence_id`/`.../evidence/:id/content` endpoint.
+    live: bool,
+}
+
+/// POST /api/v1/projects/:project_id/performance-testing/start — real Load/
+/// Stress/Spike/Volume workload kickoff. Validates the target (reused,
+/// unmodified `execution_plan::validate_plan` — real SSRF guard) and the
+/// schedule against server-enforced `SafetyLimits` *before* creating any
+/// persisted row or spawning any real request, then returns immediately
+/// (`status: RUNNING`) — the real workload runs in a background task;
+/// progress is polled via the `.../status` endpoint below, never faked.
+async fn start_performance_test_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiJson(body): ApiJson<crate::performance_testing::PerformanceTestConfig>,
+) -> Result<Json<PerformanceTestStartResponse>, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    require_scoped_project(&state, &ctx, project_id).await?;
+
+    let limits = crate::performance_testing::SafetyLimits::from_env();
+    crate::performance_testing::validate_schedule(&body.schedule, &limits).map_err(|(code, msg)| ApiError::validation(format!("{code}: {msg}")))?;
+
+    let run_id = Uuid::new_v4();
+    let plan = crate::performance_testing::build_request_plan(&run_id.to_string(), &body.request, body.expected_status).map_err(|(code, msg)| ApiError::validation(format!("{code}: {msg}")))?;
+
+    // The real SSRF/structural guard — reused unmodified, run once before
+    // the workload starts (every repeated request inside the workload
+    // reuses this same, already-validated plan; see `executor::
+    // execute_plan_once`'s doc comment for why it is not re-run per sample).
+    if let Err(reasons) = crate::execution_plan::validate_plan(&plan).await {
+        return Err(ApiError::validation(format!("TARGET_NOT_ALLOWED: {}", reasons.join("; "))));
+    }
+
+    let test_type = body.schedule.type_name();
+    let name = format!("{test_type} test: {} {}", body.request.method.trim().to_uppercase(), body.request.url);
+    let config_json = serde_json::to_string(&body).map_err(to_500)?;
+
+    let handle = crate::performance_testing::PerformanceRunHandle::new(run_id);
+    state
+        .store
+        .insert_performance_run(run_id, &project_id.to_string(), &name, test_type, &config_json, Some(&ctx.name), handle.started_at)
+        .await
+        .map_err(to_500)?;
+    state.performance_tests.write().await.insert(run_id, handle.clone());
+
+    // One real `reqwest::Client` built here and reused for every request
+    // this whole workload makes — real HTTP keep-alive connection pooling,
+    // not a fresh TCP connection (and fresh local ephemeral port) per
+    // single request. Same `API_TEST_TIMEOUT_SECS` convention `CompiledApiExecutor`
+    // already uses for its own per-request timeout.
+    let timeout = crate::executor::CompiledApiExecutor::from_env().timeout;
+    let client = reqwest::Client::builder().timeout(timeout).build().map_err(to_500)?;
+    let plan = Arc::new(plan);
+    let schedule = body.schedule;
+    let config = body.clone();
+    let state2 = state.clone();
+    let handle2 = handle.clone();
+    // Real Tokio task supervision (`performance_testing::supervise_workload_task`)
+    // — the fix for a genuine gap this phase's own live verification found: a
+    // bare, unobserved `tokio::spawn` here meant a real panic inside the
+    // workload task silently vanished, leaving the persisted row stuck at
+    // RUNNING until the *next process restart's* recovery sweep eventually
+    // noticed. `supervise_workload_task` owns the real `JoinHandle` and
+    // reacts immediately: `Ok(())` is the exact same normal-completion path
+    // as before; `Err(failure)` is a genuine, unexpected task-level failure,
+    // finalized as a real, persisted `ERROR` — not silently orphaned.
+    tokio::spawn(async move {
+        let handle3 = handle2.clone();
+        let outcome = crate::performance_testing::supervise_workload_task(async move {
+            crate::performance_testing::run_workload(client, plan, schedule, limits, handle3).await;
+        })
+        .await;
+        match outcome {
+            Ok(()) => finalize_performance_run(&state2, run_id, &config, &handle2).await,
+            Err(failure) => finalize_performance_run_as_error(&state2, run_id, &handle2, &failure).await,
+        }
+    });
+
+    audit(&state, &ctx, "performance_testing.start", Some(&run_id.to_string()), Some(&name), "ok").await;
+
+    Ok(Json(PerformanceTestStartResponse { run_id, status: "RUNNING" }))
+}
+
+/// Runs exactly once, right after `run_workload` returns — computes real
+/// metrics/verdict from the handle's final sample set, persists the raw
+/// samples via the *existing* evidence store (same convention
+/// `CompiledApiExecutor`'s own evidence already uses), and writes the one
+/// terminal `performance_runs` row update.
+async fn finalize_performance_run(state: &AppState, run_id: Uuid, config: &crate::performance_testing::PerformanceTestConfig, handle: &crate::performance_testing::PerformanceRunHandle) {
+    let samples = handle.samples.read().await.clone();
+    // `run_workload` freezes this the instant it actually finishes — use
+    // it in preference to a fresh `now - started_at` read, which would
+    // include whatever real time has passed since (scheduling delay
+    // between `run_workload` returning and this function actually running).
+    let actual_duration_ms = match *handle.finished_elapsed_ms.read().await {
+        Some(ms) => ms,
+        None => (chrono::Utc::now() - handle.started_at).num_milliseconds().max(0) as u64,
+    };
+    let metrics = crate::performance_testing::compute_metrics(&samples, actual_duration_ms);
+    let cancelled = handle.user_cancelled.load(std::sync::atomic::Ordering::SeqCst);
+    let (verdict, reasons) = crate::performance_testing::evaluate_verdict(config, &metrics, cancelled);
+
+    let evidence_id = match serde_json::to_string(&samples) {
+        Ok(samples_json) => match state.evidence.put(&run_id.to_string(), "performance-test", "raw-samples", &samples_json) {
+            Ok((object_key, size)) => state.store.insert_evidence(run_id, "performance-test", "raw-samples", &object_key, "application/json", size).await.ok(),
+            Err(e) => {
+                tracing::error!("failed to persist performance test raw samples for run {run_id}: {e}");
+                None
+            }
+        },
+        Err(e) => {
+            tracing::error!("failed to serialize performance test raw samples for run {run_id}: {e}");
+            None
+        }
+    };
+
+    let status_str = if cancelled { "CANCELLED" } else { "COMPLETED" };
+    let metrics_json = serde_json::to_string(&metrics).ok();
+    let reasons_json = serde_json::to_string(&reasons).ok();
+    if let Err(e) = state.store.finalize_performance_run(run_id, status_str, Some(verdict.as_str()), metrics_json.as_deref(), reasons_json.as_deref(), None, evidence_id).await {
+        tracing::error!("failed to persist final performance test result for run {run_id}: {e}");
+    }
+}
+
+/// Runs when `supervise_workload_task` reports that the workload task
+/// itself failed unexpectedly (§ the fix this function exists for) — a
+/// genuine, immediate ERROR finalization, never a silently orphaned
+/// `RUNNING` row left for the next restart's recovery sweep to eventually
+/// notice. Preserves whatever real samples the handle had already collected
+/// before the failure (never invents the rest — §6 of the fix brief: "Never
+/// invent missing samples"), freezes a real elapsed-time snapshot at the
+/// moment of detection (the task is *provably* no longer running here —
+/// `supervise_workload_task`'s own `join.await` only returns after the
+/// spawned task has fully exited, so `now - started_at` at this exact point
+/// is the real, true elapsed duration, not an approximation), and persists
+/// only `failure`'s already-sanitized `safe_message` — never a raw panic
+/// payload.
+///
+/// `pub(crate)`, not part of the public HTTP surface: this exists so
+/// `api_tests.rs` can exercise the real persistence round-trip of a genuine,
+/// deterministic supervision failure (obtained via a real panic through the
+/// real `supervise_workload_task`) without needing to make the real
+/// Load/Stress/Spike/Volume workload logic itself panic, which this fix
+/// deliberately leaves untouched — see the fix report's own test-design
+/// section for the full reasoning.
+pub(crate) async fn finalize_performance_run_as_error(state: &AppState, run_id: Uuid, handle: &crate::performance_testing::PerformanceRunHandle, failure: &crate::performance_testing::SupervisionFailure) {
+    let samples = handle.samples.read().await.clone();
+    let elapsed_ms = (chrono::Utc::now() - handle.started_at).num_milliseconds().max(0) as u64;
+    *handle.finished_elapsed_ms.write().await = Some(elapsed_ms);
+    let metrics = crate::performance_testing::compute_metrics(&samples, elapsed_ms);
+
+    *handle.error_reason.write().await = Some(failure.safe_message.clone());
+    *handle.state.write().await = crate::performance_testing::PerfRunState::Error;
+
+    let evidence_id = match serde_json::to_string(&samples) {
+        Ok(samples_json) => match state.evidence.put(&run_id.to_string(), "performance-test", "raw-samples", &samples_json) {
+            Ok((object_key, size)) => state.store.insert_evidence(run_id, "performance-test", "raw-samples", &object_key, "application/json", size).await.ok(),
+            Err(e) => {
+                tracing::error!("failed to persist partial performance test raw samples for run {run_id} after an internal execution failure: {e}");
+                None
+            }
+        },
+        Err(e) => {
+            tracing::error!("failed to serialize partial performance test raw samples for run {run_id} after an internal execution failure: {e}");
+            None
+        }
+    };
+
+    let metrics_json = serde_json::to_string(&metrics).ok();
+    // Also mirrored into `verdict_reasons_json` (not just the dedicated
+    // `error_reason` column) so a reload after the live handle is gone
+    // (`get_performance_run_status_scoped`'s durable-row fallback, which
+    // only ever reads `verdict_reasons_json` — the same real field every
+    // other terminal verdict already uses) still shows the real reason,
+    // not an empty list. A real gap this fix's own tests caught: an earlier
+    // version left this `None`, and a durable-fallback read of an ERROR run
+    // showed no reason at all even though `error_reason` was separately
+    // persisted.
+    let reasons_json = serde_json::to_string(&[failure.safe_message.clone()]).ok();
+    tracing::error!("performance test run {run_id} failed with a genuine internal execution error: {}", failure.safe_message);
+    if let Err(e) = state
+        .store
+        .finalize_performance_run(run_id, "ERROR", Some(crate::performance_testing::PerfVerdict::Error.as_str()), metrics_json.as_deref(), reasons_json.as_deref(), Some(&failure.safe_message), evidence_id)
+        .await
+    {
+        tracing::error!("failed to persist ERROR result for performance test run {run_id}: {e}");
+    }
+}
+
+/// GET /api/v1/projects/:project_id/performance-testing/:run_id/status —
+/// real, live progress while running (real elapsed time, real sample count,
+/// real current concurrency, metrics recomputed from the real samples
+/// gathered so far — never a fabricated percentage), falling back to the
+/// durable row once no live handle exists in this process.
+async fn get_performance_run_status_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, run_id)): ApiPath<(Uuid, Uuid)>,
+) -> Result<Json<PerformanceRunStatusResponse>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let row = state.store.get_performance_run(run_id).await.map_err(to_500)?.ok_or_else(|| ApiError::not_found("performance test run not found"))?;
+    require_resource_in_project(Some(&row.project_id), project_id)?;
+
+    if let Some(handle) = state.performance_tests.read().await.get(&run_id).cloned() {
+        let config: crate::performance_testing::PerformanceTestConfig = serde_json::from_str(&row.config_json).map_err(to_500)?;
+        let samples = handle.samples.read().await.clone();
+        let sample_count = samples.len() as u64;
+        // While RUNNING, real, live elapsed time (`now - started_at`) is
+        // exactly right for a live progress read. Once terminal, the run's
+        // own `finished_elapsed_ms` (frozen by `run_workload` the instant
+        // it actually finished) must be used instead — otherwise every
+        // later poll of an already-completed run would recompute
+        // `metrics`/`throughput_rps` against a denominator that keeps
+        // growing with wall-clock time even though nothing is still
+        // happening, silently shrinking the reported throughput on repeat
+        // reads (a real bug caught during this phase's own live
+        // verification — see the report's bug log).
+        let frozen_elapsed = *handle.finished_elapsed_ms.read().await;
+        let elapsed_ms = match frozen_elapsed {
+            Some(ms) => ms,
+            None => (chrono::Utc::now() - handle.started_at).num_milliseconds().max(0) as u64,
+        };
+        let metrics = crate::performance_testing::compute_metrics(&samples, elapsed_ms);
+        let run_state = *handle.state.read().await;
+        // `PerfRunState::Error` is deliberately never routed through
+        // `evaluate_verdict` — that function has no genuine ERROR-producing
+        // path of its own (it only ever compares real metrics against
+        // configured thresholds) and would misclassify a genuine task-level
+        // failure as COMPLETED/PASSED/FAILED/CANCELLED from whatever partial
+        // samples happened to exist. The real, safe reason
+        // `finalize_performance_run_as_error` recorded is used verbatim.
+        let (verdict, reasons, error_reason) = match run_state {
+            crate::performance_testing::PerfRunState::Running => (None, Vec::new(), None),
+            crate::performance_testing::PerfRunState::Error => {
+                let reason = handle.error_reason.read().await.clone().unwrap_or_else(|| "performance execution terminated unexpectedly".to_string());
+                (Some(crate::performance_testing::PerfVerdict::Error.as_str().to_string()), vec![reason.clone()], Some(reason))
+            }
+            _ => {
+                let cancelled = handle.user_cancelled.load(std::sync::atomic::Ordering::SeqCst);
+                let (v, r) = crate::performance_testing::evaluate_verdict(&config, &metrics, cancelled);
+                (Some(v.as_str().to_string()), r, None)
+            }
+        };
+        return Ok(Json(PerformanceRunStatusResponse {
+            run_id,
+            name: row.name,
+            test_type: row.test_type,
+            status: run_state.as_str().to_string(),
+            verdict,
+            verdict_reasons: reasons,
+            error_reason,
+            elapsed_ms,
+            current_concurrency: handle.current_concurrency.load(std::sync::atomic::Ordering::SeqCst),
+            sample_count,
+            metrics: Some(metrics),
+            samples,
+            config,
+            started_at: handle.started_at,
+            finished_at: row.finished_at,
+            evidence_id: row.evidence_id,
+            live: true,
+        }));
+    }
+
+    let config: crate::performance_testing::PerformanceTestConfig = serde_json::from_str(&row.config_json).map_err(to_500)?;
+    let metrics = row.metrics_json.as_deref().and_then(|s| serde_json::from_str(s).ok());
+    let reasons: Vec<String> = row.verdict_reasons_json.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default();
+    let elapsed_ms = row.finished_at.unwrap_or_else(chrono::Utc::now).signed_duration_since(row.started_at).num_milliseconds().max(0) as u64;
+    Ok(Json(PerformanceRunStatusResponse {
+        run_id,
+        name: row.name,
+        test_type: row.test_type,
+        status: row.status,
+        verdict: row.verdict,
+        verdict_reasons: reasons,
+        error_reason: row.error_reason,
+        elapsed_ms,
+        current_concurrency: 0,
+        sample_count: 0,
+        metrics,
+        samples: Vec::new(),
+        config,
+        started_at: row.started_at,
+        finished_at: row.finished_at,
+        evidence_id: row.evidence_id,
+        live: false,
+    }))
+}
+
+#[derive(Debug, Serialize)]
+struct PerformanceTestCancelResponse {
+    run_id: Uuid,
+    cancelled: bool,
+    reason: Option<&'static str>,
+}
+
+/// POST /api/v1/projects/:project_id/performance-testing/:run_id/cancel —
+/// real cancellation (`PerformanceRunHandle::request_cancel`, races and
+/// interrupts in-flight requests, not just "stop starting new ones"). Only
+/// reachable when a live handle exists in *this* process — an honest
+/// limitation disclosed via `reason`, not silently pretended to succeed,
+/// same class of in-memory-only limitation `engine.rs`'s own run
+/// cancellation already has.
+async fn cancel_performance_run_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, run_id)): ApiPath<(Uuid, Uuid)>,
+) -> Result<Json<PerformanceTestCancelResponse>, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let row = state.store.get_performance_run(run_id).await.map_err(to_500)?.ok_or_else(|| ApiError::not_found("performance test run not found"))?;
+    require_resource_in_project(Some(&row.project_id), project_id)?;
+
+    let Some(handle) = state.performance_tests.read().await.get(&run_id).cloned() else {
+        audit(&state, &ctx, "performance_testing.cancel", Some(&run_id.to_string()), Some("no live handle in this process"), "unavailable").await;
+        return Ok(Json(PerformanceTestCancelResponse {
+            run_id,
+            cancelled: false,
+            reason: Some("no live handle for this run exists in this process — it may have already finished, or this process restarted since it started"),
+        }));
+    };
+    let cancelled = handle.request_cancel().await;
+    audit(&state, &ctx, "performance_testing.cancel", Some(&run_id.to_string()), None, if cancelled { "ok" } else { "already_terminal" }).await;
+    Ok(Json(PerformanceTestCancelResponse { run_id, cancelled, reason: if cancelled { None } else { Some("run was already terminal") } }))
+}
+
+/// GET /api/v1/projects/:project_id/performance-testing — real, persisted
+/// run history for this project, newest first.
+async fn list_performance_runs_scoped(State(state): State<AppState>, Extension(ctx): Extension<AuthContext>, ApiPath(project_id): ApiPath<Uuid>) -> Result<Json<Vec<crate::store::PerformanceRunRow>>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let rows = state.store.list_performance_runs(&project_id.to_string()).await.map_err(to_500)?;
+    Ok(Json(rows))
 }
 
 // ------------------------------------------------------ AI Intelligence Layer

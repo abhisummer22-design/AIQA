@@ -532,6 +532,177 @@ export interface ApiTestExecutionResponse {
   evidence_id: string | null;
 }
 
+// ---------------------------------------------------- Phase 6: Performance Testing
+
+/** `performance_testing.rs::WorkloadSchedule` — internally tagged on
+ *  `test_type`, mirroring `PlanAction`'s own wire shape. Each variant is a
+ *  genuinely distinct real schedule (see the Rust doc comment on this same
+ *  type for exactly how) — never render all four with the same form fields
+ *  relabeled. */
+export type PerformanceWorkloadSchedule =
+  | { test_type: 'LOAD'; concurrency: number; duration_secs: number; max_requests?: number | null }
+  | { test_type: 'STRESS'; start_concurrency: number; max_concurrency: number; step_size: number; step_interval_secs: number; max_duration_secs: number }
+  | { test_type: 'SPIKE'; baseline_concurrency: number; spike_concurrency: number; baseline_secs: number; spike_secs: number }
+  | { test_type: 'VOLUME'; concurrency: number; total_requests: number };
+
+/** `performance_testing.rs::PerformanceTestConfig` — the real `POST
+ *  .../performance-testing/start` request body. `request` reuses
+ *  `AdHocApiRequest`'s exact shape, but its own `assertions` field must be
+ *  left empty here — a performance test's real per-request correctness
+ *  check is `expected_status` alone (the backend rejects a non-empty
+ *  `assertions` with `INVALID_REQUEST_CONFIGURATION`). Thresholds are all
+ *  optional; when none are set the real verdict is `COMPLETED` (metrics
+ *  only, no pass/fail judgement) — never a false `PASSED`. */
+export interface PerformanceTestConfig {
+  request: Omit<AdHocApiRequest, 'assertions'>;
+  expected_status?: number | null;
+  schedule: PerformanceWorkloadSchedule;
+  max_p95_ms?: number | null;
+  max_error_rate_percent?: number | null;
+  min_throughput_rps?: number | null;
+}
+
+export type PerformanceSampleOutcome = 'SUCCESS' | 'FAILED' | 'ERROR';
+
+/** `performance_testing.rs::RequestSample` — one real, completed HTTP
+ *  round-trip. `concurrency_at_start` is the real, live worker count in
+ *  effect at that moment — the truthful basis for a "concurrency over time"
+ *  chart overlay, not inferred from the schedule's own configured values. */
+export interface PerformanceRequestSample {
+  sequence: number;
+  offset_ms: number;
+  duration_ms: number;
+  outcome: PerformanceSampleOutcome;
+  http_status: number | null;
+  error_reason: string | null;
+  concurrency_at_start: number;
+}
+
+/** `performance_testing.rs::PerformanceMetrics` — every field computed
+ *  directly from the real `samples` gathered so far (or, once terminal, the
+ *  complete real set). `throughput_rps` divides by the real wall-clock
+ *  `actual_duration_ms`, never by a configured/expected duration. */
+export interface PerformanceMetrics {
+  total_requests: number;
+  successful: number;
+  failed: number;
+  errored: number;
+  error_rate_percent: number;
+  success_rate_percent: number;
+  min_ms: number;
+  avg_ms: number;
+  max_ms: number;
+  p50_ms: number;
+  p95_ms: number;
+  p99_ms: number;
+  throughput_rps: number;
+  actual_duration_ms: number;
+}
+
+export type PerformanceRunLifecycleStatus = 'RUNNING' | 'COMPLETED' | 'CANCELLED' | 'ERROR' | 'INTERRUPTED';
+export type PerformanceVerdict = 'COMPLETED' | 'PASSED' | 'FAILED' | 'ERROR' | 'CANCELLED';
+
+/** `api.rs::PerformanceTestStartResponse`. */
+export interface PerformanceTestStartResponse {
+  run_id: string;
+  status: 'RUNNING';
+}
+
+/** `api.rs::PerformanceRunStatusResponse` — real, live polling shape.
+ *  `live: true` means this came from the actual in-process running/
+ *  just-finished workload handle (`samples`/`metrics`/`current_concurrency`
+ *  are real-time); `live: false` means no such handle exists in this
+ *  backend process (a restart, or another process ran it) and this is the
+ *  durable row instead — `samples` is honestly `[]` in that case, not a
+ *  silently-stale copy; the full raw set, if persisted, is still fetchable
+ *  via `evidence_id` through the existing evidence-content endpoint.
+ *  `verdict`/`verdict_reasons` are only populated once `status !== 'RUNNING'`
+ *  — never a provisional pass/fail while still in flight. */
+export interface PerformanceRunStatusResponse {
+  run_id: string;
+  name: string;
+  test_type: string;
+  status: PerformanceRunLifecycleStatus;
+  verdict: PerformanceVerdict | null;
+  verdict_reasons: string[];
+  /** Set only for a genuine `ERROR` result — the workload task itself
+   *  failed unexpectedly (a real Tokio panic caught by the backend's own
+   *  supervisor), not a per-request failure. The same safe message is also
+   *  present as `verdict_reasons[0]` for convenience; this field exists so
+   *  a caller doesn't need to know that convention to render it. `null` for
+   *  every other status. */
+  error_reason: string | null;
+  elapsed_ms: number;
+  current_concurrency: number;
+  sample_count: number;
+  metrics: PerformanceMetrics | null;
+  samples: PerformanceRequestSample[];
+  config: PerformanceTestConfig;
+  started_at: string;
+  finished_at: string | null;
+  evidence_id: string | null;
+  live: boolean;
+}
+
+/** `api.rs::PerformanceTestCancelResponse`. `reason` is only present when
+ *  `cancelled === false` — a genuinely honest explanation (no live handle
+ *  in this process, or the run was already terminal), never a silent
+ *  false-success. */
+export interface PerformanceTestCancelResponse {
+  run_id: string;
+  cancelled: boolean;
+  reason: string | null;
+}
+
+/** `store.rs::PerformanceRunRow` — one row of real, persisted run history
+ *  (`GET .../performance-testing`). `config_json`/`metrics_json`/
+ *  `verdict_reasons_json` are opaque JSON text exactly as the backend
+ *  stores them — parse with `JSON.parse` when displaying, same convention
+ *  as every other `..._json` field this API already returns. */
+export interface PerformanceRunRow {
+  id: string;
+  project_id: string;
+  name: string;
+  test_type: string;
+  status: PerformanceRunLifecycleStatus;
+  verdict: PerformanceVerdict | null;
+  config_json: string;
+  metrics_json: string | null;
+  verdict_reasons_json: string | null;
+  error_reason: string | null;
+  evidence_id: string | null;
+  created_by: string | null;
+  started_at: string;
+  finished_at: string | null;
+}
+
+// -------------------------- Truthfulness Cleanup Step 1: Application Source
+
+/** `app_source.rs::AppSourceStatus`. Every value here corresponds to a real,
+ *  distinct backend outcome — never collapsed into a generic success/failure. */
+export type AppSourceVerifyStatus = 'CONNECTED' | 'UNREACHABLE' | 'REJECTED' | 'INVALID_URL' | 'ERROR';
+
+/** `api.rs::VerifyApplicationSourceBody`. */
+export interface VerifyApplicationSourceRequest {
+  url: string;
+}
+
+/** `app_source.rs::VerifyApplicationSourceResponse` — the real, honest
+ *  result of a real, bounded, SSRF-guarded outbound request
+ *  (`POST .../verify-application-source`). `reachable` and `http_status`
+ *  are deliberately distinct: a real server answering 401/403/404 is
+ *  `reachable: true` with that real `http_status`, never conflated with
+ *  `UNREACHABLE`. `latency_ms` is only ever a real, measured duration —
+ *  `null` exactly when no request was ever attempted (`REJECTED`/
+ *  `INVALID_URL`), never a fabricated/randomized value. */
+export interface VerifyApplicationSourceResponse {
+  status: AppSourceVerifyStatus;
+  reachable: boolean;
+  http_status: number | null;
+  latency_ms: number | null;
+  message: string;
+}
+
 // ---------------------------------------------------- AI-powered test generation
 
 /** `api.rs::SkillInputBody` / `ai_generation::SkillInput` — one selected

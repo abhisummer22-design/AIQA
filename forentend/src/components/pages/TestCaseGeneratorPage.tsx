@@ -171,10 +171,10 @@ export const TestCaseGeneratorPage: React.FC = () => {
   // 2. Application Sources State
   const [appSources, setAppSources] = useState<Record<AppSourceType, AppSourceConnection>>(
     activeGenerationSession?.appSources || {
-      STAGING: { type: 'STAGING', label: 'Staging', url: '', status: 'NOT_CONNECTED' },
-      DEMO: { type: 'DEMO', label: 'Demo', url: '', status: 'NOT_CONNECTED' },
-      LIVE: { type: 'LIVE', label: 'Live', url: '', status: 'NOT_CONNECTED' },
-      FIGMA: { type: 'FIGMA', label: 'Figma', url: '', status: 'NOT_CONNECTED' },
+      STAGING: { type: 'STAGING', label: 'Staging', url: '', status: 'IDLE' },
+      DEMO: { type: 'DEMO', label: 'Demo', url: '', status: 'IDLE' },
+      LIVE: { type: 'LIVE', label: 'Live', url: '', status: 'IDLE' },
+      FIGMA: { type: 'FIGMA', label: 'Figma', url: '', status: 'IDLE' },
     }
   );
 
@@ -962,6 +962,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
               <ApplicationSourceSection
                 appSources={appSources}
                 onAppSourcesChange={setAppSources}
+                projectId={realProjectId}
                 disabled={isGeneratingNow}
               />
             </div>

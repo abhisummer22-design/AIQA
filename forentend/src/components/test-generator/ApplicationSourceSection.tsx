@@ -1,3 +1,24 @@
+/**
+ * Truthfulness Cleanup — Step 1 (Application Source connectivity).
+ *
+ * Previously, `handleConnect` performed only client-side URL-syntax
+ * validation, waited a fixed 600ms, then unconditionally reported
+ * `CONNECTED` with a fabricated `httpStatus: 200`, `sslValid: true`, and a
+ * `Math.random()`-based fake ping time — for *any* syntactically valid URL,
+ * including unreachable or nonexistent hosts. This was flagged CRITICAL by
+ * the Phase 1-6 Final Consolidated Audit (Gap 1): no real network call ever
+ * occurred, and nothing in the UI disclosed that.
+ *
+ * This version calls a real backend endpoint
+ * (`aiqaApi.appSource.verify` -> `POST .../verify-application-source` ->
+ * `app_source.rs`) that performs a real, bounded, SSRF-guarded outbound
+ * request and returns a real, honest result. The UI now has seven genuinely
+ * distinct states (`IDLE`/`CHECKING`/`CONNECTED`/`UNREACHABLE`/`REJECTED`/
+ * `INVALID_URL`/`ERROR`) driven entirely by that real response — never a
+ * fabricated status, never a randomized metric. See
+ * `AIQA_STEP_1_APPLICATION_SOURCE_TRUTHFUL_CONNECTION_REPORT.md` for the
+ * full before/after.
+ */
 import React, { useState } from 'react';
 import {
   Globe,
@@ -5,20 +26,27 @@ import {
   CheckCircle2,
   XCircle,
   AlertTriangle,
+  ShieldOff,
   RefreshCw,
   ExternalLink,
   Shield,
-  Layers,
   Server,
   Radio,
   Unlink,
   Link2,
 } from 'lucide-react';
 import { AppSourceType, AppSourceConnection, AppConnectionStatus } from '../../types';
+import { ApiError, aiqaApi } from '../../services/aiqaApi';
 
 interface ApplicationSourceSectionProps {
   appSources: Record<AppSourceType, AppSourceConnection>;
   onAppSourcesChange: (sources: Record<AppSourceType, AppSourceConnection>) => void;
+  /** The real, currently-selected project id — required to call the real
+   *  verification endpoint (project-scoped, same as every other
+   *  real-outbound-action call in this app). `null` disables "Connect"
+   *  with a truthful reason, rather than silently failing or faking a
+   *  result. */
+  projectId: string | null;
   disabled?: boolean;
 }
 
@@ -79,6 +107,7 @@ const SOURCES_META: SourceCardMeta[] = [
 export const ApplicationSourceSection: React.FC<ApplicationSourceSectionProps> = ({
   appSources,
   onAppSourcesChange,
+  projectId,
   disabled = false,
 }) => {
   const [inputUrls, setInputUrls] = useState<Record<AppSourceType, string>>({
@@ -104,11 +133,11 @@ export const ApplicationSourceSection: React.FC<ApplicationSourceSectionProps> =
             <span>Connected</span>
           </span>
         );
-      case 'VALIDATING':
+      case 'CHECKING':
         return (
           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-cyan-950/80 border border-cyan-700 text-cyan-300">
             <RefreshCw className="w-3 h-3 text-cyan-400 animate-spin" />
-            <span>Validating</span>
+            <span>Checking</span>
           </span>
         );
       case 'INVALID_URL':
@@ -118,14 +147,28 @@ export const ApplicationSourceSection: React.FC<ApplicationSourceSectionProps> =
             <span>Invalid URL</span>
           </span>
         );
-      case 'CONNECTION_FAILED':
+      case 'UNREACHABLE':
         return (
           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-rose-950/80 border border-rose-700 text-rose-300">
             <XCircle className="w-3 h-3 text-rose-400" />
-            <span>Connection Failed</span>
+            <span>Unreachable</span>
           </span>
         );
-      case 'NOT_CONNECTED':
+      case 'REJECTED':
+        return (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-orange-950/80 border border-orange-700 text-orange-300">
+            <ShieldOff className="w-3 h-3 text-orange-400" />
+            <span>Rejected</span>
+          </span>
+        );
+      case 'ERROR':
+        return (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-rose-950/80 border border-rose-700 text-rose-300">
+            <AlertTriangle className="w-3 h-3 text-rose-400" />
+            <span>Error</span>
+          </span>
+        );
+      case 'IDLE':
       default:
         return (
           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-slate-900 border border-slate-700 text-slate-400">
@@ -136,14 +179,16 @@ export const ApplicationSourceSection: React.FC<ApplicationSourceSectionProps> =
     }
   };
 
-  const handleConnect = (type: AppSourceType) => {
+  const handleConnect = async (type: AppSourceType) => {
     const rawUrl = inputUrls[type]?.trim();
     if (!rawUrl) {
       setValidationErrors((prev) => ({ ...prev, [type]: 'Please provide a valid URL.' }));
       return;
     }
 
-    // Basic URL schema validation
+    // Client-side URL-syntax check: convenience only, for fast feedback —
+    // the real, authoritative validation (format, scheme, and the real
+    // SSRF policy) happens server-side in every case below.
     try {
       const parsed = new URL(rawUrl);
       if (!['http:', 'https:'].includes(parsed.protocol)) {
@@ -169,40 +214,57 @@ export const ApplicationSourceSection: React.FC<ApplicationSourceSectionProps> =
       return;
     }
 
+    if (!projectId) {
+      setValidationErrors((prev) => ({ ...prev, [type]: 'Select a project before verifying a connection.' }));
+      return;
+    }
+
     setValidationErrors((prev) => ({ ...prev, [type]: null }));
 
-    // Set status to validating
     onAppSourcesChange({
       ...appSources,
       [type]: {
         ...appSources[type],
         type,
         url: rawUrl,
-        status: 'VALIDATING',
+        status: 'CHECKING',
         errorMessage: undefined,
       },
     });
 
-    // Real ping/validation response simulation
-    setTimeout(() => {
+    const label = SOURCES_META.find((s) => s.type === type)?.label || type;
+    try {
+      const result = await aiqaApi.appSource.verify(projectId, { url: rawUrl });
       onAppSourcesChange({
         ...appSources,
         [type]: {
           ...appSources[type],
           type,
-          label: SOURCES_META.find((s) => s.type === type)?.label || type,
+          label,
           url: rawUrl,
-          status: 'CONNECTED',
+          status: result.status,
           lastValidatedAt: new Date().toISOString(),
-          details: {
-            httpStatus: 200,
-            sslValid: true,
-            pingMs: Math.floor(25 + Math.random() * 45),
-            lastUpdated: 'Just now',
-          },
+          details:
+            result.http_status != null || result.latency_ms != null
+              ? { httpStatus: result.http_status ?? undefined, latencyMs: result.latency_ms ?? undefined }
+              : undefined,
+          errorMessage: result.status === 'CONNECTED' ? undefined : result.message,
         },
       });
-    }, 600);
+    } catch (err) {
+      onAppSourcesChange({
+        ...appSources,
+        [type]: {
+          ...appSources[type],
+          type,
+          label,
+          url: rawUrl,
+          status: 'ERROR',
+          details: undefined,
+          errorMessage: err instanceof ApiError ? err.message : 'Verification request failed.',
+        },
+      });
+    }
   };
 
   const handleDisconnect = (type: AppSourceType) => {
@@ -213,7 +275,7 @@ export const ApplicationSourceSection: React.FC<ApplicationSourceSectionProps> =
       [type]: {
         ...appSources[type],
         url: '',
-        status: 'NOT_CONNECTED',
+        status: 'IDLE',
         lastValidatedAt: undefined,
         details: undefined,
         errorMessage: undefined,
@@ -236,7 +298,7 @@ export const ApplicationSourceSection: React.FC<ApplicationSourceSectionProps> =
             </span>
           </div>
           <p className="text-xs text-slate-400 font-sans mt-0.5">
-            Connect the application and design sources AIQA should analyze.
+            Connect the application and design sources AIQA should analyze. "Connect" performs a real, bounded backend connectivity check — it does not fetch or analyze page content.
           </p>
         </div>
 
@@ -250,12 +312,19 @@ export const ApplicationSourceSection: React.FC<ApplicationSourceSectionProps> =
         </div>
       </div>
 
+      {!projectId && (
+        <div className="p-2 rounded bg-amber-950/40 border border-amber-800/80 text-[11px] font-mono text-amber-300 flex items-center gap-1.5">
+          <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+          <span>Select a project before verifying a connection — the check is a real, authenticated backend request.</span>
+        </div>
+      )}
+
       {/* 4 Cards Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         {SOURCES_META.map((meta) => {
           const currentSource = appSources[meta.type];
           const isConnected = currentSource?.status === 'CONNECTED';
-          const isValidating = currentSource?.status === 'VALIDATING';
+          const isChecking = currentSource?.status === 'CHECKING';
           const Icon = meta.icon;
           const currentError = validationErrors[meta.type] || currentSource?.errorMessage;
 
@@ -290,7 +359,7 @@ export const ApplicationSourceSection: React.FC<ApplicationSourceSectionProps> =
                     </div>
                   </div>
 
-                  {getStatusBadge(currentSource?.status || 'NOT_CONNECTED')}
+                  {getStatusBadge(currentSource?.status || 'IDLE')}
                 </div>
 
                 <p className="text-[11px] text-slate-400 font-sans leading-tight">
@@ -301,7 +370,8 @@ export const ApplicationSourceSection: React.FC<ApplicationSourceSectionProps> =
               {/* URL Input Form */}
               <div className="mt-3 pt-2.5 border-t border-slate-800/80 space-y-2">
                 {isConnected ? (
-                  /* Connected Readout */
+                  /* Connected Readout — every value below is real,
+                     backend-measured/observed; nothing here is fabricated. */
                   <div className="space-y-2">
                     <div className="p-2 rounded bg-[#020617] border border-emerald-900/60 flex items-center justify-between">
                       <div className="flex items-center gap-2 truncate text-xs font-mono text-emerald-300">
@@ -320,7 +390,10 @@ export const ApplicationSourceSection: React.FC<ApplicationSourceSectionProps> =
                     </div>
 
                     <div className="flex items-center justify-between text-[10px] font-mono text-slate-400">
-                      <span>SSL: Valid • HTTP 200 OK</span>
+                      <span>
+                        {currentSource.details?.httpStatus != null ? `HTTP ${currentSource.details.httpStatus}` : 'Reachable'}
+                        {currentSource.details?.latencyMs != null ? ` • Response time: ${currentSource.details.latencyMs}ms` : ''}
+                      </span>
                       <button
                         type="button"
                         onClick={() => handleDisconnect(meta.type)}
@@ -344,19 +417,19 @@ export const ApplicationSourceSection: React.FC<ApplicationSourceSectionProps> =
                           setInputUrls((prev) => ({ ...prev, [meta.type]: e.target.value }));
                           setValidationErrors((prev) => ({ ...prev, [meta.type]: null }));
                         }}
-                        disabled={disabled || isValidating}
+                        disabled={disabled || isChecking}
                         className="flex-1 px-2.5 py-1.5 rounded bg-[#020617] border border-slate-700 hover:border-slate-600 focus:border-indigo-500 text-xs font-mono text-slate-100 placeholder-slate-500 focus:outline-none"
                       />
                       <button
                         type="button"
                         onClick={() => handleConnect(meta.type)}
-                        disabled={disabled || isValidating || !inputUrls[meta.type]?.trim()}
+                        disabled={disabled || isChecking || !projectId || !inputUrls[meta.type]?.trim()}
                         className="px-3 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 text-white disabled:text-slate-500 text-xs font-mono font-medium cursor-pointer transition-colors flex items-center gap-1 shrink-0"
                       >
-                        {isValidating ? (
+                        {isChecking ? (
                           <>
                             <RefreshCw className="w-3 h-3 animate-spin" />
-                            <span>Validating</span>
+                            <span>Checking…</span>
                           </>
                         ) : (
                           <>
@@ -375,7 +448,7 @@ export const ApplicationSourceSection: React.FC<ApplicationSourceSectionProps> =
                   </div>
                 )}
 
-                {/* Validation Error Banner */}
+                {/* Validation / Real Verification Error Banner */}
                 {currentError && (
                   <div className="p-1.5 rounded bg-rose-950/40 border border-rose-800/80 text-[10px] font-mono text-rose-300 flex items-center gap-1.5">
                     <AlertTriangle className="w-3 h-3 text-rose-400 shrink-0" />

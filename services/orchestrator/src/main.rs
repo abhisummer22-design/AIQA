@@ -62,6 +62,12 @@ async fn main() {
         Err(e) => tracing::error!("startup run-recovery pass failed: {e}"),
     }
 
+    match aiqa_orchestrator::performance_testing::recover_incomplete_performance_runs(&store).await {
+        Ok(0) => {}
+        Ok(n) => tracing::warn!("marked {n} performance test run(s) INTERRUPTED after a prior unclean shutdown"),
+        Err(e) => tracing::error!("startup performance-run-recovery pass failed: {e}"),
+    }
+
     let policy = PolicyConfig::from_env();
     let evidence = LocalEvidenceStore::new(default_root()).expect("failed to init evidence store");
 

@@ -343,6 +343,11 @@ pub async fn approve_and_spawn(
     }
     *record.approved_by.write().await = Some(actor.to_string());
     *record.approved_at.write().await = Some(chrono::Utc::now());
+    // Synchronous, awaited here -- so the caller (the approve HTTP handler)
+    // can never observe a stale PENDING_APPROVAL, nor a state the dispatch
+    // loop already raced past, when it reads the run back right after this
+    // returns. See `mark_run_running`'s doc comment.
+    mark_run_running(&record, &store).await;
     spawn_run(record, registry, concurrency, store, evidence, task_timeout);
     Ok(())
 }
@@ -481,6 +486,37 @@ pub fn default_task_timeout() -> std::time::Duration {
     std::time::Duration::from_secs(secs)
 }
 
+/// The transition a run makes the instant it starts executing: in-memory
+/// state, durable state, the started timestamp, and the real `RunScheduled`
+/// event. Idempotent (checks the current state first) because it is called
+/// from two places that can legitimately race to be first: a caller that
+/// wants this to have *already happened* before it reads the run back (see
+/// `approve_and_spawn`, whose HTTP response must never race the dispatch
+/// loop below to report a stale `PENDING_APPROVAL` or an already-progressed
+/// terminal state instead of the `RUNNING` it just caused), and `spawn_run`
+/// itself for callers that don't need that guarantee up front.
+async fn mark_run_running(record: &Arc<RunRecord>, store: &Store) {
+    if *record.state.read().await == RunState::Running {
+        return;
+    }
+    *record.state.write().await = RunState::Running;
+    if let Err(e) = store.set_run_state(record.run_id, RunState::Running).await {
+        record.note_persistence_failure("set_run_state(Running)", e).await;
+    }
+    if let Err(e) = store.set_run_started(record.run_id).await {
+        record.note_persistence_failure("set_run_started", e).await;
+    }
+    record
+        .emit(
+            store,
+            EventType::RunScheduled,
+            None,
+            None,
+            Some(format!("run '{}' scheduled", record.name)),
+        )
+        .await;
+}
+
 pub fn spawn_run(
     record: Arc<RunRecord>,
     registry: Arc<ExecutorRegistry>,
@@ -491,22 +527,7 @@ pub fn spawn_run(
 ) {
     let task_defs = record.task_defs();
     tokio::spawn(async move {
-        *record.state.write().await = RunState::Running;
-        if let Err(e) = store.set_run_state(record.run_id, RunState::Running).await {
-            record.note_persistence_failure("set_run_state(Running)", e).await;
-        }
-        if let Err(e) = store.set_run_started(record.run_id).await {
-            record.note_persistence_failure("set_run_started", e).await;
-        }
-        record
-            .emit(
-                &store,
-                EventType::RunScheduled,
-                None,
-                None,
-                Some(format!("run '{}' scheduled", record.name)),
-            )
-            .await;
+        mark_run_running(&record, &store).await;
 
         let semaphore = Arc::new(Semaphore::new(concurrency.max(1)));
         let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel::<(TaskId, crate::executor::ExecutionOutcome)>();
