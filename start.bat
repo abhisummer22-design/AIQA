@@ -13,6 +13,14 @@ echo   AIQA - starting orchestrator + web UI
 echo ========================================
 echo.
 
+REM Load local secrets (MJ_AI_API_KEY etc.) from .env if present.
+REM Format: one "NAME=value" per line; lines starting with REM are comments.
+REM This file is gitignored - keep it that way.
+set "AIQA_ENVFILE=%~dp0.env"
+if exist "%AIQA_ENVFILE%" (
+  for /f "usebackq tokens=1,* delims==" %%A in (`type "%AIQA_ENVFILE%" ^| findstr /b /i /v "REM"`) do set "%%A=%%B"
+)
+
 echo [1/2] Starting Rust orchestrator on http://127.0.0.1:8080 ...
 start "AIQA Orchestrator" cmd /k "cd /d "%~dp0services\orchestrator" && cargo run -p aiqa-orchestrator"
 
