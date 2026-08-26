@@ -800,7 +800,7 @@ fn is_sensitive_header(name: &str) -> bool {
 /// branch here reflects a real `reqwest`/`hyper` error classification
 /// method (`is_timeout`/`is_connect`/`is_request` etc.), never a guess from
 /// string matching on the error's own `Display` text.
-fn classify_reqwest_error(e: &reqwest::Error) -> String {
+pub(crate) fn classify_reqwest_error(e: &reqwest::Error) -> String {
     if e.is_timeout() {
         format!("REQUEST_TIMEOUT: {e}")
     } else if e.is_connect() {

@@ -676,6 +676,33 @@ export interface PerformanceRunRow {
   finished_at: string | null;
 }
 
+// -------------------------- Truthfulness Cleanup Step 1: Application Source
+
+/** `app_source.rs::AppSourceStatus`. Every value here corresponds to a real,
+ *  distinct backend outcome — never collapsed into a generic success/failure. */
+export type AppSourceVerifyStatus = 'CONNECTED' | 'UNREACHABLE' | 'REJECTED' | 'INVALID_URL' | 'ERROR';
+
+/** `api.rs::VerifyApplicationSourceBody`. */
+export interface VerifyApplicationSourceRequest {
+  url: string;
+}
+
+/** `app_source.rs::VerifyApplicationSourceResponse` — the real, honest
+ *  result of a real, bounded, SSRF-guarded outbound request
+ *  (`POST .../verify-application-source`). `reachable` and `http_status`
+ *  are deliberately distinct: a real server answering 401/403/404 is
+ *  `reachable: true` with that real `http_status`, never conflated with
+ *  `UNREACHABLE`. `latency_ms` is only ever a real, measured duration —
+ *  `null` exactly when no request was ever attempted (`REJECTED`/
+ *  `INVALID_URL`), never a fabricated/randomized value. */
+export interface VerifyApplicationSourceResponse {
+  status: AppSourceVerifyStatus;
+  reachable: boolean;
+  http_status: number | null;
+  latency_ms: number | null;
+  message: string;
+}
+
 // ---------------------------------------------------- AI-powered test generation
 
 /** `api.rs::SkillInputBody` / `ai_generation::SkillInput` — one selected

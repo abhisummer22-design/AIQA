@@ -1,6 +1,7 @@
 pub mod ai_generation;
 pub mod ai_router;
 pub mod api;
+pub mod app_source;
 pub mod api_testing;
 pub mod auth;
 pub mod custom_testing;

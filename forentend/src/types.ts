@@ -116,12 +116,23 @@ export interface UploadedRequirementDoc {
 
 export type AppSourceType = 'STAGING' | 'DEMO' | 'LIVE' | 'FIGMA';
 
+/** Truthfulness Cleanup Step 1 — every value here is a real, distinct
+ *  outcome of an actual backend verification attempt (or, for `IDLE`, the
+ *  honest absence of one yet). `VALIDATING`/`CONNECTION_FAILED` (the old,
+ *  pre-fix names) are gone: the prior implementation collapsed every real
+ *  failure mode into one generic `CONNECTION_FAILED`, and fabricated
+ *  `CONNECTED` unconditionally after a fixed delay regardless of whether
+ *  any real check occurred. See `app_source.rs::AppSourceStatus` (backend)
+ *  — these values are a 1:1 mirror of the real API contract, not a second,
+ *  independently-invented frontend vocabulary. */
 export type AppConnectionStatus =
-  | 'NOT_CONNECTED'
+  | 'IDLE'
+  | 'CHECKING'
   | 'CONNECTED'
-  | 'VALIDATING'
+  | 'UNREACHABLE'
+  | 'REJECTED'
   | 'INVALID_URL'
-  | 'CONNECTION_FAILED';
+  | 'ERROR';
 
 export interface AppSourceConnection {
   type: AppSourceType;
@@ -129,13 +140,16 @@ export interface AppSourceConnection {
   url: string;
   status: AppConnectionStatus;
   lastValidatedAt?: string;
+  /** Only ever populated from a real backend `VerifyApplicationSourceResponse`
+   *  — never fabricated client-side. The old `sslValid`/`title`/
+   *  `environmentRole`/`pingMs` fields are gone: no real signal, from either
+   *  the client or the backend, ever backed them (`sslValid` in particular
+   *  claimed certificate-validity detail `reqwest`'s default API cannot
+   *  actually provide — removed rather than fabricated, per the
+   *  Truthfulness Cleanup Step 1 report). */
   details?: {
-    title?: string;
-    lastUpdated?: string;
     httpStatus?: number;
-    sslValid?: boolean;
-    pingMs?: number;
-    environmentRole?: string;
+    latencyMs?: number;
   };
   errorMessage?: string;
 }

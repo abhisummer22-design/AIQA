@@ -3147,31 +3147,55 @@ const HEALTH_URL: &str = "http://127.0.0.1:8080/health";
 /// way the tests observe the same real, correct response. Never left
 /// running beyond this test binary's own process lifetime — no separate
 /// OS process is spawned; the port is reclaimed by the OS the moment
-/// `cargo test` itself exits, exactly like every other in-process
-/// `tokio::spawn`'d task in this codebase's own tests.
-static HEALTH_TARGET_READY: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+/// `cargo test` itself exits.
+///
+/// This is deliberately NOT `tokio::spawn`'d onto whichever `#[tokio::test]`
+/// happens to call this first: each `#[tokio::test]` function gets its own,
+/// independent Tokio runtime that is torn down (aborting anything spawned
+/// on it) the instant that one test function returns. Under `cargo test`'s
+/// default parallelism, that made this fixture's real lifetime depend on
+/// how long the first-calling test's own runtime happened to stay alive
+/// relative to every other test needing it — reliable by accident while the
+/// test mix stayed the same, and silently broken (`CONNECTION_FAILED`) the
+/// moment the mix (and therefore the scheduling) changed, as happened when
+/// this suite gained new tests. The fix spawns the real axum server on a
+/// dedicated OS thread with its own long-lived runtime that nothing ever
+/// tears down, so it genuinely outlives every individual test.
+static HEALTH_TARGET_STARTED: std::sync::Once = std::sync::Once::new();
 
 async fn ensure_local_health_target() {
-    HEALTH_TARGET_READY
-        .get_or_init(|| async {
-            let app = axum::Router::new().route("/health", axum::routing::get(|| async { "ok" }));
-            match tokio::net::TcpListener::bind("127.0.0.1:8080").await {
-                Ok(listener) => {
-                    tokio::spawn(async move {
+    HEALTH_TARGET_STARTED.call_once(|| {
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new()
+                .expect("build a dedicated runtime for the self-contained :8080 health test target");
+            rt.block_on(async move {
+                let app = axum::Router::new().route("/health", axum::routing::get(|| async { "ok" }));
+                match tokio::net::TcpListener::bind("127.0.0.1:8080").await {
+                    Ok(listener) => {
+                        let _ = ready_tx.send(());
                         let _ = axum::serve(listener, app).await;
-                    });
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                        // Something else (most likely a real, manually-started
+                        // dev orchestrator) already owns :8080 -- its own real
+                        // `/health` route serves the identical real response, so
+                        // the tests that depend on this still get a real,
+                        // correct target either way.
+                        let _ = ready_tx.send(());
+                    }
+                    Err(e) => panic!("failed to bind the self-contained :8080 health test target: {e}"),
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-                    // Something else (most likely a real, manually-started
-                    // dev orchestrator) already owns :8080 -- its own real
-                    // `/health` route serves the identical real response, so
-                    // the tests that depend on this still get a real,
-                    // correct target either way.
-                }
-                Err(e) => panic!("failed to bind the self-contained :8080 health test target: {e}"),
-            }
-        })
-        .await;
+            });
+        });
+        // Block briefly (this closure runs synchronously, exactly once)
+        // until the dedicated thread confirms it actually bound the real
+        // listener (or found a real `AddrInUse` fallback) -- never an
+        // arbitrary sleep standing in for a real readiness signal.
+        ready_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the self-contained :8080 health test target did not become ready in time");
+    });
 }
 
 #[tokio::test]
@@ -3367,6 +3391,84 @@ async fn phase4_api_test_project_isolation_enforced() {
 // connection-failure classification (`classify_reqwest_error`) is unit-
 // tested directly in `executor.rs` and live-verified in the Phase 4 report
 // §38 against a real, external, closed port.
+
+// ==================== Truthfulness Cleanup Step 1 — Application Source verify
+//
+// `app_source::verify`'s own unit tests (in `app_source.rs`) already prove
+// the real request/SSRF/classification logic in isolation. These tests
+// prove the *real HTTP endpoint* (auth, RBAC, project scoping, the real
+// JSON contract) is genuinely wired to that same logic — reusing the
+// existing `ensure_local_health_target`/`HEALTH_URL` self-contained fixture
+// (§ above) rather than a second, duplicate one, for exactly the same
+// reason those Phase 4 tests needed it: the real, unmodified SSRF guard
+// only ever allows a loopback target on `:8080`.
+
+#[tokio::test]
+async fn app_source_verify_a_real_reachable_target_reports_connected() {
+    ensure_local_health_target().await;
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "App Source Verify - Connected").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, body) = send(&state, req("POST", &format!("/api/v1/projects/{project}/verify-application-source"), Some(&owner), Some(serde_json::json!({"url": HEALTH_URL})))).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["status"], "CONNECTED", "body={body}");
+    assert_eq!(body["reachable"], true, "body={body}");
+    assert_eq!(body["http_status"], 200, "body={body}");
+    assert!(body["latency_ms"].as_u64().is_some(), "a real measured latency must be present; body={body}");
+}
+
+#[tokio::test]
+async fn app_source_verify_a_disallowed_target_reports_rejected_through_the_real_endpoint() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "App Source Verify - Rejected").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, body) = send(&state, req("POST", &format!("/api/v1/projects/{project}/verify-application-source"), Some(&owner), Some(serde_json::json!({"url": "http://169.254.169.254/latest/meta-data/"})))).await;
+    assert_eq!(status, StatusCode::OK, "a real, honest REJECTED result is not itself an HTTP error; body={body}");
+    assert_eq!(body["status"], "REJECTED", "body={body}");
+    assert_eq!(body["reachable"], false, "body={body}");
+    assert!(body["http_status"].is_null());
+    assert!(body["latency_ms"].is_null(), "a rejected target must show no real latency, since no request was ever attempted; body={body}");
+}
+
+#[tokio::test]
+async fn app_source_verify_a_malformed_url_reports_invalid_url() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "App Source Verify - Invalid").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, body) = send(&state, req("POST", &format!("/api/v1/projects/{project}/verify-application-source"), Some(&owner), Some(serde_json::json!({"url": "not a url"})))).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["status"], "INVALID_URL", "body={body}");
+}
+
+#[tokio::test]
+async fn app_source_verify_rbac_viewer_forbidden_operator_allowed() {
+    ensure_local_health_target().await;
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "App Source Verify - RBAC").await;
+    let viewer = mint_key(&state, "viewer", Some(&project.to_string())).await;
+    let operator = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let request_body = serde_json::json!({"url": HEALTH_URL});
+
+    let (status, body) = send(&state, req("POST", &format!("/api/v1/projects/{project}/verify-application-source"), Some(&viewer), Some(request_body.clone()))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+
+    let (status, body) = send(&state, req("POST", &format!("/api/v1/projects/{project}/verify-application-source"), Some(&operator), Some(request_body))).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+}
+
+#[tokio::test]
+async fn app_source_verify_project_isolation_enforced() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project_a = make_project(&state, "App Source Verify - Isolation A").await;
+    let project_b = make_project(&state, "App Source Verify - Isolation B").await;
+    let owner_b = mint_key(&state, "operator", Some(&project_b.to_string())).await;
+
+    let (status, body) = send(&state, req("POST", &format!("/api/v1/projects/{project_a}/verify-application-source"), Some(&owner_b), Some(serde_json::json!({"url": HEALTH_URL})))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+}
 
 // ================================== Phase 6 ERROR-fix — run-level supervision
 //

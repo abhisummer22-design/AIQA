@@ -108,6 +108,14 @@ pub fn router(state: AppState) -> Router {
         // create_run_core -> CompiledApiExecutor) — no new executor, no new
         // execution engine.
         .route("/api/v1/projects/:project_id/api-testing/execute", post(execute_api_test_scoped))
+        // Truthfulness Cleanup Step 1 — real Application Source connectivity
+        // verification (`app_source.rs`). Replaces the Test Case Generator's
+        // former fully client-side setTimeout+Math.random() simulation
+        // (flagged CRITICAL by the Phase 1-6 Final Consolidated Audit) with
+        // a genuine backend check reusing the same, unmodified SSRF guard
+        // and transport-error classification every other outbound target in
+        // this app already uses.
+        .route("/api/v1/projects/:project_id/verify-application-source", post(verify_application_source_scoped))
         // Phase 6 — Performance Testing: real Load/Stress/Spike/Volume
         // workload generation (`performance_testing.rs`). Reuses the exact
         // Phase 4 per-request execution core (`executor::execute_plan_once`,
@@ -1072,6 +1080,35 @@ async fn execute_api_test_scoped(
         response_body_preview,
         evidence_id,
     }))
+}
+
+// ------------------------------ Truthfulness Cleanup Step 1 — Application Source
+
+#[derive(Debug, Deserialize)]
+struct VerifyApplicationSourceBody {
+    url: String,
+}
+
+/// POST /api/v1/projects/:project_id/verify-application-source — real,
+/// bounded connectivity verification for the Test Case Generator's
+/// "Application Sources" panel (`app_source.rs`). `Role::Operator`: this
+/// makes a real outbound network request (bounded, SSRF-guarded, redirects
+/// disabled), the same authorization bar every other real-outbound-action
+/// endpoint in this app (API Testing's `execute`, Performance Testing's
+/// `start`) already requires — never left open to a lower role just because
+/// nothing is persisted.
+async fn verify_application_source_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiJson(body): ApiJson<VerifyApplicationSourceBody>,
+) -> Result<Json<crate::app_source::VerifyApplicationSourceResponse>, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    require_scoped_project(&state, &ctx, project_id).await?;
+
+    let result = crate::app_source::verify(&body.url).await;
+    audit(&state, &ctx, "app_source.verify", None, Some(&format!("{} -> {}", body.url, result.status)), if result.reachable { "ok" } else { "not_reachable" }).await;
+    Ok(Json(result))
 }
 
 // ---------------------------------------------------- Phase 6 — Performance Testing
