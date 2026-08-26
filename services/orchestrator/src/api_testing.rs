@@ -83,9 +83,13 @@ pub struct AdHocApiRequest {
 pub type ValidationError = (&'static str, String);
 
 fn build_url(base: &str, query_params: &[(String, String)]) -> Result<String, String> {
-    let mut url = reqwest::Url::parse(base.trim()).map_err(|e| format!("{base:?} is not a valid URL: {e}"))?;
+    let mut url = reqwest::Url::parse(base.trim())
+        .map_err(|e| format!("{base:?} is not a valid URL: {e}"))?;
     if !matches!(url.scheme(), "http" | "https") {
-        return Err(format!("unsupported URL scheme {:?} — only http and https are allowed", url.scheme()));
+        return Err(format!(
+            "unsupported URL scheme {:?} — only http and https are allowed",
+            url.scheme()
+        ));
     }
     if !query_params.is_empty() {
         let mut pairs = url.query_pairs_mut();
@@ -103,10 +107,19 @@ fn build_url(base: &str, query_params: &[(String, String)]) -> Result<String, St
 /// any network call, before any run is even created. The real SSRF/target
 /// check happens one step later, inside the reused `execution_plan::
 /// validate_plan` — not duplicated here.
-pub fn validate_and_build_plan(id: String, req: &AdHocApiRequest) -> Result<ExecutionPlan, ValidationError> {
+pub fn validate_and_build_plan(
+    id: String,
+    req: &AdHocApiRequest,
+) -> Result<ExecutionPlan, ValidationError> {
     let method = req.method.trim().to_uppercase();
     if !SUPPORTED_METHODS.contains(&method.as_str()) {
-        return Err(("UNSUPPORTED_HTTP_METHOD", format!("HTTP method {:?} is not supported — use one of {SUPPORTED_METHODS:?}", req.method)));
+        return Err((
+            "UNSUPPORTED_HTTP_METHOD",
+            format!(
+                "HTTP method {:?} is not supported — use one of {SUPPORTED_METHODS:?}",
+                req.method
+            ),
+        ));
     }
 
     if req.url.trim().is_empty() {
@@ -115,12 +128,25 @@ pub fn validate_and_build_plan(id: String, req: &AdHocApiRequest) -> Result<Exec
     let url_with_query = build_url(&req.url, &req.query_params).map_err(|e| ("INVALID_URL", e))?;
 
     for a in &req.assertions {
-        if !matches!(a, Action::AssertStatus { .. } | Action::AssertHeader { .. } | Action::AssertBodyField { .. }) {
-            return Err(("INVALID_REQUEST_CONFIGURATION", format!("{a:?} is not a supported assertion type for the API Testing page")));
+        if !matches!(
+            a,
+            Action::AssertStatus { .. }
+                | Action::AssertHeader { .. }
+                | Action::AssertBodyField { .. }
+        ) {
+            return Err((
+                "INVALID_REQUEST_CONFIGURATION",
+                format!("{a:?} is not a supported assertion type for the API Testing page"),
+            ));
         }
     }
 
-    let mut actions = vec![Action::Request { method, url: url_with_query.clone(), headers: req.headers.clone(), body: req.body.clone() }];
+    let mut actions = vec![Action::Request {
+        method,
+        url: url_with_query.clone(),
+        headers: req.headers.clone(),
+        body: req.body.clone(),
+    }];
     actions.extend(req.assertions.iter().cloned());
 
     Ok(ExecutionPlan {
@@ -140,7 +166,11 @@ pub fn validate_and_build_plan(id: String, req: &AdHocApiRequest) -> Result<Exec
 /// earlier (`create_run_core`, called by the same handler before this),
 /// never a cross-process/restart scenario, so the store-fallback branch
 /// `api.rs::get_run` needs for that case is genuinely not needed here.
-pub async fn run_to_completion(state: &AppState, run_id: Uuid, ceiling: Duration) -> Option<crate::domain::TaskState> {
+pub async fn run_to_completion(
+    state: &AppState,
+    run_id: Uuid,
+    ceiling: Duration,
+) -> Option<crate::domain::TaskState> {
     let deadline = tokio::time::Instant::now() + ceiling;
     loop {
         if let Some(record) = state.runs.read().await.get(&run_id).cloned() {
@@ -162,9 +192,15 @@ pub async fn run_to_completion(state: &AppState, run_id: Uuid, ceiling: Duration
 /// this task — the exact same store/read path `api.rs::
 /// get_evidence_content_scoped` already uses, called in-process instead of
 /// via a second HTTP round-trip.
-pub async fn read_task_evidence(state: &AppState, run_id: Uuid, task_id: &str) -> Option<(Uuid, String)> {
+pub async fn read_task_evidence(
+    state: &AppState,
+    run_id: Uuid,
+    task_id: &str,
+) -> Option<(Uuid, String)> {
     let rows = state.store.list_evidence_for_run(run_id).await.ok()?;
-    let row = rows.into_iter().find(|r| r.task_id.as_deref() == Some(task_id))?;
+    let row = rows
+        .into_iter()
+        .find(|r| r.task_id.as_deref() == Some(task_id))?;
     let bytes = state.evidence.read(&row.object_key).ok()?;
     Some((row.id, String::from_utf8_lossy(&bytes).to_string()))
 }
@@ -173,7 +209,9 @@ pub async fn read_task_evidence(state: &AppState, run_id: Uuid, task_id: &str) -
 /// evidence log — a real parse of real, executor-produced data, not a
 /// second, independently-computed result.
 pub fn parse_result_summary(log: &str) -> Option<ApiResultSummary> {
-    let line = log.lines().find_map(|l| l.strip_prefix("RESULT_SUMMARY_JSON:"))?;
+    let line = log
+        .lines()
+        .find_map(|l| l.strip_prefix("RESULT_SUMMARY_JSON:"))?;
     serde_json::from_str(line).ok()
 }
 
@@ -190,10 +228,21 @@ pub fn parse_response_body_preview(log: &str) -> Option<String> {
         .iter()
         .enumerate()
         .skip(response_idx + 1)
-        .find(|(_, l)| l.starts_with("ASSERT_STATUS ") || l.starts_with("ASSERT_HEADER ") || l.starts_with("ASSERT_BODY_FIELD ") || l.starts_with("RESULT_SUMMARY_JSON:") || l.starts_with("FAILED ASSERTIONS:"))
+        .find(|(_, l)| {
+            l.starts_with("ASSERT_STATUS ")
+                || l.starts_with("ASSERT_HEADER ")
+                || l.starts_with("ASSERT_BODY_FIELD ")
+                || l.starts_with("RESULT_SUMMARY_JSON:")
+                || l.starts_with("FAILED ASSERTIONS:")
+        })
         .map(|(i, _)| i)
         .unwrap_or(lines.len());
-    Some(lines[(response_idx + 1)..end].join("\n").trim_end().to_string())
+    Some(
+        lines[(response_idx + 1)..end]
+            .join("\n")
+            .trim_end()
+            .to_string(),
+    )
 }
 
 #[cfg(test)]
@@ -201,20 +250,34 @@ mod tests {
     use super::*;
 
     fn req(method: &str, url: &str) -> AdHocApiRequest {
-        AdHocApiRequest { method: method.to_string(), url: url.to_string(), query_params: vec![], headers: BTreeMap::new(), body: None, assertions: vec![] }
+        AdHocApiRequest {
+            method: method.to_string(),
+            url: url.to_string(),
+            query_params: vec![],
+            headers: BTreeMap::new(),
+            body: None,
+            assertions: vec![],
+        }
     }
 
     #[test]
     fn a_valid_get_request_builds_a_real_plan_with_manual_compiler_method() {
-        let plan = validate_and_build_plan("t1".to_string(), &req("GET", "https://example.com/api/health")).expect("must build");
+        let plan = validate_and_build_plan(
+            "t1".to_string(),
+            &req("GET", "https://example.com/api/health"),
+        )
+        .expect("must build");
         assert_eq!(plan.compiler, CompilerMethod::Manual);
         assert_eq!(plan.execution_type, ExecutionType::Api);
-        assert!(matches!(&plan.actions[0], Action::Request { method, url, .. } if method == "GET" && url == "https://example.com/api/health"));
+        assert!(
+            matches!(&plan.actions[0], Action::Request { method, url, .. } if method == "GET" && url == "https://example.com/api/health")
+        );
     }
 
     #[test]
     fn an_unsupported_method_is_rejected_before_any_plan_is_built() {
-        let err = validate_and_build_plan("t1".to_string(), &req("TRACE", "https://example.com")).unwrap_err();
+        let err = validate_and_build_plan("t1".to_string(), &req("TRACE", "https://example.com"))
+            .unwrap_err();
         assert_eq!(err.0, "UNSUPPORTED_HTTP_METHOD");
     }
 
@@ -226,33 +289,46 @@ mod tests {
 
     #[test]
     fn a_malformed_url_is_rejected() {
-        let err = validate_and_build_plan("t1".to_string(), &req("GET", "not a url at all")).unwrap_err();
+        let err =
+            validate_and_build_plan("t1".to_string(), &req("GET", "not a url at all")).unwrap_err();
         assert_eq!(err.0, "INVALID_URL");
     }
 
     #[test]
     fn a_non_http_scheme_is_rejected() {
-        let err = validate_and_build_plan("t1".to_string(), &req("GET", "ftp://example.com/file")).unwrap_err();
+        let err = validate_and_build_plan("t1".to_string(), &req("GET", "ftp://example.com/file"))
+            .unwrap_err();
         assert_eq!(err.0, "INVALID_URL");
     }
 
     #[test]
     fn query_parameters_are_genuinely_merged_into_the_real_request_url() {
         let mut r = req("GET", "https://example.com/search");
-        r.query_params = vec![("q".to_string(), "hello world".to_string()), ("page".to_string(), "2".to_string())];
+        r.query_params = vec![
+            ("q".to_string(), "hello world".to_string()),
+            ("page".to_string(), "2".to_string()),
+        ];
         let plan = validate_and_build_plan("t1".to_string(), &r).expect("must build");
-        let Action::Request { url, .. } = &plan.actions[0] else { panic!("expected Request action") };
-        assert!(url.contains("q=hello+world") || url.contains("q=hello%20world"), "url={url}");
+        let Action::Request { url, .. } = &plan.actions[0] else {
+            panic!("expected Request action")
+        };
+        assert!(
+            url.contains("q=hello+world") || url.contains("q=hello%20world"),
+            "url={url}"
+        );
         assert!(url.contains("page=2"), "url={url}");
     }
 
     #[test]
     fn headers_and_body_genuinely_reach_the_built_plan() {
         let mut r = req("POST", "https://example.com/items");
-        r.headers.insert("X-Custom".to_string(), "real-value".to_string());
+        r.headers
+            .insert("X-Custom".to_string(), "real-value".to_string());
         r.body = Some(serde_json::json!({"name": "widget"}));
         let plan = validate_and_build_plan("t1".to_string(), &r).expect("must build");
-        let Action::Request { headers, body, .. } = &plan.actions[0] else { panic!("expected Request action") };
+        let Action::Request { headers, body, .. } = &plan.actions[0] else {
+            panic!("expected Request action")
+        };
         assert_eq!(headers.get("X-Custom"), Some(&"real-value".to_string()));
         assert_eq!(body, &Some(serde_json::json!({"name": "widget"})));
     }
@@ -260,17 +336,28 @@ mod tests {
     #[test]
     fn assertions_genuinely_reach_the_built_plan_in_order() {
         let mut r = req("GET", "https://example.com/health");
-        r.assertions = vec![Action::AssertStatus { status: 200 }, Action::AssertHeader { name: "Content-Type".to_string(), value: "application/json".to_string() }];
+        r.assertions = vec![
+            Action::AssertStatus { status: 200 },
+            Action::AssertHeader {
+                name: "Content-Type".to_string(),
+                value: "application/json".to_string(),
+            },
+        ];
         let plan = validate_and_build_plan("t1".to_string(), &r).expect("must build");
         assert_eq!(plan.actions.len(), 3);
-        assert!(matches!(&plan.actions[1], Action::AssertStatus { status: 200 }));
+        assert!(matches!(
+            &plan.actions[1],
+            Action::AssertStatus { status: 200 }
+        ));
         assert!(matches!(&plan.actions[2], Action::AssertHeader { .. }));
     }
 
     #[test]
     fn a_non_assertion_action_sent_as_an_assertion_is_rejected_structurally() {
         let mut r = req("GET", "https://example.com/health");
-        r.assertions = vec![Action::Navigate { url: "https://example.com".to_string() }];
+        r.assertions = vec![Action::Navigate {
+            url: "https://example.com".to_string(),
+        }];
         let err = validate_and_build_plan("t1".to_string(), &r).unwrap_err();
         assert_eq!(err.0, "INVALID_REQUEST_CONFIGURATION");
     }
@@ -286,15 +373,20 @@ mod tests {
     }
 
     #[test]
-    fn response_body_preview_is_extracted_from_a_real_executor_log_and_stops_before_the_next_logged_action() {
+    fn response_body_preview_is_extracted_from_a_real_executor_log_and_stops_before_the_next_logged_action(
+    ) {
         let log = "REQUEST GET http://x\nRESPONSE 200 OK\n{\"ok\":true}\nASSERT_STATUS 200 -> actual 200\nRESULT_SUMMARY_JSON:{}\n";
         let body = parse_response_body_preview(log).expect("must parse");
-        assert_eq!(body, "{\"ok\":true}", "the body must not swallow the subsequent ASSERT_STATUS log line");
+        assert_eq!(
+            body, "{\"ok\":true}",
+            "the body must not swallow the subsequent ASSERT_STATUS log line"
+        );
     }
 
     #[test]
     fn response_body_preview_handles_a_multi_line_body_with_no_assertions() {
-        let log = "REQUEST GET http://x\nRESPONSE 200 OK\nline one\nline two\nRESULT_SUMMARY_JSON:{}\n";
+        let log =
+            "REQUEST GET http://x\nRESPONSE 200 OK\nline one\nline two\nRESULT_SUMMARY_JSON:{}\n";
         let body = parse_response_body_preview(log).expect("must parse");
         assert_eq!(body, "line one\nline two");
     }

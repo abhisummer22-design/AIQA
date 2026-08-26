@@ -42,10 +42,18 @@ pub fn notify_run_completed(summary: RunSummary) {
             .await
         {
             Ok(resp) if resp.status().is_success() => {
-                tracing::info!("webhook delivered for run {} -> {url} ({})", summary.run_id, resp.status());
+                tracing::info!(
+                    "webhook delivered for run {} -> {url} ({})",
+                    summary.run_id,
+                    resp.status()
+                );
             }
             Ok(resp) => {
-                tracing::warn!("webhook receiver returned {} for run {}", resp.status(), summary.run_id);
+                tracing::warn!(
+                    "webhook receiver returned {} for run {}",
+                    resp.status(),
+                    summary.run_id
+                );
             }
             Err(e) => {
                 tracing::warn!("webhook delivery failed for run {}: {e}", summary.run_id);

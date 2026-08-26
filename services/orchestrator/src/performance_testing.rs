@@ -78,10 +78,28 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
 #[serde(tag = "test_type", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum WorkloadSchedule {
-    Load { concurrency: u32, duration_secs: u64, max_requests: Option<u64> },
-    Stress { start_concurrency: u32, max_concurrency: u32, step_size: u32, step_interval_secs: u64, max_duration_secs: u64 },
-    Spike { baseline_concurrency: u32, spike_concurrency: u32, baseline_secs: u64, spike_secs: u64 },
-    Volume { concurrency: u32, total_requests: u64 },
+    Load {
+        concurrency: u32,
+        duration_secs: u64,
+        max_requests: Option<u64>,
+    },
+    Stress {
+        start_concurrency: u32,
+        max_concurrency: u32,
+        step_size: u32,
+        step_interval_secs: u64,
+        max_duration_secs: u64,
+    },
+    Spike {
+        baseline_concurrency: u32,
+        spike_concurrency: u32,
+        baseline_secs: u64,
+        spike_secs: u64,
+    },
+    Volume {
+        concurrency: u32,
+        total_requests: u64,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -118,9 +136,18 @@ pub struct SafetyLimits {
 impl SafetyLimits {
     pub fn from_env() -> Self {
         Self {
-            max_concurrency: std::env::var("PERF_TEST_MAX_CONCURRENCY").ok().and_then(|s| s.parse().ok()).unwrap_or(50),
-            max_duration_secs: std::env::var("PERF_TEST_MAX_DURATION_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(120),
-            max_total_requests: std::env::var("PERF_TEST_MAX_TOTAL_REQUESTS").ok().and_then(|s| s.parse().ok()).unwrap_or(5000),
+            max_concurrency: std::env::var("PERF_TEST_MAX_CONCURRENCY")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(50),
+            max_duration_secs: std::env::var("PERF_TEST_MAX_DURATION_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(120),
+            max_total_requests: std::env::var("PERF_TEST_MAX_TOTAL_REQUESTS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(5000),
         }
     }
 }
@@ -130,9 +157,17 @@ impl SafetyLimits {
 /// becomes a real `Action::AssertStatus`, so every sample's Success/Failed
 /// classification comes from `execute_plan_once`'s own real assertion
 /// evaluation, not a second, hand-rolled comparison.
-pub fn build_request_plan(id: &str, req: &AdHocApiRequest, expected_status: Option<u16>) -> Result<ExecutionPlan, ValidationError> {
+pub fn build_request_plan(
+    id: &str,
+    req: &AdHocApiRequest,
+    expected_status: Option<u16>,
+) -> Result<ExecutionPlan, ValidationError> {
     if !req.assertions.is_empty() {
-        return Err(("INVALID_REQUEST_CONFIGURATION", "performance test requests use `expected_status`, not a full assertions list".to_string()));
+        return Err((
+            "INVALID_REQUEST_CONFIGURATION",
+            "performance test requests use `expected_status`, not a full assertions list"
+                .to_string(),
+        ));
     }
     let mut built = req.clone();
     if let Some(status) = expected_status {
@@ -141,59 +176,138 @@ pub fn build_request_plan(id: &str, req: &AdHocApiRequest, expected_status: Opti
     crate::api_testing::validate_and_build_plan(id.to_string(), &built)
 }
 
-pub fn validate_schedule(schedule: &WorkloadSchedule, limits: &SafetyLimits) -> Result<(), ValidationError> {
+pub fn validate_schedule(
+    schedule: &WorkloadSchedule,
+    limits: &SafetyLimits,
+) -> Result<(), ValidationError> {
     match *schedule {
-        WorkloadSchedule::Load { concurrency, duration_secs, max_requests } => {
+        WorkloadSchedule::Load {
+            concurrency,
+            duration_secs,
+            max_requests,
+        } => {
             if concurrency == 0 {
-                return Err(("INVALID_SCHEDULE", "concurrency must be at least 1".to_string()));
+                return Err((
+                    "INVALID_SCHEDULE",
+                    "concurrency must be at least 1".to_string(),
+                ));
             }
             if concurrency > limits.max_concurrency {
-                return Err(("CONCURRENCY_LIMIT_EXCEEDED", format!("concurrency {concurrency} exceeds the server-enforced maximum of {}", limits.max_concurrency)));
+                return Err((
+                    "CONCURRENCY_LIMIT_EXCEEDED",
+                    format!(
+                        "concurrency {concurrency} exceeds the server-enforced maximum of {}",
+                        limits.max_concurrency
+                    ),
+                ));
             }
             if duration_secs == 0 || duration_secs > limits.max_duration_secs {
-                return Err(("DURATION_LIMIT_EXCEEDED", format!("duration_secs must be between 1 and {}", limits.max_duration_secs)));
+                return Err((
+                    "DURATION_LIMIT_EXCEEDED",
+                    format!(
+                        "duration_secs must be between 1 and {}",
+                        limits.max_duration_secs
+                    ),
+                ));
             }
             if let Some(m) = max_requests {
                 if m == 0 || m > limits.max_total_requests {
-                    return Err(("TOTAL_REQUESTS_LIMIT_EXCEEDED", format!("max_requests must be between 1 and {}", limits.max_total_requests)));
+                    return Err((
+                        "TOTAL_REQUESTS_LIMIT_EXCEEDED",
+                        format!(
+                            "max_requests must be between 1 and {}",
+                            limits.max_total_requests
+                        ),
+                    ));
                 }
             }
         }
-        WorkloadSchedule::Stress { start_concurrency, max_concurrency, step_size, step_interval_secs, max_duration_secs } => {
+        WorkloadSchedule::Stress {
+            start_concurrency,
+            max_concurrency,
+            step_size,
+            step_interval_secs,
+            max_duration_secs,
+        } => {
             if start_concurrency == 0 || step_size == 0 || step_interval_secs == 0 {
-                return Err(("INVALID_SCHEDULE", "start_concurrency, step_size and step_interval_secs must all be at least 1".to_string()));
+                return Err((
+                    "INVALID_SCHEDULE",
+                    "start_concurrency, step_size and step_interval_secs must all be at least 1"
+                        .to_string(),
+                ));
             }
             if max_concurrency < start_concurrency {
-                return Err(("INVALID_SCHEDULE", "max_concurrency must be >= start_concurrency".to_string()));
+                return Err((
+                    "INVALID_SCHEDULE",
+                    "max_concurrency must be >= start_concurrency".to_string(),
+                ));
             }
             if max_concurrency > limits.max_concurrency {
                 return Err(("CONCURRENCY_LIMIT_EXCEEDED", format!("max_concurrency {max_concurrency} exceeds the server-enforced maximum of {}", limits.max_concurrency)));
             }
             if max_duration_secs == 0 || max_duration_secs > limits.max_duration_secs {
-                return Err(("DURATION_LIMIT_EXCEEDED", format!("max_duration_secs must be between 1 and {}", limits.max_duration_secs)));
+                return Err((
+                    "DURATION_LIMIT_EXCEEDED",
+                    format!(
+                        "max_duration_secs must be between 1 and {}",
+                        limits.max_duration_secs
+                    ),
+                ));
             }
         }
-        WorkloadSchedule::Spike { baseline_concurrency, spike_concurrency, baseline_secs, spike_secs } => {
+        WorkloadSchedule::Spike {
+            baseline_concurrency,
+            spike_concurrency,
+            baseline_secs,
+            spike_secs,
+        } => {
             if spike_concurrency <= baseline_concurrency {
-                return Err(("INVALID_SCHEDULE", "spike_concurrency must be greater than baseline_concurrency".to_string()));
+                return Err((
+                    "INVALID_SCHEDULE",
+                    "spike_concurrency must be greater than baseline_concurrency".to_string(),
+                ));
             }
             if spike_concurrency > limits.max_concurrency {
                 return Err(("CONCURRENCY_LIMIT_EXCEEDED", format!("spike_concurrency {spike_concurrency} exceeds the server-enforced maximum of {}", limits.max_concurrency)));
             }
             let total = baseline_secs.saturating_add(spike_secs);
             if total == 0 || total > limits.max_duration_secs {
-                return Err(("DURATION_LIMIT_EXCEEDED", format!("baseline_secs + spike_secs must be between 1 and {}", limits.max_duration_secs)));
+                return Err((
+                    "DURATION_LIMIT_EXCEEDED",
+                    format!(
+                        "baseline_secs + spike_secs must be between 1 and {}",
+                        limits.max_duration_secs
+                    ),
+                ));
             }
         }
-        WorkloadSchedule::Volume { concurrency, total_requests } => {
+        WorkloadSchedule::Volume {
+            concurrency,
+            total_requests,
+        } => {
             if concurrency == 0 {
-                return Err(("INVALID_SCHEDULE", "concurrency must be at least 1".to_string()));
+                return Err((
+                    "INVALID_SCHEDULE",
+                    "concurrency must be at least 1".to_string(),
+                ));
             }
             if concurrency > limits.max_concurrency {
-                return Err(("CONCURRENCY_LIMIT_EXCEEDED", format!("concurrency {concurrency} exceeds the server-enforced maximum of {}", limits.max_concurrency)));
+                return Err((
+                    "CONCURRENCY_LIMIT_EXCEEDED",
+                    format!(
+                        "concurrency {concurrency} exceeds the server-enforced maximum of {}",
+                        limits.max_concurrency
+                    ),
+                ));
             }
             if total_requests == 0 || total_requests > limits.max_total_requests {
-                return Err(("TOTAL_REQUESTS_LIMIT_EXCEEDED", format!("total_requests must be between 1 and {}", limits.max_total_requests)));
+                return Err((
+                    "TOTAL_REQUESTS_LIMIT_EXCEEDED",
+                    format!(
+                        "total_requests must be between 1 and {}",
+                        limits.max_total_requests
+                    ),
+                ));
             }
         }
     }
@@ -284,11 +398,23 @@ pub fn percentile(sorted_ms: &[u64], p: f64) -> u64 {
 pub fn compute_metrics(samples: &[RequestSample], actual_duration_ms: u64) -> PerformanceMetrics {
     let total = samples.len() as u64;
     if total == 0 {
-        return PerformanceMetrics { actual_duration_ms, ..Default::default() };
+        return PerformanceMetrics {
+            actual_duration_ms,
+            ..Default::default()
+        };
     }
-    let successful = samples.iter().filter(|s| s.outcome == SampleOutcome::Success).count() as u64;
-    let failed = samples.iter().filter(|s| s.outcome == SampleOutcome::Failed).count() as u64;
-    let errored = samples.iter().filter(|s| s.outcome == SampleOutcome::Error).count() as u64;
+    let successful = samples
+        .iter()
+        .filter(|s| s.outcome == SampleOutcome::Success)
+        .count() as u64;
+    let failed = samples
+        .iter()
+        .filter(|s| s.outcome == SampleOutcome::Failed)
+        .count() as u64;
+    let errored = samples
+        .iter()
+        .filter(|s| s.outcome == SampleOutcome::Error)
+        .count() as u64;
 
     let mut durations: Vec<u64> = samples.iter().map(|s| s.duration_ms).collect();
     durations.sort_unstable();
@@ -296,7 +422,11 @@ pub fn compute_metrics(samples: &[RequestSample], actual_duration_ms: u64) -> Pe
     let min_ms = *durations.first().unwrap();
     let max_ms = *durations.last().unwrap();
     let avg_ms = sum as f64 / total as f64;
-    let throughput_rps = if actual_duration_ms > 0 { total as f64 / (actual_duration_ms as f64 / 1000.0) } else { 0.0 };
+    let throughput_rps = if actual_duration_ms > 0 {
+        total as f64 / (actual_duration_ms as f64 / 1000.0)
+    } else {
+        0.0
+    };
 
     PerformanceMetrics {
         total_requests: total,
@@ -354,32 +484,53 @@ impl PerfVerdict {
 /// Real, documented threshold evaluation — only evaluated when at least one
 /// threshold field is `Some`; each violation is reported with the actual
 /// measured value alongside the configured limit, never a bare true/false.
-pub fn evaluate_verdict(config: &PerformanceTestConfig, metrics: &PerformanceMetrics, cancelled: bool) -> (PerfVerdict, Vec<String>) {
+pub fn evaluate_verdict(
+    config: &PerformanceTestConfig,
+    metrics: &PerformanceMetrics,
+    cancelled: bool,
+) -> (PerfVerdict, Vec<String>) {
     if cancelled {
-        return (PerfVerdict::Cancelled, vec!["cancelled by user request before the configured schedule completed".to_string()]);
+        return (
+            PerfVerdict::Cancelled,
+            vec!["cancelled by user request before the configured schedule completed".to_string()],
+        );
     }
-    let has_thresholds = config.max_p95_ms.is_some() || config.max_error_rate_percent.is_some() || config.min_throughput_rps.is_some();
+    let has_thresholds = config.max_p95_ms.is_some()
+        || config.max_error_rate_percent.is_some()
+        || config.min_throughput_rps.is_some();
     if !has_thresholds {
         return (PerfVerdict::Completed, vec!["no thresholds were configured — reporting real measured metrics only, no pass/fail judgement".to_string()]);
     }
     let mut violations = Vec::new();
     if let Some(max_p95) = config.max_p95_ms {
         if metrics.p95_ms > max_p95 {
-            violations.push(format!("P95 latency {}ms exceeded the configured threshold of {}ms", metrics.p95_ms, max_p95));
+            violations.push(format!(
+                "P95 latency {}ms exceeded the configured threshold of {}ms",
+                metrics.p95_ms, max_p95
+            ));
         }
     }
     if let Some(max_err) = config.max_error_rate_percent {
         if metrics.error_rate_percent > max_err {
-            violations.push(format!("error rate {:.2}% exceeded the configured threshold of {:.2}%", metrics.error_rate_percent, max_err));
+            violations.push(format!(
+                "error rate {:.2}% exceeded the configured threshold of {:.2}%",
+                metrics.error_rate_percent, max_err
+            ));
         }
     }
     if let Some(min_tp) = config.min_throughput_rps {
         if metrics.throughput_rps < min_tp {
-            violations.push(format!("throughput {:.2} req/s was below the configured threshold of {:.2} req/s", metrics.throughput_rps, min_tp));
+            violations.push(format!(
+                "throughput {:.2} req/s was below the configured threshold of {:.2} req/s",
+                metrics.throughput_rps, min_tp
+            ));
         }
     }
     if violations.is_empty() {
-        (PerfVerdict::Passed, vec!["all configured thresholds were met".to_string()])
+        (
+            PerfVerdict::Passed,
+            vec!["all configured thresholds were met".to_string()],
+        )
     } else {
         (PerfVerdict::Failed, violations)
     }
@@ -497,7 +648,14 @@ impl PerformanceRunHandle {
     }
 }
 
-async fn spawn_worker(client: reqwest::Client, plan: Arc<ExecutionPlan>, handle: Arc<PerformanceRunHandle>, sequence: Arc<AtomicU64>, start: tokio::time::Instant, count_target: Option<u64>) {
+async fn spawn_worker(
+    client: reqwest::Client,
+    plan: Arc<ExecutionPlan>,
+    handle: Arc<PerformanceRunHandle>,
+    sequence: Arc<AtomicU64>,
+    start: tokio::time::Instant,
+    count_target: Option<u64>,
+) {
     handle.active_workers.fetch_add(1, Ordering::SeqCst);
     let stop_new_rx = handle.stop_new_tx.subscribe();
     let mut abort_rx = handle.abort_tx.subscribe();
@@ -548,14 +706,46 @@ async fn spawn_worker(client: reqwest::Client, plan: Arc<ExecutionPlan>, handle:
     handle.active_workers.fetch_sub(1, Ordering::SeqCst);
 }
 
-fn spawn_worker_task(client: reqwest::Client, plan: Arc<ExecutionPlan>, handle: Arc<PerformanceRunHandle>, sequence: Arc<AtomicU64>, start: tokio::time::Instant, count_target: Option<u64>) {
-    tokio::spawn(spawn_worker(client, plan, handle, sequence, start, count_target));
+fn spawn_worker_task(
+    client: reqwest::Client,
+    plan: Arc<ExecutionPlan>,
+    handle: Arc<PerformanceRunHandle>,
+    sequence: Arc<AtomicU64>,
+    start: tokio::time::Instant,
+    count_target: Option<u64>,
+) {
+    tokio::spawn(spawn_worker(
+        client,
+        plan,
+        handle,
+        sequence,
+        start,
+        count_target,
+    ));
 }
 
-async fn run_load(client: reqwest::Client, plan: Arc<ExecutionPlan>, handle: Arc<PerformanceRunHandle>, sequence: Arc<AtomicU64>, start: tokio::time::Instant, concurrency: u32, duration_secs: u64, max_requests: Option<u64>) {
-    handle.current_concurrency.store(concurrency, Ordering::SeqCst);
+async fn run_load(
+    client: reqwest::Client,
+    plan: Arc<ExecutionPlan>,
+    handle: Arc<PerformanceRunHandle>,
+    sequence: Arc<AtomicU64>,
+    start: tokio::time::Instant,
+    concurrency: u32,
+    duration_secs: u64,
+    max_requests: Option<u64>,
+) {
+    handle
+        .current_concurrency
+        .store(concurrency, Ordering::SeqCst);
     for _ in 0..concurrency {
-        spawn_worker_task(client.clone(), plan.clone(), handle.clone(), sequence.clone(), start, max_requests);
+        spawn_worker_task(
+            client.clone(),
+            plan.clone(),
+            handle.clone(),
+            sequence.clone(),
+            start,
+            max_requests,
+        );
     }
     let mut stop_new_rx = handle.stop_new_tx.subscribe();
     tokio::select! {
@@ -564,10 +754,27 @@ async fn run_load(client: reqwest::Client, plan: Arc<ExecutionPlan>, handle: Arc
     }
 }
 
-async fn run_volume(client: reqwest::Client, plan: Arc<ExecutionPlan>, handle: Arc<PerformanceRunHandle>, sequence: Arc<AtomicU64>, start: tokio::time::Instant, concurrency: u32, total_requests: u64) {
-    handle.current_concurrency.store(concurrency, Ordering::SeqCst);
+async fn run_volume(
+    client: reqwest::Client,
+    plan: Arc<ExecutionPlan>,
+    handle: Arc<PerformanceRunHandle>,
+    sequence: Arc<AtomicU64>,
+    start: tokio::time::Instant,
+    concurrency: u32,
+    total_requests: u64,
+) {
+    handle
+        .current_concurrency
+        .store(concurrency, Ordering::SeqCst);
     for _ in 0..concurrency {
-        spawn_worker_task(client.clone(), plan.clone(), handle.clone(), sequence.clone(), start, Some(total_requests));
+        spawn_worker_task(
+            client.clone(),
+            plan.clone(),
+            handle.clone(),
+            sequence.clone(),
+            start,
+            Some(total_requests),
+        );
     }
     // Bounded intrinsically by the shared ticket counter reaching
     // `total_requests` (every worker stops itself and signals
@@ -578,11 +785,31 @@ async fn run_volume(client: reqwest::Client, plan: Arc<ExecutionPlan>, handle: A
     let _ = stop_new_rx.changed().await;
 }
 
-async fn run_stress(client: reqwest::Client, plan: Arc<ExecutionPlan>, handle: Arc<PerformanceRunHandle>, sequence: Arc<AtomicU64>, start: tokio::time::Instant, start_concurrency: u32, max_concurrency: u32, step_size: u32, step_interval_secs: u64, max_duration_secs: u64) {
+async fn run_stress(
+    client: reqwest::Client,
+    plan: Arc<ExecutionPlan>,
+    handle: Arc<PerformanceRunHandle>,
+    sequence: Arc<AtomicU64>,
+    start: tokio::time::Instant,
+    start_concurrency: u32,
+    max_concurrency: u32,
+    step_size: u32,
+    step_interval_secs: u64,
+    max_duration_secs: u64,
+) {
     for _ in 0..start_concurrency {
-        spawn_worker_task(client.clone(), plan.clone(), handle.clone(), sequence.clone(), start, None);
+        spawn_worker_task(
+            client.clone(),
+            plan.clone(),
+            handle.clone(),
+            sequence.clone(),
+            start,
+            None,
+        );
     }
-    handle.current_concurrency.store(start_concurrency, Ordering::SeqCst);
+    handle
+        .current_concurrency
+        .store(start_concurrency, Ordering::SeqCst);
 
     let deadline = start + Duration::from_secs(max_duration_secs);
     let mut current = start_concurrency;
@@ -597,7 +824,14 @@ async fn run_stress(client: reqwest::Client, plan: Arc<ExecutionPlan>, handle: A
         }
         let add = step_size.min(max_concurrency - current);
         for _ in 0..add {
-            spawn_worker_task(client.clone(), plan.clone(), handle.clone(), sequence.clone(), start, None);
+            spawn_worker_task(
+                client.clone(),
+                plan.clone(),
+                handle.clone(),
+                sequence.clone(),
+                start,
+                None,
+            );
         }
         current += add;
         handle.current_concurrency.store(current, Ordering::SeqCst);
@@ -609,11 +843,30 @@ async fn run_stress(client: reqwest::Client, plan: Arc<ExecutionPlan>, handle: A
     }
 }
 
-async fn run_spike(client: reqwest::Client, plan: Arc<ExecutionPlan>, handle: Arc<PerformanceRunHandle>, sequence: Arc<AtomicU64>, start: tokio::time::Instant, baseline_concurrency: u32, spike_concurrency: u32, baseline_secs: u64, spike_secs: u64) {
+async fn run_spike(
+    client: reqwest::Client,
+    plan: Arc<ExecutionPlan>,
+    handle: Arc<PerformanceRunHandle>,
+    sequence: Arc<AtomicU64>,
+    start: tokio::time::Instant,
+    baseline_concurrency: u32,
+    spike_concurrency: u32,
+    baseline_secs: u64,
+    spike_secs: u64,
+) {
     for _ in 0..baseline_concurrency {
-        spawn_worker_task(client.clone(), plan.clone(), handle.clone(), sequence.clone(), start, None);
+        spawn_worker_task(
+            client.clone(),
+            plan.clone(),
+            handle.clone(),
+            sequence.clone(),
+            start,
+            None,
+        );
     }
-    handle.current_concurrency.store(baseline_concurrency, Ordering::SeqCst);
+    handle
+        .current_concurrency
+        .store(baseline_concurrency, Ordering::SeqCst);
 
     let mut stop_new_rx = handle.stop_new_tx.subscribe();
     tokio::select! {
@@ -628,9 +881,18 @@ async fn run_spike(client: reqwest::Client, plan: Arc<ExecutionPlan>, handle: Ar
     // spawned in this single burst, not incrementally like Stress's steps.
     let jump = spike_concurrency - baseline_concurrency;
     for _ in 0..jump {
-        spawn_worker_task(client.clone(), plan.clone(), handle.clone(), sequence.clone(), start, None);
+        spawn_worker_task(
+            client.clone(),
+            plan.clone(),
+            handle.clone(),
+            sequence.clone(),
+            start,
+            None,
+        );
     }
-    handle.current_concurrency.store(spike_concurrency, Ordering::SeqCst);
+    handle
+        .current_concurrency
+        .store(spike_concurrency, Ordering::SeqCst);
 
     tokio::select! {
         _ = tokio::time::sleep(Duration::from_secs(spike_secs)) => { let _ = handle.stop_new_tx.send(true); }
@@ -646,7 +908,13 @@ async fn run_spike(client: reqwest::Client, plan: Arc<ExecutionPlan>, handle: Ar
 /// observed the stop signal and exited (polls `active_workers`, not a fixed
 /// sleep), so the final sample set is complete and stable before the caller
 /// reads it.
-pub async fn run_workload(client: reqwest::Client, plan: Arc<ExecutionPlan>, schedule: WorkloadSchedule, limits: SafetyLimits, handle: Arc<PerformanceRunHandle>) {
+pub async fn run_workload(
+    client: reqwest::Client,
+    plan: Arc<ExecutionPlan>,
+    schedule: WorkloadSchedule,
+    limits: SafetyLimits,
+    handle: Arc<PerformanceRunHandle>,
+) {
     let start = tokio::time::Instant::now();
     let sequence = Arc::new(AtomicU64::new(0));
 
@@ -663,13 +931,77 @@ pub async fn run_workload(client: reqwest::Client, plan: Arc<ExecutionPlan>, sch
     }
 
     match schedule {
-        WorkloadSchedule::Load { concurrency, duration_secs, max_requests } => run_load(client, plan, handle.clone(), sequence, start, concurrency, duration_secs, max_requests).await,
-        WorkloadSchedule::Volume { concurrency, total_requests } => run_volume(client, plan, handle.clone(), sequence, start, concurrency, total_requests).await,
-        WorkloadSchedule::Stress { start_concurrency, max_concurrency, step_size, step_interval_secs, max_duration_secs } => {
-            run_stress(client, plan, handle.clone(), sequence, start, start_concurrency, max_concurrency, step_size, step_interval_secs, max_duration_secs.min(limits.max_duration_secs)).await
+        WorkloadSchedule::Load {
+            concurrency,
+            duration_secs,
+            max_requests,
+        } => {
+            run_load(
+                client,
+                plan,
+                handle.clone(),
+                sequence,
+                start,
+                concurrency,
+                duration_secs,
+                max_requests,
+            )
+            .await
         }
-        WorkloadSchedule::Spike { baseline_concurrency, spike_concurrency, baseline_secs, spike_secs } => {
-            run_spike(client, plan, handle.clone(), sequence, start, baseline_concurrency, spike_concurrency, baseline_secs, spike_secs).await
+        WorkloadSchedule::Volume {
+            concurrency,
+            total_requests,
+        } => {
+            run_volume(
+                client,
+                plan,
+                handle.clone(),
+                sequence,
+                start,
+                concurrency,
+                total_requests,
+            )
+            .await
+        }
+        WorkloadSchedule::Stress {
+            start_concurrency,
+            max_concurrency,
+            step_size,
+            step_interval_secs,
+            max_duration_secs,
+        } => {
+            run_stress(
+                client,
+                plan,
+                handle.clone(),
+                sequence,
+                start,
+                start_concurrency,
+                max_concurrency,
+                step_size,
+                step_interval_secs,
+                max_duration_secs.min(limits.max_duration_secs),
+            )
+            .await
+        }
+        WorkloadSchedule::Spike {
+            baseline_concurrency,
+            spike_concurrency,
+            baseline_secs,
+            spike_secs,
+        } => {
+            run_spike(
+                client,
+                plan,
+                handle.clone(),
+                sequence,
+                start,
+                baseline_concurrency,
+                spike_concurrency,
+                baseline_secs,
+                spike_secs,
+            )
+            .await
         }
     }
 
@@ -677,7 +1009,11 @@ pub async fn run_workload(client: reqwest::Client, plan: Arc<ExecutionPlan>, sch
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
-    let final_state = if handle.user_cancelled.load(Ordering::SeqCst) { PerfRunState::Cancelled } else { PerfRunState::Completed };
+    let final_state = if handle.user_cancelled.load(Ordering::SeqCst) {
+        PerfRunState::Cancelled
+    } else {
+        PerfRunState::Completed
+    };
     *handle.finished_elapsed_ms.write().await = Some(start.elapsed().as_millis() as u64);
     *handle.state.write().await = final_state;
 }
@@ -705,7 +1041,9 @@ impl SupervisionFailure {
                 .or_else(|| payload.downcast_ref::<String>().cloned());
             let safe_message = match detail {
                 Some(s) => format!("performance execution terminated unexpectedly: {s}"),
-                None => "performance execution terminated unexpectedly (internal panic)".to_string(),
+                None => {
+                    "performance execution terminated unexpectedly (internal panic)".to_string()
+                }
             };
             Self { safe_message }
         } else {
@@ -713,7 +1051,10 @@ impl SupervisionFailure {
             // (`JoinHandle::abort`) before it could finish. Nothing in this
             // module's own real code path calls `.abort()`, but every
             // `JoinError` is honestly handled, not assumed-panic.
-            Self { safe_message: "performance execution task was terminated before it could finish".to_string() }
+            Self {
+                safe_message: "performance execution task was terminated before it could finish"
+                    .to_string(),
+            }
         }
     }
 }
@@ -756,11 +1097,15 @@ where
 /// `PerformanceRunHandle` driving it lived only in that prior process's
 /// `AppState::performance_tests` map and is gone. Marked `INTERRUPTED`
 /// honestly — never guessed at as `COMPLETED`, never left `RUNNING` forever.
-pub async fn recover_incomplete_performance_runs(store: &crate::store::Store) -> anyhow::Result<usize> {
+pub async fn recover_incomplete_performance_runs(
+    store: &crate::store::Store,
+) -> anyhow::Result<usize> {
     let ids = store.list_incomplete_performance_runs().await?;
     let reason = "orchestrator process restarted while this performance test was running; its live in-memory progress was not durable, so it is marked INTERRUPTED rather than left RUNNING forever";
     for id in &ids {
-        store.finalize_performance_run(*id, "INTERRUPTED", None, None, None, Some(reason), None).await?;
+        store
+            .finalize_performance_run(*id, "INTERRUPTED", None, None, None, Some(reason), None)
+            .await?;
     }
     Ok(ids.len())
 }
@@ -771,11 +1116,22 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn ad_hoc(method: &str, url: &str) -> AdHocApiRequest {
-        AdHocApiRequest { method: method.to_string(), url: url.to_string(), query_params: vec![], headers: BTreeMap::new(), body: None, assertions: vec![] }
+        AdHocApiRequest {
+            method: method.to_string(),
+            url: url.to_string(),
+            query_params: vec![],
+            headers: BTreeMap::new(),
+            body: None,
+            assertions: vec![],
+        }
     }
 
     fn limits() -> SafetyLimits {
-        SafetyLimits { max_concurrency: 50, max_duration_secs: 120, max_total_requests: 5000 }
+        SafetyLimits {
+            max_concurrency: 50,
+            max_duration_secs: 120,
+            max_total_requests: 5000,
+        }
     }
 
     // ------------------------------------------------------- percentile
@@ -802,7 +1158,15 @@ mod tests {
     // --------------------------------------------------------- metrics
 
     fn sample(ms: u64, outcome: SampleOutcome) -> RequestSample {
-        RequestSample { sequence: 0, offset_ms: 0, duration_ms: ms, outcome, http_status: Some(200), error_reason: None, concurrency_at_start: 1 }
+        RequestSample {
+            sequence: 0,
+            offset_ms: 0,
+            duration_ms: ms,
+            outcome,
+            http_status: Some(200),
+            error_reason: None,
+            concurrency_at_start: 1,
+        }
     }
 
     #[test]
@@ -823,7 +1187,11 @@ mod tests {
         assert!((m.avg_ms - 25.0).abs() < 0.001);
         assert!((m.error_rate_percent - 50.0).abs() < 0.001);
         assert!((m.success_rate_percent - 50.0).abs() < 0.001);
-        assert!((m.throughput_rps - 2.0).abs() < 0.001, "4 requests / 2s = 2 req/s, got {}", m.throughput_rps);
+        assert!(
+            (m.throughput_rps - 2.0).abs() < 0.001,
+            "4 requests / 2s = 2 req/s, got {}",
+            m.throughput_rps
+        );
     }
 
     #[test]
@@ -837,12 +1205,23 @@ mod tests {
     // --------------------------------------------------------- verdict
 
     fn base_config(schedule: WorkloadSchedule) -> PerformanceTestConfig {
-        PerformanceTestConfig { request: ad_hoc("GET", "http://example.com"), expected_status: Some(200), schedule, max_p95_ms: None, max_error_rate_percent: None, min_throughput_rps: None }
+        PerformanceTestConfig {
+            request: ad_hoc("GET", "http://example.com"),
+            expected_status: Some(200),
+            schedule,
+            max_p95_ms: None,
+            max_error_rate_percent: None,
+            min_throughput_rps: None,
+        }
     }
 
     #[test]
     fn no_thresholds_configured_yields_completed_never_a_false_pass() {
-        let cfg = base_config(WorkloadSchedule::Load { concurrency: 1, duration_secs: 1, max_requests: None });
+        let cfg = base_config(WorkloadSchedule::Load {
+            concurrency: 1,
+            duration_secs: 1,
+            max_requests: None,
+        });
         let m = compute_metrics(&[sample(10, SampleOutcome::Success)], 1000);
         let (verdict, _) = evaluate_verdict(&cfg, &m, false);
         assert_eq!(verdict, PerfVerdict::Completed);
@@ -850,10 +1229,20 @@ mod tests {
 
     #[test]
     fn thresholds_met_yields_passed() {
-        let mut cfg = base_config(WorkloadSchedule::Load { concurrency: 1, duration_secs: 1, max_requests: None });
+        let mut cfg = base_config(WorkloadSchedule::Load {
+            concurrency: 1,
+            duration_secs: 1,
+            max_requests: None,
+        });
         cfg.max_p95_ms = Some(1000);
         cfg.max_error_rate_percent = Some(5.0);
-        let m = compute_metrics(&[sample(10, SampleOutcome::Success), sample(20, SampleOutcome::Success)], 1000);
+        let m = compute_metrics(
+            &[
+                sample(10, SampleOutcome::Success),
+                sample(20, SampleOutcome::Success),
+            ],
+            1000,
+        );
         let (verdict, reasons) = evaluate_verdict(&cfg, &m, false);
         assert_eq!(verdict, PerfVerdict::Passed);
         assert!(!reasons.is_empty());
@@ -861,7 +1250,11 @@ mod tests {
 
     #[test]
     fn a_violated_threshold_yields_failed_with_the_real_measured_value_in_the_reason() {
-        let mut cfg = base_config(WorkloadSchedule::Load { concurrency: 1, duration_secs: 1, max_requests: None });
+        let mut cfg = base_config(WorkloadSchedule::Load {
+            concurrency: 1,
+            duration_secs: 1,
+            max_requests: None,
+        });
         cfg.max_p95_ms = Some(5);
         let m = compute_metrics(&[sample(100, SampleOutcome::Success)], 1000);
         let (verdict, reasons) = evaluate_verdict(&cfg, &m, false);
@@ -871,7 +1264,11 @@ mod tests {
 
     #[test]
     fn cancellation_always_wins_over_threshold_evaluation() {
-        let mut cfg = base_config(WorkloadSchedule::Load { concurrency: 1, duration_secs: 1, max_requests: None });
+        let mut cfg = base_config(WorkloadSchedule::Load {
+            concurrency: 1,
+            duration_secs: 1,
+            max_requests: None,
+        });
         cfg.max_p95_ms = Some(1_000_000); // would trivially pass if evaluated
         let m = compute_metrics(&[sample(1, SampleOutcome::Success)], 1000);
         let (verdict, _) = evaluate_verdict(&cfg, &m, true);
@@ -882,49 +1279,129 @@ mod tests {
 
     #[test]
     fn a_concurrency_above_the_server_limit_is_rejected_regardless_of_frontend_input() {
-        let err = validate_schedule(&WorkloadSchedule::Load { concurrency: 999, duration_secs: 10, max_requests: None }, &limits()).unwrap_err();
+        let err = validate_schedule(
+            &WorkloadSchedule::Load {
+                concurrency: 999,
+                duration_secs: 10,
+                max_requests: None,
+            },
+            &limits(),
+        )
+        .unwrap_err();
         assert_eq!(err.0, "CONCURRENCY_LIMIT_EXCEEDED");
     }
 
     #[test]
     fn a_duration_above_the_server_limit_is_rejected() {
-        let err = validate_schedule(&WorkloadSchedule::Load { concurrency: 1, duration_secs: 99999, max_requests: None }, &limits()).unwrap_err();
+        let err = validate_schedule(
+            &WorkloadSchedule::Load {
+                concurrency: 1,
+                duration_secs: 99999,
+                max_requests: None,
+            },
+            &limits(),
+        )
+        .unwrap_err();
         assert_eq!(err.0, "DURATION_LIMIT_EXCEEDED");
     }
 
     #[test]
     fn a_total_requests_above_the_server_limit_is_rejected_for_volume() {
-        let err = validate_schedule(&WorkloadSchedule::Volume { concurrency: 1, total_requests: 999_999 }, &limits()).unwrap_err();
+        let err = validate_schedule(
+            &WorkloadSchedule::Volume {
+                concurrency: 1,
+                total_requests: 999_999,
+            },
+            &limits(),
+        )
+        .unwrap_err();
         assert_eq!(err.0, "TOTAL_REQUESTS_LIMIT_EXCEEDED");
     }
 
     #[test]
     fn stress_max_concurrency_below_start_concurrency_is_rejected() {
-        let err = validate_schedule(&WorkloadSchedule::Stress { start_concurrency: 10, max_concurrency: 5, step_size: 1, step_interval_secs: 1, max_duration_secs: 10 }, &limits()).unwrap_err();
+        let err = validate_schedule(
+            &WorkloadSchedule::Stress {
+                start_concurrency: 10,
+                max_concurrency: 5,
+                step_size: 1,
+                step_interval_secs: 1,
+                max_duration_secs: 10,
+            },
+            &limits(),
+        )
+        .unwrap_err();
         assert_eq!(err.0, "INVALID_SCHEDULE");
     }
 
     #[test]
     fn spike_concurrency_not_greater_than_baseline_is_rejected() {
-        let err = validate_schedule(&WorkloadSchedule::Spike { baseline_concurrency: 10, spike_concurrency: 10, baseline_secs: 1, spike_secs: 1 }, &limits()).unwrap_err();
+        let err = validate_schedule(
+            &WorkloadSchedule::Spike {
+                baseline_concurrency: 10,
+                spike_concurrency: 10,
+                baseline_secs: 1,
+                spike_secs: 1,
+            },
+            &limits(),
+        )
+        .unwrap_err();
         assert_eq!(err.0, "INVALID_SCHEDULE");
     }
 
     #[test]
     fn a_valid_schedule_of_each_type_is_accepted() {
-        assert!(validate_schedule(&WorkloadSchedule::Load { concurrency: 5, duration_secs: 5, max_requests: None }, &limits()).is_ok());
-        assert!(validate_schedule(&WorkloadSchedule::Stress { start_concurrency: 2, max_concurrency: 10, step_size: 2, step_interval_secs: 2, max_duration_secs: 20 }, &limits()).is_ok());
-        assert!(validate_schedule(&WorkloadSchedule::Spike { baseline_concurrency: 2, spike_concurrency: 10, baseline_secs: 2, spike_secs: 2 }, &limits()).is_ok());
-        assert!(validate_schedule(&WorkloadSchedule::Volume { concurrency: 5, total_requests: 50 }, &limits()).is_ok());
+        assert!(validate_schedule(
+            &WorkloadSchedule::Load {
+                concurrency: 5,
+                duration_secs: 5,
+                max_requests: None
+            },
+            &limits()
+        )
+        .is_ok());
+        assert!(validate_schedule(
+            &WorkloadSchedule::Stress {
+                start_concurrency: 2,
+                max_concurrency: 10,
+                step_size: 2,
+                step_interval_secs: 2,
+                max_duration_secs: 20
+            },
+            &limits()
+        )
+        .is_ok());
+        assert!(validate_schedule(
+            &WorkloadSchedule::Spike {
+                baseline_concurrency: 2,
+                spike_concurrency: 10,
+                baseline_secs: 2,
+                spike_secs: 2
+            },
+            &limits()
+        )
+        .is_ok());
+        assert!(validate_schedule(
+            &WorkloadSchedule::Volume {
+                concurrency: 5,
+                total_requests: 50
+            },
+            &limits()
+        )
+        .is_ok());
     }
 
     // -------------------------------------------------- request plan build
 
     #[test]
     fn expected_status_becomes_a_real_assert_status_action() {
-        let plan = build_request_plan("t1", &ad_hoc("GET", "http://example.com/health"), Some(200)).expect("must build");
+        let plan = build_request_plan("t1", &ad_hoc("GET", "http://example.com/health"), Some(200))
+            .expect("must build");
         assert_eq!(plan.actions.len(), 2);
-        assert!(matches!(&plan.actions[1], Action::AssertStatus { status: 200 }));
+        assert!(matches!(
+            &plan.actions[1],
+            Action::AssertStatus { status: 200 }
+        ));
     }
 
     #[test]
@@ -959,19 +1436,39 @@ mod tests {
     #[tokio::test]
     async fn a_load_test_produces_real_samples_at_the_configured_concurrency() {
         let url = spawn_test_target().await;
-        let plan = Arc::new(build_request_plan("t1", &ad_hoc("GET", &url), Some(200)).expect("must build"));
+        let plan = Arc::new(
+            build_request_plan("t1", &ad_hoc("GET", &url), Some(200)).expect("must build"),
+        );
         let handle = PerformanceRunHandle::new(Uuid::new_v4());
-        let schedule = WorkloadSchedule::Load { concurrency: 4, duration_secs: 1, max_requests: None };
-        run_workload(test_client(Duration::from_secs(5)), plan, schedule, limits(), handle.clone()).await;
+        let schedule = WorkloadSchedule::Load {
+            concurrency: 4,
+            duration_secs: 1,
+            max_requests: None,
+        };
+        run_workload(
+            test_client(Duration::from_secs(5)),
+            plan,
+            schedule,
+            limits(),
+            handle.clone(),
+        )
+        .await;
 
         let samples = handle.samples.read().await;
-        assert!(!samples.is_empty(), "a 1s load test at concurrency 4 against a real local server must produce real samples");
-        assert!(samples.iter().all(|s| s.outcome == SampleOutcome::Success), "every request to /ok expecting 200 must succeed: {samples:?}");
+        assert!(
+            !samples.is_empty(),
+            "a 1s load test at concurrency 4 against a real local server must produce real samples"
+        );
+        assert!(
+            samples.iter().all(|s| s.outcome == SampleOutcome::Success),
+            "every request to /ok expecting 200 must succeed: {samples:?}"
+        );
         assert_eq!(*handle.state.read().await, PerfRunState::Completed);
     }
 
     #[tokio::test]
-    async fn finished_elapsed_ms_is_frozen_the_instant_the_workload_completes_not_left_growing_with_wall_clock_time() {
+    async fn finished_elapsed_ms_is_frozen_the_instant_the_workload_completes_not_left_growing_with_wall_clock_time(
+    ) {
         // Regression test for a real bug caught during this phase's own
         // live verification: a status re-read of an already-COMPLETED run
         // was recomputing metrics against `now - started_at`, which keeps
@@ -981,101 +1478,221 @@ mod tests {
         // the moment it actually finishes, and that value must never change
         // afterward no matter how much real wall-clock time passes.
         let url = spawn_test_target().await;
-        let plan = Arc::new(build_request_plan("t1", &ad_hoc("GET", &url), Some(200)).expect("must build"));
+        let plan = Arc::new(
+            build_request_plan("t1", &ad_hoc("GET", &url), Some(200)).expect("must build"),
+        );
         let handle = PerformanceRunHandle::new(Uuid::new_v4());
-        let schedule = WorkloadSchedule::Load { concurrency: 2, duration_secs: 1, max_requests: None };
-        run_workload(test_client(Duration::from_secs(5)), plan, schedule, limits(), handle.clone()).await;
+        let schedule = WorkloadSchedule::Load {
+            concurrency: 2,
+            duration_secs: 1,
+            max_requests: None,
+        };
+        run_workload(
+            test_client(Duration::from_secs(5)),
+            plan,
+            schedule,
+            limits(),
+            handle.clone(),
+        )
+        .await;
 
         assert_eq!(*handle.state.read().await, PerfRunState::Completed);
-        let frozen_first_read = handle.finished_elapsed_ms.read().await.expect("finished_elapsed_ms must be set once the workload has actually completed");
+        let frozen_first_read = handle
+            .finished_elapsed_ms
+            .read()
+            .await
+            .expect("finished_elapsed_ms must be set once the workload has actually completed");
 
         tokio::time::sleep(Duration::from_millis(300)).await;
 
-        let frozen_second_read = handle.finished_elapsed_ms.read().await.expect("must still be set");
+        let frozen_second_read = handle
+            .finished_elapsed_ms
+            .read()
+            .await
+            .expect("must still be set");
         assert_eq!(frozen_first_read, frozen_second_read, "elapsed time must stay frozen after completion, not keep growing with real wall-clock time");
     }
 
     #[tokio::test]
     async fn a_volume_test_stops_at_exactly_the_configured_total_and_never_overshoots() {
         let url = spawn_test_target().await;
-        let plan = Arc::new(build_request_plan("t1", &ad_hoc("GET", &url), None).expect("must build"));
+        let plan =
+            Arc::new(build_request_plan("t1", &ad_hoc("GET", &url), None).expect("must build"));
         let handle = PerformanceRunHandle::new(Uuid::new_v4());
-        let schedule = WorkloadSchedule::Volume { concurrency: 5, total_requests: 37 };
-        run_workload(test_client(Duration::from_secs(5)), plan, schedule, limits(), handle.clone()).await;
+        let schedule = WorkloadSchedule::Volume {
+            concurrency: 5,
+            total_requests: 37,
+        };
+        run_workload(
+            test_client(Duration::from_secs(5)),
+            plan,
+            schedule,
+            limits(),
+            handle.clone(),
+        )
+        .await;
 
         let samples = handle.samples.read().await;
-        assert_eq!(samples.len(), 37, "Volume must fire exactly the configured total, no more, no fewer");
+        assert_eq!(
+            samples.len(),
+            37,
+            "Volume must fire exactly the configured total, no more, no fewer"
+        );
     }
 
     #[tokio::test]
     async fn a_stress_test_genuinely_ramps_concurrency_over_real_time() {
         let url = spawn_test_target().await;
-        let plan = Arc::new(build_request_plan("t1", &ad_hoc("GET", &url), None).expect("must build"));
+        let plan =
+            Arc::new(build_request_plan("t1", &ad_hoc("GET", &url), None).expect("must build"));
         let handle = PerformanceRunHandle::new(Uuid::new_v4());
-        let schedule = WorkloadSchedule::Stress { start_concurrency: 2, max_concurrency: 6, step_size: 2, step_interval_secs: 1, max_duration_secs: 3 };
-        run_workload(test_client(Duration::from_secs(5)), plan, schedule, limits(), handle.clone()).await;
+        let schedule = WorkloadSchedule::Stress {
+            start_concurrency: 2,
+            max_concurrency: 6,
+            step_size: 2,
+            step_interval_secs: 1,
+            max_duration_secs: 3,
+        };
+        run_workload(
+            test_client(Duration::from_secs(5)),
+            plan,
+            schedule,
+            limits(),
+            handle.clone(),
+        )
+        .await;
 
         let samples = handle.samples.read().await;
-        let max_observed_concurrency = samples.iter().map(|s| s.concurrency_at_start).max().unwrap_or(0);
+        let max_observed_concurrency = samples
+            .iter()
+            .map(|s| s.concurrency_at_start)
+            .max()
+            .unwrap_or(0);
         assert!(max_observed_concurrency > 2, "a real ramp must reach beyond the starting concurrency of 2, observed max was {max_observed_concurrency}");
-        let min_observed_concurrency = samples.iter().map(|s| s.concurrency_at_start).min().unwrap_or(0);
-        assert_eq!(min_observed_concurrency, 2, "the earliest real samples must reflect the real starting concurrency");
+        let min_observed_concurrency = samples
+            .iter()
+            .map(|s| s.concurrency_at_start)
+            .min()
+            .unwrap_or(0);
+        assert_eq!(
+            min_observed_concurrency, 2,
+            "the earliest real samples must reflect the real starting concurrency"
+        );
     }
 
     #[tokio::test]
     async fn a_spike_test_jumps_concurrency_immediately_rather_than_ramping_gradually() {
         let url = spawn_test_target().await;
-        let plan = Arc::new(build_request_plan("t1", &ad_hoc("GET", &url), None).expect("must build"));
+        let plan =
+            Arc::new(build_request_plan("t1", &ad_hoc("GET", &url), None).expect("must build"));
         let handle = PerformanceRunHandle::new(Uuid::new_v4());
-        let schedule = WorkloadSchedule::Spike { baseline_concurrency: 2, spike_concurrency: 8, baseline_secs: 1, spike_secs: 1 };
-        run_workload(test_client(Duration::from_secs(5)), plan, schedule, limits(), handle.clone()).await;
+        let schedule = WorkloadSchedule::Spike {
+            baseline_concurrency: 2,
+            spike_concurrency: 8,
+            baseline_secs: 1,
+            spike_secs: 1,
+        };
+        run_workload(
+            test_client(Duration::from_secs(5)),
+            plan,
+            schedule,
+            limits(),
+            handle.clone(),
+        )
+        .await;
 
         let samples = handle.samples.read().await;
-        let observed: std::collections::BTreeSet<u32> = samples.iter().map(|s| s.concurrency_at_start).collect();
+        let observed: std::collections::BTreeSet<u32> =
+            samples.iter().map(|s| s.concurrency_at_start).collect();
         // A real jump only ever exposes the baseline value and the full
         // spike value to samples — never an intermediate value a gradual
         // Stress-style ramp would produce (e.g. 4 or 6).
-        assert!(observed.contains(&2), "baseline concurrency must appear: {observed:?}");
-        assert!(observed.contains(&8), "the full spike concurrency must appear: {observed:?}");
-        assert!(!observed.contains(&4) && !observed.contains(&6), "a spike must jump directly, not ramp through intermediate values: {observed:?}");
+        assert!(
+            observed.contains(&2),
+            "baseline concurrency must appear: {observed:?}"
+        );
+        assert!(
+            observed.contains(&8),
+            "the full spike concurrency must appear: {observed:?}"
+        );
+        assert!(
+            !observed.contains(&4) && !observed.contains(&6),
+            "a spike must jump directly, not ramp through intermediate values: {observed:?}"
+        );
     }
 
     #[tokio::test]
     async fn cancellation_actually_interrupts_a_running_workload_rather_than_waiting_it_out() {
         let url = spawn_test_target().await;
-        let plan = Arc::new(build_request_plan("t1", &ad_hoc("GET", &url), None).expect("must build"));
+        let plan =
+            Arc::new(build_request_plan("t1", &ad_hoc("GET", &url), None).expect("must build"));
         let handle = PerformanceRunHandle::new(Uuid::new_v4());
         // A schedule that would otherwise run for a full 30s if cancellation
         // did not really interrupt it.
-        let schedule = WorkloadSchedule::Load { concurrency: 2, duration_secs: 30, max_requests: None };
+        let schedule = WorkloadSchedule::Load {
+            concurrency: 2,
+            duration_secs: 30,
+            max_requests: None,
+        };
 
         let run_handle = handle.clone();
         let plan2 = plan.clone();
         let workload = tokio::spawn(async move {
-            run_workload(test_client(Duration::from_secs(5)), plan2, schedule, limits(), run_handle).await;
+            run_workload(
+                test_client(Duration::from_secs(5)),
+                plan2,
+                schedule,
+                limits(),
+                run_handle,
+            )
+            .await;
         });
 
         tokio::time::sleep(Duration::from_millis(150)).await;
         let cancelled = handle.request_cancel().await;
-        assert!(cancelled, "cancel must succeed on a genuinely running workload");
+        assert!(
+            cancelled,
+            "cancel must succeed on a genuinely running workload"
+        );
 
         let outcome = tokio::time::timeout(Duration::from_secs(3), workload).await;
-        assert!(outcome.is_ok(), "a cancelled 30s workload must actually stop in well under 3s, not run to completion");
+        assert!(
+            outcome.is_ok(),
+            "a cancelled 30s workload must actually stop in well under 3s, not run to completion"
+        );
         assert_eq!(*handle.state.read().await, PerfRunState::Cancelled);
     }
 
     #[tokio::test]
     async fn a_second_cancel_after_completion_is_a_harmless_no_op_not_an_error() {
         let url = spawn_test_target().await;
-        let plan = Arc::new(build_request_plan("t1", &ad_hoc("GET", &url), None).expect("must build"));
+        let plan =
+            Arc::new(build_request_plan("t1", &ad_hoc("GET", &url), None).expect("must build"));
         let handle = PerformanceRunHandle::new(Uuid::new_v4());
-        let schedule = WorkloadSchedule::Volume { concurrency: 1, total_requests: 2 };
-        run_workload(test_client(Duration::from_secs(5)), plan, schedule, limits(), handle.clone()).await;
+        let schedule = WorkloadSchedule::Volume {
+            concurrency: 1,
+            total_requests: 2,
+        };
+        run_workload(
+            test_client(Duration::from_secs(5)),
+            plan,
+            schedule,
+            limits(),
+            handle.clone(),
+        )
+        .await;
 
         assert_eq!(*handle.state.read().await, PerfRunState::Completed);
         let cancelled = handle.request_cancel().await;
-        assert!(!cancelled, "cancelling an already-completed run must be a real, honest no-op");
-        assert_eq!(*handle.state.read().await, PerfRunState::Completed, "state must not be corrupted into CANCELLED by a stale cancel call");
+        assert!(
+            !cancelled,
+            "cancelling an already-completed run must be a real, honest no-op"
+        );
+        assert_eq!(
+            *handle.state.read().await,
+            PerfRunState::Completed,
+            "state must not be corrupted into CANCELLED by a stale cancel call"
+        );
     }
 
     #[tokio::test]
@@ -1086,14 +1703,28 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
         let url = format!("http://127.0.0.1:{port}/nothing-here");
-        let plan = Arc::new(build_request_plan("t1", &ad_hoc("GET", &url), None).expect("must build"));
+        let plan =
+            Arc::new(build_request_plan("t1", &ad_hoc("GET", &url), None).expect("must build"));
         let handle = PerformanceRunHandle::new(Uuid::new_v4());
-        let schedule = WorkloadSchedule::Volume { concurrency: 2, total_requests: 3 };
-        run_workload(test_client(Duration::from_secs(2)), plan, schedule, limits(), handle.clone()).await;
+        let schedule = WorkloadSchedule::Volume {
+            concurrency: 2,
+            total_requests: 3,
+        };
+        run_workload(
+            test_client(Duration::from_secs(2)),
+            plan,
+            schedule,
+            limits(),
+            handle.clone(),
+        )
+        .await;
 
         let samples = handle.samples.read().await;
         assert_eq!(samples.len(), 3);
-        assert!(samples.iter().all(|s| s.outcome == SampleOutcome::Error), "every sample against a dead port must be a real Error outcome: {samples:?}");
+        assert!(
+            samples.iter().all(|s| s.outcome == SampleOutcome::Error),
+            "every sample against a dead port must be a real Error outcome: {samples:?}"
+        );
         // The exact classification (CONNECTION_FAILED vs REQUEST_TIMEOUT) for
         // a just-closed loopback port under concurrent connection attempts is
         // a genuine OS-level timing detail (observed to differ between a
@@ -1103,7 +1734,11 @@ mod tests {
         // a genuine transport failure is recorded as `Error`, never
         // `Success`/`Failed`.
         assert!(
-            samples.iter().all(|s| s.error_reason.as_deref().is_some_and(|r| r.starts_with("CONNECTION_FAILED") || r.starts_with("REQUEST_TIMEOUT"))),
+            samples
+                .iter()
+                .all(|s| s.error_reason.as_deref().is_some_and(|r| r
+                    .starts_with("CONNECTION_FAILED")
+                    || r.starts_with("REQUEST_TIMEOUT"))),
             "{samples:?}"
         );
     }
@@ -1112,12 +1747,16 @@ mod tests {
 
     #[tokio::test]
     async fn a_normal_workload_task_supervised_returns_ok() {
-        let outcome = supervise_workload_task(async { /* returns normally, like a real completed/cancelled run_workload */ }).await;
+        let outcome = supervise_workload_task(
+            async { /* returns normally, like a real completed/cancelled run_workload */ },
+        )
+        .await;
         assert!(outcome.is_ok());
     }
 
     #[tokio::test]
-    async fn a_genuine_deterministic_panic_in_the_supervised_task_is_caught_not_left_to_crash_the_process() {
+    async fn a_genuine_deterministic_panic_in_the_supervised_task_is_caught_not_left_to_crash_the_process(
+    ) {
         // A real Tokio panic inside a real spawned task — not a mock, not a
         // simulated failure flag. `supervise_workload_task` must catch this
         // via the real `JoinHandle`, not let it silently vanish.
@@ -1131,7 +1770,9 @@ mod tests {
             "the real panic message must be safely surfaced, not replaced with a generic string when it is available: {}",
             failure.safe_message
         );
-        assert!(failure.safe_message.starts_with("performance execution terminated unexpectedly"));
+        assert!(failure
+            .safe_message
+            .starts_with("performance execution terminated unexpectedly"));
     }
 
     #[tokio::test]
@@ -1141,16 +1782,24 @@ mod tests {
         // behavior at all — real requests, real samples, real `Completed`
         // state, `Ok(())` from the supervisor.
         let url = spawn_test_target().await;
-        let plan = Arc::new(build_request_plan("t1", &ad_hoc("GET", &url), Some(200)).expect("must build"));
+        let plan = Arc::new(
+            build_request_plan("t1", &ad_hoc("GET", &url), Some(200)).expect("must build"),
+        );
         let handle = PerformanceRunHandle::new(Uuid::new_v4());
-        let schedule = WorkloadSchedule::Volume { concurrency: 2, total_requests: 5 };
+        let schedule = WorkloadSchedule::Volume {
+            concurrency: 2,
+            total_requests: 5,
+        };
         let client = test_client(Duration::from_secs(5));
         let handle2 = handle.clone();
         let outcome = supervise_workload_task(async move {
             run_workload(client, plan, schedule, limits(), handle2).await;
         })
         .await;
-        assert!(outcome.is_ok(), "a real, normal workload must supervise to Ok, not a failure");
+        assert!(
+            outcome.is_ok(),
+            "a real, normal workload must supervise to Ok, not a failure"
+        );
         assert_eq!(*handle.state.read().await, PerfRunState::Completed);
         assert_eq!(handle.samples.read().await.len(), 5);
     }
@@ -1163,19 +1812,35 @@ mod tests {
         // `Cancelled`) — cancellation is never mistaken for a task-level
         // supervision failure.
         let url = spawn_test_target().await;
-        let plan = Arc::new(build_request_plan("t1", &ad_hoc("GET", &url), None).expect("must build"));
+        let plan =
+            Arc::new(build_request_plan("t1", &ad_hoc("GET", &url), None).expect("must build"));
         let handle = PerformanceRunHandle::new(Uuid::new_v4());
-        let schedule = WorkloadSchedule::Load { concurrency: 2, duration_secs: 30, max_requests: None };
+        let schedule = WorkloadSchedule::Load {
+            concurrency: 2,
+            duration_secs: 30,
+            max_requests: None,
+        };
         let client = test_client(Duration::from_secs(5));
         let handle2 = handle.clone();
 
-        let supervised = tokio::spawn(async move { supervise_workload_task(async move { run_workload(client, plan, schedule, limits(), handle2).await }).await });
+        let supervised = tokio::spawn(async move {
+            supervise_workload_task(async move {
+                run_workload(client, plan, schedule, limits(), handle2).await
+            })
+            .await
+        });
 
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(handle.request_cancel().await);
 
-        let outcome = tokio::time::timeout(Duration::from_secs(3), supervised).await.expect("must finish well under 3s").expect("join");
-        assert!(outcome.is_ok(), "a real cancellation must resolve as a normal supervised completion, not a failure");
+        let outcome = tokio::time::timeout(Duration::from_secs(3), supervised)
+            .await
+            .expect("must finish well under 3s")
+            .expect("join");
+        assert!(
+            outcome.is_ok(),
+            "a real cancellation must resolve as a normal supervised completion, not a failure"
+        );
         assert_eq!(*handle.state.read().await, PerfRunState::Cancelled);
     }
 
@@ -1190,6 +1855,9 @@ mod tests {
         })
         .await;
         let failure = outcome.expect_err("must be caught");
-        assert_eq!(failure.safe_message, "performance execution terminated unexpectedly (internal panic)");
+        assert_eq!(
+            failure.safe_message,
+            "performance execution terminated unexpectedly (internal panic)"
+        );
     }
 }

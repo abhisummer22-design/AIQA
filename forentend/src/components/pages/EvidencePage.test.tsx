@@ -22,6 +22,15 @@ import type { EvidenceRow, Project, RunListItem } from '../../types/contract';
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 }
+function blobResponse(text: string, contentType = 'text/plain'): Response {
+  const blob = new globalThis.Blob([text], { type: contentType });
+  return {
+    ok: true,
+    status: 200,
+    headers: new Headers({ 'Content-Type': contentType }),
+    blob: async () => blob,
+  } as unknown as Response;
+}
 function envelope(code: string, message: string) {
   return { error: { code, message, details: {}, request_id: 'req_evidence_test' } };
 }
@@ -93,7 +102,7 @@ function mockBackend(opts: {
       const entry = opts.contentByEvidenceId?.[id];
       if (entry === 'offline') throw new TypeError('Failed to fetch');
       if (entry?.kind === 'ok') {
-        return new Response(entry.body, { status: 200, headers: { 'Content-Type': entry.contentType } });
+        return blobResponse(entry.body, entry.contentType);
       }
       if (entry?.kind === 'error') return jsonResponse(entry.status, entry.body);
       return new Response('', { status: 404 });

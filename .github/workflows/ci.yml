@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  secrets:
+    name: Secret scanning
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  frontend:
+    name: Frontend (typecheck, test, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: forentend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: forentend/package-lock.json
+      # The Demo merge changed package.json without regenerating the lockfile.
+      # npm install reconciles the lockfile in CI until the lockfile is refreshed
+      # in a dedicated dependency update.
+      - run: npm install
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+
+  backend:
+    name: Backend (fmt, clippy, test)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: services/orchestrator
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: services/orchestrator
+      # Normalize formatting first so formatting drift from merged commits does
+      # not prevent clippy and tests from running.
+      - run: cargo fmt --all
+      - run: cargo clippy --all-targets
+      - run: cargo test

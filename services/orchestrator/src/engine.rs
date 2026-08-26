@@ -30,7 +30,10 @@ pub struct ProjectStream {
 impl Default for ProjectStream {
     fn default() -> Self {
         let (tx, _rx) = broadcast::channel(1024);
-        Self { tx, seq: AtomicU64::new(0) }
+        Self {
+            tx,
+            seq: AtomicU64::new(0),
+        }
     }
 }
 
@@ -154,7 +157,11 @@ impl RunRecord {
     }
 
     pub fn task_defs(&self) -> HashMap<TaskId, TaskDef> {
-        self.plan.tasks.iter().map(|t| (t.id.clone(), t.clone())).collect()
+        self.plan
+            .tasks
+            .iter()
+            .map(|t| (t.id.clone(), t.clone()))
+            .collect()
     }
 
     /// Append + broadcast one event (SRD §5: event_id, run_id, task_id,
@@ -207,7 +214,8 @@ impl RunRecord {
             // B1 — a lost event leaves a permanent gap in a log SRD §5
             // requires to be complete and gap-free, so this is escalated
             // rather than logged and forgotten.
-            self.note_persistence_failure(&format!("insert_event({})", ev.event_id), e).await;
+            self.note_persistence_failure(&format!("insert_event({})", ev.event_id), e)
+                .await;
         }
     }
 
@@ -292,17 +300,34 @@ fn derive_run_state(tasks: &[TaskState]) -> RunState {
 /// straight to `Cancelled` without ever dispatching them. Factored out so
 /// cancellation reuses exactly the same persist/emit code a normal
 /// completion already uses, rather than a second copy of it.
-async fn persist_and_emit_terminal(record: &Arc<RunRecord>, store: &Store, newly_terminal: Vec<TaskId>) {
+async fn persist_and_emit_terminal(
+    record: &Arc<RunRecord>,
+    store: &Store,
+    newly_terminal: Vec<TaskId>,
+) {
     for tid in newly_terminal {
         let (status, reason) = {
             let engine = record.engine.read().await;
             let t = &engine.tasks[&tid];
             (t.status, t.reason.clone())
         };
-        if let Err(e) = store.set_task_status(record.run_id, &tid, status, reason.as_deref(), false, true).await {
-            record.note_persistence_failure(&format!("set_task_status(final, {tid})"), e).await;
+        if let Err(e) = store
+            .set_task_status(record.run_id, &tid, status, reason.as_deref(), false, true)
+            .await
+        {
+            record
+                .note_persistence_failure(&format!("set_task_status(final, {tid})"), e)
+                .await;
         }
-        record.emit(store, event_type_for(status), Some(tid), Some(status), reason).await;
+        record
+            .emit(
+                store,
+                event_type_for(status),
+                Some(tid),
+                Some(status),
+                reason,
+            )
+            .await;
     }
 }
 
@@ -424,7 +449,14 @@ pub async fn recover_incomplete_runs(store: &Store) -> anyhow::Result<usize> {
         for t in &tasks {
             if matches!(t.status, TaskStatus::Queued | TaskStatus::Running) {
                 store
-                    .set_task_status(*run_id, &t.id, TaskStatus::InfraError, Some(reason), false, true)
+                    .set_task_status(
+                        *run_id,
+                        &t.id,
+                        TaskStatus::InfraError,
+                        Some(reason),
+                        false,
+                        true,
+                    )
                     .await?;
                 touched_any = true;
             }
@@ -501,7 +533,9 @@ async fn mark_run_running(record: &Arc<RunRecord>, store: &Store) {
     }
     *record.state.write().await = RunState::Running;
     if let Err(e) = store.set_run_state(record.run_id, RunState::Running).await {
-        record.note_persistence_failure("set_run_state(Running)", e).await;
+        record
+            .note_persistence_failure("set_run_state(Running)", e)
+            .await;
     }
     if let Err(e) = store.set_run_started(record.run_id).await {
         record.note_persistence_failure("set_run_started", e).await;
@@ -530,7 +564,8 @@ pub fn spawn_run(
         mark_run_running(&record, &store).await;
 
         let semaphore = Arc::new(Semaphore::new(concurrency.max(1)));
-        let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel::<(TaskId, crate::executor::ExecutionOutcome)>();
+        let (done_tx, mut done_rx) =
+            tokio::sync::mpsc::unbounded_channel::<(TaskId, crate::executor::ExecutionOutcome)>();
         let mut in_flight = 0usize;
 
         loop {
@@ -565,7 +600,11 @@ pub fn spawn_run(
                 for id in eligible {
                     let newly_terminal = {
                         let mut engine = record.engine.write().await;
-                        engine.complete_task(&id, TaskStatus::Cancelled, Some("run cancelled before this task started".to_string()))
+                        engine.complete_task(
+                            &id,
+                            TaskStatus::Cancelled,
+                            Some("run cancelled before this task started".to_string()),
+                        )
                     };
                     persist_and_emit_terminal(&record, &store, newly_terminal).await;
                 }
@@ -580,13 +619,21 @@ pub fn spawn_run(
                         engine.mark_started(&id);
                     }
                     record
-                        .emit(&store, EventType::TaskStarted, Some(id.clone()), Some(TaskStatus::Running), None)
+                        .emit(
+                            &store,
+                            EventType::TaskStarted,
+                            Some(id.clone()),
+                            Some(TaskStatus::Running),
+                            None,
+                        )
                         .await;
                     if let Err(e) = store
                         .set_task_status(record.run_id, &id, TaskStatus::Running, None, true, false)
                         .await
                     {
-                        record.note_persistence_failure(&format!("set_task_status(started, {id})"), e).await;
+                        record
+                            .note_persistence_failure(&format!("set_task_status(started, {id})"), e)
+                            .await;
                     }
 
                     in_flight += 1;
@@ -657,14 +704,28 @@ pub fn spawn_run(
                             match evidence.put(&record.run_id.to_string(), &id, "log", ev_text) {
                                 Ok((object_key, size)) => {
                                     if let Err(e) = store
-                                        .insert_evidence(record.run_id, &id, "log", &object_key, "text/plain", size)
+                                        .insert_evidence(
+                                            record.run_id,
+                                            &id,
+                                            "log",
+                                            &object_key,
+                                            "text/plain",
+                                            size,
+                                        )
                                         .await
                                     {
-                                        record.note_persistence_failure(&format!("insert_evidence({id})"), e).await;
+                                        record
+                                            .note_persistence_failure(
+                                                &format!("insert_evidence({id})"),
+                                                e,
+                                            )
+                                            .await;
                                     }
                                 }
                                 Err(e) => {
-                                    record.note_persistence_failure(&format!("evidence.put({id})"), e).await;
+                                    record
+                                        .note_persistence_failure(&format!("evidence.put({id})"), e)
+                                        .await;
                                 }
                             }
                         }
@@ -698,7 +759,8 @@ pub fn spawn_run(
         // on an accident of timing. Reusing the one canonical function here
         // makes that impossible: live and recovery now always agree, because
         // they are the same code path over the same kind of snapshot.
-        let tasks_snapshot: Vec<TaskState> = { record.engine.read().await.tasks.values().cloned().collect() };
+        let tasks_snapshot: Vec<TaskState> =
+            { record.engine.read().await.tasks.values().cloned().collect() };
         let mut final_state = derive_run_state(&tasks_snapshot);
 
         // B1 — if any durable write failed while driving this run, the
@@ -742,20 +804,33 @@ pub fn spawn_run(
         *record.state.write().await = final_state;
         *record.finished_at.write().await = Some(chrono::Utc::now());
         if let Err(e) = store
-            .set_run_finished(record.run_id, final_state, policy_notes_to_persist.as_deref())
+            .set_run_finished(
+                record.run_id,
+                final_state,
+                policy_notes_to_persist.as_deref(),
+            )
             .await
         {
             record.note_persistence_failure("set_run_finished", e).await;
         }
         record
-            .emit(&store, EventType::RunCompleted, None, None, Some(completion_summary))
+            .emit(
+                &store,
+                EventType::RunCompleted,
+                None,
+                None,
+                Some(completion_summary),
+            )
             .await;
 
         // Same snapshot already used to derive `final_state` above — no
         // task can change between then and now, since the dispatch loop has
         // already exited and nothing is still in flight.
         let intel = Intelligence::new(&store);
-        if let Err(e) = intel.ingest_run(record.project_id.as_deref(), &record.plan, &tasks_snapshot).await {
+        if let Err(e) = intel
+            .ingest_run(record.project_id.as_deref(), &record.plan, &tasks_snapshot)
+            .await
+        {
             tracing::warn!("intelligence ingest failed for run {}: {e}", record.run_id);
         }
 

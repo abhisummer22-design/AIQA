@@ -133,12 +133,19 @@ pub fn resolve_skill_instructions(skills: &[SkillInput]) -> Vec<ResolvedSkillIns
                 .map(|i| i.to_string())
                 .unwrap_or_else(|| {
                     if s.description.trim().is_empty() {
-                        format!("Apply this custom skill's own stated focus: \"{}\".", s.name)
+                        format!(
+                            "Apply this custom skill's own stated focus: \"{}\".",
+                            s.name
+                        )
                     } else {
                         s.description.clone()
                     }
                 });
-            ResolvedSkillInstruction { id: s.id.clone(), name: s.name.clone(), instruction }
+            ResolvedSkillInstruction {
+                id: s.id.clone(),
+                name: s.name.clone(),
+                instruction,
+            }
         })
         .collect()
 }
@@ -153,10 +160,14 @@ pub fn resolve_skill_instructions(skills: &[SkillInput]) -> Vec<ResolvedSkillIns
 pub fn build_prompt(requirement_text: &str, skills: &[ResolvedSkillInstruction]) -> String {
     let mut skill_blocks = String::new();
     for s in skills {
-        skill_blocks.push_str(&format!("- Skill \"{}\" (id: {}): {}\n", s.name, s.id, s.instruction));
+        skill_blocks.push_str(&format!(
+            "- Skill \"{}\" (id: {}): {}\n",
+            s.name, s.id, s.instruction
+        ));
     }
     if skills.is_empty() {
-        skill_blocks.push_str("- (no skill selected — generate general functional coverage only)\n");
+        skill_blocks
+            .push_str("- (no skill selected — generate general functional coverage only)\n");
     }
 
     format!(
@@ -233,8 +244,14 @@ pub struct AiGenerationResponse {
 
 #[derive(Debug, Clone)]
 pub enum GenerationOutcome {
-    Ai { cases: Vec<GeneratedTestCaseDraft>, provider: String, model: String },
-    Failed { reason: String },
+    Ai {
+        cases: Vec<GeneratedTestCaseDraft>,
+        provider: String,
+        model: String,
+    },
+    Failed {
+        reason: String,
+    },
 }
 
 // ------------------------------------------------------------------ validation
@@ -249,7 +266,9 @@ fn validate_and_clean(cases: Vec<GeneratedTestCaseDraft>) -> Vec<GeneratedTestCa
             !c.title.trim().is_empty()
                 && !c.expected_result.trim().is_empty()
                 && !c.steps.is_empty()
-                && c.steps.iter().all(|s| !s.action.trim().is_empty() && !s.expected_result.trim().is_empty())
+                && c.steps
+                    .iter()
+                    .all(|s| !s.action.trim().is_empty() && !s.expected_result.trim().is_empty())
         })
         .collect()
 }
@@ -261,7 +280,10 @@ fn validate_and_clean(cases: Vec<GeneratedTestCaseDraft>) -> Vec<GeneratedTestCa
 /// that does not actually appear there, rather than trusting the model's
 /// own say-so. This is the concrete, code-enforced difference between
 /// "the prompt asked for honesty" and "honesty is verified".
-fn enforce_traceability(mut cases: Vec<GeneratedTestCaseDraft>, requirement_text: &str) -> Vec<GeneratedTestCaseDraft> {
+fn enforce_traceability(
+    mut cases: Vec<GeneratedTestCaseDraft>,
+    requirement_text: &str,
+) -> Vec<GeneratedTestCaseDraft> {
     let haystack = requirement_text.to_lowercase();
     for c in &mut cases {
         if let Some(reference) = &c.source_reference {
@@ -317,6 +339,58 @@ fn deduplicate(cases: Vec<GeneratedTestCaseDraft>) -> Vec<GeneratedTestCaseDraft
 
 use crate::ai_router::{AiInfrastructure, AiRequest, AiTask, GenerationOutcome2};
 
+/// Extracts the JSON payload from a model response that may legally carry
+/// conversational noise around it. Real OpenAI-compatible chat models
+/// (including the MJ gateway's qwen3, observed live) sometimes wrap the
+/// requested JSON object in markdown fences, precede it with reasoning
+/// prose or `<think>` blocks, or append trailing commentary — none of
+/// which change the JSON itself. Strategy: strip `<think>` blocks and
+/// code fences first; if the remainder still isn't parseable at the
+/// top level, fall back to the outermost `{...}` span. Returns `None`
+/// when no plausible JSON object exists at all.
+fn extract_json_payload(text: &str) -> Option<String> {
+    let mut working = text.trim().to_string();
+
+    // Strip one or more <think>...</think> blocks (qwen-style reasoning
+    // models emit these inside `content` when thinking is enabled).
+    while let Some(start) = working.find("<think>") {
+        match working[start..].find("</think>") {
+            Some(end_off) => working.replace_range(start..start + end_off + "</think>".len(), ""),
+            None => {
+                // Unterminated think block: everything from <think> on is reasoning.
+                working.truncate(start);
+                break;
+            }
+        }
+    }
+    let working = working.trim();
+
+    // Strip markdown code fences: ```json ... ``` or ``` ... ```
+    if working.starts_with("```") {
+        let inner = working.trim_start_matches('`');
+        let inner = inner
+            .strip_prefix("json")
+            .map(str::trim_start)
+            .unwrap_or(inner);
+        let end = inner.rfind("```").unwrap_or(inner.len());
+        return Some(inner[..end].trim().to_string());
+    }
+
+    // Fast path: already a bare JSON object.
+    if working.starts_with('{') && working.ends_with('}') {
+        return Some(working.to_string());
+    }
+
+    // Fallback: outermost brace span (prose before/after the object).
+    let start = working.find('{')?;
+    let end = working.rfind('}')?;
+    if end > start {
+        Some(working[start..=end].to_string())
+    } else {
+        None
+    }
+}
+
 /// The Test-Case-Generation consumer of the central `AiInfrastructure`
 /// (the later "Central AI Model Auto-Discovery, Smart Routing & AI
 /// Settings" unit's own §17: "Test Case Generator does not need to know
@@ -327,29 +401,86 @@ use crate::ai_router::{AiInfrastructure, AiRequest, AiTask, GenerationOutcome2};
 /// through `infra`, then validate/traceability-check/deduplicate whatever
 /// came back — or return a real, honest failure. Never returns a
 /// fabricated success.
-pub async fn generate_test_cases(infra: &AiInfrastructure, requirement_text: &str, skills: &[SkillInput]) -> GenerationOutcome {
+pub async fn generate_test_cases(
+    infra: &AiInfrastructure,
+    requirement_text: &str,
+    skills: &[SkillInput],
+) -> GenerationOutcome {
     let resolved = resolve_skill_instructions(skills);
     let prompt = build_prompt(requirement_text, &resolved);
 
-    let request = AiRequest { task: AiTask::TestCaseGeneration, prompt, preferred_provider: None, preferred_model: None };
-    let result = match infra.generate(request).await {
-        GenerationOutcome2::Ok(r) => r,
-        GenerationOutcome2::Failed { reason } => return GenerationOutcome::Failed { reason },
+    let request = AiRequest {
+        task: AiTask::TestCaseGeneration,
+        prompt,
+        preferred_provider: None,
+        preferred_model: None,
     };
 
-    let parsed: AiGenerationResponse = match serde_json::from_str(&result.text) {
+    // One retry on a degenerate response: real models occasionally return
+    // an empty object (`{}` observed live from ollama's json-format mode)
+    // or prose-only output while being substantively capable — a second,
+    // identical call is genuine nondeterminism recovery, not a fabricated
+    // success (every attempt is still fully validated below).
+    let mut last_failure: Option<String> = None;
+    for _attempt in 0..2 {
+        let result = match infra.generate(request.clone()).await {
+            GenerationOutcome2::Ok(r) => r,
+            GenerationOutcome2::Failed { reason } => return GenerationOutcome::Failed { reason },
+        };
+
+        let outcome = validate_structured_output(&result, requirement_text);
+        match outcome {
+            Ok(cases) => return cases,
+            Err(reason) => last_failure = Some(reason),
+        }
+    }
+    GenerationOutcome::Failed {
+        reason: last_failure.unwrap_or_else(|| "unknown generation failure".to_string()),
+    }
+}
+
+/// Parses + validates one raw model response into final deduplicated test
+/// cases, or a real failure reason.
+fn validate_structured_output(
+    result: &crate::ai_router::GenerationResult,
+    requirement_text: &str,
+) -> Result<GenerationOutcome, String> {
+    let payload = match extract_json_payload(&result.text) {
+        Some(p) => p,
+        None => {
+            return Err(
+                "invalid structured output: no JSON object found in AI response".to_string(),
+            )
+        }
+    };
+    let parsed: AiGenerationResponse = match serde_json::from_str(&payload) {
         Ok(v) => v,
-        Err(e) => return GenerationOutcome::Failed { reason: format!("invalid structured output: {e}") },
+        Err(e) => {
+            // Real diagnostic, not a guess: which provider/model produced
+            // the unusable shape, and the first bytes of what it said.
+            let head: String = payload.chars().take(300).collect();
+            tracing::warn!(
+                "generate_test_cases: unparseable structured output from {}/{} ({} chars): {e}; payload head: {head}",
+                result.provider,
+                result.model,
+                payload.len()
+            );
+            return Err(format!("invalid structured output: {e}"));
+        }
     };
 
     let cleaned = validate_and_clean(parsed.test_cases);
     if cleaned.is_empty() {
-        return GenerationOutcome::Failed { reason: "AI response contained no structurally valid test cases".to_string() };
+        return Err("AI response contained no structurally valid test cases".to_string());
     }
     let traced = enforce_traceability(cleaned, requirement_text);
     let deduped = deduplicate(traced);
 
-    GenerationOutcome::Ai { cases: deduped, provider: result.provider, model: result.model }
+    Ok(GenerationOutcome::Ai {
+        cases: deduped,
+        provider: result.provider.clone(),
+        model: result.model.clone(),
+    })
 }
 
 #[cfg(test)]
@@ -357,7 +488,11 @@ pub mod test_support {
     use super::*;
 
     pub fn skill(id: &str, name: &str, description: &str) -> SkillInput {
-        SkillInput { id: id.to_string(), name: name.to_string(), description: description.to_string() }
+        SkillInput {
+            id: id.to_string(),
+            name: name.to_string(),
+            description: description.to_string(),
+        }
     }
 }
 
@@ -372,7 +507,10 @@ mod tests {
     fn resolver_maps_known_builtin_skill_to_its_real_instruction() {
         let resolved = resolve_skill_instructions(&[skill("s1", "Security Testing", "")]);
         assert_eq!(resolved.len(), 1);
-        assert!(resolved[0].instruction.to_lowercase().contains("authorization"));
+        assert!(resolved[0]
+            .instruction
+            .to_lowercase()
+            .contains("authorization"));
         assert!(resolved[0].instruction.to_lowercase().contains("injection"));
     }
 
@@ -383,7 +521,10 @@ mod tests {
             "Boundary Testing for Indian PIN Codes",
             "PIN codes must be exactly 6 digits and map to a real postal circle.",
         )]);
-        assert_eq!(resolved[0].instruction, "PIN codes must be exactly 6 digits and map to a real postal circle.");
+        assert_eq!(
+            resolved[0].instruction,
+            "PIN codes must be exactly 6 digits and map to a real postal circle."
+        );
     }
 
     #[test]
@@ -396,8 +537,14 @@ mod tests {
 
     #[test]
     fn prompt_differs_by_selected_skill_real_content_not_just_an_id() {
-        let functional_only = build_prompt("Users can log in.", &resolve_skill_instructions(&[skill("f", "Functional Testing", "")]));
-        let security_only = build_prompt("Users can log in.", &resolve_skill_instructions(&[skill("s", "Security Testing", "")]));
+        let functional_only = build_prompt(
+            "Users can log in.",
+            &resolve_skill_instructions(&[skill("f", "Functional Testing", "")]),
+        );
+        let security_only = build_prompt(
+            "Users can log in.",
+            &resolve_skill_instructions(&[skill("s", "Security Testing", "")]),
+        );
         assert_ne!(functional_only, security_only);
         assert!(security_only.to_lowercase().contains("injection"));
         assert!(!functional_only.to_lowercase().contains("injection"));
@@ -422,7 +569,9 @@ mod tests {
     fn prompt_carries_the_real_requirement_text_and_evidence_rules() {
         let prompt = build_prompt("Password must be at least 8 characters.", &[]);
         assert!(prompt.contains("Password must be at least 8 characters."));
-        assert!(prompt.to_lowercase().contains("never invent a specific numeric requirement"));
+        assert!(prompt
+            .to_lowercase()
+            .contains("never invent a specific numeric requirement"));
     }
 
     // ----------------------------------------------------------- validation
@@ -433,7 +582,10 @@ mod tests {
             category: "Functional".to_string(),
             skill_id: "skill-functional-testing".to_string(),
             preconditions: vec![],
-            steps: vec![DraftStep { action: "Do X".to_string(), expected_result: "Y happens".to_string() }],
+            steps: vec![DraftStep {
+                action: "Do X".to_string(),
+                expected_result: "Y happens".to_string(),
+            }],
             expected_result: "Y happens".to_string(),
             priority: "HIGH".to_string(),
             severity: "MAJOR".to_string(),
@@ -478,15 +630,25 @@ mod tests {
         let mut draft = valid_draft("Fabricated reference");
         draft.source_reference = Some("must contain at least one emoji".to_string());
         let result = enforce_traceability(vec![draft], "Password must be at least 8 characters.");
-        assert_eq!(result[0].source_reference, None, "a reference not actually in the requirement text must be stripped, not trusted");
-        assert_eq!(result[0].evidence, EvidenceKind::Inferred, "an unverifiable 'evidenced' claim must be downgraded, never kept");
+        assert_eq!(
+            result[0].source_reference, None,
+            "a reference not actually in the requirement text must be stripped, not trusted"
+        );
+        assert_eq!(
+            result[0].evidence,
+            EvidenceKind::Inferred,
+            "an unverifiable 'evidenced' claim must be downgraded, never kept"
+        );
     }
 
     #[test]
     fn traceability_keeps_a_reference_that_genuinely_appears_in_the_requirement_text() {
         let draft = valid_draft("Real reference");
         let result = enforce_traceability(vec![draft], "Password must be at least 8 characters.");
-        assert_eq!(result[0].source_reference.as_deref(), Some("must be at least 8 characters"));
+        assert_eq!(
+            result[0].source_reference.as_deref(),
+            Some("must be at least 8 characters")
+        );
         assert_eq!(result[0].evidence, EvidenceKind::Evidenced);
     }
 
@@ -519,37 +681,58 @@ mod tests {
             valid_draft("Accept valid password"),
         ];
         let deduped = deduplicate(cases);
-        assert_eq!(deduped.len(), 2, "near-identical titles must collapse to one; a genuinely distinct case must survive");
+        assert_eq!(
+            deduped.len(),
+            2,
+            "near-identical titles must collapse to one; a genuinely distinct case must survive"
+        );
     }
 
     #[test]
     fn deduplicate_keeps_combined_coverage_distinct_across_different_skills() {
-        let cases = vec![valid_draft("Reject invalid password"), valid_draft("Password field is keyboard-navigable")];
+        let cases = vec![
+            valid_draft("Reject invalid password"),
+            valid_draft("Password field is keyboard-navigable"),
+        ];
         let deduped = deduplicate(cases);
-        assert_eq!(deduped.len(), 2, "genuinely different coverage across skills must not be collapsed");
+        assert_eq!(
+            deduped.len(),
+            2,
+            "genuinely different coverage across skills must not be collapsed"
+        );
     }
 
     // ------------------------------------------------- central-router integration
 
-    use crate::ai_router::test_support::{healthy_model, healthy_provider, FakeDiscovery, FakeExecutor};
+    use crate::ai_router::test_support::{
+        healthy_model, healthy_provider, FakeDiscovery, FakeExecutor,
+    };
     use crate::ai_router::{AiInfrastructure, CapabilityLevel, ExecutionError};
     use std::collections::HashMap;
     use std::sync::Arc;
 
     fn infra_with_executor_response(response: &str) -> AiInfrastructure {
-        let mut executors: HashMap<&'static str, Arc<dyn crate::ai_router::AiExecutor>> = HashMap::new();
+        let mut executors: HashMap<&'static str, Arc<dyn crate::ai_router::AiExecutor>> =
+            HashMap::new();
         executors.insert("mock", Arc::new(FakeExecutor::ok(response)));
         AiInfrastructure::new(
-            vec![Arc::new(FakeDiscovery(healthy_provider("mock", vec![healthy_model("mock-model", "mock", CapabilityLevel::Strong)])))],
+            vec![Arc::new(FakeDiscovery(healthy_provider(
+                "mock",
+                vec![healthy_model("mock-model", "mock", CapabilityLevel::Strong)],
+            )))],
             executors,
         )
     }
 
     fn infra_with_executor_error(err: ExecutionError) -> AiInfrastructure {
-        let mut executors: HashMap<&'static str, Arc<dyn crate::ai_router::AiExecutor>> = HashMap::new();
+        let mut executors: HashMap<&'static str, Arc<dyn crate::ai_router::AiExecutor>> =
+            HashMap::new();
         executors.insert("mock", Arc::new(FakeExecutor::err(err)));
         AiInfrastructure::new(
-            vec![Arc::new(FakeDiscovery(healthy_provider("mock", vec![healthy_model("mock-model", "mock", CapabilityLevel::Strong)])))],
+            vec![Arc::new(FakeDiscovery(healthy_provider(
+                "mock",
+                vec![healthy_model("mock-model", "mock", CapabilityLevel::Strong)],
+            )))],
             executors,
         )
     }
@@ -561,14 +744,89 @@ mod tests {
             "expected_result":"Validation error shown","priority":"HIGH","severity":"MAJOR",
             "evidence":"evidenced","source_reference":"must be at least 8 characters"}]}"#;
         let infra = infra_with_executor_response(response);
-        let outcome = generate_test_cases(&infra, "Password must be at least 8 characters.", &[skill("s", "Security Testing", "")]).await;
+        let outcome = generate_test_cases(
+            &infra,
+            "Password must be at least 8 characters.",
+            &[skill("s", "Security Testing", "")],
+        )
+        .await;
         match outcome {
-            GenerationOutcome::Ai { cases, provider, model } => {
+            GenerationOutcome::Ai {
+                cases,
+                provider,
+                model,
+            } => {
                 assert_eq!(cases.len(), 1);
                 assert_eq!(provider, "mock");
                 assert_eq!(model, "mock-model");
             }
-            GenerationOutcome::Failed { reason } => panic!("expected Ai outcome, got Failed: {reason}"),
+            GenerationOutcome::Failed { reason } => {
+                panic!("expected Ai outcome, got Failed: {reason}")
+            }
+        }
+    }
+
+    // ---------------------------------------- JSON payload extraction robustness
+    // Real OpenAI-compatible chat models (the MJ gateway's qwen3 observed
+    // live) sometimes wrap the requested JSON in markdown fences, reasoning
+    // prose, or <think> blocks. Each form below must still parse — a noisy
+    // but substantively correct response is a success, not a fallback.
+
+    #[test]
+    fn extract_json_payload_parses_a_bare_object() {
+        let p = extract_json_payload(r#"{"test_cases":[]}"#).unwrap();
+        assert_eq!(p, r#"{"test_cases":[]}"#);
+    }
+
+    #[test]
+    fn extract_json_payload_strips_markdown_fences() {
+        let p = extract_json_payload("```json\n{\"test_cases\":[]}\n```").unwrap();
+        assert_eq!(p, r#"{"test_cases":[]}"#);
+        let p = extract_json_payload("```\n{\"a\":1}\n```").unwrap();
+        assert_eq!(p, r#"{"a":1}"#);
+    }
+
+    #[test]
+    fn extract_json_payload_strips_think_blocks_and_prose() {
+        let p = extract_json_payload(
+            "<think>Let me consider the login flow carefully...</think>{\"test_cases\":[]}",
+        )
+        .unwrap();
+        assert_eq!(p, r#"{"test_cases":[]}"#);
+        let p =
+            extract_json_payload("Here is the JSON you asked for:\n{\"a\":1}\nHope that helps!")
+                .unwrap();
+        assert_eq!(p, r#"{"a":1}"#);
+    }
+
+    #[test]
+    fn extract_json_payload_handles_an_unterminated_think_block() {
+        let p = extract_json_payload("{\"good\":1}<think>oops I started thinking after answering")
+            .unwrap();
+        assert_eq!(p, r#"{"good":1}"#);
+    }
+
+    #[test]
+    fn extract_json_payload_returns_none_when_no_json_exists() {
+        assert!(extract_json_payload("I cannot help with that.").is_none());
+        assert!(extract_json_payload("").is_none());
+    }
+
+    #[tokio::test]
+    async fn integration_succeeds_when_model_wraps_valid_json_in_fences_and_think_blocks() {
+        let response = "<think>reasoning about the requirement...</think>```json\n{\"test_cases\":[{\"title\":\"Reject short password\",\"category\":\"Security\",\"skill_id\":\"skill-security-testing\",\"preconditions\":[],\"steps\":[{\"action\":\"Submit a 7-character password\",\"expected_result\":\"Validation error shown\"}],\"expected_result\":\"Validation error shown\",\"priority\":\"HIGH\",\"severity\":\"MAJOR\",\"evidence\":\"evidenced\",\"source_reference\":\"min 8 chars\"}]}\n```";
+        let infra = infra_with_executor_response(response);
+        let outcome = generate_test_cases(
+            &infra,
+            "Password must be at least 8 characters.",
+            &[skill("s", "Security Testing", "")],
+        )
+        .await;
+        match outcome {
+            GenerationOutcome::Ai { cases, .. } => assert_eq!(cases.len(), 1),
+            GenerationOutcome::Failed { reason } => {
+                panic!("fenced+think-wrapped valid JSON must still succeed, got Failed: {reason}")
+            }
         }
     }
 
@@ -578,7 +836,9 @@ mod tests {
         let outcome = generate_test_cases(&infra, "Anything.", &[]).await;
         match outcome {
             GenerationOutcome::Failed { reason } => assert!(reason.contains("TIMEOUT")),
-            GenerationOutcome::Ai { .. } => panic!("a failing provider must never produce a fabricated Ai outcome"),
+            GenerationOutcome::Ai { .. } => {
+                panic!("a failing provider must never produce a fabricated Ai outcome")
+            }
         }
     }
 
@@ -600,8 +860,15 @@ mod tests {
              "expected_result":"Validation error shown","priority":"MEDIUM","severity":"MINOR","evidence":"inferred","source_reference":null}
         ]}"#;
         let infra = infra_with_executor_response(response);
-        let outcome =
-            generate_test_cases(&infra, "Users can log in.", &[skill("f", "Functional Testing", ""), skill("e", "Edge Case Analysis", "")]).await;
+        let outcome = generate_test_cases(
+            &infra,
+            "Users can log in.",
+            &[
+                skill("f", "Functional Testing", ""),
+                skill("e", "Edge Case Analysis", ""),
+            ],
+        )
+        .await;
         match outcome {
             GenerationOutcome::Ai { cases, .. } => {
                 assert_eq!(cases.len(), 2);
@@ -609,7 +876,9 @@ mod tests {
                 assert!(skill_ids.contains(&"skill-functional-testing"));
                 assert!(skill_ids.contains(&"skill-edge-case-analysis"));
             }
-            GenerationOutcome::Failed { reason } => panic!("expected Ai outcome, got Failed: {reason}"),
+            GenerationOutcome::Failed { reason } => {
+                panic!("expected Ai outcome, got Failed: {reason}")
+            }
         }
     }
 
@@ -630,33 +899,62 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a real, running local Ollama server — not run automatically this session, see the report's Evidence section"]
     async fn live_ollama_different_skills_produce_different_real_coverage() {
-        let requirement = "Users log in with a username and password. On success they reach the dashboard.";
+        let requirement =
+            "Users log in with a username and password. On success they reach the dashboard.";
         let infra = AiInfrastructure::from_env();
         infra.discover_all().await;
 
-        let functional_only = generate_test_cases(&infra, requirement, &[skill("f", "Functional Testing", "")]).await;
-        let security_only = generate_test_cases(&infra, requirement, &[skill("s", "Security Testing", "")]).await;
+        let functional_only =
+            generate_test_cases(&infra, requirement, &[skill("f", "Functional Testing", "")]).await;
+        let security_only =
+            generate_test_cases(&infra, requirement, &[skill("s", "Security Testing", "")]).await;
 
         let functional_cases = match functional_only {
-            GenerationOutcome::Ai { cases, provider, model } => {
+            GenerationOutcome::Ai {
+                cases,
+                provider,
+                model,
+            } => {
                 println!("FUNCTIONAL-ONLY via {provider}/{model}: {cases:#?}");
                 cases
             }
-            GenerationOutcome::Failed { reason } => panic!("live Ollama call failed (functional): {reason}"),
+            GenerationOutcome::Failed { reason } => {
+                panic!("live Ollama call failed (functional): {reason}")
+            }
         };
         let security_cases = match security_only {
-            GenerationOutcome::Ai { cases, provider, model } => {
+            GenerationOutcome::Ai {
+                cases,
+                provider,
+                model,
+            } => {
                 println!("SECURITY-ONLY via {provider}/{model}: {cases:#?}");
                 cases
             }
-            GenerationOutcome::Failed { reason } => panic!("live Ollama call failed (security): {reason}"),
+            GenerationOutcome::Failed { reason } => {
+                panic!("live Ollama call failed (security): {reason}")
+            }
         };
 
-        assert!(functional_cases.iter().all(|c| c.skill_id != "skill-security-testing"));
-        assert!(security_cases.iter().all(|c| c.skill_id != "skill-functional-testing"));
+        assert!(functional_cases
+            .iter()
+            .all(|c| c.skill_id != "skill-security-testing"));
+        assert!(security_cases
+            .iter()
+            .all(|c| c.skill_id != "skill-functional-testing"));
 
-        let functional_text = functional_cases.iter().map(|c| format!("{} {}", c.title, c.expected_result)).collect::<Vec<_>>().join(" ").to_lowercase();
-        let security_text = security_cases.iter().map(|c| format!("{} {}", c.title, c.expected_result)).collect::<Vec<_>>().join(" ").to_lowercase();
+        let functional_text = functional_cases
+            .iter()
+            .map(|c| format!("{} {}", c.title, c.expected_result))
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
+        let security_text = security_cases
+            .iter()
+            .map(|c| format!("{} {}", c.title, c.expected_result))
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
         assert_ne!(functional_text, security_text, "the two skill selections must produce genuinely different content, not the same text twice");
     }
 }

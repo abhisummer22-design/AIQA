@@ -74,12 +74,26 @@ pub enum ExecutionType {
 #[serde(tag = "type", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum Action {
     // ---- Browser
-    Navigate { url: String },
-    Click { selector: String },
-    Fill { selector: String, value: String },
-    AssertVisible { selector: String },
-    AssertText { selector: String, text: String },
-    AssertUrl { url_contains: String },
+    Navigate {
+        url: String,
+    },
+    Click {
+        selector: String,
+    },
+    Fill {
+        selector: String,
+        value: String,
+    },
+    AssertVisible {
+        selector: String,
+    },
+    AssertText {
+        selector: String,
+        text: String,
+    },
+    AssertUrl {
+        url_contains: String,
+    },
     // ---- API
     Request {
         method: String,
@@ -89,9 +103,17 @@ pub enum Action {
         #[serde(default)]
         body: Option<serde_json::Value>,
     },
-    AssertStatus { status: u16 },
-    AssertHeader { name: String, value: String },
-    AssertBodyField { path: String, equals: serde_json::Value },
+    AssertStatus {
+        status: u16,
+    },
+    AssertHeader {
+        name: String,
+        value: String,
+    },
+    AssertBodyField {
+        path: String,
+        equals: serde_json::Value,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -152,7 +174,8 @@ pub enum CompilationOutcome {
 /// (a bare "Submit an authenticated request...", a vague UI description)
 /// deliberately falls through to LEVEL 3 rather than being guessed here.
 fn compile_deterministic_api(case: &TestCaseRow) -> Option<ExecutionPlan> {
-    let method_re = regex::Regex::new(r"(?i)\b(GET|POST|PUT|DELETE|PATCH)\s+(/\S+|https?://\S+)").ok()?;
+    let method_re =
+        regex::Regex::new(r"(?i)\b(GET|POST|PUT|DELETE|PATCH)\s+(/\S+|https?://\S+)").ok()?;
 
     let mut chosen: Option<(String, String)> = None;
     for step in &case.steps {
@@ -171,7 +194,9 @@ fn compile_deterministic_api(case: &TestCaseRow) -> Option<ExecutionPlan> {
 
     // Status assertion: scan every real text field this case actually has —
     // never invented if none is present.
-    let status_re = regex::Regex::new(r"(?i)HTTP\s+(\d{3})|status(?:\s+code)?\s*(?:is|=|of)?\s*(\d{3})").ok()?;
+    let status_re =
+        regex::Regex::new(r"(?i)HTTP\s+(\d{3})|status(?:\s+code)?\s*(?:is|=|of)?\s*(\d{3})")
+            .ok()?;
     let mut statuses: Vec<u16> = Vec::new();
     let mut scan = |text: &str| {
         for caps in status_re.captures_iter(text) {
@@ -197,7 +222,12 @@ fn compile_deterministic_api(case: &TestCaseRow) -> Option<ExecutionPlan> {
         return None;
     }
 
-    let mut actions = vec![Action::Request { method, url: url.clone(), headers: BTreeMap::new(), body: None }];
+    let mut actions = vec![Action::Request {
+        method,
+        url: url.clone(),
+        headers: BTreeMap::new(),
+        body: None,
+    }];
     for s in statuses {
         actions.push(Action::AssertStatus { status: s });
     }
@@ -236,7 +266,10 @@ fn compile_deterministic_browser(case: &TestCaseRow) -> Option<ExecutionPlan> {
         test_case_id: case.id.to_string(),
         execution_type: ExecutionType::Browser,
         target: Some(url.clone()),
-        actions: vec![Action::Navigate { url }, Action::AssertUrl { url_contains: host }],
+        actions: vec![
+            Action::Navigate { url },
+            Action::AssertUrl { url_contains: host },
+        ],
         compiler: CompilerMethod::Deterministic,
         diagnostics: vec![],
         provider: None,
@@ -253,15 +286,27 @@ fn compile_deterministic(case: &TestCaseRow) -> Option<ExecutionPlan> {
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum AiPlanResponse {
-    Executable { execution_type: ExecutionType, #[serde(default)] target: Option<String>, actions: Vec<Action> },
-    NotExecutable { reasons: Vec<String> },
+    Executable {
+        execution_type: ExecutionType,
+        #[serde(default)]
+        target: Option<String>,
+        actions: Vec<Action>,
+    },
+    NotExecutable {
+        reasons: Vec<String>,
+    },
 }
 
 fn build_compiler_prompt(case: &TestCaseRow) -> String {
     let steps_text: String = case
         .steps
         .iter()
-        .map(|s| format!("- action: \"{}\" | expected_result: \"{}\"\n", s.action, s.expected_result))
+        .map(|s| {
+            format!(
+                "- action: \"{}\" | expected_result: \"{}\"\n",
+                s.action, s.expected_result
+            )
+        })
         .collect();
     format!(
         "You are a QA test case compiler. Given a real test case's title, category, steps, and expected \
@@ -305,30 +350,57 @@ fn resolve_relative_url(url: &str) -> String {
 }
 
 async fn compile_with_ai(infra: &AiInfrastructure, case: &TestCaseRow) -> CompilationOutcome {
-    let request = AiRequest { task: AiTask::TestCaseCompilation, prompt: build_compiler_prompt(case), preferred_provider: None, preferred_model: None };
+    let request = AiRequest {
+        task: AiTask::TestCaseCompilation,
+        prompt: build_compiler_prompt(case),
+        preferred_provider: None,
+        preferred_model: None,
+    };
     let result = match infra.generate(request).await {
         GenerationOutcome2::Ok(r) => r,
         // A real, honest routing/provider failure (e.g. NoCompatibleModel)
         // is reported as truthfully "unavailable" here — never as a
         // fabricated plan.
-        GenerationOutcome2::Failed { reason } => return CompilationOutcome::CompilationUnavailable { reason },
+        GenerationOutcome2::Failed { reason } => {
+            return CompilationOutcome::CompilationUnavailable { reason }
+        }
     };
 
     let parsed: AiPlanResponse = match serde_json::from_str(&result.text) {
         Ok(v) => v,
-        Err(e) => return CompilationOutcome::CompilationFailed { reasons: vec![format!("AI response did not match the required structured schema: {e}")] },
+        Err(e) => {
+            return CompilationOutcome::CompilationFailed {
+                reasons: vec![format!(
+                    "AI response did not match the required structured schema: {e}"
+                )],
+            }
+        }
     };
 
     match parsed {
         AiPlanResponse::NotExecutable { reasons } => CompilationOutcome::NotExecutable { reasons },
-        AiPlanResponse::Executable { execution_type, target, actions } => {
+        AiPlanResponse::Executable {
+            execution_type,
+            target,
+            actions,
+        } => {
             let actions: Vec<Action> = actions
                 .into_iter()
                 .map(|a| match a {
-                    Action::Navigate { url } => Action::Navigate { url: resolve_relative_url(&url) },
-                    Action::Request { method, url, headers, body } => {
-                        Action::Request { method, url: resolve_relative_url(&url), headers, body }
-                    }
+                    Action::Navigate { url } => Action::Navigate {
+                        url: resolve_relative_url(&url),
+                    },
+                    Action::Request {
+                        method,
+                        url,
+                        headers,
+                        body,
+                    } => Action::Request {
+                        method,
+                        url: resolve_relative_url(&url),
+                        headers,
+                        body,
+                    },
                     other => other,
                 })
                 .collect();
@@ -364,12 +436,20 @@ pub async fn validate_plan(plan: &ExecutionPlan) -> Result<(), Vec<String>> {
         reasons.push("plan has no actions".to_string());
     }
     if matches!(plan.execution_type, ExecutionType::Python) {
-        reasons.push("PYTHON execution type is not implemented in this phase — see the Phase 2.1 report".to_string());
+        reasons.push(
+            "PYTHON execution type is not implemented in this phase — see the Phase 2.1 report"
+                .to_string(),
+        );
     }
 
-    let has_primary_action = plan.actions.iter().any(|a| matches!(a, Action::Navigate { .. } | Action::Request { .. }));
+    let has_primary_action = plan
+        .actions
+        .iter()
+        .any(|a| matches!(a, Action::Navigate { .. } | Action::Request { .. }));
     if !has_primary_action && !matches!(plan.execution_type, ExecutionType::Python) {
-        reasons.push("plan has no NAVIGATE or REQUEST action to actually interact with a target".to_string());
+        reasons.push(
+            "plan has no NAVIGATE or REQUEST action to actually interact with a target".to_string(),
+        );
     }
 
     for action in &plan.actions {
@@ -419,7 +499,11 @@ pub async fn compile(infra: &AiInfrastructure, case: &TestCaseRow) -> Compilatio
 /// runs — everything downstream of the returned `TaskDef` is pre-existing,
 /// unmodified code (`create_run_core` -> `engine::spawn_run` ->
 /// `ExecutorRegistry::resolve` -> a real adapter).
-pub fn materialize_task_def(task_id: String, task_name: String, plan: &ExecutionPlan) -> Result<TaskDef, String> {
+pub fn materialize_task_def(
+    task_id: String,
+    task_name: String,
+    plan: &ExecutionPlan,
+) -> Result<TaskDef, String> {
     match plan.execution_type {
         ExecutionType::Api => Ok(TaskDef {
             id: task_id,
@@ -427,7 +511,8 @@ pub fn materialize_task_def(task_id: String, task_name: String, plan: &Execution
             prerequisites: Vec::new(),
             simulate: None,
             executor: Some("compiled-api".to_string()),
-            params: serde_json::to_value(plan).map_err(|e| format!("failed to serialize execution plan: {e}"))?,
+            params: serde_json::to_value(plan)
+                .map_err(|e| format!("failed to serialize execution plan: {e}"))?,
         }),
         ExecutionType::Browser => {
             let spec_path = crate::executor::materialize_playwright_spec(&task_id, plan)?;
@@ -440,7 +525,9 @@ pub fn materialize_task_def(task_id: String, task_name: String, plan: &Execution
                 params: serde_json::json!({ "spec": spec_path }),
             })
         }
-        ExecutionType::Python => Err("PYTHON execution type is not implemented in this phase".to_string()),
+        ExecutionType::Python => {
+            Err("PYTHON execution type is not implemented in this phase".to_string())
+        }
     }
 }
 
@@ -450,7 +537,13 @@ pub mod test_support {
     use crate::domain::{TestCaseStatus, TestStep};
     use uuid::Uuid;
 
-    pub fn case(title: &str, category: &str, steps: Vec<(&str, &str)>, expected_result: &str, assertions: Vec<&str>) -> TestCaseRow {
+    pub fn case(
+        title: &str,
+        category: &str,
+        steps: Vec<(&str, &str)>,
+        expected_result: &str,
+        assertions: Vec<&str>,
+    ) -> TestCaseRow {
         TestCaseRow {
             id: Uuid::new_v4(),
             project_id: "test-project".to_string(),
@@ -463,7 +556,11 @@ pub mod test_support {
             steps: steps
                 .into_iter()
                 .enumerate()
-                .map(|(i, (action, expected_result))| TestStep { step_number: (i + 1) as i64, action: action.to_string(), expected_result: expected_result.to_string() })
+                .map(|(i, (action, expected_result))| TestStep {
+                    step_number: (i + 1) as i64,
+                    action: action.to_string(),
+                    expected_result: expected_result.to_string(),
+                })
                 .collect(),
             expected_result: expected_result.to_string(),
             assertions: assertions.into_iter().map(String::from).collect(),
@@ -490,7 +587,9 @@ pub mod test_support {
 mod tests {
     use super::test_support::*;
     use super::*;
-    use crate::ai_router::test_support::{healthy_model, healthy_provider, FakeDiscovery, FakeExecutor};
+    use crate::ai_router::test_support::{
+        healthy_model, healthy_provider, FakeDiscovery, FakeExecutor,
+    };
     use crate::ai_router::{AiExecutor, CapabilityLevel};
     use std::sync::Arc;
 
@@ -499,10 +598,14 @@ mod tests {
             Ok(text) => Arc::new(FakeExecutor::ok(text)),
             Err(e) => Arc::new(FakeExecutor::err(e)),
         };
-        let mut executors: std::collections::HashMap<&'static str, Arc<dyn AiExecutor>> = std::collections::HashMap::new();
+        let mut executors: std::collections::HashMap<&'static str, Arc<dyn AiExecutor>> =
+            std::collections::HashMap::new();
         executors.insert("mock", executor);
         AiInfrastructure::new(
-            vec![Arc::new(FakeDiscovery(healthy_provider("mock", vec![healthy_model("mock-model", "mock", CapabilityLevel::Strong)])))],
+            vec![Arc::new(FakeDiscovery(healthy_provider(
+                "mock",
+                vec![healthy_model("mock-model", "mock", CapabilityLevel::Strong)],
+            )))],
             executors,
         )
     }
@@ -515,33 +618,78 @@ mod tests {
 
     #[test]
     fn deterministic_compiles_a_clear_api_step_with_a_stated_status_assertion() {
-        let c = case("Health check", "API", vec![("GET /health", "HTTP 200 with body ok")], "HTTP 200 ok", vec![]);
+        let c = case(
+            "Health check",
+            "API",
+            vec![("GET /health", "HTTP 200 with body ok")],
+            "HTTP 200 ok",
+            vec![],
+        );
         let plan = compile_deterministic(&c).expect("must compile deterministically");
         assert_eq!(plan.execution_type, ExecutionType::Api);
         assert_eq!(plan.compiler, CompilerMethod::Deterministic);
-        assert!(matches!(&plan.actions[0], Action::Request { method, url, .. } if method == "GET" && url == "http://127.0.0.1:8080/health"));
-        assert!(plan.actions.iter().any(|a| matches!(a, Action::AssertStatus { status: 200 })));
+        assert!(
+            matches!(&plan.actions[0], Action::Request { method, url, .. } if method == "GET" && url == "http://127.0.0.1:8080/health")
+        );
+        assert!(plan
+            .actions
+            .iter()
+            .any(|a| matches!(a, Action::AssertStatus { status: 200 })));
     }
 
     #[test]
     fn deterministic_compiles_a_clear_navigate_step() {
-        let c = case("Homepage loads", "Functional", vec![("Navigate to https://example.com/login", "Login form is shown")], "Login form visible", vec![]);
+        let c = case(
+            "Homepage loads",
+            "Functional",
+            vec![(
+                "Navigate to https://example.com/login",
+                "Login form is shown",
+            )],
+            "Login form visible",
+            vec![],
+        );
         let plan = compile_deterministic(&c).expect("must compile deterministically");
         assert_eq!(plan.execution_type, ExecutionType::Browser);
-        assert!(matches!(&plan.actions[0], Action::Navigate { url } if url == "https://example.com/login"));
-        assert!(plan.actions.iter().any(|a| matches!(a, Action::AssertUrl { url_contains } if url_contains == "example.com")));
+        assert!(
+            matches!(&plan.actions[0], Action::Navigate { url } if url == "https://example.com/login")
+        );
+        assert!(plan.actions.iter().any(
+            |a| matches!(a, Action::AssertUrl { url_contains } if url_contains == "example.com")
+        ));
     }
 
     #[test]
     fn ambiguous_prose_is_not_guessed_by_the_deterministic_compiler() {
-        let c = case("Vague case", "API", vec![("Submit an authenticated request using the expired token", "Request is rejected")], "Request rejected", vec![]);
-        assert!(compile_deterministic(&c).is_none(), "must not invent a method/URL/status from vague prose");
+        let c = case(
+            "Vague case",
+            "API",
+            vec![(
+                "Submit an authenticated request using the expired token",
+                "Request is rejected",
+            )],
+            "Request rejected",
+            vec![],
+        );
+        assert!(
+            compile_deterministic(&c).is_none(),
+            "must not invent a method/URL/status from vague prose"
+        );
     }
 
     #[test]
     fn an_api_step_with_no_stated_status_assertion_anywhere_is_not_guessed() {
-        let c = case("No assertion stated", "API", vec![("GET /health", "It works")], "It works", vec![]);
-        assert!(compile_deterministic(&c).is_none(), "must not invent a 200 just because that's the common case");
+        let c = case(
+            "No assertion stated",
+            "API",
+            vec![("GET /health", "It works")],
+            "It works",
+            vec![],
+        );
+        assert!(
+            compile_deterministic(&c).is_none(),
+            "must not invent a 200 just because that's the common case"
+        );
     }
 
     // ------------------------------------------------------------- validation
@@ -552,20 +700,44 @@ mod tests {
             test_case_id: "t".into(),
             execution_type: ExecutionType::Api,
             target: Some("http://169.254.169.254/".into()),
-            actions: vec![Action::Request { method: "GET".into(), url: "http://169.254.169.254/latest/meta-data/".into(), headers: BTreeMap::new(), body: None }, Action::AssertStatus { status: 200 }],
+            actions: vec![
+                Action::Request {
+                    method: "GET".into(),
+                    url: "http://169.254.169.254/latest/meta-data/".into(),
+                    headers: BTreeMap::new(),
+                    body: None,
+                },
+                Action::AssertStatus { status: 200 },
+            ],
             compiler: CompilerMethod::Deterministic,
             diagnostics: vec![],
             provider: None,
             model: None,
         };
-        let err = validate_plan(&plan).await.expect_err("cloud metadata address must be rejected");
-        assert!(err.iter().any(|r| r.contains("disallowed")), "reasons={err:?}");
+        let err = validate_plan(&plan)
+            .await
+            .expect_err("cloud metadata address must be rejected");
+        assert!(
+            err.iter().any(|r| r.contains("disallowed")),
+            "reasons={err:?}"
+        );
     }
 
     #[tokio::test]
     async fn validate_plan_rejects_python_execution_type() {
-        let plan = ExecutionPlan { test_case_id: "t".into(), execution_type: ExecutionType::Python, target: None, actions: vec![Action::AssertStatus { status: 200 }], compiler: CompilerMethod::Ai, diagnostics: vec![], provider: None, model: None };
-        let err = validate_plan(&plan).await.expect_err("PYTHON must be rejected — not implemented this phase");
+        let plan = ExecutionPlan {
+            test_case_id: "t".into(),
+            execution_type: ExecutionType::Python,
+            target: None,
+            actions: vec![Action::AssertStatus { status: 200 }],
+            compiler: CompilerMethod::Ai,
+            diagnostics: vec![],
+            provider: None,
+            model: None,
+        };
+        let err = validate_plan(&plan)
+            .await
+            .expect_err("PYTHON must be rejected — not implemented this phase");
         assert!(err.iter().any(|r| r.contains("PYTHON")), "reasons={err:?}");
     }
 
@@ -575,7 +747,15 @@ mod tests {
             test_case_id: "t".into(),
             execution_type: ExecutionType::Api,
             target: Some(format!("{DEFAULT_TARGET}/health")),
-            actions: vec![Action::Request { method: "GET".into(), url: format!("{DEFAULT_TARGET}/health"), headers: BTreeMap::new(), body: None }, Action::AssertStatus { status: 200 }],
+            actions: vec![
+                Action::Request {
+                    method: "GET".into(),
+                    url: format!("{DEFAULT_TARGET}/health"),
+                    headers: BTreeMap::new(),
+                    body: None,
+                },
+                Action::AssertStatus { status: 200 },
+            ],
             compiler: CompilerMethod::Deterministic,
             diagnostics: vec![],
             provider: None,
@@ -588,7 +768,16 @@ mod tests {
 
     #[tokio::test]
     async fn ai_compilation_is_used_only_when_deterministic_compilation_finds_nothing() {
-        let c = case("Vague case", "API", vec![("Submit an authenticated request using the expired token", "Request is rejected")], "Request rejected", vec![]);
+        let c = case(
+            "Vague case",
+            "API",
+            vec![(
+                "Submit an authenticated request using the expired token",
+                "Request is rejected",
+            )],
+            "Request rejected",
+            vec![],
+        );
         let ai_json = r#"{"executable":true,"execution_type":"API","target":null,"actions":[{"type":"REQUEST","method":"GET","url":"/health"},{"type":"ASSERT_STATUS","status":401}]}"#;
         let infra = infra_with_ai(Ok(ai_json));
         let outcome = compile(&infra, &c).await;
@@ -602,64 +791,118 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deterministic_compilation_is_preferred_and_never_calls_the_ai_router_when_it_already_succeeded() {
-        let c = case("Health check", "API", vec![("GET /health", "HTTP 200 with body ok")], "HTTP 200 ok", vec![]);
+    async fn deterministic_compilation_is_preferred_and_never_calls_the_ai_router_when_it_already_succeeded(
+    ) {
+        let c = case(
+            "Health check",
+            "API",
+            vec![("GET /health", "HTTP 200 with body ok")],
+            "HTTP 200 ok",
+            vec![],
+        );
         // An AI infra with zero providers would fail loudly if actually
         // invoked (NoCompatibleModel) — using it here and still getting a
         // successful Ready result proves the AI path was never reached.
         let infra = no_ai_infra();
         let outcome = compile(&infra, &c).await;
-        assert!(matches!(outcome, CompilationOutcome::Ready(ref plan) if plan.compiler == CompilerMethod::Deterministic), "outcome={outcome:?}");
+        assert!(
+            matches!(outcome, CompilationOutcome::Ready(ref plan) if plan.compiler == CompilerMethod::Deterministic),
+            "outcome={outcome:?}"
+        );
     }
 
     #[tokio::test]
     async fn ai_compilation_unavailable_is_reported_truthfully_not_faked() {
-        let c = case("Vague case", "UI", vec![("Do the thing on the page", "It works")], "It works", vec![]);
+        let c = case(
+            "Vague case",
+            "UI",
+            vec![("Do the thing on the page", "It works")],
+            "It works",
+            vec![],
+        );
         let infra = no_ai_infra();
         let outcome = compile(&infra, &c).await;
-        assert!(matches!(outcome, CompilationOutcome::CompilationUnavailable { .. }), "outcome={outcome:?}");
+        assert!(
+            matches!(outcome, CompilationOutcome::CompilationUnavailable { .. }),
+            "outcome={outcome:?}"
+        );
     }
 
     #[tokio::test]
     async fn ai_response_declining_to_compile_is_reported_as_not_executable() {
-        let c = case("Vague case", "UI", vec![("Do the thing", "It works")], "It works", vec![]);
+        let c = case(
+            "Vague case",
+            "UI",
+            vec![("Do the thing", "It works")],
+            "It works",
+            vec![],
+        );
         let ai_json = r#"{"executable":false,"reasons":["no target URL or selector is stated anywhere in this case"]}"#;
         let infra = infra_with_ai(Ok(ai_json));
         let outcome = compile(&infra, &c).await;
         match outcome {
-            CompilationOutcome::NotExecutable { reasons } => assert!(reasons[0].contains("no target URL")),
+            CompilationOutcome::NotExecutable { reasons } => {
+                assert!(reasons[0].contains("no target URL"))
+            }
             other => panic!("expected NotExecutable, got {other:?}"),
         }
     }
 
     #[tokio::test]
     async fn malformed_ai_json_is_a_real_compilation_failure_not_a_crash_or_a_guess() {
-        let c = case("Vague case", "UI", vec![("Do the thing", "It works")], "It works", vec![]);
+        let c = case(
+            "Vague case",
+            "UI",
+            vec![("Do the thing", "It works")],
+            "It works",
+            vec![],
+        );
         let infra = infra_with_ai(Ok("not json at all"));
         let outcome = compile(&infra, &c).await;
-        assert!(matches!(outcome, CompilationOutcome::CompilationFailed { .. }), "outcome={outcome:?}");
+        assert!(
+            matches!(outcome, CompilationOutcome::CompilationFailed { .. }),
+            "outcome={outcome:?}"
+        );
     }
 
     #[tokio::test]
-    async fn an_ai_response_naming_an_action_type_outside_the_closed_vocabulary_is_rejected_structurally() {
-        let c = case("Vague case", "UI", vec![("Do the thing", "It works")], "It works", vec![]);
+    async fn an_ai_response_naming_an_action_type_outside_the_closed_vocabulary_is_rejected_structurally(
+    ) {
+        let c = case(
+            "Vague case",
+            "UI",
+            vec![("Do the thing", "It works")],
+            "It works",
+            vec![],
+        );
         // "RUN_SHELL" is not, and will never be, a real Action variant —
         // this must fail to deserialize, proving the AI cannot smuggle an
         // arbitrary-code action through even if it tried.
         let ai_json = r#"{"executable":true,"execution_type":"API","target":null,"actions":[{"type":"RUN_SHELL","command":"rm -rf /"}]}"#;
         let infra = infra_with_ai(Ok(ai_json));
         let outcome = compile(&infra, &c).await;
-        assert!(matches!(outcome, CompilationOutcome::CompilationFailed { .. }), "outcome={outcome:?}");
+        assert!(
+            matches!(outcome, CompilationOutcome::CompilationFailed { .. }),
+            "outcome={outcome:?}"
+        );
     }
 
     #[tokio::test]
     async fn an_ai_response_proposing_an_ssrf_target_is_rejected_by_the_same_real_guard() {
-        let c = case("Vague case", "API", vec![("Call the internal service", "It works")], "It works", vec![]);
+        let c = case(
+            "Vague case",
+            "API",
+            vec![("Call the internal service", "It works")],
+            "It works",
+            vec![],
+        );
         let ai_json = r#"{"executable":true,"execution_type":"API","target":"http://169.254.169.254/","actions":[{"type":"REQUEST","method":"GET","url":"http://169.254.169.254/latest/meta-data/"},{"type":"ASSERT_STATUS","status":200}]}"#;
         let infra = infra_with_ai(Ok(ai_json));
         let outcome = compile(&infra, &c).await;
         match outcome {
-            CompilationOutcome::CompilationFailed { reasons } => assert!(reasons.iter().any(|r| r.contains("disallowed"))),
+            CompilationOutcome::CompilationFailed { reasons } => {
+                assert!(reasons.iter().any(|r| r.contains("disallowed")))
+            }
             other => panic!("expected CompilationFailed (SSRF), got {other:?}"),
         }
     }

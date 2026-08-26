@@ -77,7 +77,10 @@ pub struct VerifyApplicationSourceResponse {
 }
 
 fn verify_timeout() -> Duration {
-    let secs: u64 = std::env::var("APP_SOURCE_VERIFY_TIMEOUT_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(10);
+    let secs: u64 = std::env::var("APP_SOURCE_VERIFY_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10);
     Duration::from_secs(secs)
 }
 
@@ -118,7 +121,13 @@ pub async fn verify(raw_url: &str) -> VerifyApplicationSourceResponse {
 }
 
 fn invalid_url(message: &str) -> VerifyApplicationSourceResponse {
-    VerifyApplicationSourceResponse { status: AppSourceStatus::InvalidUrl.as_str(), reachable: false, http_status: None, latency_ms: None, message: message.to_string() }
+    VerifyApplicationSourceResponse {
+        status: AppSourceStatus::InvalidUrl.as_str(),
+        reachable: false,
+        http_status: None,
+        latency_ms: None,
+        message: message.to_string(),
+    }
 }
 
 /// The actual, real network attempt — deliberately factored out of
@@ -135,8 +144,15 @@ fn invalid_url(message: &str) -> VerifyApplicationSourceResponse {
 /// silently reached. The response body is never read (no
 /// `.text()`/`.bytes()` call) — only the real, observed status and the
 /// real, measured elapsed time.
-async fn attempt_real_request(url: &reqwest::Url, timeout: Duration) -> VerifyApplicationSourceResponse {
-    let client = match reqwest::Client::builder().timeout(timeout).redirect(reqwest::redirect::Policy::none()).build() {
+async fn attempt_real_request(
+    url: &reqwest::Url,
+    timeout: Duration,
+) -> VerifyApplicationSourceResponse {
+    let client = match reqwest::Client::builder()
+        .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+    {
         Ok(c) => c,
         Err(e) => {
             return VerifyApplicationSourceResponse {
@@ -154,7 +170,11 @@ async fn attempt_real_request(url: &reqwest::Url, timeout: Duration) -> VerifyAp
         Ok(resp) => {
             let latency_ms = started.elapsed().as_millis() as u64;
             let status = resp.status();
-            let https_note = if url.scheme() == "https" { " (HTTPS request completed successfully)" } else { "" };
+            let https_note = if url.scheme() == "https" {
+                " (HTTPS request completed successfully)"
+            } else {
+                ""
+            };
             VerifyApplicationSourceResponse {
                 status: AppSourceStatus::Connected.as_str(),
                 reachable: true,
@@ -183,7 +203,11 @@ async fn attempt_real_request(url: &reqwest::Url, timeout: Duration) -> VerifyAp
 /// to a fixed, safe, user-facing message — never raw internal networking
 /// errors or stack traces reach the frontend.
 fn safe_unreachable_message(classified: &str) -> String {
-    let prefix = classified.split(':').next().unwrap_or("CONNECTION_FAILED").trim();
+    let prefix = classified
+        .split(':')
+        .next()
+        .unwrap_or("CONNECTION_FAILED")
+        .trim();
     match prefix {
         "REQUEST_TIMEOUT" => "The connection attempt timed out.".to_string(),
         "DNS_FAILED" => "The hostname could not be resolved.".to_string(),
@@ -236,7 +260,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_loopback_target_on_a_non_documented_port_is_rejected_same_as_every_other_outbound_call_in_this_app() {
+    async fn a_loopback_target_on_a_non_documented_port_is_rejected_same_as_every_other_outbound_call_in_this_app(
+    ) {
         let r = verify("http://127.0.0.1:9/").await;
         assert_eq!(r.status, "REJECTED");
     }
@@ -274,7 +299,10 @@ mod tests {
     async fn a_real_reachable_target_returning_a_non_2xx_status_is_still_reported_connected() {
         // Reachability and application HTTP status must be distinguished —
         // a real, responding server answering 404 is genuinely reachable.
-        let app = axum::Router::new().route("/missing", axum::routing::get(|| async { (axum::http::StatusCode::NOT_FOUND, "nope") }));
+        let app = axum::Router::new().route(
+            "/missing",
+            axum::routing::get(|| async { (axum::http::StatusCode::NOT_FOUND, "nope") }),
+        );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
@@ -283,13 +311,17 @@ mod tests {
         let url = reqwest::Url::parse(&format!("http://{addr}/missing")).unwrap();
 
         let r = attempt_real_request(&url, Duration::from_secs(5)).await;
-        assert_eq!(r.status, "CONNECTED", "a real 404 response is still a genuinely reachable target");
+        assert_eq!(
+            r.status, "CONNECTED",
+            "a real 404 response is still a genuinely reachable target"
+        );
         assert!(r.reachable);
         assert_eq!(r.http_status, Some(404));
     }
 
     #[tokio::test]
-    async fn a_genuinely_dead_port_reports_unreachable_with_a_safe_message_and_a_real_measured_duration() {
+    async fn a_genuinely_dead_port_reports_unreachable_with_a_safe_message_and_a_real_measured_duration(
+    ) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         drop(listener); // genuinely nothing listens here now
@@ -299,8 +331,15 @@ mod tests {
         assert_eq!(r.status, "UNREACHABLE");
         assert!(!r.reachable);
         assert!(r.http_status.is_none());
-        assert!(r.latency_ms.is_some(), "a real elapsed duration must be reported even for a failed attempt");
-        assert!(!r.message.to_lowercase().contains("os error"), "the raw OS-level error text must never reach the message: {}", r.message);
+        assert!(
+            r.latency_ms.is_some(),
+            "a real elapsed duration must be reported even for a failed attempt"
+        );
+        assert!(
+            !r.message.to_lowercase().contains("os error"),
+            "the raw OS-level error text must never reach the message: {}",
+            r.message
+        );
     }
 
     #[tokio::test]
@@ -323,10 +362,21 @@ mod tests {
 
     #[test]
     fn safe_unreachable_message_never_echoes_raw_classification_detail() {
-        assert_eq!(safe_unreachable_message("REQUEST_TIMEOUT: operation timed out"), "The connection attempt timed out.");
-        assert_eq!(safe_unreachable_message("DNS_FAILED: dns error: no records found"), "The hostname could not be resolved.");
-        assert_eq!(safe_unreachable_message("TLS_FAILED: invalid certificate"), "The secure (TLS/SSL) connection could not be established.");
-        let generic = safe_unreachable_message("CONNECTION_FAILED: os error 10061, real internal socket detail");
+        assert_eq!(
+            safe_unreachable_message("REQUEST_TIMEOUT: operation timed out"),
+            "The connection attempt timed out."
+        );
+        assert_eq!(
+            safe_unreachable_message("DNS_FAILED: dns error: no records found"),
+            "The hostname could not be resolved."
+        );
+        assert_eq!(
+            safe_unreachable_message("TLS_FAILED: invalid certificate"),
+            "The secure (TLS/SSL) connection could not be established."
+        );
+        let generic = safe_unreachable_message(
+            "CONNECTION_FAILED: os error 10061, real internal socket detail",
+        );
         assert_eq!(generic, "Unable to reach the application source.");
         assert!(!generic.contains("10061"));
     }

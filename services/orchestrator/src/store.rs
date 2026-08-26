@@ -58,7 +58,9 @@ fn performance_run_from_row(r: sqlx::sqlite::SqliteRow) -> Result<PerformanceRun
         metrics_json: r.get("metrics_json"),
         verdict_reasons_json: r.get("verdict_reasons_json"),
         error_reason: r.get("error_reason"),
-        evidence_id: r.get::<Option<String>, _>("evidence_id").and_then(|s| Uuid::parse_str(&s).ok()),
+        evidence_id: r
+            .get::<Option<String>, _>("evidence_id")
+            .and_then(|s| Uuid::parse_str(&s).ok()),
         created_by: r.get("created_by"),
         started_at: parse_ts(&r.get::<String, _>("started_at")),
         finished_at: parse_ts_opt(r.get("finished_at")),
@@ -91,7 +93,9 @@ fn test_case_from_row(r: sqlx::sqlite::SqliteRow) -> Result<TestCaseRow> {
         source: r.get("source"),
         status: TestCaseStatus::from_db_str(&r.get::<String, _>("status")),
         validation_notes: r.get("validation_notes"),
-        executed_run_id: r.get::<Option<String>, _>("executed_run_id").and_then(|s| Uuid::parse_str(&s).ok()),
+        executed_run_id: r
+            .get::<Option<String>, _>("executed_run_id")
+            .and_then(|s| Uuid::parse_str(&s).ok()),
         executed_task_id: r.get("executed_task_id"),
         created_by: r.get("created_by"),
         created_at: parse_ts(&r.get::<String, _>("created_at")),
@@ -215,7 +219,11 @@ impl Store {
         let edges: Vec<(&str, &str)> = plan
             .tasks
             .iter()
-            .flat_map(|t| t.prerequisites.iter().map(move |p| (t.id.as_str(), p.as_str())))
+            .flat_map(|t| {
+                t.prerequisites
+                    .iter()
+                    .map(move |p| (t.id.as_str(), p.as_str()))
+            })
             .collect();
 
         for chunk in edges.chunks(CHUNK) {
@@ -307,15 +315,13 @@ impl Store {
     ) -> Result<()> {
         let now = now_rfc3339();
         if set_started {
-            sqlx::query(
-                "UPDATE tasks SET status = ?, started_at = ? WHERE run_id = ? AND id = ?",
-            )
-            .bind(status.as_db_str())
-            .bind(&now)
-            .bind(run_id.to_string())
-            .bind(task_id)
-            .execute(&self.pool)
-            .await?;
+            sqlx::query("UPDATE tasks SET status = ?, started_at = ? WHERE run_id = ? AND id = ?")
+                .bind(status.as_db_str())
+                .bind(&now)
+                .bind(run_id.to_string())
+                .bind(task_id)
+                .execute(&self.pool)
+                .await?;
         } else if set_finished {
             sqlx::query(
                 "UPDATE tasks SET status = ?, reason = ?, finished_at = ? WHERE run_id = ? AND id = ?",
@@ -451,11 +457,21 @@ impl Store {
     pub async fn get_run_for_rehydration(
         &self,
         run_id: RunId,
-    ) -> Result<Option<(RunPlan, Option<String>, Option<String>, Option<String>, RunState)>> {
-        let row = sqlx::query("SELECT plan, project_id, requested_by, policy_notes, state FROM runs WHERE id = ?")
-            .bind(run_id.to_string())
-            .fetch_optional(&self.pool)
-            .await?;
+    ) -> Result<
+        Option<(
+            RunPlan,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            RunState,
+        )>,
+    > {
+        let row = sqlx::query(
+            "SELECT plan, project_id, requested_by, policy_notes, state FROM runs WHERE id = ?",
+        )
+        .bind(run_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
         let Some(row) = row else { return Ok(None) };
         let plan_json: String = row.get("plan");
         let plan: RunPlan = serde_json::from_str(&plan_json)?;
@@ -475,11 +491,13 @@ impl Store {
         .bind(run_id.to_string())
         .fetch_all(&self.pool)
         .await?;
-        let deps = sqlx::query("SELECT task_id, prerequisite_id FROM task_dependencies WHERE run_id = ?")
-            .bind(run_id.to_string())
-            .fetch_all(&self.pool)
-            .await?;
-        let mut dep_map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        let deps =
+            sqlx::query("SELECT task_id, prerequisite_id FROM task_dependencies WHERE run_id = ?")
+                .bind(run_id.to_string())
+                .fetch_all(&self.pool)
+                .await?;
+        let mut dep_map: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
         for d in deps {
             dep_map
                 .entry(d.get("task_id"))
@@ -530,11 +548,16 @@ impl Store {
     /// same `GROUP BY state` shape `metrics.rs::render` already uses for the
     /// global Prometheus counter, scoped down to a single project.
     pub async fn dashboard_run_counts(&self, project_id: &str) -> Result<Vec<(String, i64)>> {
-        let rows = sqlx::query("SELECT state, COUNT(*) as c FROM runs WHERE project_id = ? GROUP BY state")
-            .bind(project_id)
-            .fetch_all(&self.pool)
-            .await?;
-        Ok(rows.into_iter().map(|r| (r.get("state"), r.get("c"))).collect())
+        let rows = sqlx::query(
+            "SELECT state, COUNT(*) as c FROM runs WHERE project_id = ? GROUP BY state",
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.get("state"), r.get("c")))
+            .collect())
     }
 
     /// Task counts by status for one project. `tasks` carries no
@@ -550,7 +573,10 @@ impl Store {
         .bind(project_id)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows.into_iter().map(|r| (r.get("status"), r.get("c"))).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.get("status"), r.get("c")))
+            .collect())
     }
 
     /// Distinct known tests for one project: `quality_nodes` rows of type
@@ -558,10 +584,12 @@ impl Store {
     /// this backend's only real "test" identity — there is no separate
     /// generated-test-case table (Test Case Generator, §8/§9, is not built).
     pub async fn dashboard_test_count(&self, project_id: &str) -> Result<i64> {
-        let row = sqlx::query("SELECT COUNT(*) as c FROM quality_nodes WHERE project_id = ? AND node_type = 'test'")
-            .bind(project_id)
-            .fetch_one(&self.pool)
-            .await?;
+        let row = sqlx::query(
+            "SELECT COUNT(*) as c FROM quality_nodes WHERE project_id = ? AND node_type = 'test'",
+        )
+        .bind(project_id)
+        .fetch_one(&self.pool)
+        .await?;
         Ok(row.get("c"))
     }
 
@@ -660,7 +688,12 @@ impl Store {
     /// (`Uuid::new_v4()`), matching every other entity in this store
     /// (`evidence`, `bug_drafts`, `api_keys`) rather than relying on a
     /// DB-side default.
-    pub async fn insert_project(&self, id: Uuid, name: &str, description: Option<&str>) -> Result<()> {
+    pub async fn insert_project(
+        &self,
+        id: Uuid,
+        name: &str,
+        description: Option<&str>,
+    ) -> Result<()> {
         let now = now_rfc3339();
         sqlx::query(
             "INSERT INTO projects (id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
@@ -702,10 +735,12 @@ impl Store {
     /// BE-8 (API Contract §5.3). Single-project lookup, used both for
     /// `GET .../projects/{id}` and as the existence check before `PATCH`.
     pub async fn get_project(&self, id: Uuid) -> Result<Option<Project>> {
-        let row = sqlx::query("SELECT id, name, description, created_at, updated_at FROM projects WHERE id = ?")
-            .bind(id.to_string())
-            .fetch_optional(&self.pool)
-            .await?;
+        let row = sqlx::query(
+            "SELECT id, name, description, created_at, updated_at FROM projects WHERE id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
         Ok(row.map(project_from_row))
     }
 
@@ -714,7 +749,12 @@ impl Store {
     /// already uses for `policy_notes`. Returns `false` (zero rows affected)
     /// when `id` does not exist, so the caller can return 404 rather than a
     /// false "ok" on a no-op update.
-    pub async fn update_project(&self, id: Uuid, name: Option<&str>, description: Option<&str>) -> Result<bool> {
+    pub async fn update_project(
+        &self,
+        id: Uuid,
+        name: Option<&str>,
+        description: Option<&str>,
+    ) -> Result<bool> {
         let result = sqlx::query(
             "UPDATE projects SET name = COALESCE(?, name), description = COALESCE(?, description), updated_at = ? WHERE id = ?",
         )
@@ -734,7 +774,9 @@ impl Store {
     // are the only two operations this needs; there is nothing to list or
     // delete.
 
-    pub async fn get_ai_settings(&self) -> Result<Option<(String, Option<String>, Option<String>, bool)>> {
+    pub async fn get_ai_settings(
+        &self,
+    ) -> Result<Option<(String, Option<String>, Option<String>, bool)>> {
         let row = sqlx::query("SELECT mode, preferred_provider, preferred_model, fallback_enabled FROM ai_settings WHERE id = 'global'")
             .fetch_optional(&self.pool)
             .await?;
@@ -743,11 +785,22 @@ impl Store {
             let preferred_provider: Option<String> = r.get("preferred_provider");
             let preferred_model: Option<String> = r.get("preferred_model");
             let fallback_enabled: i64 = r.get("fallback_enabled");
-            (mode, preferred_provider, preferred_model, fallback_enabled != 0)
+            (
+                mode,
+                preferred_provider,
+                preferred_model,
+                fallback_enabled != 0,
+            )
         }))
     }
 
-    pub async fn upsert_ai_settings(&self, mode: &str, preferred_provider: Option<&str>, preferred_model: Option<&str>, fallback_enabled: bool) -> Result<()> {
+    pub async fn upsert_ai_settings(
+        &self,
+        mode: &str,
+        preferred_provider: Option<&str>,
+        preferred_model: Option<&str>,
+        fallback_enabled: bool,
+    ) -> Result<()> {
         sqlx::query(
             "INSERT INTO ai_settings (id, mode, preferred_provider, preferred_model, fallback_enabled, updated_at)
              VALUES ('global', ?, ?, ?, ?, ?)
@@ -772,7 +825,12 @@ impl Store {
     // column exists so a future non-generator source (e.g. a human-authored
     // case) does not need a schema change.
 
-    pub async fn insert_test_case(&self, project_id: &str, req: &CreateTestCaseRequest, created_by: Option<&str>) -> Result<Uuid> {
+    pub async fn insert_test_case(
+        &self,
+        project_id: &str,
+        req: &CreateTestCaseRequest,
+        created_by: Option<&str>,
+    ) -> Result<Uuid> {
         let id = Uuid::new_v4();
         let now = now_rfc3339();
         let expected_result = req
@@ -834,7 +892,11 @@ impl Store {
     /// Project-scoped list, optionally narrowed to one lifecycle status —
     /// same optional-filter shape `list_projects`/`list_test_intelligence`
     /// already use. Newest first, matching every other list endpoint.
-    pub async fn list_test_cases(&self, project_id: &str, status_filter: Option<&str>) -> Result<Vec<TestCaseRow>> {
+    pub async fn list_test_cases(
+        &self,
+        project_id: &str,
+        status_filter: Option<&str>,
+    ) -> Result<Vec<TestCaseRow>> {
         let rows = match status_filter {
             Some(status) => {
                 sqlx::query(
@@ -966,7 +1028,12 @@ impl Store {
     /// was actually dispatched as (FRD-RT-04 traceability: Test Case -> Run
     /// -> Task -> Result/Evidence, all already queryable by these two ids
     /// via the existing `runs`/`tasks`/`evidence`/`run_events` tables).
-    pub async fn mark_test_case_executed(&self, id: Uuid, run_id: Uuid, task_id: &str) -> Result<bool> {
+    pub async fn mark_test_case_executed(
+        &self,
+        id: Uuid,
+        run_id: Uuid,
+        task_id: &str,
+    ) -> Result<bool> {
         let result = sqlx::query(
             "UPDATE test_cases SET status = ?, executed_run_id = ?, executed_task_id = ?, updated_at = ?
              WHERE id = ? AND status = ?",
@@ -990,7 +1057,16 @@ impl Store {
     /// it finishes. `id` is generated by the caller, same convention as
     /// every other entity in this store.
     #[allow(clippy::too_many_arguments)]
-    pub async fn insert_performance_run(&self, id: Uuid, project_id: &str, name: &str, test_type: &str, config_json: &str, created_by: Option<&str>, started_at: chrono::DateTime<chrono::Utc>) -> Result<()> {
+    pub async fn insert_performance_run(
+        &self,
+        id: Uuid,
+        project_id: &str,
+        name: &str,
+        test_type: &str,
+        config_json: &str,
+        created_by: Option<&str>,
+        started_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
         sqlx::query(
             "INSERT INTO performance_runs (id, project_id, name, test_type, status, config_json, created_by, started_at)
              VALUES (?, ?, ?, ?, 'RUNNING', ?, ?, ?)",
@@ -1079,8 +1155,13 @@ impl Store {
     /// handle that was driving it (`AppState::performance_tests`) does not
     /// survive a restart, so nothing will ever finalize that row otherwise.
     pub async fn list_incomplete_performance_runs(&self) -> Result<Vec<Uuid>> {
-        let rows = sqlx::query("SELECT id FROM performance_runs WHERE status = 'RUNNING'").fetch_all(&self.pool).await?;
-        Ok(rows.into_iter().filter_map(|r| Uuid::parse_str(&r.get::<String, _>("id")).ok()).collect())
+        let rows = sqlx::query("SELECT id FROM performance_runs WHERE status = 'RUNNING'")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| Uuid::parse_str(&r.get::<String, _>("id")).ok())
+            .collect())
     }
 
     // ------------------------------------------------------------ evidence
@@ -1136,7 +1217,10 @@ impl Store {
 
     /// Returns (object_key, content_type, run_id) — `run_id` lets the API
     /// layer re-check project ownership before serving the raw content.
-    pub async fn get_evidence_object_key(&self, id: Uuid) -> Result<Option<(String, Option<String>, Option<String>)>> {
+    pub async fn get_evidence_object_key(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<(String, Option<String>, Option<String>)>> {
         let row = sqlx::query("SELECT object_key, content_type, run_id FROM evidence WHERE id = ?")
             .bind(id.to_string())
             .fetch_optional(&self.pool)
@@ -1151,7 +1235,10 @@ impl Store {
     /// `evidence.rs`), per the contract's own "large binary artifacts
     /// SHOULD be accessed through secure artifact references rather than
     /// embedded in normal API responses."
-    pub async fn get_evidence_by_id(&self, id: Uuid) -> Result<Option<(EvidenceRow, Option<String>)>> {
+    pub async fn get_evidence_by_id(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<(EvidenceRow, Option<String>)>> {
         let row = sqlx::query(
             "SELECT id, task_id, kind, object_key, content_type, size_bytes, created_at, run_id FROM evidence WHERE id = ?",
         )
@@ -1451,7 +1538,10 @@ impl Store {
 
     /// Test-intelligence table: one row per known test node with its latest
     /// risk/value/flakiness, for `GET /intelligence/tests`.
-    pub async fn list_test_intelligence(&self, project_filter: Option<&str>) -> Result<Vec<TestIntelRow>> {
+    pub async fn list_test_intelligence(
+        &self,
+        project_filter: Option<&str>,
+    ) -> Result<Vec<TestIntelRow>> {
         let pid = project_filter.unwrap_or("default");
         let rows = sqlx::query(
             "SELECT n.id as id, n.name as name,
@@ -1538,7 +1628,10 @@ impl Store {
         Ok((id, 1))
     }
 
-    pub async fn list_failure_clusters(&self, project_filter: Option<&str>) -> Result<Vec<FailureClusterRow>> {
+    pub async fn list_failure_clusters(
+        &self,
+        project_filter: Option<&str>,
+    ) -> Result<Vec<FailureClusterRow>> {
         let pid = project_filter.unwrap_or("default");
         let rows = sqlx::query(
             "SELECT id, signature, first_seen_at, last_seen_at, occurrence_count, root_cause_hypothesis, confidence, reproducibility, review_state,
@@ -1608,7 +1701,13 @@ impl Store {
     /// stay exactly as they were (`NULL` if never generated before) rather
     /// than being overwritten with a fabricated value. See ACC-018's
     /// Failure Behavior criteria ("Never fabricated output").
-    pub async fn set_ai_hypothesis(&self, cluster_id: Uuid, hypothesis: &str, provider: &str, model: &str) -> Result<()> {
+    pub async fn set_ai_hypothesis(
+        &self,
+        cluster_id: Uuid,
+        hypothesis: &str,
+        provider: &str,
+        model: &str,
+    ) -> Result<()> {
         sqlx::query(
             "UPDATE failure_clusters SET ai_hypothesis = ?, ai_hypothesis_provider = ?, ai_hypothesis_model = ?, ai_hypothesis_generated_at = ? WHERE id = ?",
         )
@@ -1700,7 +1799,8 @@ impl Store {
             .into_iter()
             .map(|r| BugDraftRow {
                 id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap_or_default(),
-                failure_cluster_id: Uuid::parse_str(&r.get::<String, _>("failure_cluster_id")).unwrap_or_default(),
+                failure_cluster_id: Uuid::parse_str(&r.get::<String, _>("failure_cluster_id"))
+                    .unwrap_or_default(),
                 title: r.get("title"),
                 description: r.get("description"),
                 severity: r.get("severity"),
@@ -1732,7 +1832,8 @@ impl Store {
         .await?;
         Ok(row.map(|r| BugDraftRow {
             id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap_or_default(),
-            failure_cluster_id: Uuid::parse_str(&r.get::<String, _>("failure_cluster_id")).unwrap_or_default(),
+            failure_cluster_id: Uuid::parse_str(&r.get::<String, _>("failure_cluster_id"))
+                .unwrap_or_default(),
             title: r.get("title"),
             description: r.get("description"),
             severity: r.get("severity"),
@@ -1757,7 +1858,12 @@ impl Store {
         Ok(row.map(|r| r.get::<String, _>("project_id")))
     }
 
-    pub async fn review_bug_draft(&self, id: Uuid, new_state: &str, reviewed_by: &str) -> Result<()> {
+    pub async fn review_bug_draft(
+        &self,
+        id: Uuid,
+        new_state: &str,
+        reviewed_by: &str,
+    ) -> Result<()> {
         sqlx::query(
             "UPDATE bug_drafts SET review_state = ?, promoted_at = ?, promoted_by = ? WHERE id = ?",
         )
@@ -1806,28 +1912,29 @@ impl Store {
     /// project context" — an admin action — and correctly never matches a
     /// real project's scoped view). `None` is the legacy unscoped
     /// behavior (`/admin/audit-log`), unchanged.
-    pub async fn list_audit(&self, project_filter: Option<&str>, limit: i64) -> Result<Vec<AuditRow>> {
-        let rows = match project_filter {
-            Some(pid) => {
-                sqlx::query(
+    pub async fn list_audit(
+        &self,
+        project_filter: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<AuditRow>> {
+        let rows =
+            match project_filter {
+                Some(pid) => sqlx::query(
                     "SELECT occurred_at, actor, role, project_id, action, target, detail, outcome
                      FROM audit_log WHERE project_id = ? ORDER BY occurred_at DESC LIMIT ?",
                 )
                 .bind(pid)
                 .bind(limit)
                 .fetch_all(&self.pool)
-                .await?
-            }
-            None => {
-                sqlx::query(
+                .await?,
+                None => sqlx::query(
                     "SELECT occurred_at, actor, role, project_id, action, target, detail, outcome
                      FROM audit_log ORDER BY occurred_at DESC LIMIT ?",
                 )
                 .bind(limit)
                 .fetch_all(&self.pool)
-                .await?
-            }
-        };
+                .await?,
+            };
         Ok(rows
             .into_iter()
             .map(|r| AuditRow {

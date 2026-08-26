@@ -17,7 +17,9 @@ use uuid::Uuid;
 
 async fn temp_store() -> (Store, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
-    let store = Store::connect(&dir.path().join("engine.sqlite3")).await.expect("connect");
+    let store = Store::connect(&dir.path().join("engine.sqlite3"))
+        .await
+        .expect("connect");
     (store, dir)
 }
 
@@ -36,7 +38,11 @@ fn sim_task(id: &str, outcome: SimOutcome, delay_ms: u64) -> TaskDef {
 }
 
 fn plan(name: &str, tasks: Vec<TaskDef>, concurrency: usize) -> RunPlan {
-    RunPlan { name: name.into(), tasks, concurrency }
+    RunPlan {
+        name: name.into(),
+        tasks,
+        concurrency,
+    }
 }
 
 /// Drives a run to completion and returns the final persisted summary.
@@ -49,12 +55,34 @@ async fn run_to_completion(
 ) -> Uuid {
     let run_id = Uuid::new_v4();
     store
-        .insert_run(run_id, &plan, Some("p1"), Some("tester"), RunState::Scheduled, None)
+        .insert_run(
+            run_id,
+            &plan,
+            Some("p1"),
+            Some("tester"),
+            RunState::Scheduled,
+            None,
+        )
         .await
         .expect("insert_run");
-    let record = RunRecord::new(run_id, &plan, Some("p1".into()), Some("tester".into()), RunState::Scheduled, None, None);
+    let record = RunRecord::new(
+        run_id,
+        &plan,
+        Some("p1".into()),
+        Some("tester".into()),
+        RunState::Scheduled,
+        None,
+        None,
+    );
     let concurrency = plan.concurrency;
-    spawn_run(record.clone(), registry, concurrency, store.clone(), evidence, task_timeout);
+    spawn_run(
+        record.clone(),
+        registry,
+        concurrency,
+        store.clone(),
+        evidence,
+        task_timeout,
+    );
 
     // Poll until terminal rather than sleeping a fixed amount.
     for _ in 0..300 {
@@ -79,16 +107,36 @@ async fn b2_recovery_of_all_passed_run_yields_completed_not_failed() {
     let (store, _dir) = temp_store().await;
     let run_id = Uuid::new_v4();
 
-    let p = plan("all-passed", vec![sim_task("t1", SimOutcome::Pass, 0), sim_task("t2", SimOutcome::Pass, 0)], 2);
+    let p = plan(
+        "all-passed",
+        vec![
+            sim_task("t1", SimOutcome::Pass, 0),
+            sim_task("t2", SimOutcome::Pass, 0),
+        ],
+        2,
+    );
     store
-        .insert_run(run_id, &p, Some("p1"), Some("tester"), RunState::Running, None)
+        .insert_run(
+            run_id,
+            &p,
+            Some("p1"),
+            Some("tester"),
+            RunState::Running,
+            None,
+        )
         .await
         .expect("insert");
 
     // Every task finished successfully...
     for id in ["t1", "t2"] {
-        store.set_task_status(run_id, id, TaskStatus::Running, None, true, false).await.unwrap();
-        store.set_task_status(run_id, id, TaskStatus::Passed, None, false, true).await.unwrap();
+        store
+            .set_task_status(run_id, id, TaskStatus::Running, None, true, false)
+            .await
+            .unwrap();
+        store
+            .set_task_status(run_id, id, TaskStatus::Passed, None, false, true)
+            .await
+            .unwrap();
     }
     // ...but the run-level completion write never landed (the B1 scenario),
     // so the run is still RUNNING in the database.
@@ -96,13 +144,20 @@ async fn b2_recovery_of_all_passed_run_yields_completed_not_failed() {
     let recovered = recover_incomplete_runs(&store).await.expect("recovery");
     assert_eq!(recovered, 1, "the stale run must be picked up by recovery");
 
-    let summary = store.get_run_summary(run_id).await.expect("summary").expect("run exists");
+    let summary = store
+        .get_run_summary(run_id)
+        .await
+        .expect("summary")
+        .expect("run exists");
     assert_eq!(
         summary.state,
         RunState::Completed,
         "a run whose tasks all passed must recover as COMPLETED, never FAILED"
     );
-    assert_eq!(summary.passed, 2, "task states must be preserved by recovery");
+    assert_eq!(
+        summary.passed, 2,
+        "task states must be preserved by recovery"
+    );
 }
 
 /// B2: a genuinely interrupted run (tasks left QUEUED/RUNNING) must still be
@@ -122,29 +177,56 @@ async fn b2_recovery_marks_orphaned_tasks_and_preserves_terminal_ones() {
         2,
     );
     store
-        .insert_run(run_id, &p, Some("p1"), Some("tester"), RunState::Running, None)
+        .insert_run(
+            run_id,
+            &p,
+            Some("p1"),
+            Some("tester"),
+            RunState::Running,
+            None,
+        )
         .await
         .expect("insert");
 
-    store.set_task_status(run_id, "done", TaskStatus::Running, None, true, false).await.unwrap();
-    store.set_task_status(run_id, "done", TaskStatus::Passed, None, false, true).await.unwrap();
+    store
+        .set_task_status(run_id, "done", TaskStatus::Running, None, true, false)
+        .await
+        .unwrap();
+    store
+        .set_task_status(run_id, "done", TaskStatus::Passed, None, false, true)
+        .await
+        .unwrap();
     // "orphan" is left RUNNING — the process died mid-execution.
-    store.set_task_status(run_id, "orphan", TaskStatus::Running, None, true, false).await.unwrap();
+    store
+        .set_task_status(run_id, "orphan", TaskStatus::Running, None, true, false)
+        .await
+        .unwrap();
 
     recover_incomplete_runs(&store).await.expect("recovery");
 
     let tasks = store.list_tasks_for_run(run_id).await.expect("tasks");
     let done = tasks.iter().find(|t| t.id == "done").expect("done task");
-    let orphan = tasks.iter().find(|t| t.id == "orphan").expect("orphan task");
+    let orphan = tasks
+        .iter()
+        .find(|t| t.id == "orphan")
+        .expect("orphan task");
 
-    assert_eq!(done.status, TaskStatus::Passed, "an already-terminal task must not be rewritten");
+    assert_eq!(
+        done.status,
+        TaskStatus::Passed,
+        "an already-terminal task must not be rewritten"
+    );
     assert_eq!(
         orphan.status,
         TaskStatus::InfraError,
         "a task left RUNNING by an unclean shutdown is an infrastructure outcome"
     );
 
-    let summary = store.get_run_summary(run_id).await.expect("summary").expect("run");
+    let summary = store
+        .get_run_summary(run_id)
+        .await
+        .expect("summary")
+        .expect("run");
     assert_eq!(
         summary.state,
         RunState::Partial,
@@ -159,20 +241,57 @@ async fn b2_recovery_of_run_with_product_failure_yields_failed() {
     let (store, _dir) = temp_store().await;
     let run_id = Uuid::new_v4();
 
-    let p = plan("has-failure", vec![sim_task("ok", SimOutcome::Pass, 0), sim_task("bad", SimOutcome::Fail, 0)], 2);
+    let p = plan(
+        "has-failure",
+        vec![
+            sim_task("ok", SimOutcome::Pass, 0),
+            sim_task("bad", SimOutcome::Fail, 0),
+        ],
+        2,
+    );
     store
-        .insert_run(run_id, &p, Some("p1"), Some("tester"), RunState::Running, None)
+        .insert_run(
+            run_id,
+            &p,
+            Some("p1"),
+            Some("tester"),
+            RunState::Running,
+            None,
+        )
         .await
         .expect("insert");
 
-    store.set_task_status(run_id, "ok", TaskStatus::Running, None, true, false).await.unwrap();
-    store.set_task_status(run_id, "ok", TaskStatus::Passed, None, false, true).await.unwrap();
-    store.set_task_status(run_id, "bad", TaskStatus::Running, None, true, false).await.unwrap();
-    store.set_task_status(run_id, "bad", TaskStatus::Failed, Some("assert"), false, true).await.unwrap();
+    store
+        .set_task_status(run_id, "ok", TaskStatus::Running, None, true, false)
+        .await
+        .unwrap();
+    store
+        .set_task_status(run_id, "ok", TaskStatus::Passed, None, false, true)
+        .await
+        .unwrap();
+    store
+        .set_task_status(run_id, "bad", TaskStatus::Running, None, true, false)
+        .await
+        .unwrap();
+    store
+        .set_task_status(
+            run_id,
+            "bad",
+            TaskStatus::Failed,
+            Some("assert"),
+            false,
+            true,
+        )
+        .await
+        .unwrap();
 
     recover_incomplete_runs(&store).await.expect("recovery");
 
-    let summary = store.get_run_summary(run_id).await.expect("summary").expect("run");
+    let summary = store
+        .get_run_summary(run_id)
+        .await
+        .expect("summary")
+        .expect("run");
     assert_eq!(
         summary.state,
         RunState::Failed,
@@ -260,7 +379,8 @@ async fn b5_hung_executor_times_out_releases_permit_and_run_continues() {
     let (store, dir) = temp_store().await;
 
     let registry = Arc::new(
-        ExecutorRegistry::new(Arc::new(SimulatedExecutor)).register("hang", Arc::new(HangingExecutor)),
+        ExecutorRegistry::new(Arc::new(SimulatedExecutor))
+            .register("hang", Arc::new(HangingExecutor)),
     );
 
     let hanging = TaskDef {
@@ -273,22 +393,39 @@ async fn b5_hung_executor_times_out_releases_permit_and_run_continues() {
     };
     // concurrency = 1 so the hung task must release its permit before the
     // second task can run at all.
-    let p = plan("timeout", vec![hanging, sim_task("after", SimOutcome::Pass, 0)], 1);
+    let p = plan(
+        "timeout",
+        vec![hanging, sim_task("after", SimOutcome::Pass, 0)],
+        1,
+    );
 
     let run_id = tokio::time::timeout(
         std::time::Duration::from_secs(60),
         // A short ceiling so the hung executor is cut off quickly; the
         // point under test is that the timeout fires at all.
-        run_to_completion(&store, evidence_store(&dir), registry, p, std::time::Duration::from_secs(2)),
+        run_to_completion(
+            &store,
+            evidence_store(&dir),
+            registry,
+            p,
+            std::time::Duration::from_secs(2),
+        ),
     )
     .await
     .expect("the run must finish; if this times out the executor timeout is not working");
 
     let tasks = store.list_tasks_for_run(run_id).await.expect("tasks");
     let hung = tasks.iter().find(|t| t.id == "hang").expect("hanging task");
-    let after = tasks.iter().find(|t| t.id == "after").expect("subsequent task");
+    let after = tasks
+        .iter()
+        .find(|t| t.id == "after")
+        .expect("subsequent task");
 
-    assert_eq!(hung.status, TaskStatus::Timeout, "a hung executor must be recorded as TIMEOUT");
+    assert_eq!(
+        hung.status,
+        TaskStatus::Timeout,
+        "a hung executor must be recorded as TIMEOUT"
+    );
     assert_eq!(
         after.status,
         TaskStatus::Passed,
@@ -305,10 +442,21 @@ async fn b5_hung_executor_times_out_releases_permit_and_run_continues() {
 async fn d1_approval_persistence_failure_is_propagated_and_does_not_spawn_or_approve_in_memory() {
     let (store, dir) = temp_store().await;
     let run_id = Uuid::new_v4();
-    let p = plan("gated-approval-fail", vec![sim_task("t1", SimOutcome::Pass, 0)], 1);
+    let p = plan(
+        "gated-approval-fail",
+        vec![sim_task("t1", SimOutcome::Pass, 0)],
+        1,
+    );
 
     store
-        .insert_run(run_id, &p, Some("p1"), Some("requester"), RunState::PendingApproval, Some("held for review"))
+        .insert_run(
+            run_id,
+            &p,
+            Some("p1"),
+            Some("requester"),
+            RunState::PendingApproval,
+            Some("held for review"),
+        )
         .await
         .expect("insert_run");
 
@@ -338,7 +486,10 @@ async fn d1_approval_persistence_failure_is_propagated_and_does_not_spawn_or_app
     )
     .await;
 
-    assert!(res.is_err(), "approve_and_spawn must return Err when DB update fails");
+    assert!(
+        res.is_err(),
+        "approve_and_spawn must return Err when DB update fails"
+    );
     let failure_msg = record.persistence_error().await;
     assert!(
         failure_msg.is_some(),
@@ -382,10 +533,21 @@ async fn d1_approval_persistence_failure_is_propagated_and_does_not_spawn_or_app
 async fn d1_rejection_persistence_failure_is_propagated_and_does_not_mutate_in_memory_state() {
     let (store, _dir) = temp_store().await;
     let run_id = Uuid::new_v4();
-    let p = plan("gated-rejection-fail", vec![sim_task("t1", SimOutcome::Pass, 0)], 1);
+    let p = plan(
+        "gated-rejection-fail",
+        vec![sim_task("t1", SimOutcome::Pass, 0)],
+        1,
+    );
 
     store
-        .insert_run(run_id, &p, Some("p1"), Some("requester"), RunState::PendingApproval, Some("held for review"))
+        .insert_run(
+            run_id,
+            &p,
+            Some("p1"),
+            Some("requester"),
+            RunState::PendingApproval,
+            Some("held for review"),
+        )
         .await
         .expect("insert_run");
 
@@ -402,9 +564,18 @@ async fn d1_rejection_persistence_failure_is_propagated_and_does_not_mutate_in_m
     // Induce a genuine persistence failure by closing the store's connection pool.
     store.pool.close().await;
 
-    let res = reject_run(record.clone(), &store, "rejector_bob", "security policy breach").await;
+    let res = reject_run(
+        record.clone(),
+        &store,
+        "rejector_bob",
+        "security policy breach",
+    )
+    .await;
 
-    assert!(res.is_err(), "reject_run must return Err when DB update fails");
+    assert!(
+        res.is_err(),
+        "reject_run must return Err when DB update fails"
+    );
     let failure_msg = record.persistence_error().await;
     assert!(
         failure_msg.is_some(),
@@ -448,10 +619,21 @@ async fn d1_rejection_persistence_failure_is_propagated_and_does_not_mutate_in_m
 async fn d1_successful_approval_persists_and_spawns() {
     let (store, dir) = temp_store().await;
     let run_id = Uuid::new_v4();
-    let p = plan("gated-success", vec![sim_task("t1", SimOutcome::Pass, 0)], 1);
+    let p = plan(
+        "gated-success",
+        vec![sim_task("t1", SimOutcome::Pass, 0)],
+        1,
+    );
 
     store
-        .insert_run(run_id, &p, Some("p1"), Some("requester"), RunState::PendingApproval, Some("held for review"))
+        .insert_run(
+            run_id,
+            &p,
+            Some("p1"),
+            Some("requester"),
+            RunState::PendingApproval,
+            Some("held for review"),
+        )
         .await
         .expect("insert_run");
 
@@ -478,7 +660,10 @@ async fn d1_successful_approval_persists_and_spawns() {
     )
     .await;
 
-    assert!(res.is_ok(), "approve_and_spawn must succeed when DB write succeeds");
+    assert!(
+        res.is_ok(),
+        "approve_and_spawn must succeed when DB write succeeds"
+    );
     assert_eq!(
         *record.approved_by.read().await,
         Some("approver_alice".to_string())
@@ -494,7 +679,11 @@ async fn d1_successful_approval_persists_and_spawns() {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 
-    let summary = store.get_run_summary(run_id).await.expect("summary").expect("run exists");
+    let summary = store
+        .get_run_summary(run_id)
+        .await
+        .expect("summary")
+        .expect("run exists");
     assert_eq!(summary.approved_by, Some("approver_alice".to_string()));
     assert!(summary.approved_at.is_some());
 }
@@ -504,10 +693,21 @@ async fn d1_successful_approval_persists_and_spawns() {
 async fn d1_successful_rejection_persists_and_mutates_state() {
     let (store, _dir) = temp_store().await;
     let run_id = Uuid::new_v4();
-    let p = plan("gated-reject-success", vec![sim_task("t1", SimOutcome::Pass, 0)], 1);
+    let p = plan(
+        "gated-reject-success",
+        vec![sim_task("t1", SimOutcome::Pass, 0)],
+        1,
+    );
 
     store
-        .insert_run(run_id, &p, Some("p1"), Some("requester"), RunState::PendingApproval, Some("held for review"))
+        .insert_run(
+            run_id,
+            &p,
+            Some("p1"),
+            Some("requester"),
+            RunState::PendingApproval,
+            Some("held for review"),
+        )
         .await
         .expect("insert_run");
 
@@ -523,13 +723,26 @@ async fn d1_successful_rejection_persists_and_mutates_state() {
 
     let res = reject_run(record.clone(), &store, "rejector_bob", "policy violation").await;
 
-    assert!(res.is_ok(), "reject_run must succeed when DB write succeeds");
+    assert!(
+        res.is_ok(),
+        "reject_run must succeed when DB write succeeds"
+    );
     assert_eq!(*record.state.read().await, RunState::Rejected);
-    assert_eq!(*record.approved_by.read().await, Some("rejector_bob".to_string()));
-    assert_eq!(*record.policy_notes.read().await, Some("policy violation".to_string()));
+    assert_eq!(
+        *record.approved_by.read().await,
+        Some("rejector_bob".to_string())
+    );
+    assert_eq!(
+        *record.policy_notes.read().await,
+        Some("policy violation".to_string())
+    );
     assert_eq!(record.events.read().await.len(), 1);
 
-    let summary = store.get_run_summary(run_id).await.expect("summary").expect("run exists");
+    let summary = store
+        .get_run_summary(run_id)
+        .await
+        .expect("summary")
+        .expect("run exists");
     assert_eq!(summary.state, RunState::Rejected);
     assert_eq!(summary.approved_by, Some("rejector_bob".to_string()));
     assert_eq!(summary.policy_notes, Some("policy violation".to_string()));
@@ -547,10 +760,21 @@ async fn d2_persistence_failure_reason_is_durable_and_survives_restart() {
     let db_path = dir.path().join("engine.sqlite3");
     let run_id = Uuid::new_v4();
 
-    let p = plan("persistence-fail-durable", vec![sim_task("t1", SimOutcome::Pass, 10)], 1);
+    let p = plan(
+        "persistence-fail-durable",
+        vec![sim_task("t1", SimOutcome::Pass, 10)],
+        1,
+    );
 
     store
-        .insert_run(run_id, &p, Some("p1"), Some("tester"), RunState::Scheduled, None)
+        .insert_run(
+            run_id,
+            &p,
+            Some("p1"),
+            Some("tester"),
+            RunState::Scheduled,
+            None,
+        )
         .await
         .expect("insert_run");
 
@@ -631,7 +855,9 @@ async fn d2_persistence_failure_reason_is_durable_and_survives_restart() {
     let restarted_store = Store::connect(&db_path).await.expect("reconnect to db");
 
     // Run startup recovery
-    let _ = recover_incomplete_runs(&restarted_store).await.expect("recover_incomplete_runs");
+    let _ = recover_incomplete_runs(&restarted_store)
+        .await
+        .expect("recover_incomplete_runs");
 
     // 4. Verify durable persistence survived restart
     let recovered_summary = restarted_store
@@ -651,8 +877,7 @@ async fn d2_persistence_failure_reason_is_durable_and_survives_restart() {
         "recovered policy_notes after restart must match original failure reason (recovered reason == database reason)"
     );
     assert_eq!(
-        recovered_summary.policy_notes,
-        db_summary.policy_notes,
+        recovered_summary.policy_notes, db_summary.policy_notes,
         "recovered reason must be identical to pre-restart database reason"
     );
 }
@@ -674,15 +899,33 @@ async fn d3_orphaned_task_under_terminal_run_is_repaired_by_recovery() {
 
     let p = plan(
         "task-write-fails",
-        vec![sim_task("ok", SimOutcome::Pass, 0), sim_task("target", SimOutcome::Pass, 10)],
+        vec![
+            sim_task("ok", SimOutcome::Pass, 0),
+            sim_task("target", SimOutcome::Pass, 10),
+        ],
         2,
     );
     store
-        .insert_run(run_id, &p, Some("p1"), Some("tester"), RunState::Scheduled, None)
+        .insert_run(
+            run_id,
+            &p,
+            Some("p1"),
+            Some("tester"),
+            RunState::Scheduled,
+            None,
+        )
         .await
         .expect("insert_run");
 
-    let record = RunRecord::new(run_id, &p, Some("p1".into()), Some("tester".into()), RunState::Scheduled, None, None);
+    let record = RunRecord::new(
+        run_id,
+        &p,
+        Some("p1".into()),
+        Some("tester".into()),
+        RunState::Scheduled,
+        None,
+        None,
+    );
     let registry = Arc::new(ExecutorRegistry::new(Arc::new(SimulatedExecutor)));
     let evidence = evidence_store(&dir);
 
@@ -722,11 +965,18 @@ async fn d3_orphaned_task_under_terminal_run_is_repaired_by_recovery() {
     // of the defect.
     {
         let engine = record.engine.read().await;
-        assert_eq!(engine.tasks[&"target".to_string()].status, TaskStatus::Passed);
+        assert_eq!(
+            engine.tasks[&"target".to_string()].status,
+            TaskStatus::Passed
+        );
     }
 
     let memory_summary = record.summary().await;
-    assert_eq!(memory_summary.state, RunState::Failed, "the run must be escalated per B1/D2");
+    assert_eq!(
+        memory_summary.state,
+        RunState::Failed,
+        "the run must be escalated per B1/D2"
+    );
     assert!(
         memory_summary
             .policy_notes
@@ -739,11 +989,22 @@ async fn d3_orphaned_task_under_terminal_run_is_repaired_by_recovery() {
     // Confirm the defect directly against the database, matching the live
     // reproduction: the run is durably terminal (FAILED, correct per B1/D2)
     // but "target" never made it out of RUNNING.
-    let db_summary_before = store.get_run_summary(run_id).await.expect("summary").expect("exists");
-    assert_eq!(db_summary_before.state, RunState::Failed, "run must already be durably FAILED (B1/D2, unaffected by D3)");
+    let db_summary_before = store
+        .get_run_summary(run_id)
+        .await
+        .expect("summary")
+        .expect("exists");
+    assert_eq!(
+        db_summary_before.state,
+        RunState::Failed,
+        "run must already be durably FAILED (B1/D2, unaffected by D3)"
+    );
 
     let tasks_before = store.list_tasks_for_run(run_id).await.expect("tasks");
-    let target_before = tasks_before.iter().find(|t| t.id == "target").expect("target");
+    let target_before = tasks_before
+        .iter()
+        .find(|t| t.id == "target")
+        .expect("target");
     assert_eq!(
         target_before.status,
         TaskStatus::Running,
@@ -762,7 +1023,9 @@ async fn d3_orphaned_task_under_terminal_run_is_repaired_by_recovery() {
     // reconnect fresh, and run the exact startup recovery pass.
     store.pool.close().await;
     let restarted_store = Store::connect(&db_path).await.expect("reconnect");
-    let recovered_count = recover_incomplete_runs(&restarted_store).await.expect("recovery");
+    let recovered_count = recover_incomplete_runs(&restarted_store)
+        .await
+        .expect("recovery");
 
     assert_eq!(
         recovered_count, 1,
@@ -772,8 +1035,14 @@ async fn d3_orphaned_task_under_terminal_run_is_repaired_by_recovery() {
 
     // Task integrity: the orphan must not remain RUNNING, and the
     // already-correct task must not be rewritten.
-    let tasks_after = restarted_store.list_tasks_for_run(run_id).await.expect("tasks");
-    let target_after = tasks_after.iter().find(|t| t.id == "target").expect("target");
+    let tasks_after = restarted_store
+        .list_tasks_for_run(run_id)
+        .await
+        .expect("tasks");
+    let target_after = tasks_after
+        .iter()
+        .find(|t| t.id == "target")
+        .expect("target");
     assert_ne!(
         target_after.status,
         TaskStatus::Running,
@@ -786,12 +1055,20 @@ async fn d3_orphaned_task_under_terminal_run_is_repaired_by_recovery() {
          — the exact vocabulary already used for every other orphan-recovery case (B2)"
     );
     let ok_after = tasks_after.iter().find(|t| t.id == "ok").expect("ok");
-    assert_eq!(ok_after.status, TaskStatus::Passed, "an already-correct terminal task must not be rewritten");
+    assert_eq!(
+        ok_after.status,
+        TaskStatus::Passed,
+        "an already-correct terminal task must not be rewritten"
+    );
 
     // Run integrity: durable run state must be consistent with the
     // now-durable task states, via the same `derive_run_state` recovery
     // already uses for every other case (B2) — no new state-transition rule.
-    let recovered_summary = restarted_store.get_run_summary(run_id).await.expect("summary").expect("exists");
+    let recovered_summary = restarted_store
+        .get_run_summary(run_id)
+        .await
+        .expect("summary")
+        .expect("exists");
     assert_eq!(
         recovered_summary.state,
         RunState::Partial,
@@ -806,17 +1083,27 @@ async fn d3_orphaned_task_under_terminal_run_is_repaired_by_recovery() {
     // Event integrity: recovery's own reconciliation event must be durably
     // recorded (not silently dropped), and no existing sequence was
     // duplicated or renumbered by the repair.
-    let events_after = restarted_store.list_events_since(run_id, 0).await.expect("events");
+    let events_after = restarted_store
+        .list_events_since(run_id, 0)
+        .await
+        .expect("events");
     let mut seqs: Vec<u64> = events_after.iter().map(|e| e.sequence).collect();
     let before_dedup = seqs.len();
     seqs.sort_unstable();
     seqs.dedup();
-    assert_eq!(seqs.len(), before_dedup, "no duplicate/renumbered event sequences were introduced by recovery");
+    assert_eq!(
+        seqs.len(),
+        before_dedup,
+        "no duplicate/renumbered event sequences were introduced by recovery"
+    );
     assert!(
         events_after
             .iter()
             .any(|e| e.event_type == crate::domain::EventType::RunCompleted
-                && e.summary.as_deref().unwrap_or("").contains("run recovered at startup")),
+                && e.summary
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("run recovered at startup")),
         "recovery's own reconciliation must be durably auditable as an event, not silent"
     );
 }
@@ -833,18 +1120,44 @@ async fn d3_orphaned_task_under_terminal_run_is_repaired_by_recovery() {
 /// check: it proves what the canonical function *would* derive for this
 /// exact task snapshot, without depending on whichever code path the run
 /// under test itself took to reach its live state.
-async fn recovery_derived_state(store: &Store, name: &str, tasks: &[(&str, TaskStatus)]) -> RunState {
+async fn recovery_derived_state(
+    store: &Store,
+    name: &str,
+    tasks: &[(&str, TaskStatus)],
+) -> RunState {
     let run_id = Uuid::new_v4();
-    let p = plan(name, tasks.iter().map(|(id, _)| sim_task(id, SimOutcome::Pass, 0)).collect(), 2);
+    let p = plan(
+        name,
+        tasks
+            .iter()
+            .map(|(id, _)| sim_task(id, SimOutcome::Pass, 0))
+            .collect(),
+        2,
+    );
     store
-        .insert_run(run_id, &p, Some("p1"), Some("tester"), RunState::Running, None)
+        .insert_run(
+            run_id,
+            &p,
+            Some("p1"),
+            Some("tester"),
+            RunState::Running,
+            None,
+        )
         .await
         .expect("insert_run");
     for (id, status) in tasks {
-        store.set_task_status(run_id, id, *status, None, false, true).await.expect("seed task status");
+        store
+            .set_task_status(run_id, id, *status, None, false, true)
+            .await
+            .expect("seed task status");
     }
     recover_incomplete_runs(store).await.expect("recovery");
-    store.get_run_summary(run_id).await.expect("summary").expect("run exists").state
+    store
+        .get_run_summary(run_id)
+        .await
+        .expect("summary")
+        .expect("run exists")
+        .state
 }
 
 /// D4 Test 1 — FAILED: a run containing a real product failure must reach
@@ -870,11 +1183,33 @@ async fn d4_live_run_with_failed_task_matches_recovery_derived_state() {
     );
     let run_id = Uuid::new_v4();
     store
-        .insert_run(run_id, &p, Some("p1"), Some("tester"), RunState::Scheduled, None)
+        .insert_run(
+            run_id,
+            &p,
+            Some("p1"),
+            Some("tester"),
+            RunState::Scheduled,
+            None,
+        )
         .await
         .expect("insert_run");
-    let record = RunRecord::new(run_id, &p, Some("p1".into()), Some("tester".into()), RunState::Scheduled, None, None);
-    spawn_run(record.clone(), registry, p.concurrency, store.clone(), evidence, std::time::Duration::from_secs(10));
+    let record = RunRecord::new(
+        run_id,
+        &p,
+        Some("p1".into()),
+        Some("tester".into()),
+        RunState::Scheduled,
+        None,
+        None,
+    );
+    spawn_run(
+        record.clone(),
+        registry,
+        p.concurrency,
+        store.clone(),
+        evidence,
+        std::time::Duration::from_secs(10),
+    );
 
     for _ in 0..200 {
         if record.engine.read().await.is_finished() {
@@ -894,21 +1229,40 @@ async fn d4_live_run_with_failed_task_matches_recovery_derived_state() {
 
     // 2. Live finalisation must derive FAILED, not COMPLETED.
     let live_state = record.summary().await.state;
-    assert_eq!(live_state, RunState::Failed, "a run containing a FAILED task must not be reported COMPLETED live");
+    assert_eq!(
+        live_state,
+        RunState::Failed,
+        "a run containing a FAILED task must not be reported COMPLETED live"
+    );
 
     // 3. The database must durably agree with the live state.
-    let db_state = store.get_run_summary(run_id).await.expect("summary").expect("exists").state;
-    assert_eq!(db_state, live_state, "database run state must match the live state exactly");
+    let db_state = store
+        .get_run_summary(run_id)
+        .await
+        .expect("summary")
+        .expect("exists")
+        .state;
+    assert_eq!(
+        db_state, live_state,
+        "database run state must match the live state exactly"
+    );
 
     // 4. Recovery, via the canonical derive_run_state, must reach the same
     //    verdict for the identical task snapshot.
     let recovered = recovery_derived_state(
         &store,
         "d4-failed-shadow",
-        &[("ok1", TaskStatus::Passed), ("ok2", TaskStatus::Passed), ("bad", TaskStatus::Failed)],
+        &[
+            ("ok1", TaskStatus::Passed),
+            ("ok2", TaskStatus::Passed),
+            ("bad", TaskStatus::Failed),
+        ],
     )
     .await;
-    assert_eq!(recovered, live_state, "recovery-derived state must match live-finalisation state for the same tasks");
+    assert_eq!(
+        recovered, live_state,
+        "recovery-derived state must match live-finalisation state for the same tasks"
+    );
 }
 
 /// D4 Test 2 — BLOCKED: a dependent task blocked by a failed prerequisite
@@ -927,17 +1281,42 @@ async fn d4_live_run_with_blocked_task_matches_recovery_derived_state() {
         id: "dependent".into(),
         name: "dependent".into(),
         prerequisites: vec!["root".into()],
-        simulate: Some(SimSpec { outcome: SimOutcome::Pass, delay_ms: 0 }),
+        simulate: Some(SimSpec {
+            outcome: SimOutcome::Pass,
+            delay_ms: 0,
+        }),
         ..Default::default()
     };
     let p = plan("d4-blocked", vec![root, dependent], 2);
     let run_id = Uuid::new_v4();
     store
-        .insert_run(run_id, &p, Some("p1"), Some("tester"), RunState::Scheduled, None)
+        .insert_run(
+            run_id,
+            &p,
+            Some("p1"),
+            Some("tester"),
+            RunState::Scheduled,
+            None,
+        )
         .await
         .expect("insert_run");
-    let record = RunRecord::new(run_id, &p, Some("p1".into()), Some("tester".into()), RunState::Scheduled, None, None);
-    spawn_run(record.clone(), registry, p.concurrency, store.clone(), evidence, std::time::Duration::from_secs(10));
+    let record = RunRecord::new(
+        run_id,
+        &p,
+        Some("p1".into()),
+        Some("tester".into()),
+        RunState::Scheduled,
+        None,
+        None,
+    );
+    spawn_run(
+        record.clone(),
+        registry,
+        p.concurrency,
+        store.clone(),
+        evidence,
+        std::time::Duration::from_secs(10),
+    );
 
     for _ in 0..200 {
         if record.engine.read().await.is_finished() {
@@ -951,7 +1330,10 @@ async fn d4_live_run_with_blocked_task_matches_recovery_derived_state() {
     {
         let engine = record.engine.read().await;
         assert_eq!(engine.tasks[&"root".to_string()].status, TaskStatus::Failed);
-        assert_eq!(engine.tasks[&"dependent".to_string()].status, TaskStatus::Blocked);
+        assert_eq!(
+            engine.tasks[&"dependent".to_string()].status,
+            TaskStatus::Blocked
+        );
     }
 
     // 2. Live finalisation must derive FAILED (precedence over BLOCKED), not COMPLETED.
@@ -963,17 +1345,31 @@ async fn d4_live_run_with_blocked_task_matches_recovery_derived_state() {
     );
 
     // 3. The database must durably agree with the live state.
-    let db_state = store.get_run_summary(run_id).await.expect("summary").expect("exists").state;
-    assert_eq!(db_state, live_state, "database run state must match the live state exactly");
+    let db_state = store
+        .get_run_summary(run_id)
+        .await
+        .expect("summary")
+        .expect("exists")
+        .state;
+    assert_eq!(
+        db_state, live_state,
+        "database run state must match the live state exactly"
+    );
 
     // 4. Recovery must reach the same verdict for the identical task snapshot.
     let recovered = recovery_derived_state(
         &store,
         "d4-blocked-shadow",
-        &[("root", TaskStatus::Failed), ("dependent", TaskStatus::Blocked)],
+        &[
+            ("root", TaskStatus::Failed),
+            ("dependent", TaskStatus::Blocked),
+        ],
     )
     .await;
-    assert_eq!(recovered, live_state, "recovery-derived state must match live-finalisation state for the same tasks");
+    assert_eq!(
+        recovered, live_state,
+        "recovery-derived state must match live-finalisation state for the same tasks"
+    );
 }
 
 /// D4 Test 3 — TIMEOUT: a run whose only infrastructure outcome is a
@@ -985,7 +1381,8 @@ async fn d4_live_run_with_blocked_task_matches_recovery_derived_state() {
 async fn d4_live_run_with_timeout_task_matches_recovery_derived_state() {
     let (store, dir) = temp_store().await;
     let registry = Arc::new(
-        ExecutorRegistry::new(Arc::new(SimulatedExecutor)).register("hang", Arc::new(HangingExecutor)),
+        ExecutorRegistry::new(Arc::new(SimulatedExecutor))
+            .register("hang", Arc::new(HangingExecutor)),
     );
     let evidence = evidence_store(&dir);
 
@@ -997,13 +1394,32 @@ async fn d4_live_run_with_timeout_task_matches_recovery_derived_state() {
         executor: Some("hang".into()),
         ..Default::default()
     };
-    let p = plan("d4-timeout", vec![hanging, sim_task("fast", SimOutcome::Pass, 0)], 2);
+    let p = plan(
+        "d4-timeout",
+        vec![hanging, sim_task("fast", SimOutcome::Pass, 0)],
+        2,
+    );
     let run_id = Uuid::new_v4();
     store
-        .insert_run(run_id, &p, Some("p1"), Some("tester"), RunState::Scheduled, None)
+        .insert_run(
+            run_id,
+            &p,
+            Some("p1"),
+            Some("tester"),
+            RunState::Scheduled,
+            None,
+        )
         .await
         .expect("insert_run");
-    let record = RunRecord::new(run_id, &p, Some("p1".into()), Some("tester".into()), RunState::Scheduled, None, None);
+    let record = RunRecord::new(
+        run_id,
+        &p,
+        Some("p1".into()),
+        Some("tester".into()),
+        RunState::Scheduled,
+        None,
+        None,
+    );
     spawn_run(
         record.clone(),
         registry,
@@ -1023,22 +1439,40 @@ async fn d4_live_run_with_timeout_task_matches_recovery_derived_state() {
         }
     })
     .await;
-    assert!(deadline.is_ok(), "the run must finish; if this times out the executor timeout is not firing");
+    assert!(
+        deadline.is_ok(),
+        "the run must finish; if this times out the executor timeout is not firing"
+    );
 
     // 1. Task reaches the expected terminal state.
     {
         let engine = record.engine.read().await;
-        assert_eq!(engine.tasks[&"slow".to_string()].status, TaskStatus::Timeout);
+        assert_eq!(
+            engine.tasks[&"slow".to_string()].status,
+            TaskStatus::Timeout
+        );
         assert_eq!(engine.tasks[&"fast".to_string()].status, TaskStatus::Passed);
     }
 
     // 2. Live finalisation must derive PARTIAL, not COMPLETED.
     let live_state = record.summary().await.state;
-    assert_eq!(live_state, RunState::Partial, "a run containing a TIMEOUT task must not be reported COMPLETED live");
+    assert_eq!(
+        live_state,
+        RunState::Partial,
+        "a run containing a TIMEOUT task must not be reported COMPLETED live"
+    );
 
     // 3. The database must durably agree with the live state.
-    let db_state = store.get_run_summary(run_id).await.expect("summary").expect("exists").state;
-    assert_eq!(db_state, live_state, "database run state must match the live state exactly");
+    let db_state = store
+        .get_run_summary(run_id)
+        .await
+        .expect("summary")
+        .expect("exists")
+        .state;
+    assert_eq!(
+        db_state, live_state,
+        "database run state must match the live state exactly"
+    );
 
     // 4. Recovery must reach the same verdict for the identical task snapshot.
     let recovered = recovery_derived_state(
@@ -1047,7 +1481,10 @@ async fn d4_live_run_with_timeout_task_matches_recovery_derived_state() {
         &[("fast", TaskStatus::Passed), ("slow", TaskStatus::Timeout)],
     )
     .await;
-    assert_eq!(recovered, live_state, "recovery-derived state must match live-finalisation state for the same tasks");
+    assert_eq!(
+        recovered, live_state,
+        "recovery-derived state must match live-finalisation state for the same tasks"
+    );
 }
 
 // -------------------------------------------------------------------- D5
@@ -1063,7 +1500,9 @@ impl Executor for EvidenceProducingExecutor {
         ExecutionOutcome {
             status: TaskStatus::Passed,
             reason: None,
-            evidence: Some("captured stdout: all assertions ok\ncaptured stderr: (empty)\n".to_string()),
+            evidence: Some(
+                "captured stdout: all assertions ok\ncaptured stderr: (empty)\n".to_string(),
+            ),
         }
     }
 }
@@ -1081,7 +1520,8 @@ impl Executor for EvidenceProducingExecutor {
 async fn d5_insert_evidence_failure_is_escalated_with_no_false_success_row() {
     let (store, dir) = temp_store().await;
     let registry = Arc::new(
-        ExecutorRegistry::new(Arc::new(SimulatedExecutor)).register("evidence-producer", Arc::new(EvidenceProducingExecutor)),
+        ExecutorRegistry::new(Arc::new(SimulatedExecutor))
+            .register("evidence-producer", Arc::new(EvidenceProducingExecutor)),
     );
     let evidence = evidence_store(&dir);
 
@@ -1096,10 +1536,25 @@ async fn d5_insert_evidence_failure_is_escalated_with_no_false_success_row() {
     let p = plan("d5-evidence-fail", vec![task], 1);
     let run_id = Uuid::new_v4();
     store
-        .insert_run(run_id, &p, Some("p1"), Some("tester"), RunState::Scheduled, None)
+        .insert_run(
+            run_id,
+            &p,
+            Some("p1"),
+            Some("tester"),
+            RunState::Scheduled,
+            None,
+        )
         .await
         .expect("insert_run");
-    let record = RunRecord::new(run_id, &p, Some("p1".into()), Some("tester".into()), RunState::Scheduled, None, None);
+    let record = RunRecord::new(
+        run_id,
+        &p,
+        Some("p1".into()),
+        Some("tester".into()),
+        RunState::Scheduled,
+        None,
+        None,
+    );
 
     // Real SQLite write failure on every INSERT into `evidence` — not a mock,
     // not a manually-set flag.
@@ -1108,7 +1563,14 @@ async fn d5_insert_evidence_failure_is_escalated_with_no_false_success_row() {
         .await
         .expect("create trigger");
 
-    spawn_run(record.clone(), registry, p.concurrency, store.clone(), evidence, std::time::Duration::from_secs(10));
+    spawn_run(
+        record.clone(),
+        registry,
+        p.concurrency,
+        store.clone(),
+        evidence,
+        std::time::Duration::from_secs(10),
+    );
 
     for _ in 0..200 {
         if record.engine.read().await.is_finished() {
@@ -1122,12 +1584,18 @@ async fn d5_insert_evidence_failure_is_escalated_with_no_false_success_row() {
     // failure here must not corrupt or block the task's real result.
     {
         let engine = record.engine.read().await;
-        assert_eq!(engine.tasks[&"with-evidence".to_string()].status, TaskStatus::Passed);
+        assert_eq!(
+            engine.tasks[&"with-evidence".to_string()].status,
+            TaskStatus::Passed
+        );
     }
 
     // Error propagation: the failure must be escalated, not swallowed.
     let failure = record.persistence_error().await;
-    assert!(failure.is_some(), "an insert_evidence failure must be recorded via note_persistence_failure");
+    assert!(
+        failure.is_some(),
+        "an insert_evidence failure must be recorded via note_persistence_failure"
+    );
     assert!(
         failure.unwrap().contains("insert_evidence"),
         "the recorded failure must identify insert_evidence as the context"
@@ -1136,21 +1604,45 @@ async fn d5_insert_evidence_failure_is_escalated_with_no_false_success_row() {
     // No false success: the run must not be reported COMPLETED over evidence
     // that never made it to disk.
     let live_state = record.summary().await.state;
-    assert_eq!(live_state, RunState::Failed, "a run with a lost evidence write must not be reported COMPLETED");
-    let db_state = store.get_run_summary(run_id).await.expect("summary").expect("exists").state;
-    assert_eq!(db_state, live_state, "database state must durably agree with the live state");
+    assert_eq!(
+        live_state,
+        RunState::Failed,
+        "a run with a lost evidence write must not be reported COMPLETED"
+    );
+    let db_state = store
+        .get_run_summary(run_id)
+        .await
+        .expect("summary")
+        .expect("exists")
+        .state;
+    assert_eq!(
+        db_state, live_state,
+        "database state must durably agree with the live state"
+    );
 
     // Database verification: genuinely zero evidence rows for this run —
     // not a partial row, not a row with a dangling object_key.
-    let evidence_rows = store.list_evidence_for_run(run_id).await.expect("list_evidence_for_run");
-    assert_eq!(evidence_rows.len(), 0, "no evidence row may exist when its insert genuinely failed");
+    let evidence_rows = store
+        .list_evidence_for_run(run_id)
+        .await
+        .expect("list_evidence_for_run");
+    assert_eq!(
+        evidence_rows.len(),
+        0,
+        "no evidence row may exist when its insert genuinely failed"
+    );
 
     // The filesystem write, by contrast, really did happen — this is the
     // concrete divergence the escalation exists to catch: content exists
     // that the database has no knowledge of.
     let task_dir = dir.path().join("evidence").join(run_id.to_string());
-    let has_log_file = std::fs::read_dir(&task_dir).map(|mut it| it.next().is_some()).unwrap_or(false);
-    assert!(has_log_file, "the evidence file itself must have been written (only the DB row failed)");
+    let has_log_file = std::fs::read_dir(&task_dir)
+        .map(|mut it| it.next().is_some())
+        .unwrap_or(false);
+    assert!(
+        has_log_file,
+        "the evidence file itself must have been written (only the DB row failed)"
+    );
 }
 
 /// D5-B — `set_run_state`: a real SQLite write failure on the transition to
@@ -1164,13 +1656,32 @@ async fn d5_set_run_state_running_failure_is_escalated_and_run_finishes_failed()
     let registry = Arc::new(ExecutorRegistry::new(Arc::new(SimulatedExecutor)));
     let evidence = evidence_store(&dir);
 
-    let p = plan("d5-run-state-fail", vec![sim_task("t1", SimOutcome::Pass, 0)], 1);
+    let p = plan(
+        "d5-run-state-fail",
+        vec![sim_task("t1", SimOutcome::Pass, 0)],
+        1,
+    );
     let run_id = Uuid::new_v4();
     store
-        .insert_run(run_id, &p, Some("p1"), Some("tester"), RunState::Scheduled, None)
+        .insert_run(
+            run_id,
+            &p,
+            Some("p1"),
+            Some("tester"),
+            RunState::Scheduled,
+            None,
+        )
         .await
         .expect("insert_run");
-    let record = RunRecord::new(run_id, &p, Some("p1".into()), Some("tester".into()), RunState::Scheduled, None, None);
+    let record = RunRecord::new(
+        run_id,
+        &p,
+        Some("p1".into()),
+        Some("tester".into()),
+        RunState::Scheduled,
+        None,
+        None,
+    );
 
     // Fails only the UPDATE that sets state to RUNNING — set_run_finished's
     // UPDATE never sets state to 'RUNNING', so it is untouched by this trigger.
@@ -1183,7 +1694,14 @@ async fn d5_set_run_state_running_failure_is_escalated_and_run_finishes_failed()
     .await
     .expect("create trigger");
 
-    spawn_run(record.clone(), registry, p.concurrency, store.clone(), evidence, std::time::Duration::from_secs(10));
+    spawn_run(
+        record.clone(),
+        registry,
+        p.concurrency,
+        store.clone(),
+        evidence,
+        std::time::Duration::from_secs(10),
+    );
 
     for _ in 0..200 {
         if record.engine.read().await.is_finished() {
@@ -1197,20 +1715,39 @@ async fn d5_set_run_state_running_failure_is_escalated_and_run_finishes_failed()
     // still genuinely ran to completion.
     {
         let engine = record.engine.read().await;
-        assert_eq!(engine.tasks[&"t1".to_string()].status, TaskStatus::Passed, "execution must proceed despite the lost state write");
+        assert_eq!(
+            engine.tasks[&"t1".to_string()].status,
+            TaskStatus::Passed,
+            "execution must proceed despite the lost state write"
+        );
     }
 
     let failure = record.persistence_error().await;
-    assert!(failure.is_some(), "a set_run_state failure must be recorded via note_persistence_failure");
+    assert!(
+        failure.is_some(),
+        "a set_run_state failure must be recorded via note_persistence_failure"
+    );
     assert!(
         failure.unwrap().contains("set_run_state"),
         "the recorded failure must identify set_run_state as the context"
     );
 
     let live_state = record.summary().await.state;
-    assert_eq!(live_state, RunState::Failed, "a run whose RUNNING transition never persisted must not report COMPLETED");
-    let db_state = store.get_run_summary(run_id).await.expect("summary").expect("exists").state;
-    assert_eq!(db_state, live_state, "database state must durably agree with the live state");
+    assert_eq!(
+        live_state,
+        RunState::Failed,
+        "a run whose RUNNING transition never persisted must not report COMPLETED"
+    );
+    let db_state = store
+        .get_run_summary(run_id)
+        .await
+        .expect("summary")
+        .expect("exists")
+        .state;
+    assert_eq!(
+        db_state, live_state,
+        "database state must durably agree with the live state"
+    );
 }
 
 /// D5-C — `set_run_started`: a real SQLite write failure on the write that
@@ -1225,13 +1762,32 @@ async fn d5_set_run_started_failure_is_escalated_and_started_at_stays_null() {
     let registry = Arc::new(ExecutorRegistry::new(Arc::new(SimulatedExecutor)));
     let evidence = evidence_store(&dir);
 
-    let p = plan("d5-run-started-fail", vec![sim_task("t1", SimOutcome::Pass, 0)], 1);
+    let p = plan(
+        "d5-run-started-fail",
+        vec![sim_task("t1", SimOutcome::Pass, 0)],
+        1,
+    );
     let run_id = Uuid::new_v4();
     store
-        .insert_run(run_id, &p, Some("p1"), Some("tester"), RunState::Scheduled, None)
+        .insert_run(
+            run_id,
+            &p,
+            Some("p1"),
+            Some("tester"),
+            RunState::Scheduled,
+            None,
+        )
         .await
         .expect("insert_run");
-    let record = RunRecord::new(run_id, &p, Some("p1".into()), Some("tester".into()), RunState::Scheduled, None, None);
+    let record = RunRecord::new(
+        run_id,
+        &p,
+        Some("p1".into()),
+        Some("tester".into()),
+        RunState::Scheduled,
+        None,
+        None,
+    );
 
     // set_run_finished's UPDATE never touches started_at, so NEW.started_at
     // during that write just carries over the (still-NULL) old value — this
@@ -1245,7 +1801,14 @@ async fn d5_set_run_started_failure_is_escalated_and_started_at_stays_null() {
     .await
     .expect("create trigger");
 
-    spawn_run(record.clone(), registry, p.concurrency, store.clone(), evidence, std::time::Duration::from_secs(10));
+    spawn_run(
+        record.clone(),
+        registry,
+        p.concurrency,
+        store.clone(),
+        evidence,
+        std::time::Duration::from_secs(10),
+    );
 
     for _ in 0..200 {
         if record.engine.read().await.is_finished() {
@@ -1257,28 +1820,47 @@ async fn d5_set_run_started_failure_is_escalated_and_started_at_stays_null() {
 
     {
         let engine = record.engine.read().await;
-        assert_eq!(engine.tasks[&"t1".to_string()].status, TaskStatus::Passed, "execution must proceed despite the lost started_at write");
+        assert_eq!(
+            engine.tasks[&"t1".to_string()].status,
+            TaskStatus::Passed,
+            "execution must proceed despite the lost started_at write"
+        );
     }
 
     let failure = record.persistence_error().await;
-    assert!(failure.is_some(), "a set_run_started failure must be recorded via note_persistence_failure");
+    assert!(
+        failure.is_some(),
+        "a set_run_started failure must be recorded via note_persistence_failure"
+    );
     assert!(
         failure.unwrap().contains("set_run_started"),
         "the recorded failure must identify set_run_started as the context"
     );
 
     let live_state = record.summary().await.state;
-    assert_eq!(live_state, RunState::Failed, "a run whose start was never durably recorded must not report COMPLETED");
-    let db_summary = store.get_run_summary(run_id).await.expect("summary").expect("exists");
-    assert_eq!(db_summary.state, live_state, "database state must durably agree with the live state");
+    assert_eq!(
+        live_state,
+        RunState::Failed,
+        "a run whose start was never durably recorded must not report COMPLETED"
+    );
+    let db_summary = store
+        .get_run_summary(run_id)
+        .await
+        .expect("summary")
+        .expect("exists");
+    assert_eq!(
+        db_summary.state, live_state,
+        "database state must durably agree with the live state"
+    );
 
     // Direct database verification: started_at genuinely never made it in,
     // even though the run demonstrably executed and finished.
-    let row_started_at: Option<String> = sqlx::query_scalar("SELECT started_at FROM runs WHERE id = ?")
-        .bind(run_id.to_string())
-        .fetch_one(&store.pool)
-        .await
-        .expect("query started_at");
+    let row_started_at: Option<String> =
+        sqlx::query_scalar("SELECT started_at FROM runs WHERE id = ?")
+            .bind(run_id.to_string())
+            .fetch_one(&store.pool)
+            .await
+            .expect("query started_at");
     assert_eq!(row_started_at, None, "started_at must remain NULL in the database — the write that would have set it genuinely failed");
 }
 
@@ -1298,15 +1880,38 @@ async fn d5_concurrent_recovery_of_multiple_orphaned_runs_is_consistent_and_non_
 
     async fn seed_orphan(store: &Store, name: &str) -> Uuid {
         let run_id = Uuid::new_v4();
-        let p = plan(name, vec![sim_task("done", SimOutcome::Pass, 0), sim_task("orphan", SimOutcome::Pass, 0)], 2);
+        let p = plan(
+            name,
+            vec![
+                sim_task("done", SimOutcome::Pass, 0),
+                sim_task("orphan", SimOutcome::Pass, 0),
+            ],
+            2,
+        );
         store
-            .insert_run(run_id, &p, Some("p1"), Some("tester"), RunState::Running, None)
+            .insert_run(
+                run_id,
+                &p,
+                Some("p1"),
+                Some("tester"),
+                RunState::Running,
+                None,
+            )
             .await
             .expect("insert_run");
-        store.set_task_status(run_id, "done", TaskStatus::Running, None, true, false).await.unwrap();
-        store.set_task_status(run_id, "done", TaskStatus::Passed, None, false, true).await.unwrap();
+        store
+            .set_task_status(run_id, "done", TaskStatus::Running, None, true, false)
+            .await
+            .unwrap();
+        store
+            .set_task_status(run_id, "done", TaskStatus::Passed, None, false, true)
+            .await
+            .unwrap();
         // "orphan" is left RUNNING, exactly like an unclean shutdown.
-        store.set_task_status(run_id, "orphan", TaskStatus::Running, None, true, false).await.unwrap();
+        store
+            .set_task_status(run_id, "orphan", TaskStatus::Running, None, true, false)
+            .await
+            .unwrap();
         run_id
     }
 
@@ -1315,7 +1920,10 @@ async fn d5_concurrent_recovery_of_multiple_orphaned_runs_is_consistent_and_non_
 
     // Two concurrent recovery passes against the SAME connection pool/file —
     // the real concurrency primitive, not two sequential calls.
-    let (result_a, result_b) = tokio::join!(recover_incomplete_runs(&store), recover_incomplete_runs(&store));
+    let (result_a, result_b) = tokio::join!(
+        recover_incomplete_runs(&store),
+        recover_incomplete_runs(&store)
+    );
 
     // Whichever caller "loses" a duplicate-event race is allowed to report
     // that in its own return value — what must NOT happen is that loss
@@ -1328,15 +1936,26 @@ async fn d5_concurrent_recovery_of_multiple_orphaned_runs_is_consistent_and_non_
     for (label, run_id) in [("A", run_a), ("B", run_b)] {
         let tasks = store.list_tasks_for_run(run_id).await.expect("tasks");
         let done = tasks.iter().find(|t| t.id == "done").expect("done task");
-        let orphan = tasks.iter().find(|t| t.id == "orphan").expect("orphan task");
-        assert_eq!(done.status, TaskStatus::Passed, "run {label}: an already-terminal task must not be corrupted by the race");
+        let orphan = tasks
+            .iter()
+            .find(|t| t.id == "orphan")
+            .expect("orphan task");
+        assert_eq!(
+            done.status,
+            TaskStatus::Passed,
+            "run {label}: an already-terminal task must not be corrupted by the race"
+        );
         assert_eq!(
             orphan.status,
             TaskStatus::InfraError,
             "run {label}: the orphaned task must be repaired exactly once, to the correct terminal status, regardless of which racer did it"
         );
 
-        let summary = store.get_run_summary(run_id).await.expect("summary").expect("run exists");
+        let summary = store
+            .get_run_summary(run_id)
+            .await
+            .expect("summary")
+            .expect("run exists");
         assert_eq!(
             summary.state,
             RunState::Partial,
@@ -1349,7 +1968,12 @@ async fn d5_concurrent_recovery_of_multiple_orphaned_runs_is_consistent_and_non_
         let events = store.list_events_since(run_id, 0).await.expect("events");
         let recovery_events = events
             .iter()
-            .filter(|e| e.summary.as_deref().unwrap_or("").contains("run recovered at startup"))
+            .filter(|e| {
+                e.summary
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("run recovered at startup")
+            })
             .count();
         assert_eq!(
             recovery_events, 1,
@@ -1374,15 +1998,48 @@ async fn be13_cancel_actually_interrupts_an_in_flight_task_rather_than_waiting_i
     let evidence = evidence_store(&dir);
     let registry = Arc::new(ExecutorRegistry::new(Arc::new(SimulatedExecutor)));
 
-    let p = plan("cancel-in-flight", vec![sim_task("slow", SimOutcome::Pass, 2_000)], 1);
+    let p = plan(
+        "cancel-in-flight",
+        vec![sim_task("slow", SimOutcome::Pass, 2_000)],
+        1,
+    );
     let run_id = Uuid::new_v4();
-    store.insert_run(run_id, &p, Some("p1"), Some("tester"), RunState::Scheduled, None).await.expect("insert_run");
-    let record = RunRecord::new(run_id, &p, Some("p1".into()), Some("tester".into()), RunState::Scheduled, None, None);
-    spawn_run(record.clone(), registry, p.concurrency, store.clone(), evidence, std::time::Duration::from_secs(30));
+    store
+        .insert_run(
+            run_id,
+            &p,
+            Some("p1"),
+            Some("tester"),
+            RunState::Scheduled,
+            None,
+        )
+        .await
+        .expect("insert_run");
+    let record = RunRecord::new(
+        run_id,
+        &p,
+        Some("p1".into()),
+        Some("tester".into()),
+        RunState::Scheduled,
+        None,
+        None,
+    );
+    spawn_run(
+        record.clone(),
+        registry,
+        p.concurrency,
+        store.clone(),
+        evidence,
+        std::time::Duration::from_secs(30),
+    );
 
     // Give the task a moment to actually be dispatched and start running.
     tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-    assert_eq!(record.engine.read().await.tasks["slow"].status, TaskStatus::Running, "task must be genuinely in-flight before cancelling");
+    assert_eq!(
+        record.engine.read().await.tasks["slow"].status,
+        TaskStatus::Running,
+        "task must be genuinely in-flight before cancelling"
+    );
 
     let start = std::time::Instant::now();
     record.request_cancel("tester").await;
@@ -1403,13 +2060,28 @@ async fn be13_cancel_actually_interrupts_an_in_flight_task_rather_than_waiting_i
     );
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await; // let the finalisation tail persist
-    assert_eq!(record.engine.read().await.tasks["slow"].status, TaskStatus::Cancelled);
+    assert_eq!(
+        record.engine.read().await.tasks["slow"].status,
+        TaskStatus::Cancelled
+    );
     assert_eq!(*record.state.read().await, RunState::Cancelled);
 
-    let summary = store.get_run_summary(run_id).await.expect("summary").expect("run exists");
-    assert_eq!(summary.state, RunState::Cancelled, "durable state must also be CANCELLED");
+    let summary = store
+        .get_run_summary(run_id)
+        .await
+        .expect("summary")
+        .expect("run exists");
+    assert_eq!(
+        summary.state,
+        RunState::Cancelled,
+        "durable state must also be CANCELLED"
+    );
     let tasks = store.list_tasks_for_run(run_id).await.expect("tasks");
-    assert_eq!(tasks[0].status, TaskStatus::Cancelled, "durable task status must also be CANCELLED");
+    assert_eq!(
+        tasks[0].status,
+        TaskStatus::Cancelled,
+        "durable task status must also be CANCELLED"
+    );
 }
 
 /// BE-13 — a task that was never dispatched (still QUEUED, waiting for a
@@ -1426,17 +2098,52 @@ async fn be13_cancel_prevents_a_not_yet_started_queued_task_from_ever_running() 
     // QUEUED behind it the whole time.
     let p = plan(
         "cancel-queued",
-        vec![sim_task("first", SimOutcome::Pass, 500), sim_task("second", SimOutcome::Pass, 0)],
+        vec![
+            sim_task("first", SimOutcome::Pass, 500),
+            sim_task("second", SimOutcome::Pass, 0),
+        ],
         1,
     );
     let run_id = Uuid::new_v4();
-    store.insert_run(run_id, &p, Some("p1"), Some("tester"), RunState::Scheduled, None).await.expect("insert_run");
-    let record = RunRecord::new(run_id, &p, Some("p1".into()), Some("tester".into()), RunState::Scheduled, None, None);
-    spawn_run(record.clone(), registry, p.concurrency, store.clone(), evidence, std::time::Duration::from_secs(30));
+    store
+        .insert_run(
+            run_id,
+            &p,
+            Some("p1"),
+            Some("tester"),
+            RunState::Scheduled,
+            None,
+        )
+        .await
+        .expect("insert_run");
+    let record = RunRecord::new(
+        run_id,
+        &p,
+        Some("p1".into()),
+        Some("tester".into()),
+        RunState::Scheduled,
+        None,
+        None,
+    );
+    spawn_run(
+        record.clone(),
+        registry,
+        p.concurrency,
+        store.clone(),
+        evidence,
+        std::time::Duration::from_secs(30),
+    );
 
     tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-    assert_eq!(record.engine.read().await.tasks["first"].status, TaskStatus::Running);
-    assert_eq!(record.engine.read().await.tasks["second"].status, TaskStatus::Queued, "second must still be waiting on the permit, never started");
+    assert_eq!(
+        record.engine.read().await.tasks["first"].status,
+        TaskStatus::Running
+    );
+    assert_eq!(
+        record.engine.read().await.tasks["second"].status,
+        TaskStatus::Queued,
+        "second must still be waiting on the permit, never started"
+    );
 
     record.request_cancel("tester").await;
 
@@ -1448,9 +2155,20 @@ async fn be13_cancel_prevents_a_not_yet_started_queued_task_from_ever_running() 
     }
 
     let engine = record.engine.read().await;
-    assert_eq!(engine.tasks["first"].status, TaskStatus::Cancelled, "in-flight task interrupted");
-    assert_eq!(engine.tasks["second"].status, TaskStatus::Cancelled, "never-started task cancelled directly, never RUNNING");
-    assert!(engine.tasks["second"].started_at.is_none(), "a task cancelled before dispatch must never have a started_at");
+    assert_eq!(
+        engine.tasks["first"].status,
+        TaskStatus::Cancelled,
+        "in-flight task interrupted"
+    );
+    assert_eq!(
+        engine.tasks["second"].status,
+        TaskStatus::Cancelled,
+        "never-started task cancelled directly, never RUNNING"
+    );
+    assert!(
+        engine.tasks["second"].started_at.is_none(),
+        "a task cancelled before dispatch must never have a started_at"
+    );
 }
 
 /// BE-13 durability — a `CANCELLED` task status, once actually persisted,
@@ -1463,18 +2181,53 @@ async fn be13_cancel_prevents_a_not_yet_started_queued_task_from_ever_running() 
 async fn be13_recovery_reports_cancelled_run_as_cancelled_not_completed() {
     let (store, _dir) = temp_store().await;
     let run_id = Uuid::new_v4();
-    let p = plan("cancel-recovery", vec![sim_task("t1", SimOutcome::Pass, 0), sim_task("t2", SimOutcome::Pass, 0)], 2);
+    let p = plan(
+        "cancel-recovery",
+        vec![
+            sim_task("t1", SimOutcome::Pass, 0),
+            sim_task("t2", SimOutcome::Pass, 0),
+        ],
+        2,
+    );
     // Simulates: process died right after persisting one task as CANCELLED
     // (the completion path) but before the run-level completion write.
-    store.insert_run(run_id, &p, Some("p1"), Some("tester"), RunState::Running, None).await.expect("insert");
     store
-        .set_task_status(run_id, "t1", TaskStatus::Cancelled, Some("run cancelled while this task was executing"), false, true)
+        .insert_run(
+            run_id,
+            &p,
+            Some("p1"),
+            Some("tester"),
+            RunState::Running,
+            None,
+        )
+        .await
+        .expect("insert");
+    store
+        .set_task_status(
+            run_id,
+            "t1",
+            TaskStatus::Cancelled,
+            Some("run cancelled while this task was executing"),
+            false,
+            true,
+        )
         .await
         .unwrap();
-    store.set_task_status(run_id, "t2", TaskStatus::Running, None, true, false).await.unwrap(); // orphaned mid-flight
+    store
+        .set_task_status(run_id, "t2", TaskStatus::Running, None, true, false)
+        .await
+        .unwrap(); // orphaned mid-flight
 
     recover_incomplete_runs(&store).await.expect("recovery");
 
-    let summary = store.get_run_summary(run_id).await.expect("summary").expect("run exists");
-    assert_eq!(summary.state, RunState::Cancelled, "a run with any CANCELLED task must recover as CANCELLED, not COMPLETED/PARTIAL");
+    let summary = store
+        .get_run_summary(run_id)
+        .await
+        .expect("summary")
+        .expect("run exists");
+    assert_eq!(
+        summary.state,
+        RunState::Cancelled,
+        "a run with any CANCELLED task must recover as CANCELLED, not COMPLETED/PARTIAL"
+    );
 }

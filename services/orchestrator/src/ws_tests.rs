@@ -7,7 +7,9 @@
 //! the real upgrade/auth/multiplex path ran, not that an internal
 //! broadcaster was called directly the way production code never does.
 
-use crate::ai_router::test_support::{healthy_model, healthy_provider, FakeDiscovery, FakeExecutor};
+use crate::ai_router::test_support::{
+    healthy_model, healthy_provider, FakeDiscovery, FakeExecutor,
+};
 use crate::ai_router::{AiExecutor, AiInfrastructure, CapabilityLevel};
 use crate::domain::RunEvent;
 use crate::evidence::LocalEvidenceStore;
@@ -21,7 +23,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpStream;
-use tokio_tungstenite::tungstenite::{Message as WsMessage, Error as WsError};
+use tokio_tungstenite::tungstenite::{Error as WsError, Message as WsMessage};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use uuid::Uuid;
 
@@ -29,7 +31,9 @@ type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 async fn test_state() -> (AppState, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
-    let store = Store::connect(&dir.path().join("ws.sqlite3")).await.expect("connect");
+    let store = Store::connect(&dir.path().join("ws.sqlite3"))
+        .await
+        .expect("connect");
     let evidence = LocalEvidenceStore::new(dir.path().join("evidence")).expect("evidence store");
     let registry = ExecutorRegistry::new(Arc::new(SimulatedExecutor));
     let policy = PolicyConfig {
@@ -37,20 +41,33 @@ async fn test_state() -> (AppState, tempfile::TempDir) {
         require_approval_for: HashSet::new(),
         blocked_executors: HashSet::new(),
     };
-    let mut executors: std::collections::HashMap<&'static str, Arc<dyn AiExecutor>> = std::collections::HashMap::new();
+    let mut executors: std::collections::HashMap<&'static str, Arc<dyn AiExecutor>> =
+        std::collections::HashMap::new();
     executors.insert("mock", Arc::new(FakeExecutor::ok("{}")));
     let ai_infra = Arc::new(AiInfrastructure::new(
-        vec![Arc::new(FakeDiscovery(healthy_provider("mock", vec![healthy_model("mock-model", "mock", CapabilityLevel::Strong)])))],
+        vec![Arc::new(FakeDiscovery(healthy_provider(
+            "mock",
+            vec![healthy_model("mock-model", "mock", CapabilityLevel::Strong)],
+        )))],
         executors,
     ));
-    (AppState::new(Arc::new(registry), store, policy, evidence, ai_infra), dir)
+    (
+        AppState::new(Arc::new(registry), store, policy, evidence, ai_infra),
+        dir,
+    )
 }
 
 async fn mint_key(state: &AppState, role: &str, project_id: Option<&str>) -> String {
     let raw = crate::auth::generate_key();
     state
         .store
-        .insert_api_key(Uuid::new_v4(), "ws-test-key", &crate::auth::hash_key(&raw), role, project_id)
+        .insert_api_key(
+            Uuid::new_v4(),
+            "ws-test-key",
+            &crate::auth::hash_key(&raw),
+            role,
+            project_id,
+        )
         .await
         .expect("insert_api_key");
     raw
@@ -58,7 +75,11 @@ async fn mint_key(state: &AppState, role: &str, project_id: Option<&str>) -> Str
 
 async fn make_project(state: &AppState, name: &str) -> Uuid {
     let id = Uuid::new_v4();
-    state.store.insert_project(id, name, None).await.expect("insert_project");
+    state
+        .store
+        .insert_project(id, name, None)
+        .await
+        .expect("insert_project");
     id
 }
 
@@ -66,7 +87,9 @@ async fn make_project(state: &AppState, name: &str) -> Uuid {
 /// the background. Returns the HTTP origin ("http://127.0.0.1:PORT") —
 /// callers derive both REST and `ws://` URLs from it.
 async fn spawn_server(state: AppState) -> String {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
     let addr = listener.local_addr().expect("local_addr");
     let app = crate::api::router(state);
     tokio::spawn(async move {
@@ -83,7 +106,13 @@ fn simple_plan(name: &str) -> Value {
     })
 }
 
-async fn create_run(client: &reqwest::Client, base: &str, project: Uuid, key: &str, plan: Value) -> Uuid {
+async fn create_run(
+    client: &reqwest::Client,
+    base: &str,
+    project: Uuid,
+    key: &str,
+    plan: Value,
+) -> Uuid {
     let resp = client
         .post(format!("{base}/api/v1/projects/{project}/executions"))
         .bearer_auth(key)
@@ -91,7 +120,11 @@ async fn create_run(client: &reqwest::Client, base: &str, project: Uuid, key: &s
         .send()
         .await
         .expect("create run request");
-    assert_eq!(resp.status(), reqwest::StatusCode::CREATED, "create run must succeed");
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::CREATED,
+        "create run must succeed"
+    );
     let body: Value = resp.json().await.expect("json body");
     Uuid::parse_str(body["run_id"].as_str().expect("run_id")).expect("valid uuid")
 }
@@ -100,13 +133,19 @@ async fn create_run(client: &reqwest::Client, base: &str, project: Uuid, key: &s
 /// the upgrade actually succeeded (101 Switching Protocols); `Err` carries
 /// the real pre-upgrade HTTP status tungstenite captured, for asserting the
 /// rejection cases.
-async fn try_connect_project_stream(base: &str, project: Uuid, key: Option<&str>) -> Result<WsStream, WsError> {
+async fn try_connect_project_stream(
+    base: &str,
+    project: Uuid,
+    key: Option<&str>,
+) -> Result<WsStream, WsError> {
     let ws_base = base.replacen("http://", "ws://", 1);
     let url = match key {
         Some(k) => format!("{ws_base}/api/v1/projects/{project}/events?key={k}"),
         None => format!("{ws_base}/api/v1/projects/{project}/events"),
     };
-    tokio_tungstenite::connect_async(url).await.map(|(ws, _resp)| ws)
+    tokio_tungstenite::connect_async(url)
+        .await
+        .map(|(ws, _resp)| ws)
 }
 
 fn rejection_status(err: &WsError) -> Option<u16> {
@@ -136,7 +175,9 @@ async fn recv_event(ws: &mut WsStream, timeout: Duration) -> Value {
 /// leak check. Bounded, not an arbitrary long sleep.
 async fn assert_silence(ws: &mut WsStream, dur: Duration, context: &str) {
     match tokio::time::timeout(dur, ws.next()).await {
-        Ok(Some(Ok(WsMessage::Text(text)))) => panic!("{context}: unexpected event received: {text}"),
+        Ok(Some(Ok(WsMessage::Text(text)))) => {
+            panic!("{context}: unexpected event received: {text}")
+        }
         Ok(Some(Ok(_))) | Ok(None) => {}
         Ok(Some(Err(e))) => panic!("{context}: websocket error while expecting silence: {e}"),
         Err(_) => {} // timed out with nothing received — the desired outcome
@@ -154,7 +195,10 @@ async fn be14_authorized_subscriber_can_connect_to_project_stream() {
     let base = spawn_server(state).await;
 
     let ws = try_connect_project_stream(&base, project, Some(&key)).await;
-    assert!(ws.is_ok(), "authorized subscriber must be able to connect: {ws:?}");
+    assert!(
+        ws.is_ok(),
+        "authorized subscriber must be able to connect: {ws:?}"
+    );
 }
 
 /// Category: missing authentication is rejected.
@@ -164,14 +208,17 @@ async fn be14_missing_key_is_rejected() {
     let project = make_project(&state, "WS No Key").await;
     let base = spawn_server(state).await;
 
-    let err = try_connect_project_stream(&base, project, None).await.expect_err("must be rejected");
+    let err = try_connect_project_stream(&base, project, None)
+        .await
+        .expect_err("must be rejected");
     assert_eq!(rejection_status(&err), Some(401), "err={err:?}");
 }
 
 /// Category: nonexistent project is rejected with structured behavior
 /// where applicable (pre-upgrade WS responses are deliberately plain, not
-/// the JSON envelope — see `errors.rs`'s module doc comment on `ws_handler`
-/// / G-WS; this asserts the real status code that IS guaranteed).
+/// the JSON envelope — see `errors.rs`'s module doc comment on
+/// `project_events_ws_handler` / G-WS; this asserts the real status code
+/// that IS guaranteed).
 #[tokio::test]
 async fn be14_nonexistent_project_is_rejected() {
     let (state, _dir) = test_state().await;
@@ -179,7 +226,9 @@ async fn be14_nonexistent_project_is_rejected() {
     let base = spawn_server(state).await;
     let phantom = Uuid::new_v4();
 
-    let err = try_connect_project_stream(&base, phantom, Some(&admin_key)).await.expect_err("must be rejected");
+    let err = try_connect_project_stream(&base, phantom, Some(&admin_key))
+        .await
+        .expect_err("must be rejected");
     assert_eq!(rejection_status(&err), Some(404), "err={err:?}");
 }
 
@@ -192,8 +241,14 @@ async fn be14_cross_project_subscription_is_rejected() {
     let key_a = mint_key(&state, "operator", Some(&project_a.to_string())).await;
     let base = spawn_server(state).await;
 
-    let err = try_connect_project_stream(&base, project_b, Some(&key_a)).await.expect_err("must be rejected");
-    assert_eq!(rejection_status(&err), Some(403), "a project-A-scoped key must not reach project B's stream; err={err:?}");
+    let err = try_connect_project_stream(&base, project_b, Some(&key_a))
+        .await
+        .expect_err("must be rejected");
+    assert_eq!(
+        rejection_status(&err),
+        Some(403),
+        "a project-A-scoped key must not reach project B's stream; err={err:?}"
+    );
 }
 
 /// Category: two real projects produce distinct execution events; each
@@ -211,8 +266,12 @@ async fn be14_subscribers_receive_only_their_own_projects_real_events() {
     let base = spawn_server(state).await;
     let client = reqwest::Client::new();
 
-    let mut ws_a = try_connect_project_stream(&base, project_a, Some(&key_a)).await.expect("A connects");
-    let mut ws_b = try_connect_project_stream(&base, project_b, Some(&key_b)).await.expect("B connects");
+    let mut ws_a = try_connect_project_stream(&base, project_a, Some(&key_a))
+        .await
+        .expect("A connects");
+    let mut ws_b = try_connect_project_stream(&base, project_b, Some(&key_b))
+        .await
+        .expect("B connects");
 
     let run_a = create_run(&client, &base, project_a, &key_a, simple_plan("run-a")).await;
 
@@ -220,7 +279,12 @@ async fn be14_subscribers_receive_only_their_own_projects_real_events() {
     let ev_a = recv_event(&mut ws_a, Duration::from_secs(5)).await;
     assert_eq!(ev_a["run_id"], run_a.to_string(), "event={ev_a}");
     assert_eq!(ev_a["project_id"], project_a.to_string(), "event={ev_a}");
-    assert_silence(&mut ws_b, Duration::from_millis(400), "project B subscriber during project A's run").await;
+    assert_silence(
+        &mut ws_b,
+        Duration::from_millis(400),
+        "project B subscriber during project A's run",
+    )
+    .await;
 
     // Now trigger a real event in B and confirm A never sees it either —
     // the leak check in both directions, not just one.
@@ -236,8 +300,16 @@ async fn be14_subscribers_receive_only_their_own_projects_real_events() {
         match tokio::time::timeout(deadline - tokio::time::Instant::now(), ws_a.next()).await {
             Ok(Some(Ok(WsMessage::Text(text)))) => {
                 let ev: Value = serde_json::from_str(&text).expect("json");
-                assert_ne!(ev["run_id"], run_b.to_string(), "project A subscriber leaked project B's run: {ev}");
-                assert_ne!(ev["project_id"], project_b.to_string(), "project A subscriber leaked project B's project_id: {ev}");
+                assert_ne!(
+                    ev["run_id"],
+                    run_b.to_string(),
+                    "project A subscriber leaked project B's run: {ev}"
+                );
+                assert_ne!(
+                    ev["project_id"],
+                    project_b.to_string(),
+                    "project A subscriber leaked project B's project_id: {ev}"
+                );
             }
             _ => break,
         }
@@ -256,30 +328,50 @@ async fn be14_disconnect_releases_the_subscriber() {
     let state_handle = state.clone();
     let base = spawn_server(state).await;
 
-    let ws = try_connect_project_stream(&base, project, Some(&key)).await.expect("connect");
+    let ws = try_connect_project_stream(&base, project, Some(&key))
+        .await
+        .expect("connect");
 
     // Give the server side a moment to finish the upgrade and subscribe.
     let mut subscribed = false;
     for _ in 0..50 {
-        if state_handle.project_stream(&project.to_string()).await.tx.receiver_count() >= 1 {
+        if state_handle
+            .project_stream(&project.to_string())
+            .await
+            .tx
+            .receiver_count()
+            >= 1
+        {
             subscribed = true;
             break;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert!(subscribed, "server must have subscribed to the project stream after a successful upgrade");
+    assert!(
+        subscribed,
+        "server must have subscribed to the project stream after a successful upgrade"
+    );
 
     drop(ws); // client disconnects
 
     let mut released = false;
     for _ in 0..50 {
-        if state_handle.project_stream(&project.to_string()).await.tx.receiver_count() == 0 {
+        if state_handle
+            .project_stream(&project.to_string())
+            .await
+            .tx
+            .receiver_count()
+            == 0
+        {
             released = true;
             break;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert!(released, "disconnecting the client must release its subscription (no leaked receiver)");
+    assert!(
+        released,
+        "disconnecting the client must release its subscription (no leaked receiver)"
+    );
 }
 
 /// Category: existing per-run catch-up REST endpoint must continue to
@@ -296,14 +388,19 @@ async fn be14_per_run_events_rest_endpoint_still_works() {
     tokio::time::sleep(Duration::from_millis(200)).await; // let the fast SimulatedExecutor task finish
 
     let resp = client
-        .get(format!("{base}/api/v1/projects/{project}/executions/{run_id}/events"))
+        .get(format!(
+            "{base}/api/v1/projects/{project}/executions/{run_id}/events"
+        ))
         .bearer_auth(&key)
         .send()
         .await
         .expect("events request");
     assert_eq!(resp.status(), reqwest::StatusCode::OK);
     let events: Vec<RunEvent> = resp.json().await.expect("json");
-    assert!(!events.is_empty(), "a completed run must have real persisted/in-memory events");
+    assert!(
+        !events.is_empty(),
+        "a completed run must have real persisted/in-memory events"
+    );
     assert!(events.iter().all(|e| e.run_id == run_id));
 }
 
@@ -324,7 +421,9 @@ async fn be14_lagging_subscriber_is_closed_with_distinct_code_not_silently_skipp
     let state_for_server = state.clone();
     let base = spawn_server(state_for_server).await;
 
-    let mut ws = try_connect_project_stream(&base, project, Some(&key)).await.expect("connect");
+    let mut ws = try_connect_project_stream(&base, project, Some(&key))
+        .await
+        .expect("connect");
 
     let mut subscribed = false;
     for _ in 0..50 {
@@ -334,7 +433,10 @@ async fn be14_lagging_subscriber_is_closed_with_distinct_code_not_silently_skipp
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert!(subscribed, "server must have subscribed before the flood begins");
+    assert!(
+        subscribed,
+        "server must have subscribed before the flood begins"
+    );
 
     // Non-yielding loop: no `.await` between sends, so the server's
     // consumer task cannot be scheduled to drain any of these until after
@@ -361,28 +463,17 @@ async fn be14_lagging_subscriber_is_closed_with_distinct_code_not_silently_skipp
         .expect("stream ended without a close frame");
     match close {
         Ok(WsMessage::Close(Some(frame))) => {
-            assert_eq!(frame.code, tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::from(4001u16), "close frame={frame:?}")
+            assert_eq!(
+                frame.code,
+                tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::from(4001u16),
+                "close frame={frame:?}"
+            )
         }
         other => panic!("expected a Close(4001) frame after lagging, got: {other:?}"),
     }
 }
 
-/// Category: existing per-run WebSocket must not regress.
-#[tokio::test]
-async fn be14_legacy_per_run_websocket_still_works() {
-    let (state, _dir) = test_state().await;
-    let project = make_project(&state, "Legacy WS Regression").await;
-    let key = mint_key(&state, "operator", Some(&project.to_string())).await;
-    let base = spawn_server(state).await;
-    let client = reqwest::Client::new();
-
-    let run_id = create_run(&client, &base, project, &key, simple_plan("legacy-ws")).await;
-
-    let ws_base = base.replacen("http://", "ws://", 1);
-    let (mut ws, _resp) = tokio_tungstenite::connect_async(format!("{ws_base}/runs/{run_id}/ws?key={key}"))
-        .await
-        .expect("legacy per-run ws connect");
-
-    let ev = recv_event(&mut ws, Duration::from_secs(5)).await;
-    assert_eq!(ev["run_id"], run_id.to_string(), "event={ev}");
-}
+// Phase B cleanup: `be14_legacy_per_run_websocket_still_works` was removed
+// together with the legacy per-run `/runs/:id/ws` socket it pinned — the
+// project-scoped stream above (`/api/v1/projects/:id/events`) is now the
+// only WebSocket endpoint, and its coverage lives in the tests above.

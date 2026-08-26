@@ -225,7 +225,11 @@ mod tests {
         // All 10 are independent, so all are eligible up front and remain so
         // even after some are simulated as failing below.
         let eligible = engine.eligible();
-        assert_eq!(eligible.len(), 10, "all independent tasks are eligible immediately");
+        assert_eq!(
+            eligible.len(),
+            10,
+            "all independent tasks are eligible immediately"
+        );
 
         for id in &eligible {
             engine.mark_started(id);
@@ -298,7 +302,10 @@ mod tests {
         engine.mark_started("d");
         let newly = engine.complete_task("a", TaskStatus::Failed, Some("boom".into()));
         // Completing 'a' as Failed must cascade-block both 'b' and 'c'.
-        assert_eq!(newly, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+        assert_eq!(
+            newly,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
         assert_eq!(engine.tasks["b"].status, TaskStatus::Blocked);
         assert_eq!(engine.tasks["c"].status, TaskStatus::Blocked);
 

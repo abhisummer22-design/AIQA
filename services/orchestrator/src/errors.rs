@@ -17,7 +17,8 @@
 //! Content-Type" vs "bad path parameter", so none of those are changed here,
 //! only their body shape).
 //!
-//! Scope note: `api.rs::ws_handler`'s pre-upgrade rejections are
+//! Scope note: `api.rs::project_events_ws_handler`'s pre-upgrade
+//! rejections are
 //! deliberately NOT converted to this envelope. A WebSocket handshake
 //! failure is not a JSON API response a browser's `WebSocket` client parses
 //! as JSON, and G-WS (WebSocket auth/transport semantics) is an explicitly
@@ -25,7 +26,10 @@
 //! `AIQA_PHASE2_BE9_IMPLEMENTATION_REPORT.md`.
 
 use axum::{
-    extract::{FromRequest, FromRequestParts, Json as AxumJson, Path as AxumPath, Query as AxumQuery, Request},
+    extract::{
+        FromRequest, FromRequestParts, Json as AxumJson, Path as AxumPath, Query as AxumQuery,
+        Request,
+    },
     http::{request::Parts, StatusCode},
     response::{IntoResponse, Json, Response},
 };
@@ -60,7 +64,11 @@ pub struct ApiError {
 
 impl ApiError {
     pub fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
-        Self { status, code, message: message.into() }
+        Self {
+            status,
+            code,
+            message: message.into(),
+        }
     }
 
     /// 401 — missing, malformed, or unrecognized credentials.
@@ -107,7 +115,11 @@ impl ApiError {
     /// placed in the response body. The client sees a fixed, safe message.
     pub fn internal(context: impl std::fmt::Display) -> Self {
         tracing::error!("internal error: {context}");
-        Self::new(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "An internal error occurred.")
+        Self::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "INTERNAL_ERROR",
+            "An internal error occurred.",
+        )
     }
 
     /// BE-10 — a request Axum itself rejected before any handler ran

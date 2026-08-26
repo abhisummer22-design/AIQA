@@ -98,7 +98,10 @@ pub fn classify_failure(reason: &str) -> (String, f64) {
             0.5,
         );
     }
-    if lower.contains("econnrefused") || lower.contains("connection refused") || lower.contains("connect error") {
+    if lower.contains("econnrefused")
+        || lower.contains("connection refused")
+        || lower.contains("connect error")
+    {
         return (
             "Target service was unreachable (connection refused) — likely down, still starting, or pointed at the wrong base URL".into(),
             0.55,
@@ -108,7 +111,11 @@ pub fn classify_failure(reason: &str) -> (String, f64) {
     // is a more specific signal than merely containing a 3-digit number
     // (e.g. "expected 200 to equal 404" is a test assertion mismatch, not
     // literally a 404 response — the old ordering let " 404" shadow this).
-    if lower.contains("assert") || lower.contains("expect") || lower.contains("to have status") || lower.contains("to eql") {
+    if lower.contains("assert")
+        || lower.contains("expect")
+        || lower.contains("to have status")
+        || lower.contains("to eql")
+    {
         return (
             "Assertion mismatch between expected and actual output — behavior likely changed since the assertion was written".into(),
             0.4,
@@ -116,7 +123,8 @@ pub fn classify_failure(reason: &str) -> (String, f64) {
     }
     if lower.contains(" 404") || lower.contains("not found") {
         return (
-            "Endpoint returned 404 — route missing, renamed, or moved since the test was written".into(),
+            "Endpoint returned 404 — route missing, renamed, or moved since the test was written"
+                .into(),
             0.45,
         );
     }
@@ -148,7 +156,12 @@ impl<'a> Intelligence<'a> {
     /// BLOCKED, SKIPPED, CANCELLED: those aren't evidence the *thing under
     /// test* is broken, per the FRD §2 product-vs-infrastructure distinction
     /// this codebase already keeps everywhere else).
-    pub async fn ingest_run(&self, project_id: Option<&str>, plan: &RunPlan, tasks: &[TaskState]) -> Result<()> {
+    pub async fn ingest_run(
+        &self,
+        project_id: Option<&str>,
+        plan: &RunPlan,
+        tasks: &[TaskState],
+    ) -> Result<()> {
         let pid = tenant_key(project_id);
         let prereq_counts: std::collections::HashMap<&str, usize> = plan
             .tasks
@@ -160,8 +173,12 @@ impl<'a> Intelligence<'a> {
             if !t.status.is_terminal() {
                 continue;
             }
-            self.update_test_intelligence(pid, t, prereq_counts.get(t.id.as_str()).copied().unwrap_or(0))
-                .await?;
+            self.update_test_intelligence(
+                pid,
+                t,
+                prereq_counts.get(t.id.as_str()).copied().unwrap_or(0),
+            )
+            .await?;
 
             if matches!(t.status, TaskStatus::Failed | TaskStatus::Timeout) {
                 self.record_failure(pid, t).await?;
@@ -170,7 +187,12 @@ impl<'a> Intelligence<'a> {
         Ok(())
     }
 
-    async fn update_test_intelligence(&self, project_id: &str, t: &TaskState, dependency_count: usize) -> Result<()> {
+    async fn update_test_intelligence(
+        &self,
+        project_id: &str,
+        t: &TaskState,
+        dependency_count: usize,
+    ) -> Result<()> {
         let node_id = self
             .store
             .upsert_quality_node(project_id, "test", &t.name, &t.name)
@@ -180,10 +202,18 @@ impl<'a> Intelligence<'a> {
         // here is already the resolved tenant key (see `tenant_key`), so an
         // untenanted run scores against other untenanted runs and never
         // against a real project's history.
-        let history = self.store.task_history_by_name(&t.name, Some(project_id), 20).await?;
+        let history = self
+            .store
+            .task_history_by_name(&t.name, Some(project_id), 20)
+            .await?;
         let relevant: Vec<bool> = history
             .iter()
-            .filter(|h| matches!(h.status, TaskStatus::Passed | TaskStatus::Failed | TaskStatus::Timeout))
+            .filter(|h| {
+                matches!(
+                    h.status,
+                    TaskStatus::Passed | TaskStatus::Failed | TaskStatus::Timeout
+                )
+            })
             .map(|h| matches!(h.status, TaskStatus::Passed))
             .collect();
 
@@ -295,8 +325,16 @@ impl<'a> Intelligence<'a> {
         // NEEDS_REVIEW until a human calls POST /bug-drafts/:id/review —
         // this module never auto-confirms anything.
         if occurrence_count >= 2 && !self.store.has_bug_draft_for_cluster(cluster_id).await? {
-            let severity = if occurrence_count >= 5 { "High" } else { "Medium" };
-            let title = format!("Recurring failure in '{}' ({occurrence_count}x): {}", t.name, signature.chars().take(80).collect::<String>());
+            let severity = if occurrence_count >= 5 {
+                "High"
+            } else {
+                "Medium"
+            };
+            let title = format!(
+                "Recurring failure in '{}' ({occurrence_count}x): {}",
+                t.name,
+                signature.chars().take(80).collect::<String>()
+            );
             let description = format!(
                 "Task '{}' has failed {occurrence_count} times with a matching failure signature.\n\n\
                  Heuristic root-cause hypothesis (rule-based, not LLM-derived — see intelligence.rs): {hypothesis}\n\n\
@@ -343,8 +381,14 @@ struct AiHypothesisResponse {
 
 #[derive(Debug, Clone)]
 pub enum AiHypothesisOutcome {
-    Ai { hypothesis: String, provider: String, model: String },
-    Failed { reason: String },
+    Ai {
+        hypothesis: String,
+        provider: String,
+        model: String,
+    },
+    Failed {
+        reason: String,
+    },
 }
 
 /// Builds the real prompt sent to the model. Takes only what is actually,
@@ -359,7 +403,11 @@ pub enum AiHypothesisOutcome {
 /// normalized signature only, and explicitly tells the model that numbers/
 /// ids were collapsed, so it does not mistake `#` for a literal character
 /// in the real failure text or invent a specific number to fill the gap.
-pub fn build_bug_analysis_prompt(signature: &str, rule_based_hypothesis: &str, occurrence_count: i64) -> String {
+pub fn build_bug_analysis_prompt(
+    signature: &str,
+    rule_based_hypothesis: &str,
+    occurrence_count: i64,
+) -> String {
     format!(
         "You are assisting with root-cause analysis of a recurring software test failure. A deterministic, \
          rule-based classifier has already produced a first-pass hypothesis (shown below) by matching the \
@@ -393,9 +441,19 @@ pub fn build_bug_analysis_prompt(signature: &str, rule_based_hypothesis: &str, o
 /// that decides what a failure means for the HTTP response — this function
 /// itself does not touch `Store` at all (see `set_ai_hypothesis`, called
 /// only by the caller, only on `Ai { .. }`).
-pub async fn generate_ai_hypothesis(infra: &AiInfrastructure, signature: &str, rule_based_hypothesis: &str, occurrence_count: i64) -> AiHypothesisOutcome {
+pub async fn generate_ai_hypothesis(
+    infra: &AiInfrastructure,
+    signature: &str,
+    rule_based_hypothesis: &str,
+    occurrence_count: i64,
+) -> AiHypothesisOutcome {
     let prompt = build_bug_analysis_prompt(signature, rule_based_hypothesis, occurrence_count);
-    let request = AiRequest { task: AiTask::BugAnalysis, prompt, preferred_provider: None, preferred_model: None };
+    let request = AiRequest {
+        task: AiTask::BugAnalysis,
+        prompt,
+        preferred_provider: None,
+        preferred_model: None,
+    };
     let result = match infra.generate(request).await {
         GenerationOutcome2::Ok(r) => r,
         GenerationOutcome2::Failed { reason } => return AiHypothesisOutcome::Failed { reason },
@@ -403,13 +461,23 @@ pub async fn generate_ai_hypothesis(infra: &AiInfrastructure, signature: &str, r
 
     let parsed: AiHypothesisResponse = match serde_json::from_str(&result.text) {
         Ok(v) => v,
-        Err(e) => return AiHypothesisOutcome::Failed { reason: format!("invalid structured output: {e}") },
+        Err(e) => {
+            return AiHypothesisOutcome::Failed {
+                reason: format!("invalid structured output: {e}"),
+            }
+        }
     };
     if parsed.hypothesis.trim().is_empty() {
-        return AiHypothesisOutcome::Failed { reason: "AI response contained an empty hypothesis".to_string() };
+        return AiHypothesisOutcome::Failed {
+            reason: "AI response contained an empty hypothesis".to_string(),
+        };
     }
 
-    AiHypothesisOutcome::Ai { hypothesis: parsed.hypothesis, provider: result.provider, model: result.model }
+    AiHypothesisOutcome::Ai {
+        hypothesis: parsed.hypothesis,
+        provider: result.provider,
+        model: result.model,
+    }
 }
 
 #[cfg(test)]
@@ -425,9 +493,15 @@ mod tests {
 
     #[test]
     fn classify_failure_recognizes_common_categories() {
-        assert!(classify_failure("connect ECONNREFUSED 127.0.0.1:8080").0.contains("unreachable"));
-        assert!(classify_failure("Timeout 30000ms exceeded").0.contains("timeout"));
-        assert!(classify_failure("expected 200 to equal 404").0.contains("Assertion"));
+        assert!(classify_failure("connect ECONNREFUSED 127.0.0.1:8080")
+            .0
+            .contains("unreachable"));
+        assert!(classify_failure("Timeout 30000ms exceeded")
+            .0
+            .contains("timeout"));
+        assert!(classify_failure("expected 200 to equal 404")
+            .0
+            .contains("Assertion"));
         assert!(classify_failure("some totally novel failure text").1 <= 0.2);
     }
 
@@ -435,47 +509,75 @@ mod tests {
 
     #[test]
     fn bug_analysis_prompt_carries_the_real_signature_hypothesis_and_occurrence_count() {
-        let prompt = build_bug_analysis_prompt("connect econnrefused #.#.#.#:#", "Target service was unreachable", 4);
+        let prompt = build_bug_analysis_prompt(
+            "connect econnrefused #.#.#.#:#",
+            "Target service was unreachable",
+            4,
+        );
         assert!(prompt.contains("connect econnrefused #.#.#.#:#"));
         assert!(prompt.contains("Target service was unreachable"));
         assert!(prompt.contains('4'));
-        assert!(prompt.to_lowercase().contains("never invent a specific file name"));
+        assert!(prompt
+            .to_lowercase()
+            .contains("never invent a specific file name"));
     }
 
     #[test]
     fn bug_analysis_prompt_differs_by_real_signature_not_just_by_occurrence_count() {
-        let timeout_prompt = build_bug_analysis_prompt("operation exceeded its timeout threshold", "Operation exceeded its timeout threshold", 3);
-        let refused_prompt = build_bug_analysis_prompt("connect econnrefused #.#.#.#:#", "Target service was unreachable", 3);
+        let timeout_prompt = build_bug_analysis_prompt(
+            "operation exceeded its timeout threshold",
+            "Operation exceeded its timeout threshold",
+            3,
+        );
+        let refused_prompt = build_bug_analysis_prompt(
+            "connect econnrefused #.#.#.#:#",
+            "Target service was unreachable",
+            3,
+        );
         assert_ne!(timeout_prompt, refused_prompt);
     }
 
     #[test]
     fn ai_hypothesis_response_schema_rejects_missing_hypothesis_field() {
-        let parsed: Result<AiHypothesisResponse, _> = serde_json::from_str(r#"{"not_hypothesis":"x"}"#);
-        assert!(parsed.is_err(), "a response missing the required 'hypothesis' field must fail schema validation");
+        let parsed: Result<AiHypothesisResponse, _> =
+            serde_json::from_str(r#"{"not_hypothesis":"x"}"#);
+        assert!(
+            parsed.is_err(),
+            "a response missing the required 'hypothesis' field must fail schema validation"
+        );
     }
 
     // --------------------------------------------- central-router integration
 
-    use crate::ai_router::test_support::{healthy_model, healthy_provider, FakeDiscovery, FakeExecutor};
+    use crate::ai_router::test_support::{
+        healthy_model, healthy_provider, FakeDiscovery, FakeExecutor,
+    };
     use crate::ai_router::{CapabilityLevel, ExecutionError};
     use std::collections::HashMap;
     use std::sync::Arc;
 
     fn infra_with_executor_response(response: &str) -> AiInfrastructure {
-        let mut executors: HashMap<&'static str, Arc<dyn crate::ai_router::AiExecutor>> = HashMap::new();
+        let mut executors: HashMap<&'static str, Arc<dyn crate::ai_router::AiExecutor>> =
+            HashMap::new();
         executors.insert("mock", Arc::new(FakeExecutor::ok(response)));
         AiInfrastructure::new(
-            vec![Arc::new(FakeDiscovery(healthy_provider("mock", vec![healthy_model("mock-model", "mock", CapabilityLevel::Strong)])))],
+            vec![Arc::new(FakeDiscovery(healthy_provider(
+                "mock",
+                vec![healthy_model("mock-model", "mock", CapabilityLevel::Strong)],
+            )))],
             executors,
         )
     }
 
     fn infra_with_executor_error(err: ExecutionError) -> AiInfrastructure {
-        let mut executors: HashMap<&'static str, Arc<dyn crate::ai_router::AiExecutor>> = HashMap::new();
+        let mut executors: HashMap<&'static str, Arc<dyn crate::ai_router::AiExecutor>> =
+            HashMap::new();
         executors.insert("mock", Arc::new(FakeExecutor::err(err)));
         AiInfrastructure::new(
-            vec![Arc::new(FakeDiscovery(healthy_provider("mock", vec![healthy_model("mock-model", "mock", CapabilityLevel::Strong)])))],
+            vec![Arc::new(FakeDiscovery(healthy_provider(
+                "mock",
+                vec![healthy_model("mock-model", "mock", CapabilityLevel::Strong)],
+            )))],
             executors,
         )
     }
@@ -483,15 +585,29 @@ mod tests {
     /// ACC-018 Verification item 1 — "Local model success."
     #[tokio::test]
     async fn integration_real_routing_to_bug_analysis_returns_ai_outcome_on_success() {
-        let infra = infra_with_executor_response(r#"{"hypothesis":"The target dependency's health check was still warming up when this run started."}"#);
-        let outcome = generate_ai_hypothesis(&infra, "connect econnrefused #.#.#.#:#", "Target service was unreachable", 3).await;
+        let infra = infra_with_executor_response(
+            r#"{"hypothesis":"The target dependency's health check was still warming up when this run started."}"#,
+        );
+        let outcome = generate_ai_hypothesis(
+            &infra,
+            "connect econnrefused #.#.#.#:#",
+            "Target service was unreachable",
+            3,
+        )
+        .await;
         match outcome {
-            AiHypothesisOutcome::Ai { hypothesis, provider, model } => {
+            AiHypothesisOutcome::Ai {
+                hypothesis,
+                provider,
+                model,
+            } => {
                 assert_eq!(hypothesis, "The target dependency's health check was still warming up when this run started.");
                 assert_eq!(provider, "mock");
                 assert_eq!(model, "mock-model");
             }
-            AiHypothesisOutcome::Failed { reason } => panic!("expected Ai outcome, got Failed: {reason}"),
+            AiHypothesisOutcome::Failed { reason } => {
+                panic!("expected Ai outcome, got Failed: {reason}")
+            }
         }
     }
 
@@ -501,10 +617,20 @@ mod tests {
     #[tokio::test]
     async fn integration_real_timeout_reports_truthful_failure_never_fabricated_hypothesis() {
         let infra = infra_with_executor_error(ExecutionError::Timeout);
-        let outcome = generate_ai_hypothesis(&infra, "operation exceeded its timeout threshold", "Operation exceeded its timeout threshold", 2).await;
+        let outcome = generate_ai_hypothesis(
+            &infra,
+            "operation exceeded its timeout threshold",
+            "Operation exceeded its timeout threshold",
+            2,
+        )
+        .await;
         match outcome {
-            AiHypothesisOutcome::Failed { reason } => assert!(reason.contains("TIMEOUT"), "reason={reason}"),
-            AiHypothesisOutcome::Ai { .. } => panic!("a real timeout must never produce a fabricated Ai outcome"),
+            AiHypothesisOutcome::Failed { reason } => {
+                assert!(reason.contains("TIMEOUT"), "reason={reason}")
+            }
+            AiHypothesisOutcome::Ai { .. } => {
+                panic!("a real timeout must never produce a fabricated Ai outcome")
+            }
         }
     }
 
@@ -512,27 +638,54 @@ mod tests {
     /// all is registered, so routing itself fails before any execution is
     /// even attempted.
     #[tokio::test]
-    async fn integration_no_provider_available_reports_no_compatible_model_never_fabricated_hypothesis() {
+    async fn integration_no_provider_available_reports_no_compatible_model_never_fabricated_hypothesis(
+    ) {
         let infra = AiInfrastructure::new(vec![], HashMap::new());
-        let outcome = generate_ai_hypothesis(&infra, "connect econnrefused #.#.#.#:#", "Target service was unreachable", 2).await;
+        let outcome = generate_ai_hypothesis(
+            &infra,
+            "connect econnrefused #.#.#.#:#",
+            "Target service was unreachable",
+            2,
+        )
+        .await;
         match outcome {
-            AiHypothesisOutcome::Failed { reason } => assert!(reason.contains("NoCompatibleModel"), "reason={reason}"),
-            AiHypothesisOutcome::Ai { .. } => panic!("no provider exists at all — this must never fabricate a success"),
+            AiHypothesisOutcome::Failed { reason } => {
+                assert!(reason.contains("NoCompatibleModel"), "reason={reason}")
+            }
+            AiHypothesisOutcome::Ai { .. } => {
+                panic!("no provider exists at all — this must never fabricate a success")
+            }
         }
     }
 
     #[tokio::test]
     async fn integration_invalid_structured_output_reports_truthful_failure() {
         let infra = infra_with_executor_response("not json at all");
-        let outcome = generate_ai_hypothesis(&infra, "connect econnrefused #.#.#.#:#", "Target service was unreachable", 2).await;
+        let outcome = generate_ai_hypothesis(
+            &infra,
+            "connect econnrefused #.#.#.#:#",
+            "Target service was unreachable",
+            2,
+        )
+        .await;
         assert!(matches!(outcome, AiHypothesisOutcome::Failed { .. }));
     }
 
     #[tokio::test]
-    async fn integration_empty_hypothesis_string_is_treated_as_a_real_failure_not_a_blank_success() {
+    async fn integration_empty_hypothesis_string_is_treated_as_a_real_failure_not_a_blank_success()
+    {
         let infra = infra_with_executor_response(r#"{"hypothesis":"   "}"#);
-        let outcome = generate_ai_hypothesis(&infra, "connect econnrefused #.#.#.#:#", "Target service was unreachable", 2).await;
-        assert!(matches!(outcome, AiHypothesisOutcome::Failed { .. }), "a blank hypothesis must never be accepted as a real Ai outcome");
+        let outcome = generate_ai_hypothesis(
+            &infra,
+            "connect econnrefused #.#.#.#:#",
+            "Target service was unreachable",
+            2,
+        )
+        .await;
+        assert!(
+            matches!(outcome, AiHypothesisOutcome::Failed { .. }),
+            "a blank hypothesis must never be accepted as a real Ai outcome"
+        );
     }
 
     /// ACC-018 Verification item 2 — "API fallback." A genuine second
@@ -540,13 +693,36 @@ mod tests {
     /// as-is, not a parallel fallback mechanism written for this task).
     #[tokio::test]
     async fn integration_falls_back_to_the_next_best_model_when_the_primary_fails() {
-        let mut executors: HashMap<&'static str, Arc<dyn crate::ai_router::AiExecutor>> = HashMap::new();
-        executors.insert("primary", Arc::new(FakeExecutor::err(ExecutionError::Timeout)));
-        executors.insert("backup", Arc::new(FakeExecutor::ok(r#"{"hypothesis":"A genuinely different, backup-sourced hypothesis."}"#)));
+        let mut executors: HashMap<&'static str, Arc<dyn crate::ai_router::AiExecutor>> =
+            HashMap::new();
+        executors.insert(
+            "primary",
+            Arc::new(FakeExecutor::err(ExecutionError::Timeout)),
+        );
+        executors.insert(
+            "backup",
+            Arc::new(FakeExecutor::ok(
+                r#"{"hypothesis":"A genuinely different, backup-sourced hypothesis."}"#,
+            )),
+        );
         let infra = AiInfrastructure::new(
             vec![
-                Arc::new(FakeDiscovery(healthy_provider("primary", vec![healthy_model("primary-model", "primary", CapabilityLevel::Strong)]))),
-                Arc::new(FakeDiscovery(healthy_provider("backup", vec![healthy_model("backup-model", "backup", CapabilityLevel::Basic)]))),
+                Arc::new(FakeDiscovery(healthy_provider(
+                    "primary",
+                    vec![healthy_model(
+                        "primary-model",
+                        "primary",
+                        CapabilityLevel::Strong,
+                    )],
+                ))),
+                Arc::new(FakeDiscovery(healthy_provider(
+                    "backup",
+                    vec![healthy_model(
+                        "backup-model",
+                        "backup",
+                        CapabilityLevel::Basic,
+                    )],
+                ))),
             ],
             executors,
         );
@@ -559,13 +735,31 @@ mod tests {
             })
             .await;
 
-        let outcome = generate_ai_hypothesis(&infra, "connect econnrefused #.#.#.#:#", "Target service was unreachable", 2).await;
+        let outcome = generate_ai_hypothesis(
+            &infra,
+            "connect econnrefused #.#.#.#:#",
+            "Target service was unreachable",
+            2,
+        )
+        .await;
         match outcome {
-            AiHypothesisOutcome::Ai { hypothesis, provider, .. } => {
-                assert_eq!(provider, "backup", "must genuinely fall back to the real, different, working provider");
-                assert_eq!(hypothesis, "A genuinely different, backup-sourced hypothesis.");
+            AiHypothesisOutcome::Ai {
+                hypothesis,
+                provider,
+                ..
+            } => {
+                assert_eq!(
+                    provider, "backup",
+                    "must genuinely fall back to the real, different, working provider"
+                );
+                assert_eq!(
+                    hypothesis,
+                    "A genuinely different, backup-sourced hypothesis."
+                );
             }
-            AiHypothesisOutcome::Failed { reason } => panic!("expected a real fallback to succeed, got Failed: {reason}"),
+            AiHypothesisOutcome::Failed { reason } => {
+                panic!("expected a real fallback to succeed, got Failed: {reason}")
+            }
         }
     }
 
@@ -574,13 +768,36 @@ mod tests {
     /// a fabricated success synthesized from neither.
     #[tokio::test]
     async fn integration_reports_truthful_failure_when_every_candidate_including_fallback_fails() {
-        let mut executors: HashMap<&'static str, Arc<dyn crate::ai_router::AiExecutor>> = HashMap::new();
-        executors.insert("primary", Arc::new(FakeExecutor::err(ExecutionError::Timeout)));
-        executors.insert("backup", Arc::new(FakeExecutor::err(ExecutionError::ProviderUnavailable("backup down too".to_string()))));
+        let mut executors: HashMap<&'static str, Arc<dyn crate::ai_router::AiExecutor>> =
+            HashMap::new();
+        executors.insert(
+            "primary",
+            Arc::new(FakeExecutor::err(ExecutionError::Timeout)),
+        );
+        executors.insert(
+            "backup",
+            Arc::new(FakeExecutor::err(ExecutionError::ProviderUnavailable(
+                "backup down too".to_string(),
+            ))),
+        );
         let infra = AiInfrastructure::new(
             vec![
-                Arc::new(FakeDiscovery(healthy_provider("primary", vec![healthy_model("primary-model", "primary", CapabilityLevel::Strong)]))),
-                Arc::new(FakeDiscovery(healthy_provider("backup", vec![healthy_model("backup-model", "backup", CapabilityLevel::Basic)]))),
+                Arc::new(FakeDiscovery(healthy_provider(
+                    "primary",
+                    vec![healthy_model(
+                        "primary-model",
+                        "primary",
+                        CapabilityLevel::Strong,
+                    )],
+                ))),
+                Arc::new(FakeDiscovery(healthy_provider(
+                    "backup",
+                    vec![healthy_model(
+                        "backup-model",
+                        "backup",
+                        CapabilityLevel::Basic,
+                    )],
+                ))),
             ],
             executors,
         );
@@ -593,8 +810,17 @@ mod tests {
             })
             .await;
 
-        let outcome = generate_ai_hypothesis(&infra, "connect econnrefused #.#.#.#:#", "Target service was unreachable", 2).await;
-        assert!(matches!(outcome, AiHypothesisOutcome::Failed { .. }), "both candidates genuinely failed — this must never fabricate a success from neither");
+        let outcome = generate_ai_hypothesis(
+            &infra,
+            "connect econnrefused #.#.#.#:#",
+            "Target service was unreachable",
+            2,
+        )
+        .await;
+        assert!(
+            matches!(outcome, AiHypothesisOutcome::Failed { .. }),
+            "both candidates genuinely failed — this must never fabricate a success from neither"
+        );
     }
 
     #[test]
@@ -604,7 +830,13 @@ mod tests {
         // exactly what this unit's routing tests above already rely on —
         // not silently redefined here.
         let required = crate::ai_router::required_capabilities(AiTask::BugAnalysis);
-        assert_eq!(required, vec![crate::ai_router::RequiredCapability::TextGeneration, crate::ai_router::RequiredCapability::Reasoning]);
+        assert_eq!(
+            required,
+            vec![
+                crate::ai_router::RequiredCapability::TextGeneration,
+                crate::ai_router::RequiredCapability::Reasoning
+            ]
+        );
     }
 
     // ---------------------------------------------------------------- live
@@ -636,27 +868,44 @@ mod tests {
             let (h, _) = classify_failure(timeout_reason);
             (sig, h)
         };
-        assert_ne!(connection_signature, timeout_signature, "the two real example failures must genuinely normalize to different signatures");
+        assert_ne!(
+            connection_signature, timeout_signature,
+            "the two real example failures must genuinely normalize to different signatures"
+        );
 
         let infra = AiInfrastructure::from_env();
         infra.discover_all().await;
 
-        let connection_outcome = generate_ai_hypothesis(&infra, &connection_signature, &connection_hypothesis, 3).await;
-        let timeout_outcome = generate_ai_hypothesis(&infra, &timeout_signature, &timeout_hypothesis, 3).await;
+        let connection_outcome =
+            generate_ai_hypothesis(&infra, &connection_signature, &connection_hypothesis, 3).await;
+        let timeout_outcome =
+            generate_ai_hypothesis(&infra, &timeout_signature, &timeout_hypothesis, 3).await;
 
         let connection_text = match connection_outcome {
-            AiHypothesisOutcome::Ai { hypothesis, provider, model } => {
+            AiHypothesisOutcome::Ai {
+                hypothesis,
+                provider,
+                model,
+            } => {
                 println!("CONNECTION-REFUSED via {provider}/{model}: {hypothesis}");
                 hypothesis
             }
-            AiHypothesisOutcome::Failed { reason } => panic!("live Ollama call failed (connection-refused cluster): {reason}"),
+            AiHypothesisOutcome::Failed { reason } => {
+                panic!("live Ollama call failed (connection-refused cluster): {reason}")
+            }
         };
         let timeout_text = match timeout_outcome {
-            AiHypothesisOutcome::Ai { hypothesis, provider, model } => {
+            AiHypothesisOutcome::Ai {
+                hypothesis,
+                provider,
+                model,
+            } => {
                 println!("TIMEOUT via {provider}/{model}: {hypothesis}");
                 hypothesis
             }
-            AiHypothesisOutcome::Failed { reason } => panic!("live Ollama call failed (timeout cluster): {reason}"),
+            AiHypothesisOutcome::Failed { reason } => {
+                panic!("live Ollama call failed (timeout cluster): {reason}")
+            }
         };
 
         assert_ne!(

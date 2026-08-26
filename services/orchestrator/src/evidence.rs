@@ -34,10 +34,19 @@ impl LocalEvidenceStore {
     /// Writes `content` under `<root>/<run_id>/<task_id>-<kind>-<uuid>.log`
     /// and returns the object key (relative to `root`, so it's portable if
     /// `root` moves) plus the byte size actually written.
-    pub fn put(&self, run_id: &str, task_id: &str, kind: &str, content: &str) -> std::io::Result<(String, i64)> {
+    pub fn put(
+        &self,
+        run_id: &str,
+        task_id: &str,
+        kind: &str,
+        content: &str,
+    ) -> std::io::Result<(String, i64)> {
         let dir = self.root.join(run_id);
         std::fs::create_dir_all(&dir)?;
-        let safe_task_id: String = task_id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
+        let safe_task_id: String = task_id
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+            .collect();
         let file_name = format!("{safe_task_id}-{kind}-{}.log", uuid::Uuid::new_v4());
         let path = dir.join(&file_name);
         std::fs::write(&path, content.as_bytes())?;
@@ -55,7 +64,10 @@ impl LocalEvidenceStore {
     /// traversal bug here would be a silent-until-exploited file read).
     fn resolve(&self, object_key: &str) -> std::io::Result<PathBuf> {
         if object_key.contains("..") {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid object_key"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid object_key",
+            ));
         }
         let path = self.root.join(object_key);
         let root_canon = self.root.canonicalize()?;
@@ -63,7 +75,10 @@ impl LocalEvidenceStore {
         // fine, `read` should 404 on a missing key anyway.
         let path_canon = path.canonicalize()?;
         if !path_canon.starts_with(&root_canon) {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "object_key escapes evidence root"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "object_key escapes evidence root",
+            ));
         }
         Ok(path)
     }

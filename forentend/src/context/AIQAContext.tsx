@@ -8,7 +8,6 @@ import {
   Environment,
   GenerationSession,
   SystemSettings,
-  ActivityEvent,
 } from '../types';
 
 interface AIQAContextType {
@@ -25,9 +24,6 @@ interface AIQAContextType {
   // Generator
   activeGenerationSession: GenerationSession | null;
   setActiveGenerationSession: React.Dispatch<React.SetStateAction<GenerationSession | null>>;
-
-  // Activity Stream (write-only — see this field's own useState comment)
-  addActivity: (event: Omit<ActivityEvent, 'id' | 'timestamp'>) => void;
 
   // Settings
   settings: SystemSettings;
@@ -85,13 +81,37 @@ const defaultSettings: SystemSettings = {
 
 const AIQAContext = createContext<AIQAContextType | undefined>(undefined);
 
+const SETTINGS_STORAGE_KEY = 'aiqa.settings';
+
+function loadStoredSettings(): SystemSettings {
+  try {
+    const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
+    if (!raw) return defaultSettings;
+    const parsed = JSON.parse(raw);
+    return {
+      ...defaultSettings,
+      ...parsed,
+      general: { ...defaultSettings.general, ...parsed.general },
+      authentication: { ...defaultSettings.authentication, ...parsed.authentication },
+      execution: { ...defaultSettings.execution, ...parsed.execution },
+      policies: { ...defaultSettings.policies, ...parsed.policies },
+      aiModels: { ...defaultSettings.aiModels, ...parsed.aiModels },
+      notifications: { ...defaultSettings.notifications, ...parsed.notifications },
+    };
+  } catch {
+    return defaultSettings;
+  }
+}
+
 export const AIQAProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
   const [currentEnvironment, setCurrentEnvironment] = useState<Environment>('staging');
   const [isCommandPaletteOpen, setCommandPaletteOpen] = useState<boolean>(false);
 
-  // Settings
-  const [settings, setSettings] = useState<SystemSettings>(defaultSettings);
+  // Settings — persisted to localStorage so a refresh doesn't silently
+  // revert the workspace back to defaultSettings (this context has no
+  // backend-backed store for these fields, unlike AI Models & Reasoning).
+  const [settings, setSettings] = useState<SystemSettings>(loadStoredSettings);
 
   // FE-16: the fabricated `runs`/`triggerNewRun` local execution-run model
   // (fake run IDs, fake pass/running/queued counts, fake test names) was
@@ -109,118 +129,32 @@ export const AIQAProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // concept this generic context has no business owning.
 
   // Generator Session
-  const [activeGenerationSession, setActiveGenerationSession] = useState<GenerationSession | null>({
-    id: 'gen-4401',
-    // Phase 1 (AI Test Case Generator integration) — this used to pre-fill
-    // the real Requirement Text field with a fabricated scenario on every
-    // fresh page load. That field is now the literal text sent to the real
-    // AI backend on Generate; leaving it pre-filled with invented content
-    // risked a user unknowingly submitting fake seed text as their own
-    // real requirement to a real, authenticated generation call. Left
-    // empty so a real generation always starts from what a user actually
-    // typed. The `generatedCases` demo content below this remains
-    // unchanged — it is pre-existing, disclosed-in-repo-audit sample
-    // dashboard content, not itself part of this phase's generation path.
-    requirementText: '',
-    specType: 'NATURAL_LANGUAGE',
-    targetAppUrl: 'https://staging.enterprise.com/auth/login',
-    currentStep: 'GENERATED_CASES',
-    depth: 'STANDARD',
-    createdAt: new Date(Date.now() - 1000 * 60 * 20).toISOString(),
-    generatedCases: [
-      {
-        id: 'tc-gen-1',
-        title: 'OAuth PKCE Challenge Validation on Malformed Code Verifier',
-        description: 'Verify authorization server rejects auth code exchange when code_verifier SHA-256 does not match code_challenge.',
-        category: 'Security',
-        priority: 'CRITICAL',
-        severity: 'CRITICAL',
-        riskFactor: 'HIGH',
-        status: 'PENDING_REVIEW',
-        suggestedTags: ['security', 'oauth2', 'pkce', 'p0'],
-        preconditions: ['User registered with valid credentials', 'Auth client registered with PKCE strict mode enabled'],
-        steps: [
-          { stepNumber: 1, action: 'Initiate GET /oauth/authorize with S256 code_challenge', expectedResult: 'HTTP 302 with authorization code' },
-          { stepNumber: 2, action: 'POST /oauth/token with mismatched code_verifier', expectedResult: 'HTTP 400 invalid_grant error code' },
-        ],
-        assertions: [
-          'Response status is 400 Bad Request',
-          'JSON error field equals "invalid_grant"',
-          'Audit log records failed PKCE validation event',
-        ],
-      },
-      {
-        id: 'tc-gen-2',
-        title: 'MFA Bypass Attempt on Sensitive Profile Attribute Mutation',
-        description: 'Ensure profile phone number change endpoint enforces MFA step-up authentication even if bearer session token is active.',
-        category: 'Security',
-        priority: 'HIGH',
-        severity: 'MAJOR',
-        riskFactor: 'HIGH',
-        status: 'APPROVED',
-        suggestedTags: ['mfa', 'security', 'step-up'],
-        preconditions: ['User has active session token without step-up MFA challenge token'],
-        steps: [
-          { stepNumber: 1, action: 'Send PATCH /api/v1/user/profile with new phone number', expectedResult: 'HTTP 403 with step_up_required header' },
-          { stepNumber: 2, action: 'Submit valid SMS OTP challenge token', expectedResult: 'HTTP 200 OK profile updated' },
-        ],
-        assertions: [
-          'HTTP 403 received without MFA step-up header',
-          'Database profile record remains unmutated until OTP challenge verified',
-        ],
-      },
-      {
-        id: 'tc-gen-3',
-        title: 'Expired Authorization Code Replay Resistance',
-        description: 'Verify one-time authorization code cannot be re-used in token exchange endpoint within timeout window.',
-        category: 'Functional',
-        priority: 'HIGH',
-        severity: 'MAJOR',
-        riskFactor: 'MEDIUM',
-        status: 'PENDING_REVIEW',
-        suggestedTags: ['oauth2', 'replay-attack', 'rfc6749'],
-        preconditions: ['Valid auth code previously exchanged for access token'],
-        steps: [
-          { stepNumber: 1, action: 'Replay POST /oauth/token using already-redeemed code', expectedResult: 'HTTP 400 invalid_grant and revoke all issued tokens for code' },
-        ],
-        assertions: ['HTTP 400 returned', 'Both new and previously issued tokens immediately revoked'],
-      },
-    ],
-  });
-
-  // Activity Timeline Events
-  // FE-11: `activities` has no real or fabricated consumer left anywhere
-  // in the app (its render side was already dead before this sprint; the
-  // fake demo seed that used to populate it is removed here too, not just
-  // its display). `addActivity` (Test Generator's own protected write
-  // path — see `TestCaseGeneratorPage.tsx`) still needs somewhere to
-  // accumulate events it creates, so the state itself is kept, just empty
-  // and no longer exposed through the context's public type/value.
-  const [activities, setActivities] = useState<ActivityEvent[]>([]);
+  // Phase A cleanup: the fabricated pre-seeded session (3 hardcoded demo
+  // cases, `tc-gen-1..3`, that made a fresh page load look like a real AI
+  // run had happened) is removed entirely — a fresh load starts genuinely
+  // empty. The state itself stays: CustomTestingPage writes real AI
+  // analysis results into it and TestCaseGeneratorPage reads it back.
+  const [activeGenerationSession, setActiveGenerationSession] =
+    useState<GenerationSession | null>(null);
 
   // Actions
   const toggleSidebar = () => setIsSidebarCollapsed((prev) => !prev);
 
-  const addActivity = (event: Omit<ActivityEvent, 'id' | 'timestamp'>) => {
-    const newEvent: ActivityEvent = {
-      ...event,
-      id: `act-${Date.now().toString().slice(-6)}`,
-      timestamp: new Date().toISOString(),
-    };
-    setActivities((prev) => [newEvent, ...prev]);
-  };
-
   const updateSettings = (newSettings: Partial<SystemSettings>) => {
-    setSettings((prev) => ({
-      ...prev,
-      ...newSettings,
-      general: { ...prev.general, ...newSettings.general },
-      authentication: { ...prev.authentication, ...newSettings.authentication },
-      execution: { ...prev.execution, ...newSettings.execution },
-      policies: { ...prev.policies, ...newSettings.policies },
-      aiModels: { ...prev.aiModels, ...newSettings.aiModels },
-      notifications: { ...prev.notifications, ...newSettings.notifications },
-    }));
+    setSettings((prev) => {
+      const next = {
+        ...prev,
+        ...newSettings,
+        general: { ...prev.general, ...newSettings.general },
+        authentication: { ...prev.authentication, ...newSettings.authentication },
+        execution: { ...prev.execution, ...newSettings.execution },
+        policies: { ...prev.policies, ...newSettings.policies },
+        aiModels: { ...prev.aiModels, ...newSettings.aiModels },
+        notifications: { ...prev.notifications, ...newSettings.notifications },
+      };
+      localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(next));
+      return next;
+    });
   };
 
   // Global Keyboard Shortcuts (Cmd+K / Ctrl+K for command palette)
@@ -249,7 +183,6 @@ export const AIQAProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setCurrentEnvironment,
         activeGenerationSession,
         setActiveGenerationSession,
-        addActivity,
         settings,
         updateSettings,
         isCommandPaletteOpen,

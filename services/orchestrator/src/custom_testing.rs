@@ -81,8 +81,16 @@ pub struct CustomTestingAnalysis {
 /// fabricated strategy standing in for an unavailable one.
 #[derive(Debug, Clone)]
 pub enum CustomTestingOutcome {
-    Ready { analysis: CustomTestingAnalysis, cases: Vec<GeneratedTestCaseDraft>, provider: String, model: String },
-    Failed { reason: String, analysis: Option<CustomTestingAnalysis> },
+    Ready {
+        analysis: CustomTestingAnalysis,
+        cases: Vec<GeneratedTestCaseDraft>,
+        provider: String,
+        model: String,
+    },
+    Failed {
+        reason: String,
+        analysis: Option<CustomTestingAnalysis>,
+    },
 }
 
 /// Folds the real, user-provided scope into the requirement text sent for
@@ -92,20 +100,34 @@ pub enum CustomTestingOutcome {
 /// convention invented here.
 fn augmented_requirement_text(requirement_text: &str, scope: Option<&str>) -> String {
     match scope.map(str::trim).filter(|s| !s.is_empty()) {
-        Some(scope) => format!("{requirement_text}\n\nTesting scope/module (user-provided): {scope}"),
+        Some(scope) => {
+            format!("{requirement_text}\n\nTesting scope/module (user-provided): {scope}")
+        }
         None => requirement_text.to_string(),
     }
 }
 
-fn build_analysis_prompt(requirement_text: &str, scope: Option<&str>, skills: &[SkillInput]) -> String {
+fn build_analysis_prompt(
+    requirement_text: &str,
+    scope: Option<&str>,
+    skills: &[SkillInput],
+) -> String {
     let scope_line = match scope.map(str::trim).filter(|s| !s.is_empty()) {
         Some(scope) => format!("Testing scope/module (user-provided): {scope}"),
-        None => "Testing scope/module: not specified — infer scope from the requirement text only.".to_string(),
+        None => "Testing scope/module: not specified — infer scope from the requirement text only."
+            .to_string(),
     };
     let skills_line = if skills.is_empty() {
         "Selected skills: (none selected)".to_string()
     } else {
-        format!("Selected skills: {}", skills.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", "))
+        format!(
+            "Selected skills: {}",
+            skills
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
     };
 
     format!(
@@ -148,8 +170,9 @@ async fn analyze_requirement(
         GenerationOutcome2::Ok(r) => r,
         GenerationOutcome2::Failed { reason } => return Err(reason),
     };
-    let analysis: CustomTestingAnalysis = serde_json::from_str(&result.text)
-        .map_err(|e| format!("AI analysis response did not match the required structured schema: {e}"))?;
+    let analysis: CustomTestingAnalysis = serde_json::from_str(&result.text).map_err(|e| {
+        format!("AI analysis response did not match the required structured schema: {e}")
+    })?;
     Ok((analysis, result.provider, result.model))
 }
 
@@ -162,23 +185,41 @@ pub async fn run(
     scope: Option<&str>,
     skills: &[SkillInput],
 ) -> CustomTestingOutcome {
-    let (analysis, analysis_provider, analysis_model) = match analyze_requirement(infra, requirement_text, scope, skills).await {
-        Ok(v) => v,
-        Err(reason) => return CustomTestingOutcome::Failed { reason, analysis: None },
-    };
+    let (analysis, analysis_provider, analysis_model) =
+        match analyze_requirement(infra, requirement_text, scope, skills).await {
+            Ok(v) => v,
+            Err(reason) => {
+                return CustomTestingOutcome::Failed {
+                    reason,
+                    analysis: None,
+                }
+            }
+        };
 
     let augmented = augmented_requirement_text(requirement_text, scope);
     match ai_generation::generate_test_cases(infra, &augmented, skills).await {
-        GenerationOutcome::Ai { cases, provider, model } => {
+        GenerationOutcome::Ai {
+            cases,
+            provider,
+            model,
+        } => {
             // Real router health can differ per task/call; report whichever
             // real provider/model actually produced the *cases* (what the
             // caller ultimately persists), not the analysis call's own —
             // both are real, but they are not guaranteed to be the same
             // model, and reporting the wrong one would misattribute output.
             let _ = (&analysis_provider, &analysis_model);
-            CustomTestingOutcome::Ready { analysis, cases, provider, model }
+            CustomTestingOutcome::Ready {
+                analysis,
+                cases,
+                provider,
+                model,
+            }
         }
-        GenerationOutcome::Failed { reason } => CustomTestingOutcome::Failed { reason, analysis: Some(analysis) },
+        GenerationOutcome::Failed { reason } => CustomTestingOutcome::Failed {
+            reason,
+            analysis: Some(analysis),
+        },
     }
 }
 
@@ -186,7 +227,9 @@ pub async fn run(
 mod tests {
     use super::*;
     use crate::ai_generation::test_support::skill;
-    use crate::ai_router::test_support::{healthy_model, healthy_provider, FakeDiscovery, FakeExecutor};
+    use crate::ai_router::test_support::{
+        healthy_model, healthy_provider, FakeDiscovery, FakeExecutor,
+    };
     use crate::ai_router::{AiExecutor, CapabilityLevel, ExecutionError, ModelDefinition};
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -232,25 +275,60 @@ mod tests {
     /// so each of `run()`'s two real calls deterministically reaches its
     /// own independently-scripted executor.
     fn two_call_infra(analysis_response: &str, cases_response: &str) -> AiInfrastructure {
-        let analysis_provider = healthy_provider("analysis-only", vec![healthy_model("analysis-model", "analysis-only", CapabilityLevel::Basic)]);
-        let cases_provider = healthy_provider("cases-only", vec![cases_only_model("cases-model", "cases-only")]);
+        let analysis_provider = healthy_provider(
+            "analysis-only",
+            vec![healthy_model(
+                "analysis-model",
+                "analysis-only",
+                CapabilityLevel::Basic,
+            )],
+        );
+        let cases_provider = healthy_provider(
+            "cases-only",
+            vec![cases_only_model("cases-model", "cases-only")],
+        );
 
         let mut executors: HashMap<&'static str, Arc<dyn AiExecutor>> = HashMap::new();
-        executors.insert("analysis-only", Arc::new(FakeExecutor::ok(analysis_response)));
+        executors.insert(
+            "analysis-only",
+            Arc::new(FakeExecutor::ok(analysis_response)),
+        );
         executors.insert("cases-only", Arc::new(FakeExecutor::ok(cases_response)));
 
-        AiInfrastructure::new(vec![Arc::new(FakeDiscovery(analysis_provider)), Arc::new(FakeDiscovery(cases_provider))], executors)
+        AiInfrastructure::new(
+            vec![
+                Arc::new(FakeDiscovery(analysis_provider)),
+                Arc::new(FakeDiscovery(cases_provider)),
+            ],
+            executors,
+        )
     }
 
     #[tokio::test]
     async fn a_full_real_round_trip_produces_ready_with_both_a_real_analysis_and_real_cases() {
         let infra = two_call_infra(VALID_ANALYSIS, VALID_CASES);
-        let outcome = run(&infra, "Test login lockout after repeated invalid password attempts.", Some("Authentication"), &[skill("s", "Security Testing", "")]).await;
+        let outcome = run(
+            &infra,
+            "Test login lockout after repeated invalid password attempts.",
+            Some("Authentication"),
+            &[skill("s", "Security Testing", "")],
+        )
+        .await;
         match outcome {
-            CustomTestingOutcome::Ready { analysis, cases, provider, model } => {
-                assert_eq!(analysis.objective, "Verify login lockout after repeated invalid attempts");
+            CustomTestingOutcome::Ready {
+                analysis,
+                cases,
+                provider,
+                model,
+            } => {
+                assert_eq!(
+                    analysis.objective,
+                    "Verify login lockout after repeated invalid attempts"
+                );
                 assert_eq!(analysis.normalized_scope, "Authentication");
-                assert!(analysis.recommended_skills.contains(&"Security Testing".to_string()));
+                assert!(analysis
+                    .recommended_skills
+                    .contains(&"Security Testing".to_string()));
                 assert_eq!(cases.len(), 1);
                 assert_eq!(cases[0].title, "Lockout after 5 invalid attempts");
                 // The reported provider/model are whichever real router
@@ -260,7 +338,9 @@ mod tests {
                 assert_eq!(provider, "cases-only");
                 assert_eq!(model, "cases-model");
             }
-            CustomTestingOutcome::Failed { reason, .. } => panic!("expected a full real Ready outcome, got Failed: {reason}"),
+            CustomTestingOutcome::Failed { reason, .. } => {
+                panic!("expected a full real Ready outcome, got Failed: {reason}")
+            }
         }
     }
 
@@ -273,23 +353,42 @@ mod tests {
         match outcome {
             CustomTestingOutcome::Failed { reason, analysis } => {
                 assert!(analysis.is_some(), "a successfully-produced analysis must not be discarded just because case generation failed afterward");
-                assert_eq!(analysis.unwrap().objective, "Verify login lockout after repeated invalid attempts");
-                assert!(reason.contains("invalid structured output"), "reason={reason}");
+                assert_eq!(
+                    analysis.unwrap().objective,
+                    "Verify login lockout after repeated invalid attempts"
+                );
+                assert!(
+                    reason.contains("invalid structured output"),
+                    "reason={reason}"
+                );
             }
-            CustomTestingOutcome::Ready { .. } => panic!("case generation was scripted to fail and must not be reported as Ready"),
+            CustomTestingOutcome::Ready { .. } => {
+                panic!("case generation was scripted to fail and must not be reported as Ready")
+            }
         }
     }
 
     #[tokio::test]
     async fn ai_unavailable_is_reported_truthfully_with_no_analysis_and_no_fabricated_cases() {
         let infra = no_ai_infra();
-        let outcome = run(&infra, "Test login lockout after repeated invalid password attempts.", Some("Authentication"), &[]).await;
+        let outcome = run(
+            &infra,
+            "Test login lockout after repeated invalid password attempts.",
+            Some("Authentication"),
+            &[],
+        )
+        .await;
         match outcome {
             CustomTestingOutcome::Failed { reason, analysis } => {
-                assert!(analysis.is_none(), "no AI provider reachable at all means no real analysis was ever produced");
+                assert!(
+                    analysis.is_none(),
+                    "no AI provider reachable at all means no real analysis was ever produced"
+                );
                 assert!(!reason.is_empty());
             }
-            CustomTestingOutcome::Ready { .. } => panic!("must never fabricate output with zero AI providers configured"),
+            CustomTestingOutcome::Ready { .. } => {
+                panic!("must never fabricate output with zero AI providers configured")
+            }
         }
     }
 
@@ -298,7 +397,10 @@ mod tests {
         let mut executors: HashMap<&'static str, Arc<dyn AiExecutor>> = HashMap::new();
         executors.insert("mock", Arc::new(FakeExecutor::ok("not json at all")));
         let infra = AiInfrastructure::new(
-            vec![Arc::new(FakeDiscovery(healthy_provider("mock", vec![healthy_model("mock-model", "mock", CapabilityLevel::Strong)])))],
+            vec![Arc::new(FakeDiscovery(healthy_provider(
+                "mock",
+                vec![healthy_model("mock-model", "mock", CapabilityLevel::Strong)],
+            )))],
             executors,
         );
         let outcome = run(&infra, "Anything.", None, &[]).await;
@@ -307,7 +409,9 @@ mod tests {
                 assert!(analysis.is_none());
                 assert!(reason.contains("required structured schema"));
             }
-            CustomTestingOutcome::Ready { .. } => panic!("malformed AI output must never be treated as a real analysis"),
+            CustomTestingOutcome::Ready { .. } => {
+                panic!("malformed AI output must never be treated as a real analysis")
+            }
         }
     }
 
@@ -316,7 +420,10 @@ mod tests {
         let mut executors: HashMap<&'static str, Arc<dyn AiExecutor>> = HashMap::new();
         executors.insert("mock", Arc::new(FakeExecutor::err(ExecutionError::Timeout)));
         let infra = AiInfrastructure::new(
-            vec![Arc::new(FakeDiscovery(healthy_provider("mock", vec![healthy_model("mock-model", "mock", CapabilityLevel::Strong)])))],
+            vec![Arc::new(FakeDiscovery(healthy_provider(
+                "mock",
+                vec![healthy_model("mock-model", "mock", CapabilityLevel::Strong)],
+            )))],
             executors,
         );
         let outcome = run(&infra, "Anything.", None, &[]).await;
@@ -325,7 +432,9 @@ mod tests {
                 assert!(analysis.is_none());
                 assert!(reason.contains("TIMEOUT"), "reason={reason}");
             }
-            CustomTestingOutcome::Ready { .. } => panic!("a real provider timeout must never be reported as success"),
+            CustomTestingOutcome::Ready { .. } => {
+                panic!("a real provider timeout must never be reported as success")
+            }
         }
     }
 
@@ -340,7 +449,11 @@ mod tests {
 
     #[test]
     fn analysis_prompt_carries_the_real_requirement_scope_and_skills() {
-        let prompt = build_analysis_prompt("Users can log in.", Some("Authentication"), &[skill("s", "Security Testing", "")]);
+        let prompt = build_analysis_prompt(
+            "Users can log in.",
+            Some("Authentication"),
+            &[skill("s", "Security Testing", "")],
+        );
         assert!(prompt.contains("Users can log in."));
         assert!(prompt.contains("Authentication"));
         assert!(prompt.contains("Security Testing"));

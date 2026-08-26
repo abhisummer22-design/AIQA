@@ -12,6 +12,16 @@ function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 }
 
+function blobResponse(text: string, contentType = 'text/plain'): Response {
+  const blob = new globalThis.Blob([text], { type: contentType });
+  return {
+    ok: true,
+    status: 200,
+    headers: new Headers({ 'Content-Type': contentType }),
+    blob: async () => blob,
+  } as unknown as Response;
+}
+
 function envelope(code: string, message: string) {
   return { error: { code, message, details: {}, request_id: 'req_test123' } };
 }
@@ -293,9 +303,7 @@ describe('Evidence endpoints (FE-7 §26 API layer, items 1-7)', () => {
 
   it('item 2c — aiqaApi.evidence.content fetches real raw bytes as a Blob at the exact real /content path', async () => {
     setApiKey('aiqa_evidencetest00000');
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue(new Response('real log bytes', { status: 200, headers: { 'Content-Type': 'text/plain' } }));
+    const fetchMock = vi.fn().mockResolvedValue(blobResponse('real log bytes', 'text/plain'));
     vi.stubGlobal('fetch', fetchMock);
 
     const blob = await aiqaApi.evidence.content(PROJECT_ID, EVIDENCE_ID);

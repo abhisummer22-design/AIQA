@@ -26,8 +26,7 @@ fn executor_project_dir(name: &str) -> PathBuf {
 /// (`evidence::default_root`) — same "no container runtime available" reason
 /// documented in `store.rs`'s module doc comment.
 fn db_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../infra/data/orchestrator.sqlite3")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../infra/data/orchestrator.sqlite3")
 }
 
 #[tokio::main]
@@ -58,13 +57,18 @@ async fn main() {
 
     match recover_incomplete_runs(&store).await {
         Ok(0) => {}
-        Ok(n) => tracing::warn!("recovered {n} run(s) left non-terminal by a prior unclean shutdown"),
+        Ok(n) => {
+            tracing::warn!("recovered {n} run(s) left non-terminal by a prior unclean shutdown")
+        }
         Err(e) => tracing::error!("startup run-recovery pass failed: {e}"),
     }
 
-    match aiqa_orchestrator::performance_testing::recover_incomplete_performance_runs(&store).await {
+    match aiqa_orchestrator::performance_testing::recover_incomplete_performance_runs(&store).await
+    {
         Ok(0) => {}
-        Ok(n) => tracing::warn!("marked {n} performance test run(s) INTERRUPTED after a prior unclean shutdown"),
+        Ok(n) => tracing::warn!(
+            "marked {n} performance test run(s) INTERRUPTED after a prior unclean shutdown"
+        ),
         Err(e) => tracing::error!("startup performance-run-recovery pass failed: {e}"),
     }
 
@@ -109,28 +113,51 @@ async fn main() {
         .register("compiled-api", Arc::new(CompiledApiExecutor::from_env()));
 
     // Central AI Provider & Model Intelligence Layer. Real discovery
-    // (Ollama + any API provider with a real, non-empty credential env
-    // var) runs in a background task, not awaited here — this app must
-    // start and serve real traffic even if no AI provider is reachable at
-    // all (brief §3: "must NOT block the entire application if no AI
-    // provider exists"); `AiInfrastructure::generate` re-discovers lazily
-    // (TTL-bounded) on first real use regardless.
+    // (Ollama + the MJ AI Gateway) runs in a background task, not awaited
+    // here — this app must start and serve real traffic even if no AI
+    // provider is reachable at all (brief §3: "must NOT block the entire
+    // application if no AI provider exists");
+    // `AiInfrastructure::generate` re-discovers lazily (TTL-bounded) on
+    // first real use regardless.
     let ai_infra = Arc::new(AiInfrastructure::from_env());
     // Real, persisted settings (brief §21) — loaded once at startup from
     // the `ai_settings` singleton row; `AiSettings::default()` (AUTO,
-    // fallback enabled) if no row exists yet.
-    if let Ok(Some((mode, preferred_provider, preferred_model, fallback_enabled))) = store.get_ai_settings().await {
-        let mode = if mode == "MANUAL" { aiqa_orchestrator::ai_router::RoutingMode::Manual } else { aiqa_orchestrator::ai_router::RoutingMode::Auto };
+    // MJ-gateway-first via `mj-default`, fallback enabled) if no row
+    // exists yet.
+    if let Ok(Some((mode, preferred_provider, preferred_model, fallback_enabled))) =
+        store.get_ai_settings().await
+    {
+        let mode = if mode == "MANUAL" {
+            aiqa_orchestrator::ai_router::RoutingMode::Manual
+        } else {
+            aiqa_orchestrator::ai_router::RoutingMode::Auto
+        };
         ai_infra
-            .set_settings(aiqa_orchestrator::ai_router::AiSettings { mode, preferred_provider, preferred_model, fallback_enabled })
+            .set_settings(aiqa_orchestrator::ai_router::AiSettings {
+                mode,
+                preferred_provider,
+                preferred_model,
+                fallback_enabled,
+            })
             .await;
     }
     {
         let ai_infra = ai_infra.clone();
         tokio::spawn(async move {
             let providers = ai_infra.discover_all().await;
-            let healthy = providers.iter().filter(|p| matches!(p.status, aiqa_orchestrator::ai_router::ProviderStatus::Healthy)).count();
-            tracing::info!("AI infrastructure discovery complete: {} provider(s) checked, {healthy} healthy", providers.len());
+            let healthy = providers
+                .iter()
+                .filter(|p| {
+                    matches!(
+                        p.status,
+                        aiqa_orchestrator::ai_router::ProviderStatus::Healthy
+                    )
+                })
+                .count();
+            tracing::info!(
+                "AI infrastructure discovery complete: {} provider(s) checked, {healthy} healthy",
+                providers.len()
+            );
         });
     }
     let state = AppState::new(Arc::new(registry), store, policy, evidence, ai_infra);
