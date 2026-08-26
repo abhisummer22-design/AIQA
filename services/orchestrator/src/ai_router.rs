@@ -1762,7 +1762,7 @@ mod tests {
     fn api_key_value_never_appears_in_discovered_provider_info() {
         // Even though MjGatewayDiscovery holds the real key internally,
         // its output must carry only boolean facts, never the value itself.
-        let secret = "mj_live_super_secret_value_1234567890";
+        let secret = "mj_test_super_secret_value_1234567890";
         let discovery = MjGatewayDiscovery {
             base_url: "http://127.0.0.1:1".to_string(),
             api_key: Some(secret.to_string()),

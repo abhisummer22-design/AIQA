@@ -1,0 +1,18 @@
+title = "AIQA Gitleaks Configuration"
+
+[allowlist]
+description = "Allowlist for test fixtures and dummy mock tokens"
+paths = [
+  '''(?i)forentend/src/.*test\.(ts|tsx)$''',
+  '''(?i)services/orchestrator/src/.*test.*\.rs$''',
+  '''(?i)services/orchestrator/src/ai_router\.rs$''',
+  '''(?i)services/orchestrator/src/auth\.rs$''',
+  '''(?i)apps/web/firebase-applet-config\.json$''',
+  '''(?i)audit/.*\.md$''',
+  '''(?i)doc/.*\.md$'''
+]
+regexes = [
+  '''(?i)aiqa_[a-z0-9_]{6,}''',
+  '''(?i)mj_test_[a-z0-9_]{6,}''',
+  '''(?i)Bearer\s+[a-zA-Z0-9_\.\-]+'''
+]

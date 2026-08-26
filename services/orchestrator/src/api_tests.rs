@@ -6436,7 +6436,7 @@ async fn ai_status_response_never_exposes_a_credential_shaped_value() {
     let discoveries: Vec<Arc<dyn crate::ai_router::ProviderDiscovery>> =
         vec![Arc::new(crate::ai_router::MjGatewayDiscovery {
             base_url: "http://127.0.0.1:1".to_string(),
-            api_key: Some("mj_live_should_never_leak_1234567890".to_string()),
+            api_key: Some("mj_test_should_never_leak_1234567890".to_string()),
             timeout: std::time::Duration::from_millis(100),
         })];
     let ai_infra = Arc::new(AiInfrastructure::new(
