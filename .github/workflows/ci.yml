@@ -13,9 +13,11 @@ jobs:
       contents: read
       pull-requests: read
     steps:
+      # Gitleaks scans a commit range. Fetch full history so the parent/base
+      # commit is available and Git can resolve the range on push events.
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 0
       - uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
