@@ -1,6 +1,7 @@
 pub mod ai_generation;
 pub mod ai_router;
 pub mod api;
+pub mod app_source;
 pub mod api_testing;
 pub mod auth;
 pub mod custom_testing;
@@ -12,6 +13,7 @@ pub mod executor;
 pub mod execution_plan;
 pub mod intelligence;
 pub mod metrics;
+pub mod performance_testing;
 pub mod policy;
 pub mod scheduler;
 pub mod state;

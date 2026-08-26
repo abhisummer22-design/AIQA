@@ -46,7 +46,7 @@
 use crate::execution_plan::{Action, CompilerMethod, ExecutionPlan, ExecutionType};
 use crate::executor::ApiResultSummary;
 use crate::state::AppState;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::time::Duration;
 use uuid::Uuid;
@@ -57,7 +57,7 @@ use uuid::Uuid;
 /// exotic (CONNECT/TRACE) that this UI has no real use case for.
 pub const SUPPORTED_METHODS: [&str; 5] = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AdHocApiRequest {
     pub method: String,
     pub url: String,

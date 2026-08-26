@@ -56,6 +56,13 @@ import type {
   GenerateAiTestCasesRequest,
   GenerateAiTestCasesResponse,
   KpisResponse,
+  VerifyApplicationSourceRequest,
+  VerifyApplicationSourceResponse,
+  PerformanceTestConfig,
+  PerformanceTestStartResponse,
+  PerformanceRunStatusResponse,
+  PerformanceTestCancelResponse,
+  PerformanceRunRow,
   Project,
   ReviewFindingRequest,
   RunDetail,
@@ -523,6 +530,37 @@ export const aiqaApi = {
   apiTesting: {
     execute: (projectId: string, body: AdHocApiRequest, signal?: AbortSignal) =>
       requestJson<ApiTestExecutionResponse>(`/projects/${projectId}/api-testing/execute`, { method: 'POST', body, signal }),
+  },
+
+  /** Phase 6 (Performance Testing page) — real Load/Stress/Spike/Volume
+   *  workload generation (`api.rs`'s `.../performance-testing/*` handlers,
+   *  `performance_testing.rs` behind them). `start` returns immediately
+   *  (`status: 'RUNNING'`); poll `status` for real, live progress — never
+   *  synthesize a percentage client-side. `cancel`/`status` are safe to
+   *  call from any component; `start` requires `Role::Operator` and a real,
+   *  scoped project id, same as every other execution-triggering call. */
+  performanceTesting: {
+    start: (projectId: string, body: PerformanceTestConfig, signal?: AbortSignal) =>
+      requestJson<PerformanceTestStartResponse>(`/projects/${projectId}/performance-testing/start`, { method: 'POST', body, signal }),
+    status: (projectId: string, runId: string, signal?: AbortSignal) =>
+      requestJson<PerformanceRunStatusResponse>(`/projects/${projectId}/performance-testing/${runId}/status`, { signal }),
+    cancel: (projectId: string, runId: string, signal?: AbortSignal) =>
+      requestJson<PerformanceTestCancelResponse>(`/projects/${projectId}/performance-testing/${runId}/cancel`, { method: 'POST', signal }),
+    list: (projectId: string, signal?: AbortSignal) =>
+      requestJson<PerformanceRunRow[]>(`/projects/${projectId}/performance-testing`, { signal }),
+  },
+
+  /** Truthfulness Cleanup Step 1 — real Application Source connectivity
+   *  verification (`api.rs::verify_application_source_scoped`,
+   *  `app_source.rs` behind it). Replaces the Test Case Generator's former
+   *  fully client-side `setTimeout`+`Math.random()` simulation with a
+   *  genuine, bounded, SSRF-guarded outbound request. Requires
+   *  `Role::Operator` and a real, scoped project id, same as every other
+   *  real-outbound-action call (API Testing's `execute`, Performance
+   *  Testing's `start`). */
+  appSource: {
+    verify: (projectId: string, body: VerifyApplicationSourceRequest, signal?: AbortSignal) =>
+      requestJson<VerifyApplicationSourceResponse>(`/projects/${projectId}/verify-application-source`, { method: 'POST', body, signal }),
   },
 
   /** Central AI Provider & Model Intelligence Layer
