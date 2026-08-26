@@ -75,6 +75,8 @@ impl AppState {
             return ps.clone();
         }
         let mut map = self.project_streams.write().await;
-        map.entry(project_id.to_string()).or_insert_with(|| Arc::new(ProjectStream::default())).clone()
+        map.entry(project_id.to_string())
+            .or_insert_with(|| Arc::new(ProjectStream::default()))
+            .clone()
     }
 }

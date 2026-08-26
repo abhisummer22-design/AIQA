@@ -6,7 +6,9 @@
 //! the *HTTP response body* — status code alone proves nothing about
 //! whether the JSON envelope shape is actually correct.
 
-use crate::ai_router::test_support::{healthy_model, healthy_provider, FakeDiscovery, FakeExecutor};
+use crate::ai_router::test_support::{
+    healthy_model, healthy_provider, FakeDiscovery, FakeExecutor,
+};
 use crate::ai_router::{AiExecutor, AiInfrastructure, CapabilityLevel};
 use crate::api::router;
 use crate::domain::RunState;
@@ -36,10 +38,14 @@ fn ai_infra_with(result: Result<&str, crate::ai_router::ExecutionError>) -> Arc<
         Ok(text) => Arc::new(FakeExecutor::ok(text)),
         Err(e) => Arc::new(FakeExecutor::err(e)),
     };
-    let mut executors: std::collections::HashMap<&'static str, Arc<dyn AiExecutor>> = std::collections::HashMap::new();
+    let mut executors: std::collections::HashMap<&'static str, Arc<dyn AiExecutor>> =
+        std::collections::HashMap::new();
     executors.insert("mock", executor);
     Arc::new(AiInfrastructure::new(
-        vec![Arc::new(FakeDiscovery(healthy_provider("mock", vec![healthy_model("mock-model", "mock", CapabilityLevel::Strong)])))],
+        vec![Arc::new(FakeDiscovery(healthy_provider(
+            "mock",
+            vec![healthy_model("mock-model", "mock", CapabilityLevel::Strong)],
+        )))],
         executors,
     ))
 }
@@ -57,19 +63,32 @@ fn inert_ai_router() -> Arc<AiInfrastructure> {
 /// unit tests use, applied here at the HTTP layer so a genuine end-to-end
 /// `REAL_AI` response (real analysis AND real cases, not the same fixed
 /// text satisfying both) can be observed on the wire.
-fn custom_testing_ai_infra_two_calls(analysis_response: &str, cases_response: &str) -> Arc<AiInfrastructure> {
+fn custom_testing_ai_infra_two_calls(
+    analysis_response: &str,
+    cases_response: &str,
+) -> Arc<AiInfrastructure> {
     let analysis_model = healthy_model("analysis-model", "analysis-only", CapabilityLevel::Basic);
     let mut cases_model = healthy_model("cases-model", "cases-only", CapabilityLevel::Strong);
     cases_model.capabilities.long_context = Some(CapabilityLevel::None);
 
-    let mut executors: std::collections::HashMap<&'static str, Arc<dyn AiExecutor>> = std::collections::HashMap::new();
-    executors.insert("analysis-only", Arc::new(FakeExecutor::ok(analysis_response)));
+    let mut executors: std::collections::HashMap<&'static str, Arc<dyn AiExecutor>> =
+        std::collections::HashMap::new();
+    executors.insert(
+        "analysis-only",
+        Arc::new(FakeExecutor::ok(analysis_response)),
+    );
     executors.insert("cases-only", Arc::new(FakeExecutor::ok(cases_response)));
 
     Arc::new(AiInfrastructure::new(
         vec![
-            Arc::new(FakeDiscovery(healthy_provider("analysis-only", vec![analysis_model]))),
-            Arc::new(FakeDiscovery(healthy_provider("cases-only", vec![cases_model]))),
+            Arc::new(FakeDiscovery(healthy_provider(
+                "analysis-only",
+                vec![analysis_model],
+            ))),
+            Arc::new(FakeDiscovery(healthy_provider(
+                "cases-only",
+                vec![cases_model],
+            ))),
         ],
         executors,
     ))
@@ -77,7 +96,9 @@ fn custom_testing_ai_infra_two_calls(analysis_response: &str, cases_response: &s
 
 async fn test_state() -> (AppState, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
-    let store = Store::connect(&dir.path().join("api.sqlite3")).await.expect("connect");
+    let store = Store::connect(&dir.path().join("api.sqlite3"))
+        .await
+        .expect("connect");
     let evidence = LocalEvidenceStore::new(dir.path().join("evidence")).expect("evidence store");
     let registry = ExecutorRegistry::new(Arc::new(SimulatedExecutor));
     let policy = PolicyConfig {
@@ -89,7 +110,16 @@ async fn test_state() -> (AppState, tempfile::TempDir) {
         require_approval_for: ["maestro".to_string()].into_iter().collect(),
         blocked_executors: HashSet::new(),
     };
-    (AppState::new(Arc::new(registry), store, policy, evidence, inert_ai_router()), dir)
+    (
+        AppState::new(
+            Arc::new(registry),
+            store,
+            policy,
+            evidence,
+            inert_ai_router(),
+        ),
+        dir,
+    )
 }
 
 /// Phase 4 — same setup as `test_state()`, but with the real, unmodified
@@ -99,15 +129,29 @@ async fn test_state() -> (AppState, tempfile::TempDir) {
 /// deployment uses, not a double.
 async fn test_state_with_compiled_api() -> (AppState, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
-    let store = Store::connect(&dir.path().join("api.sqlite3")).await.expect("connect");
+    let store = Store::connect(&dir.path().join("api.sqlite3"))
+        .await
+        .expect("connect");
     let evidence = LocalEvidenceStore::new(dir.path().join("evidence")).expect("evidence store");
-    let registry = ExecutorRegistry::new(Arc::new(SimulatedExecutor)).register("compiled-api", Arc::new(crate::executor::CompiledApiExecutor::from_env()));
+    let registry = ExecutorRegistry::new(Arc::new(SimulatedExecutor)).register(
+        "compiled-api",
+        Arc::new(crate::executor::CompiledApiExecutor::from_env()),
+    );
     let policy = PolicyConfig {
         max_concurrency: 8,
         require_approval_for: ["maestro".to_string()].into_iter().collect(),
         blocked_executors: HashSet::new(),
     };
-    (AppState::new(Arc::new(registry), store, policy, evidence, inert_ai_router()), dir)
+    (
+        AppState::new(
+            Arc::new(registry),
+            store,
+            policy,
+            evidence,
+            inert_ai_router(),
+        ),
+        dir,
+    )
 }
 
 /// Phase 2 — same setup as `test_state()`, but with a caller-supplied AI
@@ -115,9 +159,13 @@ async fn test_state_with_compiled_api() -> (AppState, tempfile::TempDir) {
 /// test can inject a controllable provider/executor and assert on the
 /// real HTTP response the endpoint produces for that outcome — without
 /// ever making a real network call.
-async fn test_state_with_ai_router(ai_router: Arc<AiInfrastructure>) -> (AppState, tempfile::TempDir) {
+async fn test_state_with_ai_router(
+    ai_router: Arc<AiInfrastructure>,
+) -> (AppState, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
-    let store = Store::connect(&dir.path().join("api.sqlite3")).await.expect("connect");
+    let store = Store::connect(&dir.path().join("api.sqlite3"))
+        .await
+        .expect("connect");
     let evidence = LocalEvidenceStore::new(dir.path().join("evidence")).expect("evidence store");
     let registry = ExecutorRegistry::new(Arc::new(SimulatedExecutor));
     let policy = PolicyConfig {
@@ -125,7 +173,10 @@ async fn test_state_with_ai_router(ai_router: Arc<AiInfrastructure>) -> (AppStat
         require_approval_for: ["maestro".to_string()].into_iter().collect(),
         blocked_executors: HashSet::new(),
     };
-    (AppState::new(Arc::new(registry), store, policy, evidence, ai_router), dir)
+    (
+        AppState::new(Arc::new(registry), store, policy, evidence, ai_router),
+        dir,
+    )
 }
 
 /// Mints a real, durably persisted API key and returns its plaintext.
@@ -133,7 +184,13 @@ async fn mint_key(state: &AppState, role: &str, project_id: Option<&str>) -> Str
     let raw = crate::auth::generate_key();
     state
         .store
-        .insert_api_key(Uuid::new_v4(), "test-key", &crate::auth::hash_key(&raw), role, project_id)
+        .insert_api_key(
+            Uuid::new_v4(),
+            "test-key",
+            &crate::auth::hash_key(&raw),
+            role,
+            project_id,
+        )
         .await
         .expect("insert_api_key");
     raw
@@ -144,7 +201,12 @@ async fn send(state: &AppState, req: Request<Body>) -> (StatusCode, Value) {
     let resp = app.oneshot(req).await.expect("router call");
     let status = resp.status();
     let content_type = resp.headers().get("content-type").cloned();
-    let bytes = resp.into_body().collect().await.expect("collect body").to_bytes();
+    let bytes = resp
+        .into_body()
+        .collect()
+        .await
+        .expect("collect body")
+        .to_bytes();
     let body: Value = if bytes.is_empty() {
         Value::Null
     } else {
@@ -175,7 +237,13 @@ fn req(method: &str, path: &str, key: Option<&str>, body: Option<Value>) -> Requ
 
 /// Like `req`, but sends `raw_body` verbatim (not JSON-serialized) — needed
 /// to construct genuinely malformed bodies BE-10's tests inject.
-fn req_raw(method: &str, path: &str, key: Option<&str>, content_type: Option<&str>, raw_body: &str) -> Request<Body> {
+fn req_raw(
+    method: &str,
+    path: &str,
+    key: Option<&str>,
+    content_type: Option<&str>,
+    raw_body: &str,
+) -> Request<Body> {
     let mut builder = Request::builder().method(method).uri(path);
     if let Some(k) = key {
         builder = builder.header("Authorization", format!("Bearer {k}"));
@@ -189,16 +257,38 @@ fn req_raw(method: &str, path: &str, key: Option<&str>, content_type: Option<&st
 /// Asserts the response is a Contract §2.5 envelope with the expected
 /// status/code, and that `message`/`details`/`request_id` are present with
 /// the right shape — not just that *a* JSON object came back.
-fn assert_envelope(status: StatusCode, body: &Value, expected_status: StatusCode, expected_code: &str) {
+fn assert_envelope(
+    status: StatusCode,
+    body: &Value,
+    expected_status: StatusCode,
+    expected_code: &str,
+) {
     assert_eq!(status, expected_status, "HTTP status; body={body}");
     let error = &body["error"];
-    assert!(error.is_object(), "response must have a top-level \"error\" object; body={body}");
+    assert!(
+        error.is_object(),
+        "response must have a top-level \"error\" object; body={body}"
+    );
     assert_eq!(error["code"], expected_code, "error.code; body={body}");
-    assert!(error["message"].is_string(), "error.message must be a string; body={body}");
-    assert!(!error["message"].as_str().unwrap().is_empty(), "error.message must not be empty");
-    assert!(error["details"].is_object(), "error.details must be an object (contract's own example shows {{}})");
-    let request_id = error["request_id"].as_str().expect("error.request_id must be a string");
-    assert!(request_id.starts_with("req_"), "request_id should look like the contract's own example (\"req_123\"): {request_id}");
+    assert!(
+        error["message"].is_string(),
+        "error.message must be a string; body={body}"
+    );
+    assert!(
+        !error["message"].as_str().unwrap().is_empty(),
+        "error.message must not be empty"
+    );
+    assert!(
+        error["details"].is_object(),
+        "error.details must be an object (contract's own example shows {{}})"
+    );
+    let request_id = error["request_id"]
+        .as_str()
+        .expect("error.request_id must be a string");
+    assert!(
+        request_id.starts_with("req_"),
+        "request_id should look like the contract's own example (\"req_123\"): {request_id}"
+    );
 }
 
 // ---------------------------------------------------------- Authentication
@@ -215,7 +305,11 @@ async fn be9_authentication_missing_credentials_returns_structured_envelope() {
 #[tokio::test]
 async fn be9_authentication_invalid_credentials_returns_structured_envelope() {
     let (state, _dir) = test_state().await;
-    let (status, body) = send(&state, req("GET", "/api/v1/projects", Some("aiqa_not_a_real_key"), None)).await;
+    let (status, body) = send(
+        &state,
+        req("GET", "/api/v1/projects", Some("aiqa_not_a_real_key"), None),
+    )
+    .await;
     assert_envelope(status, &body, StatusCode::UNAUTHORIZED, "UNAUTHENTICATED");
 }
 
@@ -228,7 +322,12 @@ async fn be9_authorization_insufficient_role_returns_structured_envelope() {
     let viewer = mint_key(&state, "viewer", None).await;
     let (status, body) = send(
         &state,
-        req("POST", "/api/v1/projects", Some(&viewer), Some(serde_json::json!({"name": "should be forbidden"}))),
+        req(
+            "POST",
+            "/api/v1/projects",
+            Some(&viewer),
+            Some(serde_json::json!({"name": "should be forbidden"})),
+        ),
     )
     .await;
     assert_envelope(status, &body, StatusCode::FORBIDDEN, "FORBIDDEN");
@@ -242,7 +341,12 @@ async fn be9_authorization_cross_project_access_returns_structured_envelope() {
     let admin = mint_key(&state, "admin", None).await;
     let (_, created) = send(
         &state,
-        req("POST", "/api/v1/projects", Some(&admin), Some(serde_json::json!({"name": "Project A"}))),
+        req(
+            "POST",
+            "/api/v1/projects",
+            Some(&admin),
+            Some(serde_json::json!({"name": "Project A"})),
+        ),
     )
     .await;
     let project_a_id = created["id"].as_str().expect("created project id");
@@ -250,7 +354,12 @@ async fn be9_authorization_cross_project_access_returns_structured_envelope() {
     let scoped_to_other = mint_key(&state, "operator", Some("some-other-project")).await;
     let (status, body) = send(
         &state,
-        req("GET", &format!("/api/v1/projects/{project_a_id}"), Some(&scoped_to_other), None),
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_a_id}"),
+            Some(&scoped_to_other),
+            None,
+        ),
     )
     .await;
     assert_envelope(status, &body, StatusCode::FORBIDDEN, "FORBIDDEN");
@@ -266,7 +375,12 @@ async fn be9_validation_blank_name_returns_structured_envelope() {
     let admin = mint_key(&state, "admin", None).await;
     let (status, body) = send(
         &state,
-        req("POST", "/api/v1/projects", Some(&admin), Some(serde_json::json!({"name": "   "}))),
+        req(
+            "POST",
+            "/api/v1/projects",
+            Some(&admin),
+            Some(serde_json::json!({"name": "   "})),
+        ),
     )
     .await;
     assert_envelope(status, &body, StatusCode::BAD_REQUEST, "VALIDATION_ERROR");
@@ -286,7 +400,12 @@ async fn be9_not_found_returns_structured_envelope_with_contract_example_code() 
     let missing_id = Uuid::new_v4();
     let (status, body) = send(
         &state,
-        req("GET", &format!("/api/v1/projects/{missing_id}"), Some(&admin), None),
+        req(
+            "GET",
+            &format!("/api/v1/projects/{missing_id}"),
+            Some(&admin),
+            None,
+        ),
     )
     .await;
     // "RESOURCE_NOT_FOUND" is not a code this implementation invented — it
@@ -320,14 +439,34 @@ async fn be9_persistence_failure_returns_sanitized_internal_envelope() {
 
     let (status, body) = send(
         &state,
-        req("POST", "/api/v1/projects", Some(&admin), Some(serde_json::json!({"name": "will fail to persist"}))),
+        req(
+            "POST",
+            "/api/v1/projects",
+            Some(&admin),
+            Some(serde_json::json!({"name": "will fail to persist"})),
+        ),
     )
     .await;
 
-    assert_envelope(status, &body, StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR");
+    assert_envelope(
+        status,
+        &body,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "INTERNAL_ERROR",
+    );
     let message = body["error"]["message"].as_str().unwrap();
-    assert_eq!(message, "An internal error occurred.", "the real SQL error must not reach the client verbatim");
-    for leaked_detail in ["RAISE", "ABORT", "be9_fail_project_insert", "injected disk write failure", "SQLite", "sqlite"] {
+    assert_eq!(
+        message, "An internal error occurred.",
+        "the real SQL error must not reach the client verbatim"
+    );
+    for leaked_detail in [
+        "RAISE",
+        "ABORT",
+        "be9_fail_project_insert",
+        "injected disk write failure",
+        "SQLite",
+        "sqlite",
+    ] {
         assert!(
             !message.contains(leaked_detail) && !body.to_string().contains(leaked_detail),
             "response must not leak internal detail {leaked_detail:?}; full body={body}"
@@ -357,11 +496,23 @@ async fn be9_execution_persistence_failure_returns_sanitized_internal_envelope()
     });
     let (status, created) = send(
         &state,
-        req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&admin), Some(plan)),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/executions"),
+            Some(&admin),
+            Some(plan),
+        ),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "run creation should succeed; body={created}");
-    assert_eq!(created["status"], serde_json::to_value(RunState::PendingApproval).unwrap());
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "run creation should succeed; body={created}"
+    );
+    assert_eq!(
+        created["status"],
+        serde_json::to_value(RunState::PendingApproval).unwrap()
+    );
     let run_id = created["run_id"].as_str().expect("run_id");
 
     sqlx::query(
@@ -374,12 +525,25 @@ async fn be9_execution_persistence_failure_returns_sanitized_internal_envelope()
 
     let (status, body) = send(
         &state,
-        req("POST", &format!("/api/v1/projects/{project}/executions/{run_id}/approve"), Some(&admin), None),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/executions/{run_id}/approve"),
+            Some(&admin),
+            None,
+        ),
     )
     .await;
-    assert_envelope(status, &body, StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR");
+    assert_envelope(
+        status,
+        &body,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "INTERNAL_ERROR",
+    );
     assert_eq!(body["error"]["message"], "An internal error occurred.");
-    assert!(!body.to_string().contains("RAISE"), "approve_run's failure must also be sanitized, not just create_project's");
+    assert!(
+        !body.to_string().contains("RAISE"),
+        "approve_run's failure must also be sanitized, not just create_project's"
+    );
 }
 
 // -------------------------------------------------------- success path guard
@@ -392,12 +556,23 @@ async fn be9_successful_response_is_not_wrapped_in_an_error_envelope() {
     let admin = mint_key(&state, "admin", None).await;
     let (status, body) = send(
         &state,
-        req("POST", "/api/v1/projects", Some(&admin), Some(serde_json::json!({"name": "Real Project"}))),
+        req(
+            "POST",
+            "/api/v1/projects",
+            Some(&admin),
+            Some(serde_json::json!({"name": "Real Project"})),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
-    assert!(body.get("error").is_none(), "a successful response must not contain an \"error\" key: {body}");
-    assert_eq!(body["name"], "Real Project", "successful response schema must be unchanged by BE-9");
+    assert!(
+        body.get("error").is_none(),
+        "a successful response must not contain an \"error\" key: {body}"
+    );
+    assert_eq!(
+        body["name"], "Real Project",
+        "successful response schema must be unchanged by BE-9"
+    );
 }
 
 // -------------------------------------------------------- BE-8 regression
@@ -413,7 +588,12 @@ async fn be9_be8_regression_full_project_crud_lifecycle_through_router() {
 
     let (status, created) = send(
         &state,
-        req("POST", "/api/v1/projects", Some(&admin), Some(serde_json::json!({"name": "Lifecycle Project", "description": "d1"}))),
+        req(
+            "POST",
+            "/api/v1/projects",
+            Some(&admin),
+            Some(serde_json::json!({"name": "Lifecycle Project", "description": "d1"})),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
@@ -423,23 +603,45 @@ async fn be9_be8_regression_full_project_crud_lifecycle_through_router() {
     // list/get/update legs, so this also re-confirms isolation still holds.
     let scoped = mint_key(&state, "operator", Some(&id)).await;
 
-    let (status, list_body) = send(&state, req("GET", "/api/v1/projects", Some(&scoped), None)).await;
+    let (status, list_body) =
+        send(&state, req("GET", "/api/v1/projects", Some(&scoped), None)).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(list_body.as_array().unwrap().len(), 1, "a scoped key must list only its own project");
+    assert_eq!(
+        list_body.as_array().unwrap().len(),
+        1,
+        "a scoped key must list only its own project"
+    );
     assert_eq!(list_body[0]["id"], id);
 
-    let (status, got) = send(&state, req("GET", &format!("/api/v1/projects/{id}"), Some(&scoped), None)).await;
+    let (status, got) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{id}"),
+            Some(&scoped),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(got["name"], "Lifecycle Project");
     assert_eq!(got["description"], "d1");
 
     let (status, updated) = send(
         &state,
-        req("PATCH", &format!("/api/v1/projects/{id}"), Some(&scoped), Some(serde_json::json!({"description": "d2"}))),
+        req(
+            "PATCH",
+            &format!("/api/v1/projects/{id}"),
+            Some(&scoped),
+            Some(serde_json::json!({"description": "d2"})),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(updated["name"], "Lifecycle Project", "an omitted field must survive the update, unchanged by BE-9");
+    assert_eq!(
+        updated["name"], "Lifecycle Project",
+        "an omitted field must survive the update, unchanged by BE-9"
+    );
     assert_eq!(updated["description"], "d2");
 }
 
@@ -456,7 +658,13 @@ async fn be10_malformed_json_body_returns_structured_envelope() {
     let admin = mint_key(&state, "admin", None).await;
     let (status, body) = send(
         &state,
-        req_raw("POST", "/api/v1/projects", Some(&admin), Some("application/json"), "{not valid json"),
+        req_raw(
+            "POST",
+            "/api/v1/projects",
+            Some(&admin),
+            Some("application/json"),
+            "{not valid json",
+        ),
     )
     .await;
     assert_envelope(status, &body, StatusCode::BAD_REQUEST, "VALIDATION_ERROR");
@@ -468,7 +676,11 @@ async fn be10_malformed_json_body_returns_structured_envelope() {
 async fn be10_invalid_path_parameter_returns_structured_envelope() {
     let (state, _dir) = test_state().await;
     let admin = mint_key(&state, "admin", None).await;
-    let (status, body) = send(&state, req("GET", "/api/v1/projects/not-a-uuid", Some(&admin), None)).await;
+    let (status, body) = send(
+        &state,
+        req("GET", "/api/v1/projects/not-a-uuid", Some(&admin), None),
+    )
+    .await;
     assert_envelope(status, &body, StatusCode::BAD_REQUEST, "VALIDATION_ERROR");
 }
 
@@ -480,10 +692,21 @@ async fn be10_missing_content_type_returns_structured_envelope() {
     let admin = mint_key(&state, "admin", None).await;
     let (status, body) = send(
         &state,
-        req_raw("POST", "/api/v1/projects", Some(&admin), None, r#"{"name":"x"}"#),
+        req_raw(
+            "POST",
+            "/api/v1/projects",
+            Some(&admin),
+            None,
+            r#"{"name":"x"}"#,
+        ),
     )
     .await;
-    assert_envelope(status, &body, StatusCode::UNSUPPORTED_MEDIA_TYPE, "VALIDATION_ERROR");
+    assert_envelope(
+        status,
+        &body,
+        StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        "VALIDATION_ERROR",
+    );
 }
 
 /// BE-10: a query parameter that doesn't deserialize to its declared type
@@ -495,7 +718,16 @@ async fn be10_missing_content_type_returns_structured_envelope() {
 async fn be10_invalid_query_parameter_returns_structured_envelope() {
     let (state, _dir) = test_state().await;
     let admin = mint_key(&state, "admin", None).await;
-    let (status, body) = send(&state, req("GET", "/admin/audit-log?limit=notanumber", Some(&admin), None)).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "GET",
+            "/admin/audit-log?limit=notanumber",
+            Some(&admin),
+            None,
+        ),
+    )
+    .await;
     assert_envelope(status, &body, StatusCode::BAD_REQUEST, "VALIDATION_ERROR");
 }
 
@@ -511,21 +743,34 @@ async fn be10_valid_requests_through_converted_extractors_are_unaffected() {
     // ApiJson: a well-formed create body.
     let (status, created) = send(
         &state,
-        req("POST", "/api/v1/projects", Some(&admin), Some(serde_json::json!({"name": "Extractor Check"}))),
+        req(
+            "POST",
+            "/api/v1/projects",
+            Some(&admin),
+            Some(serde_json::json!({"name": "Extractor Check"})),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
     let id = created["id"].as_str().expect("id");
 
     // ApiPath: a well-formed UUID path segment.
-    let (status, got) = send(&state, req("GET", &format!("/api/v1/projects/{id}"), Some(&admin), None)).await;
+    let (status, got) = send(
+        &state,
+        req("GET", &format!("/api/v1/projects/{id}"), Some(&admin), None),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(got["name"], "Extractor Check");
 
     // ApiQuery: a well-formed query string (against the surviving
     // Admin-only audit-log route — Phase B cleanup removed the legacy
     // flat `/runs` this case used to exercise).
-    let (status, list) = send(&state, req("GET", "/admin/audit-log?limit=5", Some(&admin), None)).await;
+    let (status, list) = send(
+        &state,
+        req("GET", "/admin/audit-log?limit=5", Some(&admin), None),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert!(list.is_array());
 }
@@ -537,7 +782,11 @@ async fn be10_valid_requests_through_converted_extractors_are_unaffected() {
 /// that's scoped to it) and returns its id.
 async fn make_project(state: &AppState, name: &str) -> Uuid {
     let id = Uuid::new_v4();
-    state.store.insert_project(id, name, None).await.expect("insert_project");
+    state
+        .store
+        .insert_project(id, name, None)
+        .await
+        .expect("insert_project");
     id
 }
 
@@ -565,7 +814,12 @@ async fn actual_be9_scoped_execution_lifecycle_through_router() {
 
     let (status, created) = send(
         &state,
-        req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&owner), Some(simple_plan("scoped-run"))),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/executions"),
+            Some(&owner),
+            Some(simple_plan("scoped-run")),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={created}");
@@ -574,14 +828,28 @@ async fn actual_be9_scoped_execution_lifecycle_through_router() {
     // Give the (SimulatedExecutor-backed) run a moment to finish.
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
-    let (status, list) = send(&state, req("GET", &format!("/api/v1/projects/{project}/executions"), Some(&owner), None)).await;
+    let (status, list) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/executions"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(list.as_array().unwrap().len(), 1);
     assert_eq!(list[0]["run_id"], run_id);
 
     let (status, detail) = send(
         &state,
-        req("GET", &format!("/api/v1/projects/{project}/executions/{run_id}"), Some(&owner), None),
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/executions/{run_id}"),
+            Some(&owner),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -590,15 +858,28 @@ async fn actual_be9_scoped_execution_lifecycle_through_router() {
 
     let (status, events) = send(
         &state,
-        req("GET", &format!("/api/v1/projects/{project}/executions/{run_id}/events"), Some(&owner), None),
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/executions/{run_id}/events"),
+            Some(&owner),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert!(!events.as_array().unwrap().is_empty(), "a completed run must have real events");
+    assert!(
+        !events.as_array().unwrap().is_empty(),
+        "a completed run must have real events"
+    );
 
     let (status, evidence) = send(
         &state,
-        req("GET", &format!("/api/v1/projects/{project}/executions/{run_id}/evidence"), Some(&owner), None),
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/executions/{run_id}/evidence"),
+            Some(&owner),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -606,7 +887,16 @@ async fn actual_be9_scoped_execution_lifecycle_through_router() {
 
     // Regression: a global admin key can also reach it, listing/filtering
     // correctly to *this* project only.
-    let (status, admin_list) = send(&state, req("GET", &format!("/api/v1/projects/{project}/executions"), Some(&admin), None)).await;
+    let (status, admin_list) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/executions"),
+            Some(&admin),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(admin_list.as_array().unwrap().len(), 1);
 }
@@ -627,7 +917,12 @@ async fn actual_be9_scoped_approve_and_reject_through_router() {
     });
     let (status, created) = send(
         &state,
-        req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&owner), Some(gated_plan)),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/executions"),
+            Some(&owner),
+            Some(gated_plan),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
@@ -638,7 +933,12 @@ async fn actual_be9_scoped_approve_and_reject_through_router() {
 
     let (status, approved) = send(
         &state,
-        req("POST", &format!("/api/v1/projects/{project}/executions/{run_id}/approve"), Some(&owner), None),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/executions/{run_id}/approve"),
+            Some(&owner),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body={approved}");
@@ -652,7 +952,12 @@ async fn actual_be9_scoped_approve_and_reject_through_router() {
     });
     let (_, created2) = send(
         &state,
-        req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&owner), Some(gated_plan2)),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/executions"),
+            Some(&owner),
+            Some(gated_plan2),
+        ),
     )
     .await;
     let run_id2 = created2["run_id"].as_str().unwrap().to_string();
@@ -688,7 +993,12 @@ async fn actual_be9_cross_project_isolation_is_enforced_on_every_scoped_route() 
     // A real run genuinely owned by Project B.
     let (_, created) = send(
         &state,
-        req("POST", &format!("/api/v1/projects/{project_b}/executions"), Some(&owner_b), Some(simple_plan("b-run"))),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_b}/executions"),
+            Some(&owner_b),
+            Some(simple_plan("b-run")),
+        ),
     )
     .await;
     let b_run = created["run_id"].as_str().unwrap().to_string();
@@ -696,22 +1006,51 @@ async fn actual_be9_cross_project_isolation_is_enforced_on_every_scoped_route() 
 
     // A cannot even name Project B's path at all.
     for (method, path, body) in [
-        ("GET", format!("/api/v1/projects/{project_b}/executions/{b_run}"), None),
-        ("GET", format!("/api/v1/projects/{project_b}/executions/{b_run}/events"), None),
-        ("GET", format!("/api/v1/projects/{project_b}/executions/{b_run}/evidence"), None),
-        ("GET", format!("/api/v1/projects/{project_b}/executions"), None),
+        (
+            "GET",
+            format!("/api/v1/projects/{project_b}/executions/{b_run}"),
+            None,
+        ),
+        (
+            "GET",
+            format!("/api/v1/projects/{project_b}/executions/{b_run}/events"),
+            None,
+        ),
+        (
+            "GET",
+            format!("/api/v1/projects/{project_b}/executions/{b_run}/evidence"),
+            None,
+        ),
+        (
+            "GET",
+            format!("/api/v1/projects/{project_b}/executions"),
+            None,
+        ),
     ] {
         let (status, body_json) = send(&state, req(method, &path, Some(&owner_a), body)).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {path} must 403 for a key scoped to a different project; body={body_json}");
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "{method} {path} must 403 for a key scoped to a different project; body={body_json}"
+        );
         assert_eq!(body_json["error"]["code"], "FORBIDDEN");
     }
 
     // A cannot reach B's run by guessing/using its id under A's OWN path
     // either — the resource genuinely doesn't belong to A's namespace.
     for (method, path) in [
-        ("GET", format!("/api/v1/projects/{project_a}/executions/{b_run}")),
-        ("GET", format!("/api/v1/projects/{project_a}/executions/{b_run}/events")),
-        ("GET", format!("/api/v1/projects/{project_a}/executions/{b_run}/evidence")),
+        (
+            "GET",
+            format!("/api/v1/projects/{project_a}/executions/{b_run}"),
+        ),
+        (
+            "GET",
+            format!("/api/v1/projects/{project_a}/executions/{b_run}/events"),
+        ),
+        (
+            "GET",
+            format!("/api/v1/projects/{project_a}/executions/{b_run}/evidence"),
+        ),
     ] {
         let (status, body_json) = send(&state, req(method, &path, Some(&owner_a), None)).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{method} {path} must 404 (not 403) — A's namespace genuinely lacks this run; body={body_json}");
@@ -721,17 +1060,35 @@ async fn actual_be9_cross_project_isolation_is_enforced_on_every_scoped_route() 
     // Mutation: A cannot approve/reject B's run either way.
     let (status, _) = send(
         &state,
-        req("POST", &format!("/api/v1/projects/{project_a}/executions/{b_run}/approve"), Some(&owner_a), None),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_a}/executions/{b_run}/approve"),
+            Some(&owner_a),
+            None,
+        ),
     )
     .await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "A must not be able to mutate B's run under A's own path");
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "A must not be able to mutate B's run under A's own path"
+    );
 
     let (status, _) = send(
         &state,
-        req("POST", &format!("/api/v1/projects/{project_b}/executions/{b_run}/approve"), Some(&owner_a), None),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_b}/executions/{b_run}/approve"),
+            Some(&owner_a),
+            None,
+        ),
     )
     .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "A must not be able to mutate B's run under B's path either");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "A must not be able to mutate B's run under B's path either"
+    );
 }
 
 /// The same isolation, but for evidence specifically addressed by its own
@@ -756,14 +1113,22 @@ async fn actual_be9_cross_project_isolation_on_evidence_by_id() {
     // real evidence without needing a real failing executor).
     let (_, created) = send(
         &state,
-        req("POST", &format!("/api/v1/projects/{project_b}/executions"), Some(&owner_b), Some(simple_plan("b-evidence-run"))),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_b}/executions"),
+            Some(&owner_b),
+            Some(simple_plan("b-evidence-run")),
+        ),
     )
     .await;
     let b_run: Uuid = created["run_id"].as_str().unwrap().parse().unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
-    let evidence_store = crate::evidence::LocalEvidenceStore::new(dir.path().join("evidence")).unwrap();
-    let (object_key, size) = evidence_store.put(&b_run.to_string(), "t1", "log", "real captured output").unwrap();
+    let evidence_store =
+        crate::evidence::LocalEvidenceStore::new(dir.path().join("evidence")).unwrap();
+    let (object_key, size) = evidence_store
+        .put(&b_run.to_string(), "t1", "log", "real captured output")
+        .unwrap();
     let evidence_id = state
         .store
         .insert_evidence(b_run, "t1", "log", &object_key, "text/plain", size)
@@ -774,7 +1139,12 @@ async fn actual_be9_cross_project_isolation_on_evidence_by_id() {
     // scoped path.
     let (status, detail) = send(
         &state,
-        req("GET", &format!("/api/v1/projects/{project_b}/evidence/{evidence_id}"), Some(&owner_b), None),
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_b}/evidence/{evidence_id}"),
+            Some(&owner_b),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body={detail}");
@@ -787,32 +1157,57 @@ async fn actual_be9_cross_project_isolation_on_evidence_by_id() {
     // `send`'s JSON parsing.
     let app = router(state.clone());
     let resp = app
-        .oneshot(req("GET", &format!("/api/v1/projects/{project_b}/evidence/{evidence_id}/content"), Some(&owner_b), None))
+        .oneshot(req(
+            "GET",
+            &format!("/api/v1/projects/{project_b}/evidence/{evidence_id}/content"),
+            Some(&owner_b),
+            None,
+        ))
         .await
         .expect("router call");
     assert_eq!(resp.status(), StatusCode::OK);
-    let bytes = resp.into_body().collect().await.expect("collect body").to_bytes();
+    let bytes = resp
+        .into_body()
+        .collect()
+        .await
+        .expect("collect body")
+        .to_bytes();
     assert_eq!(&bytes[..], b"real captured output");
 
     // A cannot, under either project's path, on either the detail or the
     // content route.
     let (status, body) = send(
         &state,
-        req("GET", &format!("/api/v1/projects/{project_a}/evidence/{evidence_id}"), Some(&owner_a), None),
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_a}/evidence/{evidence_id}"),
+            Some(&owner_a),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
 
     let (status, body) = send(
         &state,
-        req("GET", &format!("/api/v1/projects/{project_b}/evidence/{evidence_id}"), Some(&owner_a), None),
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_b}/evidence/{evidence_id}"),
+            Some(&owner_a),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
 
     let (status, body) = send(
         &state,
-        req("GET", &format!("/api/v1/projects/{project_b}/evidence/{evidence_id}/content"), Some(&owner_a), None),
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_b}/evidence/{evidence_id}/content"),
+            Some(&owner_a),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
@@ -835,7 +1230,12 @@ async fn actual_be9_tenant_isolation_preserved_through_scoped_routes() {
 
     let (_, created) = send(
         &state,
-        req("POST", &format!("/api/v1/projects/{tenant_b_project}/executions"), Some(&tenant_b_key), Some(simple_plan("tenant-b-run"))),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{tenant_b_project}/executions"),
+            Some(&tenant_b_key),
+            Some(simple_plan("tenant-b-run")),
+        ),
     )
     .await;
     let tenant_b_run = created["run_id"].as_str().unwrap().to_string();
@@ -843,7 +1243,12 @@ async fn actual_be9_tenant_isolation_preserved_through_scoped_routes() {
     // Tenant A (even just a viewer) must not see Tenant B's run under B's own path.
     let (status, body) = send(
         &state,
-        req("GET", &format!("/api/v1/projects/{tenant_b_project}/executions/{tenant_b_run}"), Some(&tenant_a_key), None),
+        req(
+            "GET",
+            &format!("/api/v1/projects/{tenant_b_project}/executions/{tenant_b_run}"),
+            Some(&tenant_a_key),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
@@ -852,7 +1257,12 @@ async fn actual_be9_tenant_isolation_preserved_through_scoped_routes() {
     // And Tenant B's own key genuinely can.
     let (status, _) = send(
         &state,
-        req("GET", &format!("/api/v1/projects/{tenant_b_project}/executions/{tenant_b_run}"), Some(&tenant_b_key), None),
+        req(
+            "GET",
+            &format!("/api/v1/projects/{tenant_b_project}/executions/{tenant_b_run}"),
+            Some(&tenant_b_key),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -867,13 +1277,27 @@ async fn actual_be9_nonexistent_project_returns_structured_not_found() {
     let admin = mint_key(&state, "admin", None).await;
     let phantom_project = Uuid::new_v4();
 
-    let (status, body) = send(&state, req("GET", &format!("/api/v1/projects/{phantom_project}/executions"), Some(&admin), None)).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{phantom_project}/executions"),
+            Some(&admin),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(body["error"]["code"], "RESOURCE_NOT_FOUND");
 
     let (status, body) = send(
         &state,
-        req("POST", &format!("/api/v1/projects/{phantom_project}/executions"), Some(&admin), Some(simple_plan("x"))),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{phantom_project}/executions"),
+            Some(&admin),
+            Some(simple_plan("x")),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
@@ -905,14 +1329,28 @@ async fn be12_dashboard_and_kpis_reflect_real_run_and_task_data() {
 
     let (status, created) = send(
         &state,
-        req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&owner), Some(mixed_outcome_plan("mixed-run"))),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/executions"),
+            Some(&owner),
+            Some(mixed_outcome_plan("mixed-run")),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={created}");
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    let (status, dash) = send(&state, req("GET", &format!("/api/v1/projects/{project}/dashboard"), Some(&owner), None)).await;
+    let (status, dash) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/dashboard"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={dash}");
     assert_eq!(dash["project_id"], project.to_string());
     assert_eq!(dash["project_name"], "Dashboard Real Data");
@@ -920,20 +1358,37 @@ async fn be12_dashboard_and_kpis_reflect_real_run_and_task_data() {
     // semantics for a mixed-outcome plan) — assert the count sums to 1
     // rather than pinning an exact state, since that state machine is
     // owned by engine.rs, not this unit.
-    let exec_counts = dash["execution_counts"].as_object().expect("execution_counts object");
+    let exec_counts = dash["execution_counts"]
+        .as_object()
+        .expect("execution_counts object");
     let total_runs: i64 = exec_counts.values().map(|v| v.as_i64().unwrap()).sum();
     assert_eq!(total_runs, 1, "execution_counts={exec_counts:?}");
     assert_eq!(dash["pass_fail"]["passed"], 1);
     assert_eq!(dash["pass_fail"]["failed"], 1);
     assert_eq!(dash["task_counts"]["PASSED"], 1);
     assert_eq!(dash["task_counts"]["FAILED"], 1);
-    assert_eq!(dash["test_count"], 2, "two distinct task names ingested into the quality graph");
+    assert_eq!(
+        dash["test_count"], 2,
+        "two distinct task names ingested into the quality graph"
+    );
     assert!(dash["generated_at"].is_string());
 
-    let (status, kpis) = send(&state, req("GET", &format!("/api/v1/projects/{project}/kpis"), Some(&owner), None)).await;
+    let (status, kpis) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/kpis"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={kpis}");
     assert_eq!(kpis["project_id"], project.to_string());
-    assert_eq!(kpis["execution_reliability"], 0.5, "1 passed / (1 passed + 1 failed)");
+    assert_eq!(
+        kpis["execution_reliability"], 0.5,
+        "1 passed / (1 passed + 1 failed)"
+    );
     assert!(kpis["execution_efficiency_ms"].is_number(), "kpis={kpis}");
 }
 
@@ -946,7 +1401,16 @@ async fn be12_dashboard_and_kpis_on_empty_project_show_honest_absence_not_fake_z
     let project = make_project(&state, "Empty Project").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
 
-    let (status, dash) = send(&state, req("GET", &format!("/api/v1/projects/{project}/dashboard"), Some(&owner), None)).await;
+    let (status, dash) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/dashboard"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={dash}");
     assert_eq!(dash["execution_counts"], serde_json::json!({}));
     assert_eq!(dash["task_counts"], serde_json::json!({}));
@@ -954,12 +1418,30 @@ async fn be12_dashboard_and_kpis_on_empty_project_show_honest_absence_not_fake_z
     assert_eq!(dash["pass_fail"]["failed"], 0);
     assert_eq!(dash["test_count"], 0);
 
-    let (status, kpis) = send(&state, req("GET", &format!("/api/v1/projects/{project}/kpis"), Some(&owner), None)).await;
+    let (status, kpis) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/kpis"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={kpis}");
-    assert!(kpis["execution_reliability"].is_null(), "no terminal product outcome yet -> null, not 0 or 1; kpis={kpis}");
-    assert!(kpis["execution_efficiency_ms"].is_null(), "no finished task yet -> null, not a fake 0; kpis={kpis}");
+    assert!(
+        kpis["execution_reliability"].is_null(),
+        "no terminal product outcome yet -> null, not 0 or 1; kpis={kpis}"
+    );
+    assert!(
+        kpis["execution_efficiency_ms"].is_null(),
+        "no finished task yet -> null, not a fake 0; kpis={kpis}"
+    );
     // BE-12b Test 2 — no runs at all -> null, never a fabricated 0.
-    assert!(kpis["execution_avg_run_duration_ms"].is_null(), "no completed run yet -> null, not a fake 0; kpis={kpis}");
+    assert!(
+        kpis["execution_avg_run_duration_ms"].is_null(),
+        "no completed run yet -> null, not a fake 0; kpis={kpis}"
+    );
 }
 
 // ==================================================== BE-12b — average run duration
@@ -1044,8 +1526,26 @@ async fn be12b_avg_run_duration_is_exact_over_two_real_runs() {
     let project = make_project(&state, "BE-12b Exact Average").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
 
-    let (_, run_a) = send(&state, req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&owner), Some(simple_plan("run-a")))).await;
-    let (_, run_b) = send(&state, req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&owner), Some(simple_plan("run-b")))).await;
+    let (_, run_a) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/executions"),
+            Some(&owner),
+            Some(simple_plan("run-a")),
+        ),
+    )
+    .await;
+    let (_, run_b) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/executions"),
+            Some(&owner),
+            Some(simple_plan("run-b")),
+        ),
+    )
+    .await;
     let run_a_id: Uuid = run_a["run_id"].as_str().unwrap().parse().unwrap();
     let run_b_id: Uuid = run_b["run_id"].as_str().unwrap().parse().unwrap();
     poll_run_state(&state, project, &run_a_id.to_string(), &owner, "COMPLETED").await;
@@ -1057,13 +1557,39 @@ async fn be12b_avg_run_duration_is_exact_over_two_real_runs() {
     // rather than "is a number" — the real engine/store code path that
     // ends a run is exercised unmodified above; only the timing values
     // themselves are made deterministic for this assertion.
-    set_run_timestamps(&state, run_a_id, "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:10.000Z").await;
-    set_run_timestamps(&state, run_b_id, "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:30.000Z").await;
+    set_run_timestamps(
+        &state,
+        run_a_id,
+        "2026-01-01T00:00:00.000Z",
+        "2026-01-01T00:00:10.000Z",
+    )
+    .await;
+    set_run_timestamps(
+        &state,
+        run_b_id,
+        "2026-01-01T00:00:00.000Z",
+        "2026-01-01T00:00:30.000Z",
+    )
+    .await;
 
-    let (status, kpis) = send(&state, req("GET", &format!("/api/v1/projects/{project}/kpis"), Some(&owner), None)).await;
+    let (status, kpis) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/kpis"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={kpis}");
-    let avg = kpis["execution_avg_run_duration_ms"].as_f64().expect("execution_avg_run_duration_ms must be a real number");
-    assert!((avg - 20_000.0).abs() < 1.0, "expected exactly (10s+30s)/2 = 20000ms, got {avg}; kpis={kpis}");
+    let avg = kpis["execution_avg_run_duration_ms"]
+        .as_f64()
+        .expect("execution_avg_run_duration_ms must be a real number");
+    assert!(
+        (avg - 20_000.0).abs() < 1.0,
+        "expected exactly (10s+30s)/2 = 20000ms, got {avg}; kpis={kpis}"
+    );
 }
 
 /// Test 3 — a run that has started but not finished contributes nothing.
@@ -1075,7 +1601,12 @@ async fn be12b_running_run_excluded_from_avg_run_duration() {
 
     let (_, created) = send(
         &state,
-        req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&owner), Some(delayed_plan("slow-run", 5_000))),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/executions"),
+            Some(&owner),
+            Some(delayed_plan("slow-run", 5_000)),
+        ),
     )
     .await;
     let run_id = created["run_id"].as_str().unwrap().to_string();
@@ -1084,7 +1615,16 @@ async fn be12b_running_run_excluded_from_avg_run_duration() {
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
     poll_run_state(&state, project, &run_id, &owner, "RUNNING").await;
 
-    let (status, kpis) = send(&state, req("GET", &format!("/api/v1/projects/{project}/kpis"), Some(&owner), None)).await;
+    let (status, kpis) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/kpis"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={kpis}");
     assert!(
         kpis["execution_avg_run_duration_ms"].is_null(),
@@ -1093,7 +1633,16 @@ async fn be12b_running_run_excluded_from_avg_run_duration() {
 
     // Real cleanup — cancel the still-running task so the test process
     // doesn't leave a 5s task outliving it.
-    send(&state, req("POST", &format!("/api/v1/projects/{project}/executions/{run_id}/cancel"), Some(&owner), None)).await;
+    send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/executions/{run_id}/cancel"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
 }
 
 /// Test 4 — mixed real terminal states (COMPLETED/FAILED/PARTIAL/CANCELLED)
@@ -1110,26 +1659,85 @@ async fn be12b_mixed_terminal_states_all_counted_rejected_naturally_excluded() {
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
 
     // COMPLETED
-    let (_, completed) = send(&state, req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&owner), Some(simple_plan("completed-run")))).await;
+    let (_, completed) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/executions"),
+            Some(&owner),
+            Some(simple_plan("completed-run")),
+        ),
+    )
+    .await;
     let completed_id: Uuid = completed["run_id"].as_str().unwrap().parse().unwrap();
-    poll_run_state(&state, project, &completed_id.to_string(), &owner, "COMPLETED").await;
+    poll_run_state(
+        &state,
+        project,
+        &completed_id.to_string(),
+        &owner,
+        "COMPLETED",
+    )
+    .await;
 
     // FAILED
-    let (_, failed) = send(&state, req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&owner), Some(fail_plan("failed-run")))).await;
+    let (_, failed) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/executions"),
+            Some(&owner),
+            Some(fail_plan("failed-run")),
+        ),
+    )
+    .await;
     let failed_id: Uuid = failed["run_id"].as_str().unwrap().parse().unwrap();
     poll_run_state(&state, project, &failed_id.to_string(), &owner, "FAILED").await;
 
     // PARTIAL (a real INFRA_ERROR task, not a product failure)
-    let (_, partial) = send(&state, req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&owner), Some(infra_error_plan("partial-run")))).await;
+    let (_, partial) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/executions"),
+            Some(&owner),
+            Some(infra_error_plan("partial-run")),
+        ),
+    )
+    .await;
     let partial_id: Uuid = partial["run_id"].as_str().unwrap().parse().unwrap();
     poll_run_state(&state, project, &partial_id.to_string(), &owner, "PARTIAL").await;
 
     // CANCELLED
-    let (_, cancelled) = send(&state, req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&owner), Some(delayed_plan("cancelled-run", 5_000)))).await;
+    let (_, cancelled) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/executions"),
+            Some(&owner),
+            Some(delayed_plan("cancelled-run", 5_000)),
+        ),
+    )
+    .await;
     let cancelled_id: Uuid = cancelled["run_id"].as_str().unwrap().parse().unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-    send(&state, req("POST", &format!("/api/v1/projects/{project}/executions/{cancelled_id}/cancel"), Some(&owner), None)).await;
-    poll_run_state(&state, project, &cancelled_id.to_string(), &owner, "CANCELLED").await;
+    send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/executions/{cancelled_id}/cancel"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    poll_run_state(
+        &state,
+        project,
+        &cancelled_id.to_string(),
+        &owner,
+        "CANCELLED",
+    )
+    .await;
 
     // REJECTED (never actually started — held at PENDING_APPROVAL then rejected)
     let (_, rejected) = send(&state, req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&owner), Some(serde_json::json!({
@@ -1138,16 +1746,49 @@ async fn be12b_mixed_terminal_states_all_counted_rejected_naturally_excluded() {
         "tasks": [{"id": "t1", "name": "t1", "executor": "maestro", "simulate": {"outcome": "pass", "delay_ms": 0}}],
     })))).await;
     let rejected_id: Uuid = rejected["run_id"].as_str().unwrap().parse().unwrap();
-    send(&state, req("POST", &format!("/api/v1/projects/{project}/executions/{rejected_id}/reject"), Some(&owner), Some(serde_json::json!({"reason": "be12b test"})))).await;
+    send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/executions/{rejected_id}/reject"),
+            Some(&owner),
+            Some(serde_json::json!({"reason": "be12b test"})),
+        ),
+    )
+    .await;
 
     // Give every real terminal run an exact, known duration so their
     // combined average is assertable precisely (10s each, except the
     // rejected run which is deliberately left untouched — it must never
     // even be eligible, since its real `started_at` stays NULL).
-    set_run_timestamps(&state, completed_id, "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:10.000Z").await;
-    set_run_timestamps(&state, failed_id, "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:10.000Z").await;
-    set_run_timestamps(&state, partial_id, "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:10.000Z").await;
-    set_run_timestamps(&state, cancelled_id, "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:10.000Z").await;
+    set_run_timestamps(
+        &state,
+        completed_id,
+        "2026-01-01T00:00:00.000Z",
+        "2026-01-01T00:00:10.000Z",
+    )
+    .await;
+    set_run_timestamps(
+        &state,
+        failed_id,
+        "2026-01-01T00:00:00.000Z",
+        "2026-01-01T00:00:10.000Z",
+    )
+    .await;
+    set_run_timestamps(
+        &state,
+        partial_id,
+        "2026-01-01T00:00:00.000Z",
+        "2026-01-01T00:00:10.000Z",
+    )
+    .await;
+    set_run_timestamps(
+        &state,
+        cancelled_id,
+        "2026-01-01T00:00:00.000Z",
+        "2026-01-01T00:00:10.000Z",
+    )
+    .await;
 
     // Confirm the fresh-audit finding directly: the real REJECTED row
     // genuinely has no `started_at`.
@@ -1158,16 +1799,33 @@ async fn be12b_mixed_terminal_states_all_counted_rejected_naturally_excluded() {
         .expect("fetch rejected run row");
     let rejected_started_at: Option<String> = row.get("started_at");
     let rejected_finished_at: Option<String> = row.get("finished_at");
-    assert!(rejected_started_at.is_none(), "a real rejected run must never have a started_at (it never entered the scheduler)");
+    assert!(
+        rejected_started_at.is_none(),
+        "a real rejected run must never have a started_at (it never entered the scheduler)"
+    );
     assert!(rejected_finished_at.is_some(), "a real rejected run does get a real finished_at — it just never qualifies for the duration average");
 
-    let (status, kpis) = send(&state, req("GET", &format!("/api/v1/projects/{project}/kpis"), Some(&owner), None)).await;
+    let (status, kpis) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/kpis"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={kpis}");
-    let avg = kpis["execution_avg_run_duration_ms"].as_f64().expect("execution_avg_run_duration_ms must be a real number");
+    let avg = kpis["execution_avg_run_duration_ms"]
+        .as_f64()
+        .expect("execution_avg_run_duration_ms must be a real number");
     // All 4 eligible runs (COMPLETED/FAILED/PARTIAL/CANCELLED) were set to
     // exactly 10s -> the average must be exactly 10000ms, proving the
     // REJECTED run's absence of `started_at` correctly kept it out.
-    assert!((avg - 10_000.0).abs() < 1.0, "expected exactly 10000ms (rejected run correctly excluded), got {avg}; kpis={kpis}");
+    assert!(
+        (avg - 10_000.0).abs() < 1.0,
+        "expected exactly 10000ms (rejected run correctly excluded), got {avg}; kpis={kpis}"
+    );
 }
 
 /// Test 5 — project isolation: Project A's real run durations never
@@ -1180,30 +1838,108 @@ async fn be12b_avg_run_duration_is_project_isolated() {
     let owner_a = mint_key(&state, "operator", Some(&project_a.to_string())).await;
     let owner_b = mint_key(&state, "operator", Some(&project_b.to_string())).await;
 
-    let (_, run_a) = send(&state, req("POST", &format!("/api/v1/projects/{project_a}/executions"), Some(&owner_a), Some(simple_plan("a-run")))).await;
-    let (_, run_b) = send(&state, req("POST", &format!("/api/v1/projects/{project_b}/executions"), Some(&owner_b), Some(simple_plan("b-run")))).await;
+    let (_, run_a) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_a}/executions"),
+            Some(&owner_a),
+            Some(simple_plan("a-run")),
+        ),
+    )
+    .await;
+    let (_, run_b) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_b}/executions"),
+            Some(&owner_b),
+            Some(simple_plan("b-run")),
+        ),
+    )
+    .await;
     let run_a_id: Uuid = run_a["run_id"].as_str().unwrap().parse().unwrap();
     let run_b_id: Uuid = run_b["run_id"].as_str().unwrap().parse().unwrap();
-    poll_run_state(&state, project_a, &run_a_id.to_string(), &owner_a, "COMPLETED").await;
-    poll_run_state(&state, project_b, &run_b_id.to_string(), &owner_b, "COMPLETED").await;
+    poll_run_state(
+        &state,
+        project_a,
+        &run_a_id.to_string(),
+        &owner_a,
+        "COMPLETED",
+    )
+    .await;
+    poll_run_state(
+        &state,
+        project_b,
+        &run_b_id.to_string(),
+        &owner_b,
+        "COMPLETED",
+    )
+    .await;
 
     // Deliberately different, known durations per project.
-    set_run_timestamps(&state, run_a_id, "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:05.000Z").await; // 5s
-    set_run_timestamps(&state, run_b_id, "2026-01-01T00:00:00.000Z", "2026-01-01T00:01:00.000Z").await; // 60s
+    set_run_timestamps(
+        &state,
+        run_a_id,
+        "2026-01-01T00:00:00.000Z",
+        "2026-01-01T00:00:05.000Z",
+    )
+    .await; // 5s
+    set_run_timestamps(
+        &state,
+        run_b_id,
+        "2026-01-01T00:00:00.000Z",
+        "2026-01-01T00:01:00.000Z",
+    )
+    .await; // 60s
 
-    let (status, kpis_a) = send(&state, req("GET", &format!("/api/v1/projects/{project_a}/kpis"), Some(&owner_a), None)).await;
+    let (status, kpis_a) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_a}/kpis"),
+            Some(&owner_a),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={kpis_a}");
-    let avg_a = kpis_a["execution_avg_run_duration_ms"].as_f64().expect("project A must have a real average");
-    assert!((avg_a - 5_000.0).abs() < 1.0, "project A must reflect only its own 5s run, got {avg_a}; kpis_a={kpis_a}");
+    let avg_a = kpis_a["execution_avg_run_duration_ms"]
+        .as_f64()
+        .expect("project A must have a real average");
+    assert!(
+        (avg_a - 5_000.0).abs() < 1.0,
+        "project A must reflect only its own 5s run, got {avg_a}; kpis_a={kpis_a}"
+    );
 
-    let (status, kpis_b) = send(&state, req("GET", &format!("/api/v1/projects/{project_b}/kpis"), Some(&owner_b), None)).await;
+    let (status, kpis_b) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_b}/kpis"),
+            Some(&owner_b),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={kpis_b}");
-    let avg_b = kpis_b["execution_avg_run_duration_ms"].as_f64().expect("project B must have a real average");
+    let avg_b = kpis_b["execution_avg_run_duration_ms"]
+        .as_f64()
+        .expect("project B must have a real average");
     assert!((avg_b - 60_000.0).abs() < 1.0, "project B must reflect only its own 60s run, never project A's 5s run, got {avg_b}; kpis_b={kpis_b}");
 
     // Cross-project access is still real-403'd — same existing gate every
     // other scoped route uses, unmodified by this unit.
-    let (status, body) = send(&state, req("GET", &format!("/api/v1/projects/{project_b}/kpis"), Some(&owner_a), None)).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_b}/kpis"),
+            Some(&owner_a),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
 }
 
@@ -1219,27 +1955,81 @@ async fn be12_dashboard_and_kpis_do_not_leak_across_projects() {
     let owner_b = mint_key(&state, "operator", Some(&project_b.to_string())).await;
 
     // Project A: one passing run. Project B: one failing task.
-    send(&state, req("POST", &format!("/api/v1/projects/{project_a}/executions"), Some(&owner_a), Some(simple_plan("a-run")))).await;
+    send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_a}/executions"),
+            Some(&owner_a),
+            Some(simple_plan("a-run")),
+        ),
+    )
+    .await;
     let fail_plan = serde_json::json!({
         "name": "b-run",
         "concurrency": 1,
         "tasks": [{"id": "t1", "name": "t1", "simulate": {"outcome": "fail", "delay_ms": 0}}],
     });
-    send(&state, req("POST", &format!("/api/v1/projects/{project_b}/executions"), Some(&owner_b), Some(fail_plan))).await;
+    send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_b}/executions"),
+            Some(&owner_b),
+            Some(fail_plan),
+        ),
+    )
+    .await;
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    let (_, dash_a) = send(&state, req("GET", &format!("/api/v1/projects/{project_a}/dashboard"), Some(&owner_a), None)).await;
+    let (_, dash_a) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_a}/dashboard"),
+            Some(&owner_a),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(dash_a["pass_fail"]["passed"], 1);
     assert_eq!(dash_a["pass_fail"]["failed"], 0);
 
-    let (_, dash_b) = send(&state, req("GET", &format!("/api/v1/projects/{project_b}/dashboard"), Some(&owner_b), None)).await;
+    let (_, dash_b) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_b}/dashboard"),
+            Some(&owner_b),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(dash_b["pass_fail"]["passed"], 0);
     assert_eq!(dash_b["pass_fail"]["failed"], 1);
 
-    let (_, kpis_a) = send(&state, req("GET", &format!("/api/v1/projects/{project_a}/kpis"), Some(&owner_a), None)).await;
+    let (_, kpis_a) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_a}/kpis"),
+            Some(&owner_a),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(kpis_a["execution_reliability"], 1.0);
 
-    let (_, kpis_b) = send(&state, req("GET", &format!("/api/v1/projects/{project_b}/kpis"), Some(&owner_b), None)).await;
+    let (_, kpis_b) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_b}/kpis"),
+            Some(&owner_b),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(kpis_b["execution_reliability"], 0.0);
 }
 
@@ -1253,15 +2043,42 @@ async fn be12_dashboard_and_kpis_reject_unauthorized_cross_project_access() {
     let project_b = make_project(&state, "Tenant B").await;
     let owner_a = mint_key(&state, "operator", Some(&project_a.to_string())).await;
 
-    let (status, body) = send(&state, req("GET", &format!("/api/v1/projects/{project_b}/dashboard"), Some(&owner_a), None)).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_b}/dashboard"),
+            Some(&owner_a),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
 
-    let (status, body) = send(&state, req("GET", &format!("/api/v1/projects/{project_b}/kpis"), Some(&owner_a), None)).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_b}/kpis"),
+            Some(&owner_a),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
 
     // A global admin key, by contrast, may read either project.
     let admin = mint_key(&state, "admin", None).await;
-    let (status, _) = send(&state, req("GET", &format!("/api/v1/projects/{project_b}/dashboard"), Some(&admin), None)).await;
+    let (status, _) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_b}/dashboard"),
+            Some(&admin),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
 }
 
@@ -1273,11 +2090,29 @@ async fn be12_dashboard_and_kpis_nonexistent_project_returns_structured_not_foun
     let admin = mint_key(&state, "admin", None).await;
     let phantom = Uuid::new_v4();
 
-    let (status, body) = send(&state, req("GET", &format!("/api/v1/projects/{phantom}/dashboard"), Some(&admin), None)).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{phantom}/dashboard"),
+            Some(&admin),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
     assert_eq!(body["error"]["code"], "RESOURCE_NOT_FOUND");
 
-    let (status, body) = send(&state, req("GET", &format!("/api/v1/projects/{phantom}/kpis"), Some(&admin), None)).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{phantom}/kpis"),
+            Some(&admin),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
     assert_eq!(body["error"]["code"], "RESOURCE_NOT_FOUND");
 }
@@ -1290,7 +2125,16 @@ async fn be12_dashboard_malformed_project_id_returns_structured_validation_error
     let (state, _dir) = test_state().await;
     let admin = mint_key(&state, "admin", None).await;
 
-    let (status, body) = send(&state, req("GET", "/api/v1/projects/not-a-uuid/dashboard", Some(&admin), None)).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "GET",
+            "/api/v1/projects/not-a-uuid/dashboard",
+            Some(&admin),
+            None,
+        ),
+    )
+    .await;
     assert_envelope(status, &body, StatusCode::BAD_REQUEST, "VALIDATION_ERROR");
 }
 
@@ -1301,10 +2145,28 @@ async fn be12_dashboard_and_kpis_require_authentication() {
     let (state, _dir) = test_state().await;
     let project = make_project(&state, "Auth Check").await;
 
-    let (status, body) = send(&state, req("GET", &format!("/api/v1/projects/{project}/dashboard"), None, None)).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/dashboard"),
+            None,
+            None,
+        ),
+    )
+    .await;
     assert_envelope(status, &body, StatusCode::UNAUTHORIZED, "UNAUTHENTICATED");
 
-    let (status, body) = send(&state, req("GET", &format!("/api/v1/projects/{project}/kpis"), None, None)).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/kpis"),
+            None,
+            None,
+        ),
+    )
+    .await;
     assert_envelope(status, &body, StatusCode::UNAUTHORIZED, "UNAUTHENTICATED");
 }
 
@@ -1321,10 +2183,24 @@ fn delayed_plan(name: &str, delay_ms: u64) -> Value {
 /// Polls `GET .../executions/:run_id` until its `state` matches `want`, or
 /// panics after a bounded number of attempts. Used instead of a fixed sleep
 /// so these tests aren't flaky under load while still failing fast.
-async fn poll_run_state(state: &AppState, project: Uuid, run_id: &str, key: &str, want: &str) -> Value {
+async fn poll_run_state(
+    state: &AppState,
+    project: Uuid,
+    run_id: &str,
+    key: &str,
+    want: &str,
+) -> Value {
     for _ in 0..100 {
-        let (status, detail) =
-            send(state, req("GET", &format!("/api/v1/projects/{project}/executions/{run_id}"), Some(key), None)).await;
+        let (status, detail) = send(
+            state,
+            req(
+                "GET",
+                &format!("/api/v1/projects/{project}/executions/{run_id}"),
+                Some(key),
+                None,
+            ),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "body={detail}");
         if detail["state"] == want {
             return detail;
@@ -1348,7 +2224,12 @@ async fn be13_cancel_running_execution_succeeds_and_is_auditable() {
 
     let (status, created) = send(
         &state,
-        req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&owner), Some(delayed_plan("slow-run", 1_500))),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/executions"),
+            Some(&owner),
+            Some(delayed_plan("slow-run", 1_500)),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={created}");
@@ -1358,11 +2239,22 @@ async fn be13_cancel_running_execution_succeeds_and_is_auditable() {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await; // let the task actually start
 
     let start = std::time::Instant::now();
-    let (status, cancel_body) =
-        send(&state, req("POST", &format!("/api/v1/projects/{project}/executions/{run_id}/cancel"), Some(&owner), None)).await;
+    let (status, cancel_body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/executions/{run_id}/cancel"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={cancel_body}");
     assert_eq!(cancel_body["run_id"], run_id);
-    assert_ne!(cancel_body["status"], "COMPLETED", "cancel response must never claim the run completed normally");
+    assert_ne!(
+        cancel_body["status"], "COMPLETED",
+        "cancel response must never claim the run completed normally"
+    );
 
     let detail = poll_run_state(&state, project, &run_id, &owner, "CANCELLED").await;
     assert!(
@@ -1375,19 +2267,33 @@ async fn be13_cancel_running_execution_succeeds_and_is_auditable() {
 
     // Required event behavior: the run's completion event must say it was
     // cancelled, not the generic "run finished".
-    let (status, events) =
-        send(&state, req("GET", &format!("/api/v1/projects/{project}/executions/{run_id}/events"), Some(&owner), None)).await;
+    let (status, events) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/executions/{run_id}/events"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     let events = events.as_array().unwrap();
     assert!(
-        events.iter().any(|e| e["summary"].as_str().unwrap_or("").to_lowercase().contains("cancel")),
+        events.iter().any(|e| e["summary"]
+            .as_str()
+            .unwrap_or("")
+            .to_lowercase()
+            .contains("cancel")),
         "events must include a cancellation-related summary; events={events:?}"
     );
 
     // Required audit behavior (Contract §12.3 "auditable").
     let audit = state.store.list_audit(None, 50).await.expect("list_audit");
     assert!(
-        audit.iter().any(|a| a.action == "run.cancel" && a.target.as_deref() == Some(run_id.as_str()) && a.outcome == "ok"),
+        audit.iter().any(|a| a.action == "run.cancel"
+            && a.target.as_deref() == Some(run_id.as_str())
+            && a.outcome == "ok"),
         "audit_log must contain a run.cancel entry for this run"
     );
 }
@@ -1400,13 +2306,29 @@ async fn be13_cancel_rejects_already_terminal_run() {
     let project = make_project(&state, "Cancel Terminal").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
 
-    let (_, created) =
-        send(&state, req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&owner), Some(simple_plan("fast-run")))).await;
+    let (_, created) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/executions"),
+            Some(&owner),
+            Some(simple_plan("fast-run")),
+        ),
+    )
+    .await;
     let run_id = created["run_id"].as_str().unwrap().to_string();
     poll_run_state(&state, project, &run_id, &owner, "COMPLETED").await;
 
-    let (status, body) =
-        send(&state, req("POST", &format!("/api/v1/projects/{project}/executions/{run_id}/cancel"), Some(&owner), None)).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/executions/{run_id}/cancel"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_envelope(status, &body, StatusCode::CONFLICT, "CONFLICT");
 }
 
@@ -1425,15 +2347,38 @@ async fn be13_cancel_rejects_pending_approval_run_pointing_to_reject() {
         "concurrency": 1,
         "tasks": [{"id": "t1", "name": "t1", "executor": "maestro", "simulate": {"outcome": "pass", "delay_ms": 0}}],
     });
-    let (_, created) =
-        send(&state, req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&owner), Some(gated))).await;
+    let (_, created) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/executions"),
+            Some(&owner),
+            Some(gated),
+        ),
+    )
+    .await;
     assert_eq!(created["status"], "PENDING_APPROVAL", "created={created}");
     let run_id = created["run_id"].as_str().unwrap().to_string();
 
-    let (status, body) =
-        send(&state, req("POST", &format!("/api/v1/projects/{project}/executions/{run_id}/cancel"), Some(&owner), None)).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/executions/{run_id}/cancel"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_envelope(status, &body, StatusCode::CONFLICT, "CONFLICT");
-    assert!(body["error"]["message"].as_str().unwrap().to_lowercase().contains("reject"), "body={body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .to_lowercase()
+            .contains("reject"),
+        "body={body}"
+    );
 }
 
 /// Category: cross-project cancel blocked + unauthorized cancel blocked.
@@ -1446,14 +2391,27 @@ async fn be13_cancel_rejects_cross_project_and_insufficient_role() {
     let owner_b = mint_key(&state, "operator", Some(&project_b.to_string())).await;
     let viewer_a = mint_key(&state, "viewer", Some(&project_a.to_string())).await;
 
-    let (_, created) =
-        send(&state, req("POST", &format!("/api/v1/projects/{project_a}/executions"), Some(&owner_a), Some(delayed_plan("r", 1_500)))).await;
+    let (_, created) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_a}/executions"),
+            Some(&owner_a),
+            Some(delayed_plan("r", 1_500)),
+        ),
+    )
+    .await;
     let run_id = created["run_id"].as_str().unwrap().to_string();
 
     // Cross-project: project B's own key, valid role, wrong project.
     let (status, body) = send(
         &state,
-        req("POST", &format!("/api/v1/projects/{project_a}/executions/{run_id}/cancel"), Some(&owner_b), None),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_a}/executions/{run_id}/cancel"),
+            Some(&owner_b),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
@@ -1461,15 +2419,31 @@ async fn be13_cancel_rejects_cross_project_and_insufficient_role() {
     // Insufficient role: project A's own key, right project, wrong role.
     let (status, body) = send(
         &state,
-        req("POST", &format!("/api/v1/projects/{project_a}/executions/{run_id}/cancel"), Some(&viewer_a), None),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_a}/executions/{run_id}/cancel"),
+            Some(&viewer_a),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
 
     // Confirm neither rejected attempt actually cancelled it.
-    let (_, detail) =
-        send(&state, req("GET", &format!("/api/v1/projects/{project_a}/executions/{run_id}"), Some(&owner_a), None)).await;
-    assert_eq!(detail["state"], "RUNNING", "an unauthorized cancel attempt must not have changed the run's state");
+    let (_, detail) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_a}/executions/{run_id}"),
+            Some(&owner_a),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(
+        detail["state"], "RUNNING",
+        "an unauthorized cancel attempt must not have changed the run's state"
+    );
 }
 
 /// Category: nonexistent project/run.
@@ -1481,13 +2455,26 @@ async fn be13_cancel_nonexistent_run_and_project_return_structured_not_found() {
     let phantom_run = Uuid::new_v4();
     let phantom_project = Uuid::new_v4();
 
-    let (status, body) =
-        send(&state, req("POST", &format!("/api/v1/projects/{project}/executions/{phantom_run}/cancel"), Some(&owner), None)).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/executions/{phantom_run}/cancel"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
 
     let (status, body) = send(
         &state,
-        req("POST", &format!("/api/v1/projects/{phantom_project}/executions/{phantom_run}/cancel"), Some(&owner), None),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{phantom_project}/executions/{phantom_run}/cancel"),
+            Some(&owner),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
@@ -1503,13 +2490,29 @@ async fn be13_run_tasks_list_and_detail_endpoints() {
     let owner_a = mint_key(&state, "operator", Some(&project_a.to_string())).await;
     let owner_b = mint_key(&state, "operator", Some(&project_b.to_string())).await;
 
-    let (_, created) =
-        send(&state, req("POST", &format!("/api/v1/projects/{project_a}/executions"), Some(&owner_a), Some(simple_plan("task-run")))).await;
+    let (_, created) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_a}/executions"),
+            Some(&owner_a),
+            Some(simple_plan("task-run")),
+        ),
+    )
+    .await;
     let run_id = created["run_id"].as_str().unwrap().to_string();
     poll_run_state(&state, project_a, &run_id, &owner_a, "COMPLETED").await;
 
-    let (status, tasks) =
-        send(&state, req("GET", &format!("/api/v1/projects/{project_a}/executions/{run_id}/tasks"), Some(&owner_a), None)).await;
+    let (status, tasks) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_a}/executions/{run_id}/tasks"),
+            Some(&owner_a),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={tasks}");
     let tasks_arr = tasks.as_array().unwrap();
     assert_eq!(tasks_arr.len(), 1);
@@ -1518,7 +2521,12 @@ async fn be13_run_tasks_list_and_detail_endpoints() {
 
     let (status, task_detail) = send(
         &state,
-        req("GET", &format!("/api/v1/projects/{project_a}/executions/{run_id}/tasks/t1"), Some(&owner_a), None),
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_a}/executions/{run_id}/tasks/t1"),
+            Some(&owner_a),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body={task_detail}");
@@ -1528,18 +2536,36 @@ async fn be13_run_tasks_list_and_detail_endpoints() {
     // Nonexistent task id within a real run.
     let (status, body) = send(
         &state,
-        req("GET", &format!("/api/v1/projects/{project_a}/executions/{run_id}/tasks/does-not-exist"), Some(&owner_a), None),
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_a}/executions/{run_id}/tasks/does-not-exist"),
+            Some(&owner_a),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
 
     // Cross-project: project B's key must not read project A's tasks.
-    let (status, body) =
-        send(&state, req("GET", &format!("/api/v1/projects/{project_a}/executions/{run_id}/tasks"), Some(&owner_b), None)).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_a}/executions/{run_id}/tasks"),
+            Some(&owner_b),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
     let (status, body) = send(
         &state,
-        req("GET", &format!("/api/v1/projects/{project_a}/executions/{run_id}/tasks/t1"), Some(&owner_b), None),
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_a}/executions/{run_id}/tasks/t1"),
+            Some(&owner_b),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
@@ -1578,14 +2604,23 @@ async fn make_real_finding(state: &AppState, project: Uuid, owner: &str, task_na
     for i in 0..2 {
         let (status, _created) = send(
             state,
-            req("POST", &format!("/api/v1/projects/{project}/executions"), Some(owner), Some(failing_plan(&format!("fail-run-{i}"), task_name))),
+            req(
+                "POST",
+                &format!("/api/v1/projects/{project}/executions"),
+                Some(owner),
+                Some(failing_plan(&format!("fail-run-{i}"), task_name)),
+            ),
         )
         .await;
         assert_eq!(status, StatusCode::CREATED);
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
     }
     for _ in 0..50 {
-        let drafts = state.store.list_bug_drafts(Some(&project.to_string())).await.expect("list_bug_drafts");
+        let drafts = state
+            .store
+            .list_bug_drafts(Some(&project.to_string()))
+            .await
+            .expect("list_bug_drafts");
         if let Some(d) = drafts.into_iter().find(|d| d.title.contains(task_name)) {
             return d.id;
         }
@@ -1603,16 +2638,42 @@ async fn be15_findings_list_and_detail_reflect_real_recurring_failures() {
 
     let finding_id = make_real_finding(&state, project, &owner, "flaky-login-check").await;
 
-    let (status, list) = send(&state, req("GET", &format!("/api/v1/projects/{project}/findings"), Some(&owner), None)).await;
+    let (status, list) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/findings"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={list}");
     let arr = list.as_array().unwrap();
-    assert!(arr.iter().any(|f| f["id"] == finding_id.to_string()), "list={arr:?}");
+    assert!(
+        arr.iter().any(|f| f["id"] == finding_id.to_string()),
+        "list={arr:?}"
+    );
 
-    let (status, detail) =
-        send(&state, req("GET", &format!("/api/v1/projects/{project}/findings/{finding_id}"), Some(&owner), None)).await;
+    let (status, detail) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/findings/{finding_id}"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={detail}");
     assert_eq!(detail["id"], finding_id.to_string());
-    assert!(detail["title"].as_str().unwrap().contains("flaky-login-check"), "detail={detail}");
+    assert!(
+        detail["title"]
+            .as_str()
+            .unwrap()
+            .contains("flaky-login-check"),
+        "detail={detail}"
+    );
     // Contract §16.3: uncertain findings use NEEDS_REVIEW, never an
     // automatically-confirmed defect.
     assert_eq!(detail["review_state"], "NEEDS_REVIEW", "detail={detail}");
@@ -1632,17 +2693,36 @@ async fn be15_finding_analysis_correlates_real_failure_cluster_and_is_audited() 
 
     let (status, analysis) = send(
         &state,
-        req("POST", &format!("/api/v1/projects/{project}/findings/{finding_id}/analysis"), Some(&owner), None),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/findings/{finding_id}/analysis"),
+            Some(&owner),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body={analysis}");
-    assert_eq!(analysis["finding"]["id"], finding_id.to_string(), "analysis={analysis}");
-    assert!(analysis["failure_cluster"]["occurrence_count"].as_i64().unwrap() >= 2, "analysis={analysis}");
-    assert!(analysis["failure_cluster"]["root_cause_hypothesis"].is_string(), "analysis={analysis}");
+    assert_eq!(
+        analysis["finding"]["id"],
+        finding_id.to_string(),
+        "analysis={analysis}"
+    );
+    assert!(
+        analysis["failure_cluster"]["occurrence_count"]
+            .as_i64()
+            .unwrap()
+            >= 2,
+        "analysis={analysis}"
+    );
+    assert!(
+        analysis["failure_cluster"]["root_cause_hypothesis"].is_string(),
+        "analysis={analysis}"
+    );
 
     let audit = state.store.list_audit(None, 50).await.expect("list_audit");
     assert!(
-        audit.iter().any(|a| a.action == "finding.analysis" && a.target.as_deref() == Some(finding_id.to_string().as_str())),
+        audit.iter().any(|a| a.action == "finding.analysis"
+            && a.target.as_deref() == Some(finding_id.to_string().as_str())),
         "audit_log must record the analysis request"
     );
 }
@@ -1659,7 +2739,8 @@ async fn be15_finding_review_scoped_confirms_and_dismisses() {
     let owner_confirm = mint_key(&state, "operator", Some(&project_confirm.to_string())).await;
     let owner_dismiss = mint_key(&state, "operator", Some(&project_dismiss.to_string())).await;
 
-    let confirm_id = make_real_finding(&state, project_confirm, &owner_confirm, "confirm-me-check").await;
+    let confirm_id =
+        make_real_finding(&state, project_confirm, &owner_confirm, "confirm-me-check").await;
     let (status, _) = send(
         &state,
         req(
@@ -1673,12 +2754,18 @@ async fn be15_finding_review_scoped_confirms_and_dismisses() {
     assert_eq!(status, StatusCode::NO_CONTENT);
     let (_, detail) = send(
         &state,
-        req("GET", &format!("/api/v1/projects/{project_confirm}/findings/{confirm_id}"), Some(&owner_confirm), None),
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_confirm}/findings/{confirm_id}"),
+            Some(&owner_confirm),
+            None,
+        ),
     )
     .await;
     assert_eq!(detail["review_state"], "CONFIRMED", "detail={detail}");
 
-    let dismiss_id = make_real_finding(&state, project_dismiss, &owner_dismiss, "dismiss-me-check").await;
+    let dismiss_id =
+        make_real_finding(&state, project_dismiss, &owner_dismiss, "dismiss-me-check").await;
     let (status, _) = send(
         &state,
         req(
@@ -1692,14 +2779,23 @@ async fn be15_finding_review_scoped_confirms_and_dismisses() {
     assert_eq!(status, StatusCode::NO_CONTENT);
     let (_, detail) = send(
         &state,
-        req("GET", &format!("/api/v1/projects/{project_dismiss}/findings/{dismiss_id}"), Some(&owner_dismiss), None),
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_dismiss}/findings/{dismiss_id}"),
+            Some(&owner_dismiss),
+            None,
+        ),
     )
     .await;
     assert_eq!(detail["review_state"], "DISMISSED", "detail={detail}");
 
     let audit = state.store.list_audit(None, 50).await.expect("list_audit");
-    assert!(audit.iter().any(|a| a.action == "finding.review" && a.detail.as_deref() == Some("CONFIRMED")));
-    assert!(audit.iter().any(|a| a.action == "finding.review" && a.detail.as_deref() == Some("DISMISSED")));
+    assert!(audit
+        .iter()
+        .any(|a| a.action == "finding.review" && a.detail.as_deref() == Some("CONFIRMED")));
+    assert!(audit
+        .iter()
+        .any(|a| a.action == "finding.review" && a.detail.as_deref() == Some("DISMISSED")));
 
     // Invalid action is rejected as validation, not silently accepted.
     let (status, body) = send(
@@ -1729,17 +2825,46 @@ async fn be15_findings_cross_project_isolation_and_role_check() {
     let finding_id = make_real_finding(&state, project_b, &owner_b, "isolation-check").await;
 
     // A's list must never contain B's finding.
-    let (_, list_a) = send(&state, req("GET", &format!("/api/v1/projects/{project_a}/findings"), Some(&owner_a), None)).await;
-    assert!(list_a.as_array().unwrap().iter().all(|f| f["id"] != finding_id.to_string()), "list_a={list_a}");
+    let (_, list_a) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_a}/findings"),
+            Some(&owner_a),
+            None,
+        ),
+    )
+    .await;
+    assert!(
+        list_a
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|f| f["id"] != finding_id.to_string()),
+        "list_a={list_a}"
+    );
 
     // A cannot read/analyze/review B's finding under B's own project path.
-    let (status, body) =
-        send(&state, req("GET", &format!("/api/v1/projects/{project_b}/findings/{finding_id}"), Some(&owner_a), None)).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_b}/findings/{finding_id}"),
+            Some(&owner_a),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
 
     let (status, body) = send(
         &state,
-        req("POST", &format!("/api/v1/projects/{project_b}/findings/{finding_id}/analysis"), Some(&owner_a), None),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_b}/findings/{finding_id}/analysis"),
+            Some(&owner_a),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
@@ -1770,8 +2895,16 @@ async fn be15_findings_cross_project_isolation_and_role_check() {
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
 
     // Finding remains untouched by every rejected attempt.
-    let (_, detail) =
-        send(&state, req("GET", &format!("/api/v1/projects/{project_b}/findings/{finding_id}"), Some(&owner_b), None)).await;
+    let (_, detail) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_b}/findings/{finding_id}"),
+            Some(&owner_b),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(detail["review_state"], "NEEDS_REVIEW", "detail={detail}");
 }
 
@@ -1784,15 +2917,40 @@ async fn be15_findings_require_authentication_and_reject_nonexistent_resources()
     let phantom_project = Uuid::new_v4();
     let phantom_finding = Uuid::new_v4();
 
-    let (status, body) = send(&state, req("GET", &format!("/api/v1/projects/{project}/findings"), None, None)).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/findings"),
+            None,
+            None,
+        ),
+    )
+    .await;
     assert_envelope(status, &body, StatusCode::UNAUTHORIZED, "UNAUTHENTICATED");
 
-    let (status, body) =
-        send(&state, req("GET", &format!("/api/v1/projects/{phantom_project}/findings"), Some(&admin), None)).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{phantom_project}/findings"),
+            Some(&admin),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
 
-    let (status, body) =
-        send(&state, req("GET", &format!("/api/v1/projects/{project}/findings/{phantom_finding}"), Some(&admin), None)).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/findings/{phantom_finding}"),
+            Some(&admin),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
 }
 
@@ -1805,21 +2963,47 @@ async fn be15_evidence_detail_is_metadata_not_raw_bytes() {
     let project = make_project(&state, "Evidence Shape").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
 
-    let (_, created) =
-        send(&state, req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&owner), Some(simple_plan("ev-run")))).await;
+    let (_, created) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/executions"),
+            Some(&owner),
+            Some(simple_plan("ev-run")),
+        ),
+    )
+    .await;
     let run_id: Uuid = created["run_id"].as_str().unwrap().parse().unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
-    let evidence_store = crate::evidence::LocalEvidenceStore::new(dir.path().join("evidence")).unwrap();
-    let (object_key, size) = evidence_store.put(&run_id.to_string(), "t1", "log", "shape-check bytes").unwrap();
-    let evidence_id = state.store.insert_evidence(run_id, "t1", "log", &object_key, "text/plain", size).await.unwrap();
+    let evidence_store =
+        crate::evidence::LocalEvidenceStore::new(dir.path().join("evidence")).unwrap();
+    let (object_key, size) = evidence_store
+        .put(&run_id.to_string(), "t1", "log", "shape-check bytes")
+        .unwrap();
+    let evidence_id = state
+        .store
+        .insert_evidence(run_id, "t1", "log", &object_key, "text/plain", size)
+        .await
+        .unwrap();
 
-    let (status, detail) =
-        send(&state, req("GET", &format!("/api/v1/projects/{project}/evidence/{evidence_id}"), Some(&owner), None)).await;
+    let (status, detail) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/evidence/{evidence_id}"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(detail["size_bytes"], size, "detail={detail}");
     assert_eq!(detail["content_type"], "text/plain", "detail={detail}");
-    assert!(detail.get("object_key").is_some(), "detail must be the real EvidenceRow metadata, not a raw byte string; detail={detail}");
+    assert!(
+        detail.get("object_key").is_some(),
+        "detail must be the real EvidenceRow metadata, not a raw byte string; detail={detail}"
+    );
 }
 
 /// Category: project-scoped audit list, isolation, role bar (Operator, not
@@ -1833,29 +3017,88 @@ async fn be15_audit_log_scoped_to_project_and_isolated() {
     let owner_b = mint_key(&state, "operator", Some(&project_b.to_string())).await;
 
     // Real audited actions in each project.
-    send(&state, req("POST", &format!("/api/v1/projects/{project_a}/executions"), Some(&owner_a), Some(simple_plan("audit-a")))).await;
-    send(&state, req("POST", &format!("/api/v1/projects/{project_b}/executions"), Some(&owner_b), Some(simple_plan("audit-b")))).await;
+    send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_a}/executions"),
+            Some(&owner_a),
+            Some(simple_plan("audit-a")),
+        ),
+    )
+    .await;
+    send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_b}/executions"),
+            Some(&owner_b),
+            Some(simple_plan("audit-b")),
+        ),
+    )
+    .await;
 
-    let (status, log_a) = send(&state, req("GET", &format!("/api/v1/projects/{project_a}/audit"), Some(&owner_a), None)).await;
+    let (status, log_a) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_a}/audit"),
+            Some(&owner_a),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={log_a}");
     let entries_a = log_a.as_array().unwrap();
-    assert!(!entries_a.is_empty(), "project A must see its own audit entries");
     assert!(
-        entries_a.iter().all(|e| e["project_id"] == project_a.to_string()),
+        !entries_a.is_empty(),
+        "project A must see its own audit entries"
+    );
+    assert!(
+        entries_a
+            .iter()
+            .all(|e| e["project_id"] == project_a.to_string()),
         "project A's audit view must never include another project's rows; entries={entries_a:?}"
     );
 
     // Cross-project blocked.
-    let (status, body) = send(&state, req("GET", &format!("/api/v1/projects/{project_b}/audit"), Some(&owner_a), None)).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_b}/audit"),
+            Some(&owner_a),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
 
     // Nonexistent project.
     let phantom = Uuid::new_v4();
-    let (status, body) = send(&state, req("GET", &format!("/api/v1/projects/{phantom}/audit"), Some(&owner_a), None)).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{phantom}/audit"),
+            Some(&owner_a),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
 
     // Missing auth.
-    let (status, body) = send(&state, req("GET", &format!("/api/v1/projects/{project_a}/audit"), None, None)).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_a}/audit"),
+            None,
+            None,
+        ),
+    )
+    .await;
     assert_envelope(status, &body, StatusCode::UNAUTHORIZED, "UNAUTHENTICATED");
 }
 
@@ -1874,7 +3117,12 @@ async fn be15_legacy_admin_audit_log_still_works() {
     let project = make_project(&state, "Admin Audit Seed").await;
     let (status, _) = send(
         &state,
-        req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&admin), Some(simple_plan("audit-seed"))),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/executions"),
+            Some(&admin),
+            Some(simple_plan("audit-seed")),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
@@ -1884,7 +3132,11 @@ async fn be15_legacy_admin_audit_log_still_works() {
     assert!(!log.as_array().unwrap().is_empty());
 
     // Still admin-only, unchanged.
-    let (status, body) = send(&state, req("GET", "/admin/audit-log", Some(&operator), None)).await;
+    let (status, body) = send(
+        &state,
+        req("GET", "/admin/audit-log", Some(&operator), None),
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
 }
 
@@ -1928,10 +3180,23 @@ fn scored_plan(run_name: &str, task_name: &str, outcome: &str) -> Value {
 /// not "not enough total wait time", it's waiting on the wrong condition,
 /// reproducible even in fast, unloaded, isolated runs. Every real caller
 /// needs the fully-scored row, so that's what this helper now waits for.
-async fn poll_intelligence_row(state: &AppState, project: Uuid, key: &str, task_name: &str) -> Value {
+async fn poll_intelligence_row(
+    state: &AppState,
+    project: Uuid,
+    key: &str,
+    task_name: &str,
+) -> Value {
     for _ in 0..100 {
-        let (status, rows) =
-            send(state, req("GET", &format!("/api/v1/projects/{project}/intelligence/tests"), Some(key), None)).await;
+        let (status, rows) = send(
+            state,
+            req(
+                "GET",
+                &format!("/api/v1/projects/{project}/intelligence/tests"),
+                Some(key),
+                None,
+            ),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "body={rows}");
         if let Some(row) = rows.as_array().unwrap().iter().find(|r| {
             r["name"] == task_name
@@ -1943,7 +3208,9 @@ async fn poll_intelligence_row(state: &AppState, project: Uuid, key: &str, task_
         }
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
     }
-    panic!("no fully-scored intelligence row named {task_name} appeared for project {project} in time");
+    panic!(
+        "no fully-scored intelligence row named {task_name} appeared for project {project} in time"
+    );
 }
 
 /// Test 1 (authorized project) + Test 5 (existing intelligence fields): a
@@ -1956,25 +3223,66 @@ async fn phase4_be10_intelligence_scoped_to_authorized_project_with_real_fields(
     let project = make_project(&state, "Intel Tenant A").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
 
-    send(&state, req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&owner), Some(scored_plan("intel-run", "risk-task-a", "pass"))))
-        .await;
+    send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/executions"),
+            Some(&owner),
+            Some(scored_plan("intel-run", "risk-task-a", "pass")),
+        ),
+    )
+    .await;
 
     let row = poll_intelligence_row(&state, project, &owner, "risk-task-a").await;
     assert!(row["id"].as_str().is_some(), "row={row}");
     assert_eq!(row["name"], "risk-task-a", "row={row}");
     // Real persisted/computed fields (`store.rs::TestIntelRow`) — never
     // invented ones (no `id`/`name` other than these, no extra field).
-    assert!(row["risk_score"].is_number(), "risk_score must be a real computed value; row={row}");
-    assert!(row["value_score"].is_number(), "value_score must be a real computed value; row={row}");
-    assert!(row["flakiness_score"].is_number(), "flakiness_score must be a real computed value; row={row}");
-    assert!(row["failure_rate"].is_number(), "failure_rate must be a real computed value; row={row}");
-    assert!(row["window_runs"].is_number(), "window_runs must be a real computed value; row={row}");
-    assert!(row["window_failures"].is_number(), "window_failures must be a real computed value; row={row}");
+    assert!(
+        row["risk_score"].is_number(),
+        "risk_score must be a real computed value; row={row}"
+    );
+    assert!(
+        row["value_score"].is_number(),
+        "value_score must be a real computed value; row={row}"
+    );
+    assert!(
+        row["flakiness_score"].is_number(),
+        "flakiness_score must be a real computed value; row={row}"
+    );
+    assert!(
+        row["failure_rate"].is_number(),
+        "failure_rate must be a real computed value; row={row}"
+    );
+    assert!(
+        row["window_runs"].is_number(),
+        "window_runs must be a real computed value; row={row}"
+    );
+    assert!(
+        row["window_failures"].is_number(),
+        "window_failures must be a real computed value; row={row}"
+    );
     assert_eq!(
-        row.as_object().unwrap().keys().map(|k| k.as_str()).collect::<std::collections::BTreeSet<_>>(),
-        ["id", "name", "risk_score", "failure_rate", "dependency_count", "execution_cost_ms", "value_score", "flakiness_score", "window_runs", "window_failures"]
-            .into_iter()
+        row.as_object()
+            .unwrap()
+            .keys()
+            .map(|k| k.as_str())
             .collect::<std::collections::BTreeSet<_>>(),
+        [
+            "id",
+            "name",
+            "risk_score",
+            "failure_rate",
+            "dependency_count",
+            "execution_cost_ms",
+            "value_score",
+            "flakiness_score",
+            "window_runs",
+            "window_failures"
+        ]
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>(),
         "response must be exactly the real TestIntelRow shape, no invented/extra fields; row={row}"
     );
 }
@@ -1994,10 +3302,26 @@ async fn phase4_be10_intelligence_isolated_across_projects() {
     let owner_b = mint_key(&state, "operator", Some(&project_b.to_string())).await;
     let admin = mint_key(&state, "admin", None).await; // unscoped — can legitimately see either.
 
-    send(&state, req("POST", &format!("/api/v1/projects/{project_a}/executions"), Some(&owner_a), Some(scored_plan("run-a", "task-a", "pass"))))
-        .await;
-    send(&state, req("POST", &format!("/api/v1/projects/{project_b}/executions"), Some(&owner_b), Some(scored_plan("run-b", "task-b", "fail"))))
-        .await;
+    send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_a}/executions"),
+            Some(&owner_a),
+            Some(scored_plan("run-a", "task-a", "pass")),
+        ),
+    )
+    .await;
+    send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_b}/executions"),
+            Some(&owner_b),
+            Some(scored_plan("run-b", "task-b", "fail")),
+        ),
+    )
+    .await;
 
     let row_a = poll_intelligence_row(&state, project_a, &admin, "task-a").await;
     let row_b = poll_intelligence_row(&state, project_b, &admin, "task-b").await;
@@ -2007,22 +3331,52 @@ async fn phase4_be10_intelligence_isolated_across_projects() {
 
     // Project A's own view: task-a present, task-b (and B's higher risk
     // value) never appears.
-    let (status, rows_a) = send(&state, req("GET", &format!("/api/v1/projects/{project_a}/intelligence/tests"), Some(&owner_a), None)).await;
+    let (status, rows_a) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_a}/intelligence/tests"),
+            Some(&owner_a),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={rows_a}");
     let arr_a = rows_a.as_array().unwrap();
-    assert!(arr_a.iter().any(|r| r["name"] == "task-a"), "project A must see its own intelligence; rows={arr_a:?}");
-    assert!(arr_a.iter().all(|r| r["name"] != "task-b"), "project A must never see project B's task; rows={arr_a:?}");
+    assert!(
+        arr_a.iter().any(|r| r["name"] == "task-a"),
+        "project A must see its own intelligence; rows={arr_a:?}"
+    );
+    assert!(
+        arr_a.iter().all(|r| r["name"] != "task-b"),
+        "project A must never see project B's task; rows={arr_a:?}"
+    );
     assert!(
         arr_a.iter().all(|r| r["risk_score"].as_f64() != Some(risk_b) || r["name"] != "task-b"),
         "project A's response must never carry project B's real risk value under B's task; rows={arr_a:?}"
     );
 
     // Project B's own view: symmetric.
-    let (status, rows_b) = send(&state, req("GET", &format!("/api/v1/projects/{project_b}/intelligence/tests"), Some(&owner_b), None)).await;
+    let (status, rows_b) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_b}/intelligence/tests"),
+            Some(&owner_b),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={rows_b}");
     let arr_b = rows_b.as_array().unwrap();
-    assert!(arr_b.iter().any(|r| r["name"] == "task-b"), "project B must see its own intelligence; rows={arr_b:?}");
-    assert!(arr_b.iter().all(|r| r["name"] != "task-a"), "project B must never see project A's task; rows={arr_b:?}");
+    assert!(
+        arr_b.iter().any(|r| r["name"] == "task-b"),
+        "project B must see its own intelligence; rows={arr_b:?}"
+    );
+    assert!(
+        arr_b.iter().all(|r| r["name"] != "task-a"),
+        "project B must never see project A's task; rows={arr_b:?}"
+    );
 }
 
 /// Test 3 (unauthorized project) + existing-project-check regression: a key
@@ -2038,21 +3392,45 @@ async fn phase4_be10_intelligence_unauthorized_and_missing_project_rejected() {
     let owner_a = mint_key(&state, "operator", Some(&project_a.to_string())).await;
 
     // A's key cannot name B's intelligence at all.
-    let (status, body) =
-        send(&state, req("GET", &format!("/api/v1/projects/{project_b}/intelligence/tests"), Some(&owner_a), None)).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_b}/intelligence/tests"),
+            Some(&owner_a),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
     assert_eq!(body["error"]["code"], "FORBIDDEN");
 
     // Nonexistent project.
     let phantom = Uuid::new_v4();
-    let (status, body) =
-        send(&state, req("GET", &format!("/api/v1/projects/{phantom}/intelligence/tests"), Some(&owner_a), None)).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{phantom}/intelligence/tests"),
+            Some(&owner_a),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
     assert_eq!(body["error"]["code"], "RESOURCE_NOT_FOUND");
 
     // Missing auth.
-    let (status, body) =
-        send(&state, req("GET", &format!("/api/v1/projects/{project_a}/intelligence/tests"), None, None)).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_a}/intelligence/tests"),
+            None,
+            None,
+        ),
+    )
+    .await;
     assert_envelope(status, &body, StatusCode::UNAUTHORIZED, "UNAUTHENTICATED");
 }
 
@@ -2065,7 +3443,16 @@ async fn phase4_be10_intelligence_empty_project_returns_truthful_empty_array() {
     let project = make_project(&state, "Intel Tenant Empty").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
 
-    let (status, rows) = send(&state, req("GET", &format!("/api/v1/projects/{project}/intelligence/tests"), Some(&owner), None)).await;
+    let (status, rows) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/intelligence/tests"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={rows}");
     assert_eq!(rows.as_array().unwrap().len(), 0, "a project with no completed runs must return a truthful empty array, not fabricated rows; body={rows}");
 }
@@ -2105,8 +3492,16 @@ async fn aud005_create_get_list_test_case_real_persistence() {
     let project = make_project(&state, "AUD-005 Persistence").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
 
-    let (status, created) =
-        send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&owner), Some(sample_test_case_body("Reject invalid password")))).await;
+    let (status, created) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(&owner),
+            Some(sample_test_case_body("Reject invalid password")),
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "body={created}");
     let id = created["id"].as_str().expect("id").to_string();
     assert_eq!(created["status"], "GENERATED", "created={created}");
@@ -2115,17 +3510,38 @@ async fn aud005_create_get_list_test_case_real_persistence() {
 
     // Independent GET (a fresh request, no shared in-memory state with the
     // POST above) must return the exact same real row.
-    let (status, fetched) = send(&state, req("GET", &format!("/api/v1/projects/{project}/test-cases/{id}"), Some(&owner), None)).await;
+    let (status, fetched) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/test-cases/{id}"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={fetched}");
     assert_eq!(fetched["id"], created["id"]);
     assert_eq!(fetched["title"], "Reject invalid password");
     assert_eq!(fetched["description"], created["description"]);
 
     // List must include it.
-    let (status, listed) = send(&state, req("GET", &format!("/api/v1/projects/{project}/test-cases"), Some(&owner), None)).await;
+    let (status, listed) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={listed}");
     let arr = listed.as_array().unwrap();
-    assert!(arr.iter().any(|r| r["id"] == id), "list must contain the created case; rows={arr:?}");
+    assert!(
+        arr.iter().any(|r| r["id"] == id),
+        "list must contain the created case; rows={arr:?}"
+    );
 }
 
 #[tokio::test]
@@ -2134,7 +3550,16 @@ async fn aud005_update_test_case_persists_and_ignores_status() {
     let project = make_project(&state, "AUD-005 Update").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
 
-    let (_, created) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&owner), Some(sample_test_case_body("Original title")))).await;
+    let (_, created) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(&owner),
+            Some(sample_test_case_body("Original title")),
+        ),
+    )
+    .await;
     let id = created["id"].as_str().unwrap().to_string();
 
     let (status, updated) = send(
@@ -2163,14 +3588,45 @@ async fn aud005_delete_test_case_removes_it_for_real() {
     let project = make_project(&state, "AUD-005 Delete").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
 
-    let (_, created) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&owner), Some(sample_test_case_body("To be deleted")))).await;
+    let (_, created) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(&owner),
+            Some(sample_test_case_body("To be deleted")),
+        ),
+    )
+    .await;
     let id = created["id"].as_str().unwrap().to_string();
 
-    let (status, _) = send(&state, req("DELETE", &format!("/api/v1/projects/{project}/test-cases/{id}"), Some(&owner), None)).await;
+    let (status, _) = send(
+        &state,
+        req(
+            "DELETE",
+            &format!("/api/v1/projects/{project}/test-cases/{id}"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
-    let (status, body) = send(&state, req("GET", &format!("/api/v1/projects/{project}/test-cases/{id}"), Some(&owner), None)).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "deleted case must genuinely be gone; body={body}");
+    let (status, body) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/test-cases/{id}"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "deleted case must genuinely be gone; body={body}"
+    );
 }
 
 /// The real lifecycle end to end: GENERATED -> VALIDATED -> APPROVED, each
@@ -2181,15 +3637,45 @@ async fn aud005_lifecycle_validate_then_approve_succeeds_in_order() {
     let project = make_project(&state, "AUD-005 Lifecycle").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
 
-    let (_, created) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&owner), Some(sample_test_case_body("Lifecycle case")))).await;
+    let (_, created) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(&owner),
+            Some(sample_test_case_body("Lifecycle case")),
+        ),
+    )
+    .await;
     let id = created["id"].as_str().unwrap().to_string();
 
-    let (status, validated) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/validate"), Some(&owner), None)).await;
+    let (status, validated) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/validate"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={validated}");
     assert_eq!(validated["status"], "VALIDATED", "validated={validated}");
-    assert!(validated["validation_notes"].as_str().is_some(), "a real validation note must be recorded");
+    assert!(
+        validated["validation_notes"].as_str().is_some(),
+        "a real validation note must be recorded"
+    );
 
-    let (status, approved) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/approve"), Some(&owner), None)).await;
+    let (status, approved) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/approve"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={approved}");
     assert_eq!(approved["status"], "APPROVED", "approved={approved}");
 }
@@ -2203,14 +3689,44 @@ async fn aud005_approve_without_validate_first_is_rejected_with_409() {
     let project = make_project(&state, "AUD-005 Skip Validate").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
 
-    let (_, created) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&owner), Some(sample_test_case_body("Not yet validated")))).await;
+    let (_, created) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(&owner),
+            Some(sample_test_case_body("Not yet validated")),
+        ),
+    )
+    .await;
     let id = created["id"].as_str().unwrap().to_string();
 
-    let (status, body) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/approve"), Some(&owner), None)).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/approve"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::CONFLICT, "body={body}");
 
-    let (_, row) = send(&state, req("GET", &format!("/api/v1/projects/{project}/test-cases/{id}"), Some(&owner), None)).await;
-    assert_eq!(row["status"], "GENERATED", "a rejected approve attempt must not silently move the case forward; row={row}");
+    let (_, row) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/test-cases/{id}"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(
+        row["status"], "GENERATED",
+        "a rejected approve attempt must not silently move the case forward; row={row}"
+    );
 }
 
 /// A structurally incomplete case (an empty step) fails real validation
@@ -2223,14 +3739,44 @@ async fn aud005_validate_rejects_structurally_incomplete_case() {
 
     let mut body = sample_test_case_body("Missing step content");
     body["steps"] = serde_json::json!([{"step_number": 1, "action": "", "expected_result": ""}]);
-    let (_, created) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&owner), Some(body))).await;
+    let (_, created) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(&owner),
+            Some(body),
+        ),
+    )
+    .await;
     let id = created["id"].as_str().unwrap().to_string();
 
-    let (status, body) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/validate"), Some(&owner), None)).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/validate"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::CONFLICT, "body={body}");
 
-    let (_, row) = send(&state, req("GET", &format!("/api/v1/projects/{project}/test-cases/{id}"), Some(&owner), None)).await;
-    assert_eq!(row["status"], "GENERATED", "a failed validation must not advance the case; row={row}");
+    let (_, row) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/test-cases/{id}"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(
+        row["status"], "GENERATED",
+        "a failed validation must not advance the case; row={row}"
+    );
 }
 
 #[tokio::test]
@@ -2239,21 +3785,75 @@ async fn aud005_reject_from_generated_and_validated_both_work() {
     let project = make_project(&state, "AUD-005 Reject").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
 
-    let (_, a) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&owner), Some(sample_test_case_body("Reject from generated")))).await;
+    let (_, a) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(&owner),
+            Some(sample_test_case_body("Reject from generated")),
+        ),
+    )
+    .await;
     let id_a = a["id"].as_str().unwrap().to_string();
-    let (status, rejected) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id_a}/reject"), Some(&owner), None)).await;
+    let (status, rejected) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id_a}/reject"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={rejected}");
     assert_eq!(rejected["status"], "REJECTED");
 
-    let (_, b) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&owner), Some(sample_test_case_body("Reject from validated")))).await;
+    let (_, b) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(&owner),
+            Some(sample_test_case_body("Reject from validated")),
+        ),
+    )
+    .await;
     let id_b = b["id"].as_str().unwrap().to_string();
-    send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id_b}/validate"), Some(&owner), None)).await;
-    let (status, rejected) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id_b}/reject"), Some(&owner), None)).await;
+    send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id_b}/validate"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    let (status, rejected) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id_b}/reject"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={rejected}");
     assert_eq!(rejected["status"], "REJECTED");
 
     // A rejected case cannot then be approved.
-    let (status, body) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id_a}/approve"), Some(&owner), None)).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id_a}/approve"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::CONFLICT, "body={body}");
 }
 
@@ -2269,27 +3869,75 @@ async fn aud005_project_isolation_enforced_both_directions() {
     let owner_a = mint_key(&state, "operator", Some(&project_a.to_string())).await;
     let owner_b = mint_key(&state, "operator", Some(&project_b.to_string())).await;
 
-    let (_, created) = send(&state, req("POST", &format!("/api/v1/projects/{project_a}/test-cases"), Some(&owner_a), Some(sample_test_case_body("A-only case")))).await;
+    let (_, created) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_a}/test-cases"),
+            Some(&owner_a),
+            Some(sample_test_case_body("A-only case")),
+        ),
+    )
+    .await;
     let id = created["id"].as_str().unwrap().to_string();
 
     // B's key hitting A's case through B's own project URL: not found (the
     // case genuinely does not belong to B's project).
-    let (status, body) = send(&state, req("GET", &format!("/api/v1/projects/{project_b}/test-cases/{id}"), Some(&owner_b), None)).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_b}/test-cases/{id}"),
+            Some(&owner_b),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
 
     // B's key hitting A's project URL directly (even naming A's own real
     // project id): forbidden — the standard cross-project 403.
-    let (status, body) = send(&state, req("GET", &format!("/api/v1/projects/{project_a}/test-cases/{id}"), Some(&owner_b), None)).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_a}/test-cases/{id}"),
+            Some(&owner_b),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
     assert_eq!(body["error"]["code"], "FORBIDDEN");
 
     // B's list of its own project never contains A's case.
-    let (status, listed) = send(&state, req("GET", &format!("/api/v1/projects/{project_b}/test-cases"), Some(&owner_b), None)).await;
+    let (status, listed) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_b}/test-cases"),
+            Some(&owner_b),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={listed}");
-    assert!(listed.as_array().unwrap().iter().all(|r| r["id"] != id), "project B must never see project A's test case; rows={listed:?}");
+    assert!(
+        listed.as_array().unwrap().iter().all(|r| r["id"] != id),
+        "project B must never see project A's test case; rows={listed:?}"
+    );
 
     // B cannot mutate A's case either.
-    let (status, body) = send(&state, req("POST", &format!("/api/v1/projects/{project_a}/test-cases/{id}/reject"), Some(&owner_b), None)).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_a}/test-cases/{id}/reject"),
+            Some(&owner_b),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
 }
 
@@ -2303,18 +3951,54 @@ async fn aud005_rbac_viewer_cannot_mutate_but_can_read() {
     let operator = mint_key(&state, "operator", Some(&project.to_string())).await;
     let viewer = mint_key(&state, "viewer", Some(&project.to_string())).await;
 
-    let (_, created) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&operator), Some(sample_test_case_body("RBAC case")))).await;
+    let (_, created) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(&operator),
+            Some(sample_test_case_body("RBAC case")),
+        ),
+    )
+    .await;
     let id = created["id"].as_str().unwrap().to_string();
 
-    let (status, body) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&viewer), Some(sample_test_case_body("Viewer attempt")))).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(&viewer),
+            Some(sample_test_case_body("Viewer attempt")),
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
     assert_eq!(body["error"]["code"], "FORBIDDEN");
 
-    let (status, body) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/validate"), Some(&viewer), None)).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/validate"),
+            Some(&viewer),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
 
     // But a Viewer can still read.
-    let (status, row) = send(&state, req("GET", &format!("/api/v1/projects/{project}/test-cases/{id}"), Some(&viewer), None)).await;
+    let (status, row) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/test-cases/{id}"),
+            Some(&viewer),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={row}");
 }
 
@@ -2326,11 +4010,29 @@ async fn aud005_missing_project_and_missing_test_case_return_404() {
     let phantom_project = Uuid::new_v4();
     let phantom_case = Uuid::new_v4();
 
-    let (status, body) = send(&state, req("GET", &format!("/api/v1/projects/{phantom_project}/test-cases"), Some(&owner), None)).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{phantom_project}/test-cases"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
     assert_eq!(body["error"]["code"], "RESOURCE_NOT_FOUND");
 
-    let (status, body) = send(&state, req("GET", &format!("/api/v1/projects/{project}/test-cases/{phantom_case}"), Some(&owner), None)).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/test-cases/{phantom_case}"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
     assert_eq!(body["error"]["code"], "RESOURCE_NOT_FOUND");
 }
@@ -2343,13 +4045,31 @@ async fn aud005_invalid_input_rejected_with_validation_error() {
 
     let mut empty_title = sample_test_case_body("");
     empty_title["title"] = serde_json::json!("   ");
-    let (status, body) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&owner), Some(empty_title))).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(&owner),
+            Some(empty_title),
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
     assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
 
     let mut no_steps = sample_test_case_body("No steps");
     no_steps["steps"] = serde_json::json!([]);
-    let (status, body) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&owner), Some(no_steps))).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(&owner),
+            Some(no_steps),
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
 }
 
@@ -2361,12 +4081,48 @@ async fn aud005_handoff_without_executor_or_simulate_is_rejected() {
     let project = make_project(&state, "AUD-005 No Fake Outcome").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
 
-    let (_, created) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&owner), Some(sample_test_case_body("Needs real outcome")))).await;
+    let (_, created) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(&owner),
+            Some(sample_test_case_body("Needs real outcome")),
+        ),
+    )
+    .await;
     let id = created["id"].as_str().unwrap().to_string();
-    send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/validate"), Some(&owner), None)).await;
-    send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/approve"), Some(&owner), None)).await;
+    send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/validate"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/approve"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
 
-    let (status, body) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/handoff"), Some(&owner), Some(serde_json::json!({})))).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/handoff"),
+            Some(&owner),
+            Some(serde_json::json!({})),
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
     assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
 }
@@ -2378,12 +4134,26 @@ async fn aud005_handoff_before_approval_is_rejected_with_409() {
     let project = make_project(&state, "AUD-005 Not Approved Yet").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
 
-    let (_, created) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&owner), Some(sample_test_case_body("Still generated")))).await;
+    let (_, created) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(&owner),
+            Some(sample_test_case_body("Still generated")),
+        ),
+    )
+    .await;
     let id = created["id"].as_str().unwrap().to_string();
 
     let (status, body) = send(
         &state,
-        req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/handoff"), Some(&owner), Some(serde_json::json!({"simulate": {"outcome": "pass"}}))),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/handoff"),
+            Some(&owner),
+            Some(serde_json::json!({"simulate": {"outcome": "pass"}})),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "body={body}");
@@ -2402,22 +4172,58 @@ async fn aud005_full_generate_persist_validate_approve_handoff_execute_traceabil
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
 
     // 1. Generate -> persist.
-    let (status, created) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&owner), Some(sample_test_case_body("E2E login rejection")))).await;
+    let (status, created) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(&owner),
+            Some(sample_test_case_body("E2E login rejection")),
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "body={created}");
     let id = created["id"].as_str().unwrap().to_string();
 
     // 2. Retrieve after "refresh" (a completely independent GET).
-    let (status, refetched) = send(&state, req("GET", &format!("/api/v1/projects/{project}/test-cases/{id}"), Some(&owner), None)).await;
+    let (status, refetched) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/test-cases/{id}"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={refetched}");
     assert_eq!(refetched["status"], "GENERATED");
 
     // 3. Validate.
-    let (status, validated) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/validate"), Some(&owner), None)).await;
+    let (status, validated) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/validate"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={validated}");
     assert_eq!(validated["status"], "VALIDATED");
 
     // 4. Approve.
-    let (status, approved) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/approve"), Some(&owner), None)).await;
+    let (status, approved) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/approve"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={approved}");
     assert_eq!(approved["status"], "APPROVED");
 
@@ -2439,27 +4245,60 @@ async fn aud005_full_generate_persist_validate_approve_handoff_execute_traceabil
 
     // 6. Real execution engine drives the real run to completion.
     let final_run = poll_run_state(&state, project, &run_id, &owner, "COMPLETED").await;
-    assert_eq!(final_run["passed"], 1, "the single real task must have really passed; final_run={final_run}");
+    assert_eq!(
+        final_run["passed"], 1,
+        "the single real task must have really passed; final_run={final_run}"
+    );
 
     // 7. Traceability: the test case row now points at the real run/task,
     // and the real run/task both genuinely exist and reflect the outcome —
     // Test Case -> Run -> Task -> Result, all independently re-fetchable.
-    let (status, final_case) = send(&state, req("GET", &format!("/api/v1/projects/{project}/test-cases/{id}"), Some(&owner), None)).await;
+    let (status, final_case) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/test-cases/{id}"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={final_case}");
     assert_eq!(final_case["status"], "EXECUTED", "final_case={final_case}");
-    assert_eq!(final_case["executed_run_id"], run_id, "final_case={final_case}");
-    assert_eq!(final_case["executed_task_id"], id, "final_case={final_case}");
+    assert_eq!(
+        final_case["executed_run_id"], run_id,
+        "final_case={final_case}"
+    );
+    assert_eq!(
+        final_case["executed_task_id"], id,
+        "final_case={final_case}"
+    );
 
     let task_id = final_case["executed_task_id"].as_str().unwrap();
     let task = final_run["tasks"] // not present on RunSummary directly; re-fetch full detail
         .as_array();
     let _ = task; // RunSummary (poll_run_state's return) has no `tasks`; fetch RunDetail explicitly below.
 
-    let (status, run_detail) = send(&state, req("GET", &format!("/api/v1/projects/{project}/executions/{run_id}"), Some(&owner), None)).await;
+    let (status, run_detail) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/executions/{run_id}"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={run_detail}");
     let tasks = run_detail["tasks"].as_array().expect("tasks");
-    let matching_task = tasks.iter().find(|t| t["id"] == task_id).expect("the real task the test case was dispatched as must exist in the real run");
-    assert_eq!(matching_task["status"], "PASSED", "matching_task={matching_task}");
+    let matching_task = tasks
+        .iter()
+        .find(|t| t["id"] == task_id)
+        .expect("the real task the test case was dispatched as must exist in the real run");
+    assert_eq!(
+        matching_task["status"], "PASSED",
+        "matching_task={matching_task}"
+    );
     assert_eq!(matching_task["name"], "E2E login rejection", "the real task's name must be the real test case's own title; matching_task={matching_task}");
 }
 
@@ -2472,10 +4311,37 @@ async fn aud005_handoff_run_is_a_real_execution_hub_run() {
     let project = make_project(&state, "AUD-005 Real Run Visibility").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
 
-    let (_, created) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&owner), Some(sample_test_case_body("Visible in Execution Hub")))).await;
+    let (_, created) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(&owner),
+            Some(sample_test_case_body("Visible in Execution Hub")),
+        ),
+    )
+    .await;
     let id = created["id"].as_str().unwrap().to_string();
-    send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/validate"), Some(&owner), None)).await;
-    send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/approve"), Some(&owner), None)).await;
+    send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/validate"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/approve"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
 
     let (_, handoff) = send(
         &state,
@@ -2489,7 +4355,16 @@ async fn aud005_handoff_run_is_a_real_execution_hub_run() {
     .await;
     let run_id = handoff["run_id"].as_str().unwrap().to_string();
 
-    let (status, listed_runs) = send(&state, req("GET", &format!("/api/v1/projects/{project}/executions"), Some(&owner), None)).await;
+    let (status, listed_runs) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/executions"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={listed_runs}");
     assert!(
         listed_runs.as_array().unwrap().iter().any(|r| r["run_id"] == run_id),
@@ -2531,14 +4406,32 @@ impl crate::executor::Executor for MarkerExecutor {
     }
 }
 
-fn test_state_with_marker_executor() -> impl std::future::Future<Output = (AppState, tempfile::TempDir)> {
+fn test_state_with_marker_executor(
+) -> impl std::future::Future<Output = (AppState, tempfile::TempDir)> {
     async {
         let dir = tempfile::tempdir().expect("tempdir");
-        let store = Store::connect(&dir.path().join("api.sqlite3")).await.expect("connect");
-        let evidence = LocalEvidenceStore::new(dir.path().join("evidence")).expect("evidence store");
-        let registry = ExecutorRegistry::new(Arc::new(SimulatedExecutor)).register("marker", Arc::new(MarkerExecutor));
-        let policy = PolicyConfig { max_concurrency: 8, require_approval_for: ["maestro".to_string()].into_iter().collect(), blocked_executors: HashSet::new() };
-        (AppState::new(Arc::new(registry), store, policy, evidence, inert_ai_router()), dir)
+        let store = Store::connect(&dir.path().join("api.sqlite3"))
+            .await
+            .expect("connect");
+        let evidence =
+            LocalEvidenceStore::new(dir.path().join("evidence")).expect("evidence store");
+        let registry = ExecutorRegistry::new(Arc::new(SimulatedExecutor))
+            .register("marker", Arc::new(MarkerExecutor));
+        let policy = PolicyConfig {
+            max_concurrency: 8,
+            require_approval_for: ["maestro".to_string()].into_iter().collect(),
+            blocked_executors: HashSet::new(),
+        };
+        (
+            AppState::new(
+                Arc::new(registry),
+                store,
+                policy,
+                evidence,
+                inert_ai_router(),
+            ),
+            dir,
+        )
     }
 }
 
@@ -2552,21 +4445,58 @@ fn test_state_with_marker_executor() -> impl std::future::Future<Output = (AppSt
 /// test, which documents that exact fallback deliberately). This is why a
 /// dedicated `MarkerExecutor` registered under a real key is used instead.
 #[tokio::test]
-async fn phase2_handoff_with_a_real_executor_field_dispatches_to_that_specific_registered_executor() {
+async fn phase2_handoff_with_a_real_executor_field_dispatches_to_that_specific_registered_executor()
+{
     let (state, _dir) = test_state_with_marker_executor().await;
     let project = make_project(&state, "Phase 2 Real Executor Routing").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
 
-    let (_, created) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&owner), Some(sample_test_case_body("Routed to marker executor")))).await;
+    let (_, created) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(&owner),
+            Some(sample_test_case_body("Routed to marker executor")),
+        ),
+    )
+    .await;
     let id = created["id"].as_str().unwrap().to_string();
-    send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/validate"), Some(&owner), None)).await;
-    send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/approve"), Some(&owner), None)).await;
+    send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/validate"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/approve"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
 
     // Real JSON body, exactly what `GeneratedTestCasesView.tsx`'s new
     // "Executor" dropdown sends for a real choice — `executor` only, no
     // `simulate`, no `params` (see `HandoffChoice`'s own doc comment for
     // why no params: no per-case params UI exists anywhere in this app).
-    let (status, handoff) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/handoff"), Some(&owner), Some(serde_json::json!({"executor": "marker"})))).await;
+    let (status, handoff) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/handoff"),
+            Some(&owner),
+            Some(serde_json::json!({"executor": "marker"})),
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "body={handoff}");
     let run_id = handoff["run_id"].as_str().expect("run_id").to_string();
 
@@ -2579,14 +4509,32 @@ async fn phase2_handoff_with_a_real_executor_field_dispatches_to_that_specific_r
     // outcome is only reachable if the real `executor: "marker"` field
     // really was threaded from the HTTP body through `TaskDef.executor`
     // through `ExecutorRegistry::resolve` to this exact executor.
-    assert_eq!(final_run["failed"], 1, "the marker executor's distinctive FAILED outcome must appear; final_run={final_run}");
+    assert_eq!(
+        final_run["failed"], 1,
+        "the marker executor's distinctive FAILED outcome must appear; final_run={final_run}"
+    );
 
-    let (status, run_detail) = send(&state, req("GET", &format!("/api/v1/projects/{project}/executions/{run_id}"), Some(&owner), None)).await;
+    let (status, run_detail) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/executions/{run_id}"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={run_detail}");
     let tasks = run_detail["tasks"].as_array().expect("tasks");
-    let task = tasks.iter().find(|t| t["id"] == id).expect("the handed-off task must exist in the real run");
+    let task = tasks
+        .iter()
+        .find(|t| t["id"] == id)
+        .expect("the handed-off task must exist in the real run");
     assert_eq!(task["status"], "FAILED", "task={task}");
-    assert_eq!(task["reason"], "phase2-marker-executor-actually-ran", "task={task}");
+    assert_eq!(
+        task["reason"], "phase2-marker-executor-actually-ran",
+        "task={task}"
+    );
 }
 
 /// Phase 2.1 (brief §13) fix, superseding the Phase 2-era finding this test
@@ -2601,17 +4549,54 @@ async fn phase2_handoff_with_a_real_executor_field_dispatches_to_that_specific_r
 /// produces must now genuinely fail with a real, honest reason — never a
 /// silently-simulated `PASSED`.
 #[tokio::test]
-async fn phase2_1_handoff_with_an_unregistered_executor_name_is_a_real_honest_infra_error_not_a_silent_simulate() {
+async fn phase2_1_handoff_with_an_unregistered_executor_name_is_a_real_honest_infra_error_not_a_silent_simulate(
+) {
     let (state, _dir) = test_state().await; // only SimulatedExecutor is registered here
     let project = make_project(&state, "Phase 2.1 Unregistered Executor Safety").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
 
-    let (_, created) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&owner), Some(sample_test_case_body("Unregistered executor name")))).await;
+    let (_, created) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(&owner),
+            Some(sample_test_case_body("Unregistered executor name")),
+        ),
+    )
+    .await;
     let id = created["id"].as_str().unwrap().to_string();
-    send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/validate"), Some(&owner), None)).await;
-    send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/approve"), Some(&owner), None)).await;
+    send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/validate"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/approve"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
 
-    let (status, handoff) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/handoff"), Some(&owner), Some(serde_json::json!({"executor": "totally-unregistered-tool"})))).await;
+    let (status, handoff) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/handoff"),
+            Some(&owner),
+            Some(serde_json::json!({"executor": "totally-unregistered-tool"})),
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "body={handoff}");
     let run_id = handoff["run_id"].as_str().expect("run_id").to_string();
 
@@ -2622,11 +4607,31 @@ async fn phase2_1_handoff_with_an_unregistered_executor_name_is_a_real_honest_in
     assert_eq!(final_run["infra_error"], 1, "an unrecognized executor name must be a real, honest infra error, never a silently-simulated PASSED; final_run={final_run}");
     assert_eq!(final_run["passed"], 0, "final_run={final_run}");
 
-    let (status, run_detail) = send(&state, req("GET", &format!("/api/v1/projects/{project}/executions/{run_id}"), Some(&owner), None)).await;
+    let (status, run_detail) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/executions/{run_id}"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={run_detail}");
-    let task = run_detail["tasks"].as_array().unwrap().iter().find(|t| t["id"] == id).expect("task must exist");
+    let task = run_detail["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == id)
+        .expect("task must exist");
     assert_eq!(task["status"], "INFRA_ERROR", "task={task}");
-    assert!(task["reason"].as_str().unwrap().contains("NO_COMPATIBLE_EXECUTOR"), "task={task}");
+    assert!(
+        task["reason"]
+            .as_str()
+            .unwrap()
+            .contains("NO_COMPATIBLE_EXECUTOR"),
+        "task={task}"
+    );
 }
 
 // ============================================================ Phase 2 — AI generation
@@ -2666,7 +4671,10 @@ async fn phase2_generate_ai_returns_real_structured_cases_on_success() {
     assert_eq!(cases.len(), 1, "body={body}");
     assert_eq!(cases[0]["title"], "Reject short password");
     assert_eq!(cases[0]["evidence"], "evidenced");
-    assert_eq!(cases[0]["source_reference"], "must be at least 8 characters");
+    assert_eq!(
+        cases[0]["source_reference"],
+        "must be at least 8 characters"
+    );
 }
 
 /// The core truthfulness requirement: a provider failure must be reported
@@ -2674,7 +4682,10 @@ async fn phase2_generate_ai_returns_real_structured_cases_on_success() {
 /// fabricated `"ai"` success, and never as an opaque 500 that hides why.
 #[tokio::test]
 async fn phase2_generate_ai_reports_truthful_fallback_on_provider_failure() {
-    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Err(crate::ai_router::ExecutionError::Timeout))).await;
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Err(
+        crate::ai_router::ExecutionError::Timeout,
+    )))
+    .await;
     let project = make_project(&state, "Phase2 AI Failure").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
 
@@ -2688,13 +4699,25 @@ async fn phase2_generate_ai_reports_truthful_fallback_on_provider_failure() {
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "a real, honest fallback report is not an HTTP error; body={body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a real, honest fallback report is not an HTTP error; body={body}"
+    );
     assert_eq!(body["generation_method"], "fallback", "body={body}");
     assert!(body["provider"].is_null(), "body={body}");
     assert!(body["model"].is_null(), "body={body}");
-    assert!(body["test_cases"].as_array().unwrap().is_empty(), "body={body}");
-    let reason = body["fallback_reason"].as_str().expect("a real reason must be present");
-    assert!(reason.contains("TIMEOUT"), "reason must be the real, specific failure, not generic; reason={reason}");
+    assert!(
+        body["test_cases"].as_array().unwrap().is_empty(),
+        "body={body}"
+    );
+    let reason = body["fallback_reason"]
+        .as_str()
+        .expect("a real reason must be present");
+    assert!(
+        reason.contains("TIMEOUT"),
+        "reason must be the real, specific failure, not generic; reason={reason}"
+    );
 }
 
 #[tokio::test]
@@ -2715,7 +4738,13 @@ async fn phase2_generate_ai_reports_truthful_fallback_on_invalid_structured_outp
     .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(body["generation_method"], "fallback", "body={body}");
-    assert!(body["fallback_reason"].as_str().unwrap().contains("invalid structured output"), "body={body}");
+    assert!(
+        body["fallback_reason"]
+            .as_str()
+            .unwrap()
+            .contains("invalid structured output"),
+        "body={body}"
+    );
 }
 
 #[tokio::test]
@@ -2749,13 +4778,26 @@ async fn phase2_generate_ai_rbac_viewer_forbidden_operator_allowed() {
 
     let (status, body) = send(
         &state,
-        req("POST", &format!("/api/v1/projects/{project}/test-cases/generate-ai"), Some(&viewer), Some(request_body.clone())),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/generate-ai"),
+            Some(&viewer),
+            Some(request_body.clone()),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
 
-    let (status, body) =
-        send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/generate-ai"), Some(&operator), Some(request_body))).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/generate-ai"),
+            Some(&operator),
+            Some(request_body),
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
 }
 
@@ -2845,8 +4887,11 @@ fn valid_custom_testing_cases_response() -> &'static str {
 
 #[tokio::test]
 async fn phase3_custom_testing_returns_real_analysis_and_real_cases_on_success() {
-    let (state, _dir) =
-        test_state_with_ai_router(custom_testing_ai_infra_two_calls(valid_custom_testing_analysis_response(), valid_custom_testing_cases_response())).await;
+    let (state, _dir) = test_state_with_ai_router(custom_testing_ai_infra_two_calls(
+        valid_custom_testing_analysis_response(),
+        valid_custom_testing_cases_response(),
+    ))
+    .await;
     let project = make_project(&state, "Phase3 Custom Testing Success").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
 
@@ -2871,9 +4916,22 @@ async fn phase3_custom_testing_returns_real_analysis_and_real_cases_on_success()
     assert!(body["failure_reason"].is_null(), "body={body}");
 
     let analysis = &body["analysis"];
-    assert_eq!(analysis["objective"], "Verify login lockout after repeated invalid attempts", "body={body}");
-    assert_eq!(analysis["normalized_scope"], "Authentication", "body={body}");
-    assert!(analysis["recommended_skills"].as_array().unwrap().iter().any(|s| s == "Security Testing"), "body={body}");
+    assert_eq!(
+        analysis["objective"], "Verify login lockout after repeated invalid attempts",
+        "body={body}"
+    );
+    assert_eq!(
+        analysis["normalized_scope"], "Authentication",
+        "body={body}"
+    );
+    assert!(
+        analysis["recommended_skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s == "Security Testing"),
+        "body={body}"
+    );
 
     let cases = body["test_cases"].as_array().unwrap();
     assert_eq!(cases.len(), 1, "body={body}");
@@ -2886,7 +4944,10 @@ async fn phase3_custom_testing_returns_real_analysis_and_real_cases_on_success()
 /// `REAL_AI` output, and never an opaque 500.
 #[tokio::test]
 async fn phase3_custom_testing_reports_truthful_unavailable_on_provider_failure() {
-    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Err(crate::ai_router::ExecutionError::Timeout))).await;
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Err(
+        crate::ai_router::ExecutionError::Timeout,
+    )))
+    .await;
     let project = make_project(&state, "Phase3 Custom Testing Failure").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
 
@@ -2900,13 +4961,25 @@ async fn phase3_custom_testing_reports_truthful_unavailable_on_provider_failure(
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "a real, honest unavailable report is not an HTTP error; body={body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a real, honest unavailable report is not an HTTP error; body={body}"
+    );
     assert_eq!(body["generation_source"], "UNAVAILABLE", "body={body}");
     assert!(body["analysis"].is_null(), "no real provider was reachable at all, so no real analysis could have been produced; body={body}");
-    assert!(body["test_cases"].as_array().unwrap().is_empty(), "body={body}");
+    assert!(
+        body["test_cases"].as_array().unwrap().is_empty(),
+        "body={body}"
+    );
     assert!(body["provider"].is_null(), "body={body}");
-    let reason = body["failure_reason"].as_str().expect("a real reason must be present");
-    assert!(reason.contains("TIMEOUT"), "reason must be the real, specific failure, not generic; reason={reason}");
+    let reason = body["failure_reason"]
+        .as_str()
+        .expect("a real reason must be present");
+    assert!(
+        reason.contains("TIMEOUT"),
+        "reason must be the real, specific failure, not generic; reason={reason}"
+    );
 }
 
 /// A genuinely-produced analysis must survive even when the *subsequent*
@@ -2915,7 +4988,9 @@ async fn phase3_custom_testing_reports_truthful_unavailable_on_provider_failure(
 /// (different) test-case schema.
 #[tokio::test]
 async fn phase3_custom_testing_preserves_a_real_analysis_when_case_generation_subsequently_fails() {
-    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_custom_testing_analysis_response()))).await;
+    let (state, _dir) =
+        test_state_with_ai_router(ai_infra_with(Ok(valid_custom_testing_analysis_response())))
+            .await;
     let project = make_project(&state, "Phase3 Custom Testing Partial").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
 
@@ -2931,9 +5006,21 @@ async fn phase3_custom_testing_preserves_a_real_analysis_when_case_generation_su
     .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(body["generation_source"], "UNAVAILABLE", "body={body}");
-    assert!(body["test_cases"].as_array().unwrap().is_empty(), "body={body}");
-    assert_eq!(body["analysis"]["objective"], "Verify login lockout after repeated invalid attempts", "a real, successfully-produced analysis must not be discarded; body={body}");
-    assert!(body["failure_reason"].as_str().unwrap().contains("invalid structured output"), "body={body}");
+    assert!(
+        body["test_cases"].as_array().unwrap().is_empty(),
+        "body={body}"
+    );
+    assert_eq!(
+        body["analysis"]["objective"], "Verify login lockout after repeated invalid attempts",
+        "a real, successfully-produced analysis must not be discarded; body={body}"
+    );
+    assert!(
+        body["failure_reason"]
+            .as_str()
+            .unwrap()
+            .contains("invalid structured output"),
+        "body={body}"
+    );
 }
 
 #[tokio::test]
@@ -2958,7 +5045,9 @@ async fn phase3_custom_testing_rejects_empty_requirement_text() {
 
 #[tokio::test]
 async fn phase3_custom_testing_rbac_viewer_forbidden_operator_allowed() {
-    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_custom_testing_analysis_response()))).await;
+    let (state, _dir) =
+        test_state_with_ai_router(ai_infra_with(Ok(valid_custom_testing_analysis_response())))
+            .await;
     let project = make_project(&state, "Phase3 Custom Testing RBAC").await;
     let viewer = mint_key(&state, "viewer", Some(&project.to_string())).await;
     let operator = mint_key(&state, "operator", Some(&project.to_string())).await;
@@ -2967,13 +5056,26 @@ async fn phase3_custom_testing_rbac_viewer_forbidden_operator_allowed() {
 
     let (status, body) = send(
         &state,
-        req("POST", &format!("/api/v1/projects/{project}/custom-testing/generate"), Some(&viewer), Some(request_body.clone())),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/custom-testing/generate"),
+            Some(&viewer),
+            Some(request_body.clone()),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
 
-    let (status, body) =
-        send(&state, req("POST", &format!("/api/v1/projects/{project}/custom-testing/generate"), Some(&operator), Some(request_body))).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/custom-testing/generate"),
+            Some(&operator),
+            Some(request_body),
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
 }
 
@@ -3005,9 +5107,13 @@ async fn phase3_custom_testing_project_isolation_enforced() {
 /// `traceability`) — both pre-existing, generic fields, not new columns
 /// invented for this phase.
 #[tokio::test]
-async fn phase3_custom_testing_generated_draft_can_be_saved_via_existing_test_case_persistence_with_real_traceability() {
-    let (state, _dir) =
-        test_state_with_ai_router(custom_testing_ai_infra_two_calls(valid_custom_testing_analysis_response(), valid_custom_testing_cases_response())).await;
+async fn phase3_custom_testing_generated_draft_can_be_saved_via_existing_test_case_persistence_with_real_traceability(
+) {
+    let (state, _dir) = test_state_with_ai_router(custom_testing_ai_infra_two_calls(
+        valid_custom_testing_analysis_response(),
+        valid_custom_testing_cases_response(),
+    ))
+    .await;
     let project = make_project(&state, "Phase3 Custom Testing Save").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
 
@@ -3055,15 +5161,34 @@ async fn phase3_custom_testing_generated_draft_can_be_saved_via_existing_test_ca
     .await;
     assert_eq!(status, StatusCode::CREATED, "a Custom-Testing-generated draft must be persistable via the existing real test-case store; body={saved}");
     assert_eq!(saved["status"], "GENERATED");
-    assert_eq!(saved["requirement_reference"], "Custom Testing: Test login lockout after repeated invalid password attempts.", "body={saved}");
-    assert_eq!(saved["traceability"]["source"], "custom_testing", "body={saved}");
-    assert_eq!(saved["traceability"]["scope"], "Authentication", "body={saved}");
+    assert_eq!(
+        saved["requirement_reference"],
+        "Custom Testing: Test login lockout after repeated invalid password attempts.",
+        "body={saved}"
+    );
+    assert_eq!(
+        saved["traceability"]["source"], "custom_testing",
+        "body={saved}"
+    );
+    assert_eq!(
+        saved["traceability"]["scope"], "Authentication",
+        "body={saved}"
+    );
 
     // Once persisted, this is an ordinary TestCaseRow — the existing
     // validate/approve/handoff/compile pipeline applies with zero new code,
     // proven by exercising the very next real lifecycle step for real.
     let id = saved["id"].as_str().unwrap();
-    let (status, validated) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/validate"), Some(&owner), None)).await;
+    let (status, validated) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/validate"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={validated}");
     assert_eq!(validated["status"], "VALIDATED", "body={validated}");
 }
@@ -3137,10 +5262,12 @@ async fn ensure_local_health_target() {
     HEALTH_TARGET_STARTED.call_once(|| {
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
         std::thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new()
-                .expect("build a dedicated runtime for the self-contained :8080 health test target");
+            let rt = tokio::runtime::Runtime::new().expect(
+                "build a dedicated runtime for the self-contained :8080 health test target",
+            );
             rt.block_on(async move {
-                let app = axum::Router::new().route("/health", axum::routing::get(|| async { "ok" }));
+                let app =
+                    axum::Router::new().route("/health", axum::routing::get(|| async { "ok" }));
                 match tokio::net::TcpListener::bind("127.0.0.1:8080").await {
                     Ok(listener) => {
                         let _ = ready_tx.send(());
@@ -3154,7 +5281,9 @@ async fn ensure_local_health_target() {
                         // correct target either way.
                         let _ = ready_tx.send(());
                     }
-                    Err(e) => panic!("failed to bind the self-contained :8080 health test target: {e}"),
+                    Err(e) => {
+                        panic!("failed to bind the self-contained :8080 health test target: {e}")
+                    }
                 }
             });
         });
@@ -3190,16 +5319,25 @@ async fn phase4_api_test_executes_a_real_request_and_passes_a_real_status_assert
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
-    assert_eq!(body["task_status"], "PASSED", "a real, matching status assertion must genuinely pass; body={body}");
+    assert_eq!(
+        body["task_status"], "PASSED",
+        "a real, matching status assertion must genuinely pass; body={body}"
+    );
     assert!(body["run_id"].is_string());
     assert!(body["finished_at"].is_string(), "body={body}");
     let result = &body["result"];
     assert_eq!(result["status"], 200, "body={body}");
-    assert!(result["request_duration_ms"].as_u64().is_some(), "a real, measured latency must be present; body={body}");
+    assert!(
+        result["request_duration_ms"].as_u64().is_some(),
+        "a real, measured latency must be present; body={body}"
+    );
     let assertions = result["assertions"].as_array().unwrap();
     assert_eq!(assertions.len(), 1);
     assert_eq!(assertions[0]["passed"], true, "body={body}");
-    assert_eq!(body["response_body_preview"], "ok", "the real /health response body must be captured verbatim; body={body}");
+    assert_eq!(
+        body["response_body_preview"], "ok",
+        "the real /health response body must be captured verbatim; body={body}"
+    );
 }
 
 /// The core truthfulness requirement: an assertion that genuinely does not
@@ -3225,7 +5363,11 @@ async fn phase4_api_test_assertion_mismatch_genuinely_fails_not_a_fake_pass() {
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "a real, honest FAILED result is not itself an HTTP error; body={body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a real, honest FAILED result is not itself an HTTP error; body={body}"
+    );
     assert_eq!(body["task_status"], "FAILED", "body={body}");
     let assertions = body["result"]["assertions"].as_array().unwrap();
     assert_eq!(assertions[0]["passed"], false, "body={body}");
@@ -3240,12 +5382,23 @@ async fn phase4_api_test_rejects_an_invalid_url_before_any_execution() {
 
     let (status, body) = send(
         &state,
-        req("POST", &format!("/api/v1/projects/{project}/api-testing/execute"), Some(&owner), Some(serde_json::json!({"method": "GET", "url": "not a url"}))),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/api-testing/execute"),
+            Some(&owner),
+            Some(serde_json::json!({"method": "GET", "url": "not a url"})),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
     assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
-    assert!(body["error"]["message"].as_str().unwrap().starts_with("INVALID_URL"), "body={body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("INVALID_URL"),
+        "body={body}"
+    );
 }
 
 #[tokio::test]
@@ -3256,11 +5409,22 @@ async fn phase4_api_test_rejects_an_unsupported_http_method() {
 
     let (status, body) = send(
         &state,
-        req("POST", &format!("/api/v1/projects/{project}/api-testing/execute"), Some(&owner), Some(serde_json::json!({"method": "TRACE", "url": HEALTH_URL}))),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/api-testing/execute"),
+            Some(&owner),
+            Some(serde_json::json!({"method": "TRACE", "url": HEALTH_URL})),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
-    assert!(body["error"]["message"].as_str().unwrap().starts_with("UNSUPPORTED_HTTP_METHOD"), "body={body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("UNSUPPORTED_HTTP_METHOD"),
+        "body={body}"
+    );
 }
 
 /// Reuses the exact, pre-existing, real SSRF guard (`execution_plan::
@@ -3284,8 +5448,20 @@ async fn phase4_api_test_rejects_a_disallowed_ssrf_target_via_the_existing_real_
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
-    assert!(body["error"]["message"].as_str().unwrap().starts_with("TARGET_NOT_ALLOWED"), "body={body}");
-    assert!(body["error"]["message"].as_str().unwrap().contains("disallowed"), "body={body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("TARGET_NOT_ALLOWED"),
+        "body={body}"
+    );
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("disallowed"),
+        "body={body}"
+    );
 }
 
 #[tokio::test]
@@ -3329,10 +5505,28 @@ async fn phase4_api_test_rbac_viewer_forbidden_operator_allowed() {
     let operator = mint_key(&state, "operator", Some(&project.to_string())).await;
     let request_body = serde_json::json!({"method": "GET", "url": HEALTH_URL});
 
-    let (status, body) = send(&state, req("POST", &format!("/api/v1/projects/{project}/api-testing/execute"), Some(&viewer), Some(request_body.clone()))).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/api-testing/execute"),
+            Some(&viewer),
+            Some(request_body.clone()),
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
 
-    let (status, body) = send(&state, req("POST", &format!("/api/v1/projects/{project}/api-testing/execute"), Some(&operator), Some(request_body))).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/api-testing/execute"),
+            Some(&operator),
+            Some(request_body),
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
 }
 
@@ -3345,7 +5539,12 @@ async fn phase4_api_test_project_isolation_enforced() {
 
     let (status, body) = send(
         &state,
-        req("POST", &format!("/api/v1/projects/{project_a}/api-testing/execute"), Some(&owner_b), Some(serde_json::json!({"method": "GET", "url": HEALTH_URL}))),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_a}/api-testing/execute"),
+            Some(&owner_b),
+            Some(serde_json::json!({"method": "GET", "url": HEALTH_URL})),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
@@ -3380,12 +5579,24 @@ async fn app_source_verify_a_real_reachable_target_reports_connected() {
     let project = make_project(&state, "App Source Verify - Connected").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
 
-    let (status, body) = send(&state, req("POST", &format!("/api/v1/projects/{project}/verify-application-source"), Some(&owner), Some(serde_json::json!({"url": HEALTH_URL})))).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/verify-application-source"),
+            Some(&owner),
+            Some(serde_json::json!({"url": HEALTH_URL})),
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(body["status"], "CONNECTED", "body={body}");
     assert_eq!(body["reachable"], true, "body={body}");
     assert_eq!(body["http_status"], 200, "body={body}");
-    assert!(body["latency_ms"].as_u64().is_some(), "a real measured latency must be present; body={body}");
+    assert!(
+        body["latency_ms"].as_u64().is_some(),
+        "a real measured latency must be present; body={body}"
+    );
 }
 
 #[tokio::test]
@@ -3394,8 +5605,21 @@ async fn app_source_verify_a_disallowed_target_reports_rejected_through_the_real
     let project = make_project(&state, "App Source Verify - Rejected").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
 
-    let (status, body) = send(&state, req("POST", &format!("/api/v1/projects/{project}/verify-application-source"), Some(&owner), Some(serde_json::json!({"url": "http://169.254.169.254/latest/meta-data/"})))).await;
-    assert_eq!(status, StatusCode::OK, "a real, honest REJECTED result is not itself an HTTP error; body={body}");
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/verify-application-source"),
+            Some(&owner),
+            Some(serde_json::json!({"url": "http://169.254.169.254/latest/meta-data/"})),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a real, honest REJECTED result is not itself an HTTP error; body={body}"
+    );
     assert_eq!(body["status"], "REJECTED", "body={body}");
     assert_eq!(body["reachable"], false, "body={body}");
     assert!(body["http_status"].is_null());
@@ -3408,7 +5632,16 @@ async fn app_source_verify_a_malformed_url_reports_invalid_url() {
     let project = make_project(&state, "App Source Verify - Invalid").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
 
-    let (status, body) = send(&state, req("POST", &format!("/api/v1/projects/{project}/verify-application-source"), Some(&owner), Some(serde_json::json!({"url": "not a url"})))).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/verify-application-source"),
+            Some(&owner),
+            Some(serde_json::json!({"url": "not a url"})),
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(body["status"], "INVALID_URL", "body={body}");
 }
@@ -3422,10 +5655,28 @@ async fn app_source_verify_rbac_viewer_forbidden_operator_allowed() {
     let operator = mint_key(&state, "operator", Some(&project.to_string())).await;
     let request_body = serde_json::json!({"url": HEALTH_URL});
 
-    let (status, body) = send(&state, req("POST", &format!("/api/v1/projects/{project}/verify-application-source"), Some(&viewer), Some(request_body.clone()))).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/verify-application-source"),
+            Some(&viewer),
+            Some(request_body.clone()),
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
 
-    let (status, body) = send(&state, req("POST", &format!("/api/v1/projects/{project}/verify-application-source"), Some(&operator), Some(request_body))).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/verify-application-source"),
+            Some(&operator),
+            Some(request_body),
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
 }
 
@@ -3436,7 +5687,16 @@ async fn app_source_verify_project_isolation_enforced() {
     let project_b = make_project(&state, "App Source Verify - Isolation B").await;
     let owner_b = mint_key(&state, "operator", Some(&project_b.to_string())).await;
 
-    let (status, body) = send(&state, req("POST", &format!("/api/v1/projects/{project_a}/verify-application-source"), Some(&owner_b), Some(serde_json::json!({"url": HEALTH_URL})))).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_a}/verify-application-source"),
+            Some(&owner_b),
+            Some(serde_json::json!({"url": HEALTH_URL})),
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
 }
 
@@ -3468,19 +5728,41 @@ fn perf_load_body(url: &str) -> Value {
     })
 }
 
-async fn make_running_performance_run(state: &AppState, project: Uuid) -> (Uuid, Arc<crate::performance_testing::PerformanceRunHandle>) {
+async fn make_running_performance_run(
+    state: &AppState,
+    project: Uuid,
+) -> (Uuid, Arc<crate::performance_testing::PerformanceRunHandle>) {
     let run_id = Uuid::new_v4();
     let handle = crate::performance_testing::PerformanceRunHandle::new(run_id);
     state
         .store
-        .insert_performance_run(run_id, &project.to_string(), "LOAD test: GET http://127.0.0.1:8080/health", "LOAD", &serde_json::to_string(&perf_load_body(HEALTH_URL)).unwrap(), None, handle.started_at)
+        .insert_performance_run(
+            run_id,
+            &project.to_string(),
+            "LOAD test: GET http://127.0.0.1:8080/health",
+            "LOAD",
+            &serde_json::to_string(&perf_load_body(HEALTH_URL)).unwrap(),
+            None,
+            handle.started_at,
+        )
         .await
         .expect("insert_performance_run");
     (run_id, handle)
 }
 
-fn real_sample(seq: u64, outcome: crate::performance_testing::SampleOutcome) -> crate::performance_testing::RequestSample {
-    crate::performance_testing::RequestSample { sequence: seq, offset_ms: seq * 10, duration_ms: 5, outcome, http_status: Some(200), error_reason: None, concurrency_at_start: 2 }
+fn real_sample(
+    seq: u64,
+    outcome: crate::performance_testing::SampleOutcome,
+) -> crate::performance_testing::RequestSample {
+    crate::performance_testing::RequestSample {
+        sequence: seq,
+        offset_ms: seq * 10,
+        duration_ms: 5,
+        outcome,
+        http_status: Some(200),
+        error_reason: None,
+        concurrency_at_start: 2,
+    }
 }
 
 #[tokio::test]
@@ -3493,12 +5775,19 @@ async fn phase6_error_a_genuine_internal_failure_is_detected_persisted_and_visib
     // 40 real samples "already completed" before the unexpected failure —
     // real `RequestSample`s, not invented after the fact.
     for i in 0..40u64 {
-        handle.samples.write().await.push(real_sample(i, crate::performance_testing::SampleOutcome::Success));
+        handle.samples.write().await.push(real_sample(
+            i,
+            crate::performance_testing::SampleOutcome::Success,
+        ));
     }
 
     // The live handle is registered exactly as the real `/start` handler
     // registers it, so the live status-read path is exercised too.
-    state.performance_tests.write().await.insert(run_id, handle.clone());
+    state
+        .performance_tests
+        .write()
+        .await
+        .insert(run_id, handle.clone());
 
     // A real, genuine, deterministic Tokio panic — caught by the real
     // supervisor, not a hand-built `SupervisionFailure`.
@@ -3511,16 +5800,36 @@ async fn phase6_error_a_genuine_internal_failure_is_detected_persisted_and_visib
     crate::api::finalize_performance_run_as_error(&state, run_id, &handle, &failure).await;
 
     // No orphan RUNNING state: the live handle itself must show ERROR.
-    assert_eq!(*handle.state.read().await, crate::performance_testing::PerfRunState::Error);
+    assert_eq!(
+        *handle.state.read().await,
+        crate::performance_testing::PerfRunState::Error
+    );
 
-    let (status, body) = send(&state, req("GET", &format!("/api/v1/projects/{project}/performance-testing/{run_id}/status"), Some(&owner), None)).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/performance-testing/{run_id}/status"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(body["status"], "ERROR", "body={body}");
     assert_eq!(body["verdict"], "ERROR", "body={body}");
     assert!(body["live"].as_bool().unwrap(), "body={body}");
-    let reason = body["verdict_reasons"][0].as_str().expect("a real reason must be present");
-    assert!(reason.contains("deterministic test failure: simulated internal orchestration fault"), "reason={reason}");
-    assert!(body["finished_at"].is_string(), "finished_at must be persisted, body={body}");
+    let reason = body["verdict_reasons"][0]
+        .as_str()
+        .expect("a real reason must be present");
+    assert!(
+        reason.contains("deterministic test failure: simulated internal orchestration fault"),
+        "reason={reason}"
+    );
+    assert!(
+        body["finished_at"].is_string(),
+        "finished_at must be persisted, body={body}"
+    );
 
     // Partial metrics: exactly the 40 real samples that actually completed,
     // never padded to a planned total, never discarded.
@@ -3535,31 +5844,67 @@ async fn phase6_error_persists_and_reloads_correctly_once_the_live_handle_is_gon
     let project = make_project(&state, "Phase6 ERROR fix - durable reload").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
     let (run_id, handle) = make_running_performance_run(&state, project).await;
-    handle.samples.write().await.push(real_sample(0, crate::performance_testing::SampleOutcome::Success));
-    handle.samples.write().await.push(real_sample(1, crate::performance_testing::SampleOutcome::Error));
+    handle.samples.write().await.push(real_sample(
+        0,
+        crate::performance_testing::SampleOutcome::Success,
+    ));
+    handle.samples.write().await.push(real_sample(
+        1,
+        crate::performance_testing::SampleOutcome::Error,
+    ));
     // Deliberately NOT inserted into `state.performance_tests` — simulating
     // "no live handle exists in this process" (a restart, or another
     // process), forcing the status endpoint's durable-row fallback path.
 
-    let outcome = crate::performance_testing::supervise_workload_task(async { panic!("deterministic test failure: durable reload check") }).await;
+    let outcome = crate::performance_testing::supervise_workload_task(async {
+        panic!("deterministic test failure: durable reload check")
+    })
+    .await;
     let failure = outcome.expect_err("must be a real supervision failure");
     crate::api::finalize_performance_run_as_error(&state, run_id, &handle, &failure).await;
 
-    let (status, body) = send(&state, req("GET", &format!("/api/v1/projects/{project}/performance-testing/{run_id}/status"), Some(&owner), None)).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/performance-testing/{run_id}/status"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(body["status"], "ERROR", "body={body}");
     assert_eq!(body["verdict"], "ERROR", "body={body}");
-    assert!(!body["live"].as_bool().unwrap(), "must reflect the durable fallback path, body={body}");
-    assert!(body["verdict_reasons"][0].as_str().unwrap().contains("deterministic test failure: durable reload check"));
+    assert!(
+        !body["live"].as_bool().unwrap(),
+        "must reflect the durable fallback path, body={body}"
+    );
+    assert!(body["verdict_reasons"][0]
+        .as_str()
+        .unwrap()
+        .contains("deterministic test failure: durable reload check"));
     assert!(body["finished_at"].is_string());
     assert_eq!(body["metrics"]["total_requests"], 2, "the durable row's own persisted metrics must reflect the real partial sample count, body={body}");
 
     // Re-read a second time: nothing about a terminal ERROR row changes on
     // repeat reads (no wall-clock drift, no re-computation from a growing
     // "now").
-    let (status2, body2) = send(&state, req("GET", &format!("/api/v1/projects/{project}/performance-testing/{run_id}/status"), Some(&owner), None)).await;
+    let (status2, body2) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/performance-testing/{run_id}/status"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status2, StatusCode::OK);
-    assert_eq!(body2["metrics"], body["metrics"], "a terminal ERROR row's metrics must not change between reads");
+    assert_eq!(
+        body2["metrics"], body["metrics"],
+        "a terminal ERROR row's metrics must not change between reads"
+    );
     assert_eq!(body2["finished_at"], body["finished_at"]);
 }
 
@@ -3569,11 +5914,19 @@ async fn phase6_error_cannot_later_be_overwritten_back_to_completed_terminal_ide
     let project = make_project(&state, "Phase6 ERROR fix - idempotency").await;
     let (run_id, handle) = make_running_performance_run(&state, project).await;
 
-    let outcome = crate::performance_testing::supervise_workload_task(async { panic!("deterministic test failure: idempotency check") }).await;
+    let outcome = crate::performance_testing::supervise_workload_task(async {
+        panic!("deterministic test failure: idempotency check")
+    })
+    .await;
     let failure = outcome.expect_err("must be a real supervision failure");
     crate::api::finalize_performance_run_as_error(&state, run_id, &handle, &failure).await;
 
-    let after_error = state.store.get_performance_run(run_id).await.expect("get").expect("row exists");
+    let after_error = state
+        .store
+        .get_performance_run(run_id)
+        .await
+        .expect("get")
+        .expect("row exists");
     assert_eq!(after_error.status, "ERROR");
 
     // A second, independent finalize attempt for the SAME run (defensive:
@@ -3581,18 +5934,41 @@ async fn phase6_error_cannot_later_be_overwritten_back_to_completed_terminal_ide
     // finalize call sites are mutually exclusive branches of one
     // `JoinHandle` await — but the DB-level guard, not just "it shouldn't
     // happen," is what this test proves) must be a real, honest no-op.
-    let config: crate::performance_testing::PerformanceTestConfig = serde_json::from_str(&after_error.config_json).unwrap();
+    let config: crate::performance_testing::PerformanceTestConfig =
+        serde_json::from_str(&after_error.config_json).unwrap();
     let rows_changed = state
         .store
-        .finalize_performance_run(run_id, "COMPLETED", Some(crate::performance_testing::PerfVerdict::Completed.as_str()), Some("{}"), None, None, None)
+        .finalize_performance_run(
+            run_id,
+            "COMPLETED",
+            Some(crate::performance_testing::PerfVerdict::Completed.as_str()),
+            Some("{}"),
+            None,
+            None,
+            None,
+        )
         .await
         .expect("finalize_performance_run should not error, just no-op");
-    assert!(!rows_changed, "a second finalize attempt on an already-terminal run must not report a row as changed");
+    assert!(
+        !rows_changed,
+        "a second finalize attempt on an already-terminal run must not report a row as changed"
+    );
     let _ = config;
 
-    let still = state.store.get_performance_run(run_id).await.expect("get").expect("row exists");
-    assert_eq!(still.status, "ERROR", "an already-terminal ERROR row must never be overwritten back to COMPLETED");
-    assert_eq!(still.error_reason.as_deref(), after_error.error_reason.as_deref());
+    let still = state
+        .store
+        .get_performance_run(run_id)
+        .await
+        .expect("get")
+        .expect("row exists");
+    assert_eq!(
+        still.status, "ERROR",
+        "an already-terminal ERROR row must never be overwritten back to COMPLETED"
+    );
+    assert_eq!(
+        still.error_reason.as_deref(),
+        after_error.error_reason.as_deref()
+    );
 }
 
 #[tokio::test]
@@ -3601,9 +5977,18 @@ async fn phase6_error_is_distinct_from_threshold_fail_and_from_cancelled() {
     // wrong" states this system can report are genuinely different strings,
     // never collapsed into one generic failure — reused directly against
     // the same real `PerfVerdict`/`PerfRunState` the API actually returns.
-    assert_ne!(crate::performance_testing::PerfVerdict::Error.as_str(), crate::performance_testing::PerfVerdict::Failed.as_str());
-    assert_ne!(crate::performance_testing::PerfVerdict::Error.as_str(), crate::performance_testing::PerfVerdict::Cancelled.as_str());
-    assert_ne!(crate::performance_testing::PerfRunState::Error.as_str(), "INTERRUPTED");
+    assert_ne!(
+        crate::performance_testing::PerfVerdict::Error.as_str(),
+        crate::performance_testing::PerfVerdict::Failed.as_str()
+    );
+    assert_ne!(
+        crate::performance_testing::PerfVerdict::Error.as_str(),
+        crate::performance_testing::PerfVerdict::Cancelled.as_str()
+    );
+    assert_ne!(
+        crate::performance_testing::PerfRunState::Error.as_str(),
+        "INTERRUPTED"
+    );
 }
 
 #[tokio::test]
@@ -3614,7 +5999,16 @@ async fn phase6_error_normal_completion_regression_still_reaches_completed_not_e
     let project = make_project(&state, "Phase6 ERROR fix - normal regression").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
 
-    let (status, body) = send(&state, req("POST", &format!("/api/v1/projects/{project}/performance-testing/start"), Some(&owner), Some(perf_load_body(HEALTH_URL)))).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/performance-testing/start"),
+            Some(&owner),
+            Some(perf_load_body(HEALTH_URL)),
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
     let run_id = body["run_id"].as_str().unwrap();
 
@@ -3622,7 +6016,16 @@ async fn phase6_error_normal_completion_regression_still_reaches_completed_not_e
     // the orchestrator's own always-listening health endpoint).
     let mut final_status = Value::Null;
     for _ in 0..80 {
-        let (s, b) = send(&state, req("GET", &format!("/api/v1/projects/{project}/performance-testing/{run_id}/status"), Some(&owner), None)).await;
+        let (s, b) = send(
+            &state,
+            req(
+                "GET",
+                &format!("/api/v1/projects/{project}/performance-testing/{run_id}/status"),
+                Some(&owner),
+                None,
+            ),
+        )
+        .await;
         assert_eq!(s, StatusCode::OK);
         if b["status"] != "RUNNING" {
             final_status = b;
@@ -3648,25 +6051,43 @@ fn ai_hypothesis_response() -> &'static str {
 /// byte-for-byte unchanged *after* it, alongside the new, separately-named
 /// `ai_hypothesis`/`ai_hypothesis_provider`/`ai_hypothesis_model` fields.
 #[tokio::test]
-async fn be18_finding_ai_hypothesis_returns_real_outcome_and_never_overwrites_deterministic_cluster_data() {
-    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(ai_hypothesis_response()))).await;
+async fn be18_finding_ai_hypothesis_returns_real_outcome_and_never_overwrites_deterministic_cluster_data(
+) {
+    let (state, _dir) =
+        test_state_with_ai_router(ai_infra_with(Ok(ai_hypothesis_response()))).await;
     let project = make_project(&state, "AI Hypothesis Success").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
     let finding_id = make_real_finding(&state, project, &owner, "flaky-refund-check").await;
 
     let (_, before) = send(
         &state,
-        req("POST", &format!("/api/v1/projects/{project}/findings/{finding_id}/analysis"), Some(&owner), None),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/findings/{finding_id}/analysis"),
+            Some(&owner),
+            None,
+        ),
     )
     .await;
-    let real_deterministic_hypothesis = before["failure_cluster"]["root_cause_hypothesis"].as_str().unwrap().to_string();
+    let real_deterministic_hypothesis = before["failure_cluster"]["root_cause_hypothesis"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let real_confidence = before["failure_cluster"]["confidence"].clone();
     let real_occurrence_count = before["failure_cluster"]["occurrence_count"].clone();
-    assert!(before["failure_cluster"]["ai_hypothesis"].is_null(), "no AI hypothesis has been requested yet; before={before}");
+    assert!(
+        before["failure_cluster"]["ai_hypothesis"].is_null(),
+        "no AI hypothesis has been requested yet; before={before}"
+    );
 
     let (status, after) = send(
         &state,
-        req("POST", &format!("/api/v1/projects/{project}/findings/{finding_id}/ai-hypothesis"), Some(&owner), None),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/findings/{finding_id}/ai-hypothesis"),
+            Some(&owner),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body={after}");
@@ -3679,19 +6100,39 @@ async fn be18_finding_ai_hypothesis_returns_real_outcome_and_never_overwrites_de
         "The target dependency's readiness probe likely had not yet succeeded when this run started, independent of any code change in the system under test.",
         "body={after}"
     );
-    assert_eq!(after["failure_cluster"]["ai_hypothesis_provider"], "mock", "body={after}");
-    assert_eq!(after["failure_cluster"]["ai_hypothesis_model"], "mock-model", "body={after}");
-    assert!(after["failure_cluster"]["ai_hypothesis_generated_at"].is_string(), "body={after}");
+    assert_eq!(
+        after["failure_cluster"]["ai_hypothesis_provider"], "mock",
+        "body={after}"
+    );
+    assert_eq!(
+        after["failure_cluster"]["ai_hypothesis_model"], "mock-model",
+        "body={after}"
+    );
+    assert!(
+        after["failure_cluster"]["ai_hypothesis_generated_at"].is_string(),
+        "body={after}"
+    );
 
     // The real, pre-existing deterministic fields must be exactly what
     // they were before the AI call — additive, never overwritten.
-    assert_eq!(after["failure_cluster"]["root_cause_hypothesis"], real_deterministic_hypothesis, "body={after}");
-    assert_eq!(after["failure_cluster"]["confidence"], real_confidence, "body={after}");
-    assert_eq!(after["failure_cluster"]["occurrence_count"], real_occurrence_count, "body={after}");
+    assert_eq!(
+        after["failure_cluster"]["root_cause_hypothesis"], real_deterministic_hypothesis,
+        "body={after}"
+    );
+    assert_eq!(
+        after["failure_cluster"]["confidence"], real_confidence,
+        "body={after}"
+    );
+    assert_eq!(
+        after["failure_cluster"]["occurrence_count"], real_occurrence_count,
+        "body={after}"
+    );
 
     let audit = state.store.list_audit(None, 50).await.expect("list_audit");
     assert!(
-        audit.iter().any(|a| a.action == "finding.ai_hypothesis" && a.target.as_deref() == Some(finding_id.to_string().as_str()) && a.outcome == "ok"),
+        audit.iter().any(|a| a.action == "finding.ai_hypothesis"
+            && a.target.as_deref() == Some(finding_id.to_string().as_str())
+            && a.outcome == "ok"),
         "audit_log must record the AI hypothesis request"
     );
 }
@@ -3704,41 +6145,74 @@ async fn be18_finding_ai_hypothesis_returns_real_outcome_and_never_overwrites_de
 /// stays null, `review_state` stays the real, pre-existing `NEEDS_REVIEW`,
 /// never a fabricated hypothesis or a falsely-advanced review state.
 #[tokio::test]
-async fn be18_finding_ai_hypothesis_reports_truthful_fallback_on_provider_timeout_never_fabricated() {
-    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Err(crate::ai_router::ExecutionError::Timeout))).await;
+async fn be18_finding_ai_hypothesis_reports_truthful_fallback_on_provider_timeout_never_fabricated()
+{
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Err(
+        crate::ai_router::ExecutionError::Timeout,
+    )))
+    .await;
     let project = make_project(&state, "AI Hypothesis Timeout").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
     let finding_id = make_real_finding(&state, project, &owner, "flaky-shipping-check").await;
 
     let (status, body) = send(
         &state,
-        req("POST", &format!("/api/v1/projects/{project}/findings/{finding_id}/ai-hypothesis"), Some(&owner), None),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/findings/{finding_id}/ai-hypothesis"),
+            Some(&owner),
+            None,
+        ),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "a real, honest fallback report is not an HTTP error; body={body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a real, honest fallback report is not an HTTP error; body={body}"
+    );
     assert_eq!(body["generation_method"], "fallback", "body={body}");
     assert!(body["provider"].is_null(), "body={body}");
     assert!(body["model"].is_null(), "body={body}");
-    let reason = body["fallback_reason"].as_str().expect("a real reason must be present");
-    assert!(reason.contains("TIMEOUT"), "reason must be the real, specific failure; reason={reason}");
+    let reason = body["fallback_reason"]
+        .as_str()
+        .expect("a real reason must be present");
+    assert!(
+        reason.contains("TIMEOUT"),
+        "reason must be the real, specific failure; reason={reason}"
+    );
 
     // Never fabricated output: no AI hypothesis was written, and the real
     // deterministic data (including review_state) is untouched.
-    assert!(body["failure_cluster"]["ai_hypothesis"].is_null(), "body={body}");
-    assert!(body["failure_cluster"]["ai_hypothesis_provider"].is_null(), "body={body}");
-    assert_eq!(body["failure_cluster"]["review_state"], "NEEDS_REVIEW", "body={body}");
-    assert!(body["failure_cluster"]["root_cause_hypothesis"].is_string(), "the real deterministic hypothesis must still be present; body={body}");
+    assert!(
+        body["failure_cluster"]["ai_hypothesis"].is_null(),
+        "body={body}"
+    );
+    assert!(
+        body["failure_cluster"]["ai_hypothesis_provider"].is_null(),
+        "body={body}"
+    );
+    assert_eq!(
+        body["failure_cluster"]["review_state"], "NEEDS_REVIEW",
+        "body={body}"
+    );
+    assert!(
+        body["failure_cluster"]["root_cause_hypothesis"].is_string(),
+        "the real deterministic hypothesis must still be present; body={body}"
+    );
 
     let audit = state.store.list_audit(None, 50).await.expect("list_audit");
     assert!(
-        audit.iter().any(|a| a.action == "finding.ai_hypothesis" && a.outcome == "fallback"),
+        audit
+            .iter()
+            .any(|a| a.action == "finding.ai_hypothesis" && a.outcome == "fallback"),
         "a fallback outcome must still be audited, honestly labeled"
     );
 }
 
 #[tokio::test]
 async fn be18_finding_ai_hypothesis_rbac_viewer_forbidden_operator_allowed() {
-    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(ai_hypothesis_response()))).await;
+    let (state, _dir) =
+        test_state_with_ai_router(ai_infra_with(Ok(ai_hypothesis_response()))).await;
     let project = make_project(&state, "AI Hypothesis RBAC").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
     let finding_id = make_real_finding(&state, project, &owner, "flaky-invoice-check").await;
@@ -3746,14 +6220,24 @@ async fn be18_finding_ai_hypothesis_rbac_viewer_forbidden_operator_allowed() {
 
     let (status, body) = send(
         &state,
-        req("POST", &format!("/api/v1/projects/{project}/findings/{finding_id}/ai-hypothesis"), Some(&viewer), None),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/findings/{finding_id}/ai-hypothesis"),
+            Some(&viewer),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
 
     let (status, body) = send(
         &state,
-        req("POST", &format!("/api/v1/projects/{project}/findings/{finding_id}/ai-hypothesis"), Some(&owner), None),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/findings/{finding_id}/ai-hypothesis"),
+            Some(&owner),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
@@ -3761,7 +6245,8 @@ async fn be18_finding_ai_hypothesis_rbac_viewer_forbidden_operator_allowed() {
 
 #[tokio::test]
 async fn be18_finding_ai_hypothesis_project_isolation_enforced() {
-    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(ai_hypothesis_response()))).await;
+    let (state, _dir) =
+        test_state_with_ai_router(ai_infra_with(Ok(ai_hypothesis_response()))).await;
     let project_a = make_project(&state, "AI Hypothesis Isolation A").await;
     let project_b = make_project(&state, "AI Hypothesis Isolation B").await;
     let owner_a = mint_key(&state, "operator", Some(&project_a.to_string())).await;
@@ -3770,7 +6255,12 @@ async fn be18_finding_ai_hypothesis_project_isolation_enforced() {
 
     let (status, body) = send(
         &state,
-        req("POST", &format!("/api/v1/projects/{project_a}/findings/{finding_id}/ai-hypothesis"), Some(&owner_b), None),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_a}/findings/{finding_id}/ai-hypothesis"),
+            Some(&owner_b),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
@@ -3779,14 +6269,20 @@ async fn be18_finding_ai_hypothesis_project_isolation_enforced() {
 
 #[tokio::test]
 async fn be18_finding_ai_hypothesis_missing_finding_returns_structured_not_found() {
-    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(ai_hypothesis_response()))).await;
+    let (state, _dir) =
+        test_state_with_ai_router(ai_infra_with(Ok(ai_hypothesis_response()))).await;
     let project = make_project(&state, "AI Hypothesis Not Found").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
     let phantom_finding = Uuid::new_v4();
 
     let (status, body) = send(
         &state,
-        req("POST", &format!("/api/v1/projects/{project}/findings/{phantom_finding}/ai-hypothesis"), Some(&owner), None),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/findings/{phantom_finding}/ai-hypothesis"),
+            Some(&owner),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
@@ -3830,7 +6326,11 @@ async fn ai_settings_put_persists_for_real_and_changes_routing_behavior() {
     assert_eq!(body["mode"], "MANUAL", "body={body}");
 
     // A fresh, independent GET (not just an echo of the PUT body) must show the real, persisted setting.
-    let (status, refetched) = send(&state, req("GET", "/api/v1/ai/settings", Some(&operator), None)).await;
+    let (status, refetched) = send(
+        &state,
+        req("GET", "/api/v1/ai/settings", Some(&operator), None),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={refetched}");
     assert_eq!(refetched["mode"], "MANUAL");
     assert_eq!(refetched["preferred_model"], "mock-model");
@@ -3860,8 +6360,14 @@ async fn ai_settings_survive_a_fresh_store_reload_real_durable_persistence() {
     // A completely independent `Store` connection against the same real
     // sqlite file — proves this is durable, on-disk persistence, not an
     // in-memory echo of the request that set it.
-    let reloaded = crate::store::Store::connect(&dir.path().join("api.sqlite3")).await.expect("reconnect");
-    let (mode, preferred_provider, preferred_model, fallback_enabled) = reloaded.get_ai_settings().await.expect("query").expect("a row must exist");
+    let reloaded = crate::store::Store::connect(&dir.path().join("api.sqlite3"))
+        .await
+        .expect("reconnect");
+    let (mode, preferred_provider, preferred_model, fallback_enabled) = reloaded
+        .get_ai_settings()
+        .await
+        .expect("query")
+        .expect("a row must exist");
     assert_eq!(mode, "MANUAL");
     assert_eq!(preferred_provider.as_deref(), Some("mock"));
     assert_eq!(preferred_model.as_deref(), Some("mock-model"));
@@ -3875,12 +6381,21 @@ async fn ai_settings_rbac_viewer_cannot_mutate_but_can_read() {
 
     let (status, body) = send(
         &state,
-        req("PUT", "/api/v1/ai/settings", Some(&viewer), Some(serde_json::json!({"mode": "AUTO", "fallback_enabled": true}))),
+        req(
+            "PUT",
+            "/api/v1/ai/settings",
+            Some(&viewer),
+            Some(serde_json::json!({"mode": "AUTO", "fallback_enabled": true})),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
 
-    let (status, _) = send(&state, req("GET", "/api/v1/ai/settings", Some(&viewer), None)).await;
+    let (status, _) = send(
+        &state,
+        req("GET", "/api/v1/ai/settings", Some(&viewer), None),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
 }
 
@@ -3890,10 +6405,18 @@ async fn ai_refresh_requires_operator_and_returns_real_providers() {
     let viewer = mint_key(&state, "viewer", None).await;
     let operator = mint_key(&state, "operator", None).await;
 
-    let (status, _) = send(&state, req("POST", "/api/v1/ai/refresh", Some(&viewer), None)).await;
+    let (status, _) = send(
+        &state,
+        req("POST", "/api/v1/ai/refresh", Some(&viewer), None),
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 
-    let (status, body) = send(&state, req("POST", "/api/v1/ai/refresh", Some(&operator), None)).await;
+    let (status, body) = send(
+        &state,
+        req("POST", "/api/v1/ai/refresh", Some(&operator), None),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
     let providers = body.as_array().unwrap();
     assert_eq!(providers.len(), 1);
@@ -3906,23 +6429,31 @@ async fn ai_refresh_requires_operator_and_returns_real_providers() {
 /// discovered (a real `MjGatewayDiscovery`, not a fake).
 #[tokio::test]
 async fn ai_status_response_never_exposes_a_credential_shaped_value() {
-    let discoveries: Vec<Arc<dyn crate::ai_router::ProviderDiscovery>> = vec![Arc::new(
-        crate::ai_router::MjGatewayDiscovery {
+    let discoveries: Vec<Arc<dyn crate::ai_router::ProviderDiscovery>> =
+        vec![Arc::new(crate::ai_router::MjGatewayDiscovery {
             base_url: "http://127.0.0.1:1".to_string(),
             api_key: Some("mj_live_should_never_leak_1234567890".to_string()),
             timeout: std::time::Duration::from_millis(100),
-        },
-    )];
-    let ai_infra = Arc::new(AiInfrastructure::new(discoveries, std::collections::HashMap::new()));
+        })];
+    let ai_infra = Arc::new(AiInfrastructure::new(
+        discoveries,
+        std::collections::HashMap::new(),
+    ));
     let (state, _dir) = test_state_with_ai_router(ai_infra).await;
     state.ai_infra.discover_all().await;
     let admin = mint_key(&state, "admin", None).await;
 
     let (status, body) = send(&state, req("GET", "/api/v1/ai/status", Some(&admin), None)).await;
     assert_eq!(status, StatusCode::OK, "body={body}");
-    assert_eq!(body["providers"][0]["configured"], true, "the real key's presence must genuinely be detected; body={body}");
+    assert_eq!(
+        body["providers"][0]["configured"], true,
+        "the real key's presence must genuinely be detected; body={body}"
+    );
     let raw = body.to_string();
-    assert!(!raw.contains("should_never_leak"), "the real credential value must never appear in this response; body={body}");
+    assert!(
+        !raw.contains("should_never_leak"),
+        "the real credential value must never appear in this response; body={body}"
+    );
 }
 
 // ======================================================== B12 — CORS allow-list
@@ -3939,7 +6470,9 @@ async fn ai_status_response_never_exposes_a_credential_shaped_value() {
 #[tokio::test]
 async fn cors_rejects_a_disallowed_origin() {
     let (state, _dir) = test_state().await;
-    let app = router(state).layer(crate::api::cors_layer_for_origins(&["http://localhost:3000".to_string()]));
+    let app = router(state).layer(crate::api::cors_layer_for_origins(&[
+        "http://localhost:3000".to_string(),
+    ]));
 
     let request = Request::builder()
         .method("GET")
@@ -3960,7 +6493,9 @@ async fn cors_rejects_a_disallowed_origin() {
 #[tokio::test]
 async fn cors_allows_the_configured_origin() {
     let (state, _dir) = test_state().await;
-    let app = router(state).layer(crate::api::cors_layer_for_origins(&["http://localhost:3000".to_string()]));
+    let app = router(state).layer(crate::api::cors_layer_for_origins(&[
+        "http://localhost:3000".to_string(),
+    ]));
 
     let request = Request::builder()
         .method("GET")
@@ -3971,7 +6506,10 @@ async fn cors_allows_the_configured_origin() {
     let resp = app.oneshot(request).await.expect("router call");
 
     assert_eq!(resp.status(), StatusCode::OK);
-    let cors_header = resp.headers().get("access-control-allow-origin").expect("an allowed origin must receive the CORS header");
+    let cors_header = resp
+        .headers()
+        .get("access-control-allow-origin")
+        .expect("an allowed origin must receive the CORS header");
     assert_eq!(cors_header, "http://localhost:3000");
 }
 
@@ -3985,11 +6523,20 @@ fn restart_test_policy() -> PolicyConfig {
     }
 }
 
-async fn restart_test_state(db_path: &std::path::Path, evidence_dir: std::path::PathBuf) -> AppState {
+async fn restart_test_state(
+    db_path: &std::path::Path,
+    evidence_dir: std::path::PathBuf,
+) -> AppState {
     let store = Store::connect(db_path).await.expect("connect");
     let evidence = LocalEvidenceStore::new(evidence_dir).expect("evidence store");
     let registry = ExecutorRegistry::new(Arc::new(SimulatedExecutor));
-    AppState::new(Arc::new(registry), store, restart_test_policy(), evidence, inert_ai_router())
+    AppState::new(
+        Arc::new(registry),
+        store,
+        restart_test_policy(),
+        evidence,
+        inert_ai_router(),
+    )
 }
 
 fn gated_plan(name: &str) -> Value {
@@ -4025,7 +6572,12 @@ async fn approval_survives_a_process_restart_and_can_still_be_approved() {
         let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
         let (status, created) = send(
             &state,
-            req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&owner), Some(gated_plan("gated-run"))),
+            req(
+                "POST",
+                &format!("/api/v1/projects/{project}/executions"),
+                Some(&owner),
+                Some(gated_plan("gated-run")),
+            ),
         )
         .await;
         assert_eq!(status, StatusCode::CREATED, "body={created}");
@@ -4041,29 +6593,49 @@ async fn approval_survives_a_process_restart_and_can_still_be_approved() {
         // same way `main.rs` runs it — must leave a genuinely pending
         // approval untouched, not force it to a terminal state.
         let store = Store::connect(&db_path).await.expect("connect");
-        crate::engine::recover_incomplete_runs(&store).await.expect("recovery");
+        crate::engine::recover_incomplete_runs(&store)
+            .await
+            .expect("recovery");
         let summary = store
             .get_run_summary(Uuid::parse_str(&run_id).unwrap())
             .await
             .expect("query")
             .expect("run must still exist");
-        assert_eq!(summary.state, RunState::PendingApproval, "startup recovery must not touch a run that is genuinely still awaiting approval");
+        assert_eq!(
+            summary.state,
+            RunState::PendingApproval,
+            "startup recovery must not touch a run that is genuinely still awaiting approval"
+        );
     }
 
     {
         let state = restart_test_state(&db_path, dir.path().join("evidence")).await;
         let owner2 = mint_key(&state, "operator", Some(&project.to_string())).await;
         assert!(
-            state.runs.read().await.get(&Uuid::parse_str(&run_id).unwrap()).is_none(),
+            state
+                .runs
+                .read()
+                .await
+                .get(&Uuid::parse_str(&run_id).unwrap())
+                .is_none(),
             "sanity check: the new process must not already have this run in memory"
         );
 
         let (status, approved) = send(
             &state,
-            req("POST", &format!("/api/v1/projects/{project}/executions/{run_id}/approve"), Some(&owner2), None),
+            req(
+                "POST",
+                &format!("/api/v1/projects/{project}/executions/{run_id}/approve"),
+                Some(&owner2),
+                None,
+            ),
         )
         .await;
-        assert_eq!(status, StatusCode::OK, "a pending approval must survive a restart and remain approvable; body={approved}");
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "a pending approval must survive a restart and remain approvable; body={approved}"
+        );
         assert_eq!(approved["state"], "RUNNING");
     }
 }
@@ -4083,7 +6655,12 @@ async fn rejection_survives_a_process_restart_and_can_still_be_rejected() {
         let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
         let (status, created) = send(
             &state,
-            req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&owner), Some(gated_plan("gated-run-reject"))),
+            req(
+                "POST",
+                &format!("/api/v1/projects/{project}/executions"),
+                Some(&owner),
+                Some(gated_plan("gated-run-reject")),
+            ),
         )
         .await;
         assert_eq!(status, StatusCode::CREATED, "body={created}");
@@ -4103,7 +6680,11 @@ async fn rejection_survives_a_process_restart_and_can_still_be_rejected() {
             ),
         )
         .await;
-        assert_eq!(status, StatusCode::OK, "a pending approval must survive a restart and remain rejectable; body={rejected}");
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "a pending approval must survive a restart and remain rejectable; body={rejected}"
+        );
         assert_eq!(rejected["state"], "REJECTED");
     }
 }

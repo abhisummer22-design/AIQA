@@ -97,7 +97,14 @@ impl RunState {
     /// has actually entered the execution pipeline (`Created`/`Scheduled`
     /// while about to start, or `Running`).
     pub fn is_terminal(&self) -> bool {
-        matches!(self, RunState::Rejected | RunState::Partial | RunState::Completed | RunState::Cancelled | RunState::Failed)
+        matches!(
+            self,
+            RunState::Rejected
+                | RunState::Partial
+                | RunState::Completed
+                | RunState::Cancelled
+                | RunState::Failed
+        )
     }
 
     pub fn as_db_str(&self) -> &'static str {

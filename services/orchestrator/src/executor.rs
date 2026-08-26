@@ -63,7 +63,11 @@ impl ExecutorRegistry {
     pub fn resolve(&self, task: &TaskDef) -> Result<Arc<dyn Executor>, String> {
         match &task.executor {
             None => Ok(self.default.clone()),
-            Some(kind) => self.by_kind.get(kind).cloned().ok_or_else(|| format!("no executor is registered for {kind:?}")),
+            Some(kind) => self
+                .by_kind
+                .get(kind)
+                .cloned()
+                .ok_or_else(|| format!("no executor is registered for {kind:?}")),
         }
     }
 }
@@ -116,8 +120,9 @@ impl Executor for SimulatedExecutor {
 fn sanitize_token(s: &str) -> Result<String, String> {
     let ok = !s.is_empty()
         && !s.contains("..")
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '.' | '-' | '_' | '/' | '\\' | ':'));
+        && s.chars().all(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, ' ' | '.' | '-' | '_' | '/' | '\\' | ':')
+        });
     if ok {
         Ok(s.to_string())
     } else {
@@ -165,7 +170,9 @@ fn shell_command(program: &str, args: &[&str], cwd: &Path) -> tokio::process::Co
     // UTF-8; Node-based tools (npx/newman/maestro) ignore these vars, so
     // it's harmless to set them unconditionally for every adapter here
     // rather than special-casing Python ones.
-    std_cmd.env("PYTHONIOENCODING", "utf-8").env("PYTHONUTF8", "1");
+    std_cmd
+        .env("PYTHONIOENCODING", "utf-8")
+        .env("PYTHONUTF8", "1");
     let mut cmd = tokio::process::Command::from(std_cmd);
     // B5 — the engine bounds every invocation with `tokio::time::timeout`,
     // which drops this future on expiry. Without kill_on_drop the child
@@ -249,9 +256,14 @@ fn is_blocked_ip(ip: &std::net::IpAddr, port: u16) -> bool {
 pub(crate) async fn validate_target_url(raw: &str) -> Result<(), String> {
     let url = reqwest::Url::parse(raw).map_err(|e| format!("rejected target URL {raw:?}: {e}"))?;
     if url.scheme() != "http" && url.scheme() != "https" {
-        return Err(format!("rejected target URL {raw:?}: only http/https schemes are allowed, got {:?}", url.scheme()));
+        return Err(format!(
+            "rejected target URL {raw:?}: only http/https schemes are allowed, got {:?}",
+            url.scheme()
+        ));
     }
-    let host = url.host_str().ok_or_else(|| format!("rejected target URL {raw:?}: no host"))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| format!("rejected target URL {raw:?}: no host"))?;
     let port = url.port_or_known_default().unwrap_or(80);
 
     if let Ok(ip) = host.parse::<std::net::IpAddr>() {
@@ -267,7 +279,9 @@ pub(crate) async fn validate_target_url(raw: &str) -> Result<(), String> {
         .map_err(|e| format!("rejected target {host}:{port}: could not resolve host ({e})"))?
         .collect::<Vec<_>>();
     if addrs.is_empty() {
-        return Err(format!("rejected target {host}:{port}: host resolved to no addresses"));
+        return Err(format!(
+            "rejected target {host}:{port}: host resolved to no addresses"
+        ));
     }
     for addr in &addrs {
         if is_blocked_ip(&addr.ip(), port) {
@@ -360,8 +374,9 @@ mod job_containment {
             }
 
             let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
-            info.BasicLimitInformation.LimitFlags =
-                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_ACTIVE_PROCESS | JOB_OBJECT_LIMIT_JOB_MEMORY;
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+                | JOB_OBJECT_LIMIT_ACTIVE_PROCESS
+                | JOB_OBJECT_LIMIT_JOB_MEMORY;
             info.BasicLimitInformation.ActiveProcessLimit = max_processes;
             info.JobMemoryLimit = max_memory_bytes;
 
@@ -442,18 +457,25 @@ const EXECUTOR_JOB_MAX_MEMORY_BYTES: usize = 2 * 1024 * 1024 * 1024;
 /// abandoned — a job-object failure must never leave an *unquarantined*
 /// process running for longer than the ordinary, un-contained path would
 /// have.
-async fn run_contained(mut cmd: tokio::process::Command, label: &str) -> Result<std::process::Output, std::io::Error> {
+async fn run_contained(
+    mut cmd: tokio::process::Command,
+    label: &str,
+) -> Result<std::process::Output, std::io::Error> {
     // `Command::output()` (what every call site here used before this
     // session) pipes stdout/stderr automatically as part of that one call.
     // `spawn()` does not — without this, `wait_with_output` below would
     // return empty output for a real, successful process, silently
     // breaking every adapter's actual result reporting.
-    cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
     let child = cmd.spawn()?;
 
     #[cfg(windows)]
     {
-        match job_containment::ProcessJob::new(EXECUTOR_JOB_MAX_PROCESSES, EXECUTOR_JOB_MAX_MEMORY_BYTES) {
+        match job_containment::ProcessJob::new(
+            EXECUTOR_JOB_MAX_PROCESSES,
+            EXECUTOR_JOB_MAX_MEMORY_BYTES,
+        ) {
             Ok(job) => {
                 if let Some(handle) = job_containment::raw_handle(&child) {
                     if let Err(e) = job.assign(handle) {
@@ -469,7 +491,9 @@ async fn run_contained(mut cmd: tokio::process::Command, label: &str) -> Result<
                 return output;
             }
             Err(e) => {
-                tracing::warn!("{label}: failed to create containment job, running un-contained: {e}");
+                tracing::warn!(
+                    "{label}: failed to create containment job, running un-contained: {e}"
+                );
             }
         }
     }
@@ -496,7 +520,11 @@ fn outcome_from_output(output: std::process::Output, label: &str) -> ExecutionOu
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    let evidence = if combined.trim().is_empty() { None } else { Some(combined.clone()) };
+    let evidence = if combined.trim().is_empty() {
+        None
+    } else {
+        Some(combined.clone())
+    };
     if output.status.success() {
         return ExecutionOutcome {
             status: TaskStatus::Passed,
@@ -505,7 +533,8 @@ fn outcome_from_output(output: std::process::Output, label: &str) -> ExecutionOu
         };
     }
     let lower = combined.to_lowercase();
-    let looks_like_missing_tool = lower.contains("is not recognized as an internal or external command")
+    let looks_like_missing_tool = lower
+        .contains("is not recognized as an internal or external command")
         || lower.contains("command not found")
         || lower.contains("enoent");
     let status = if looks_like_missing_tool {
@@ -536,7 +565,11 @@ fn spawn_error_outcome(label: &str, err: std::io::Error) -> ExecutionOutcome {
 /// `sanitize_token` flags as unsafe. An empty value always passes through —
 /// several adapters use "" to mean "no filter" (e.g. Playwright's `grep`).
 fn safe_param(task: &TaskDef, key: &str, default: &str) -> Result<String, ExecutionOutcome> {
-    let raw = task.params.get(key).and_then(|v| v.as_str()).unwrap_or(default);
+    let raw = task
+        .params
+        .get(key)
+        .and_then(|v| v.as_str())
+        .unwrap_or(default);
     if raw.is_empty() {
         return Ok(String::new());
     }
@@ -596,7 +629,13 @@ pub struct NewmanExecutor {
 impl Executor for NewmanExecutor {
     async fn execute(&self, task: &TaskDef) -> ExecutionOutcome {
         let folder = param_or_return!(safe_param(task, "folder", "health check passes"));
-        let args = vec!["newman", "run", "collection.json", "--folder", folder.as_str()];
+        let args = vec![
+            "newman",
+            "run",
+            "collection.json",
+            "--folder",
+            folder.as_str(),
+        ];
         match run_contained(shell_command("npx", &args, &self.project_dir), "newman").await {
             Ok(output) => outcome_from_output(output, "newman"),
             Err(e) => spawn_error_outcome("newman", e),
@@ -623,7 +662,11 @@ impl Executor for PytestExecutor {
         let node_id = param_or_return!(safe_param(task, "node_id", "test_health.py"));
         let base_url = param_or_return!(safe_param(task, "base_url", "http://localhost:8080"));
         if let Err(reason) = validate_target_url(&base_url).await {
-            return ExecutionOutcome { status: TaskStatus::InfraError, reason: Some(reason), evidence: None };
+            return ExecutionOutcome {
+                status: TaskStatus::InfraError,
+                reason: Some(reason),
+                evidence: None,
+            };
         }
         let mut cmd = tokio::process::Command::new("python");
         cmd.args(["-m", "pytest", "-q", node_id.as_str()])
@@ -664,16 +707,34 @@ pub struct MaestroExecutor {
 /// for "not a product/test failure"), never silently attempted and
 /// misattributed to the test case as a `FAILED` result.
 async fn verify_maestro_identity(project_dir: &Path) -> Result<(), String> {
-    let output = match run_contained(shell_command("maestro", &["--version"], project_dir), "maestro-identity-check").await {
+    let output = match run_contained(
+        shell_command("maestro", &["--version"], project_dir),
+        "maestro-identity-check",
+    )
+    .await
+    {
         Ok(o) => o,
-        Err(e) => return Err(format!("could not invoke the 'maestro' binary on PATH to verify its identity: {e}")),
+        Err(e) => {
+            return Err(format!(
+                "could not invoke the 'maestro' binary on PATH to verify its identity: {e}"
+            ))
+        }
     };
-    let combined = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)).to_lowercase();
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+    .to_lowercase();
 
     // Real, directly-observed signature of the specific unrelated tool
     // confirmed occupying `maestro` on PATH in this dev environment.
-    const KNOWN_WRONG_TOOL_MARKERS: [&str; 4] = ["florence", "paligemma", "qwen", "cannot import recipe"];
-    if KNOWN_WRONG_TOOL_MARKERS.iter().any(|m| combined.contains(m)) {
+    const KNOWN_WRONG_TOOL_MARKERS: [&str; 4] =
+        ["florence", "paligemma", "qwen", "cannot import recipe"];
+    if KNOWN_WRONG_TOOL_MARKERS
+        .iter()
+        .any(|m| combined.contains(m))
+    {
         return Err(
             "the 'maestro' binary on PATH is a different, unrelated tool (detected real ML-recipe warnings characteristic of a Python vision-model CLI, not the mobile.dev Maestro automation CLI)"
                 .to_string(),
@@ -697,11 +758,20 @@ async fn verify_maestro_identity(project_dir: &Path) -> Result<(), String> {
 impl Executor for MaestroExecutor {
     async fn execute(&self, task: &TaskDef) -> ExecutionOutcome {
         if let Err(reason) = verify_maestro_identity(&self.project_dir).await {
-            return ExecutionOutcome { status: TaskStatus::InfraError, reason: Some(format!("EXECUTOR_UNAVAILABLE: {reason}")), evidence: None };
+            return ExecutionOutcome {
+                status: TaskStatus::InfraError,
+                reason: Some(format!("EXECUTOR_UNAVAILABLE: {reason}")),
+                evidence: None,
+            };
         }
         let flow = param_or_return!(safe_param(task, "flow", "flow.yaml"));
         let args = vec!["test", flow.as_str()];
-        match run_contained(shell_command("maestro", &args, &self.project_dir), "maestro").await {
+        match run_contained(
+            shell_command("maestro", &args, &self.project_dir),
+            "maestro",
+        )
+        .await
+        {
             Ok(output) => outcome_from_output(output, "maestro"),
             Err(e) => spawn_error_outcome("maestro", e),
         }
@@ -731,10 +801,19 @@ impl Executor for SchemathesisExecutor {
         let schema = param_or_return!(safe_param(task, "schema", "openapi.yaml"));
         let url = param_or_return!(safe_param(task, "url", "http://localhost:8080"));
         if let Err(reason) = validate_target_url(&url).await {
-            return ExecutionOutcome { status: TaskStatus::InfraError, reason: Some(reason), evidence: None };
+            return ExecutionOutcome {
+                status: TaskStatus::InfraError,
+                reason: Some(reason),
+                evidence: None,
+            };
         }
         let args = vec!["run", schema.as_str(), "--url", url.as_str()];
-        match run_contained(shell_command("schemathesis", &args, &self.project_dir), "schemathesis").await {
+        match run_contained(
+            shell_command("schemathesis", &args, &self.project_dir),
+            "schemathesis",
+        )
+        .await
+        {
             Ok(output) => outcome_from_output(output, "schemathesis"),
             Err(e) => spawn_error_outcome("schemathesis", e),
         }
@@ -789,10 +868,19 @@ pub struct ApiResultSummary {
     pub assertions: Vec<ApiAssertionResult>,
 }
 
-const SENSITIVE_HEADER_NAMES: [&str; 6] = ["authorization", "cookie", "set-cookie", "proxy-authorization", "x-api-key", "api-key"];
+const SENSITIVE_HEADER_NAMES: [&str; 6] = [
+    "authorization",
+    "cookie",
+    "set-cookie",
+    "proxy-authorization",
+    "x-api-key",
+    "api-key",
+];
 
 fn is_sensitive_header(name: &str) -> bool {
-    SENSITIVE_HEADER_NAMES.iter().any(|s| name.eq_ignore_ascii_case(s))
+    SENSITIVE_HEADER_NAMES
+        .iter()
+        .any(|s| name.eq_ignore_ascii_case(s))
 }
 
 /// Real, distinct failure-category classification of a genuine `reqwest`
@@ -842,9 +930,15 @@ pub struct CompiledApiExecutor {
 
 impl CompiledApiExecutor {
     pub fn from_env() -> Self {
-        let timeout_secs: u64 = std::env::var("API_TEST_TIMEOUT_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(30);
+        let timeout_secs: u64 = std::env::var("API_TEST_TIMEOUT_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(30);
         let timeout = Duration::from_secs(timeout_secs);
-        let client = reqwest::Client::builder().timeout(timeout).build().unwrap_or_else(|_| reqwest::Client::new());
+        let client = reqwest::Client::builder()
+            .timeout(timeout)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         Self { timeout, client }
     }
 }
@@ -870,164 +964,232 @@ pub struct PlanExecutionResult {
     pub log: String,
 }
 
-pub async fn execute_plan_once(client: &reqwest::Client, plan: &crate::execution_plan::ExecutionPlan) -> PlanExecutionResult {
-        use crate::execution_plan::Action;
+pub async fn execute_plan_once(
+    client: &reqwest::Client,
+    plan: &crate::execution_plan::ExecutionPlan,
+) -> PlanExecutionResult {
+    use crate::execution_plan::Action;
 
-        let mut log = String::new();
-        let mut last_response: Option<(reqwest::StatusCode, reqwest::header::HeaderMap, String)> = None;
-        let mut failures: Vec<String> = Vec::new();
-        let mut assertion_results: Vec<ApiAssertionResult> = Vec::new();
-        let mut last_status: u16 = 0;
-        let mut last_duration_ms: u64 = 0;
-        let mut last_redacted_headers: Vec<(String, String)> = Vec::new();
+    let mut log = String::new();
+    let mut last_response: Option<(reqwest::StatusCode, reqwest::header::HeaderMap, String)> = None;
+    let mut failures: Vec<String> = Vec::new();
+    let mut assertion_results: Vec<ApiAssertionResult> = Vec::new();
+    let mut last_status: u16 = 0;
+    let mut last_duration_ms: u64 = 0;
+    let mut last_redacted_headers: Vec<(String, String)> = Vec::new();
 
-        for action in &plan.actions {
-            match action {
-                Action::Request { method, url, headers, body } => {
-                    log.push_str(&format!("REQUEST {method} {url}\n"));
-                    let m = match reqwest::Method::from_bytes(method.as_bytes()) {
-                        Ok(m) => m,
-                        Err(_) => {
-                            return PlanExecutionResult {
-                                status: TaskStatus::InfraError,
-                                reason: Some(format!("invalid HTTP method in compiled plan: {method:?}")),
-                                http_status: None,
-                                duration_ms: 0,
-                                response_headers: Vec::new(),
-                                assertions: Vec::new(),
-                                log,
-                            };
-                        }
-                    };
-                    let mut req = client.request(m, url);
-                    for (k, v) in headers {
-                        req = req.header(k, v);
+    for action in &plan.actions {
+        match action {
+            Action::Request {
+                method,
+                url,
+                headers,
+                body,
+            } => {
+                log.push_str(&format!("REQUEST {method} {url}\n"));
+                let m = match reqwest::Method::from_bytes(method.as_bytes()) {
+                    Ok(m) => m,
+                    Err(_) => {
+                        return PlanExecutionResult {
+                            status: TaskStatus::InfraError,
+                            reason: Some(format!(
+                                "invalid HTTP method in compiled plan: {method:?}"
+                            )),
+                            http_status: None,
+                            duration_ms: 0,
+                            response_headers: Vec::new(),
+                            assertions: Vec::new(),
+                            log,
+                        };
                     }
-                    if let Some(b) = body {
-                        req = req.json(b);
-                    }
-                    let started = std::time::Instant::now();
-                    match req.send().await {
-                        Ok(resp) => {
-                            last_duration_ms = started.elapsed().as_millis() as u64;
-                            let status = resp.status();
-                            let resp_headers = resp.headers().clone();
-                            let text = resp.text().await.unwrap_or_default();
-                            log.push_str(&format!("RESPONSE {status}\n{}\n", tail_lines(&text, 30)));
-                            last_status = status.as_u16();
-                            last_redacted_headers = resp_headers
-                                .iter()
-                                .map(|(k, v)| (k.to_string(), if is_sensitive_header(k.as_str()) { "***REDACTED***".to_string() } else { v.to_str().unwrap_or("").to_string() }))
-                                .collect();
-                            last_response = Some((status, resp_headers, text));
-                        }
-                        Err(e) => {
-                            let classified = classify_reqwest_error(&e);
-                            log.push_str(&format!("REQUEST FAILED: {classified}\n"));
-                            return PlanExecutionResult {
-                                status: TaskStatus::InfraError,
-                                reason: Some(classified),
-                                http_status: None,
-                                duration_ms: 0,
-                                response_headers: Vec::new(),
-                                assertions: Vec::new(),
-                                log,
-                            };
-                        }
-                    }
+                };
+                let mut req = client.request(m, url);
+                for (k, v) in headers {
+                    req = req.header(k, v);
                 }
-                Action::AssertStatus { status } => {
-                    let Some((actual, _, _)) = &last_response else {
-                        failures.push("ASSERT_STATUS with no prior REQUEST".to_string());
-                        continue;
-                    };
-                    let passed = actual.as_u16() == *status;
-                    if !passed {
-                        failures.push(format!("expected HTTP status {status}, got real status {actual}"));
-                    }
-                    log.push_str(&format!("ASSERT_STATUS {status} -> actual {actual}\n"));
-                    assertion_results.push(ApiAssertionResult { description: format!("Status equals {status}"), actual: actual.to_string(), passed });
+                if let Some(b) = body {
+                    req = req.json(b);
                 }
-                Action::AssertHeader { name, value } => {
-                    let Some((_, headers, _)) = &last_response else {
-                        failures.push("ASSERT_HEADER with no prior REQUEST".to_string());
-                        continue;
-                    };
-                    let actual = headers.get(name).and_then(|v| v.to_str().ok()).unwrap_or("");
-                    let passed = actual == value;
-                    if !passed {
-                        failures.push(format!("expected header {name:?} = {value:?}, got real value {actual:?}"));
+                let started = std::time::Instant::now();
+                match req.send().await {
+                    Ok(resp) => {
+                        last_duration_ms = started.elapsed().as_millis() as u64;
+                        let status = resp.status();
+                        let resp_headers = resp.headers().clone();
+                        let text = resp.text().await.unwrap_or_default();
+                        log.push_str(&format!("RESPONSE {status}\n{}\n", tail_lines(&text, 30)));
+                        last_status = status.as_u16();
+                        last_redacted_headers = resp_headers
+                            .iter()
+                            .map(|(k, v)| {
+                                (
+                                    k.to_string(),
+                                    if is_sensitive_header(k.as_str()) {
+                                        "***REDACTED***".to_string()
+                                    } else {
+                                        v.to_str().unwrap_or("").to_string()
+                                    },
+                                )
+                            })
+                            .collect();
+                        last_response = Some((status, resp_headers, text));
                     }
-                    log.push_str(&format!("ASSERT_HEADER {name}={value} -> actual {actual:?}\n"));
-                    let display_actual = if is_sensitive_header(name) { "***REDACTED***".to_string() } else { actual.to_string() };
-                    assertion_results.push(ApiAssertionResult { description: format!("Header {name} equals {value}"), actual: display_actual, passed });
-                }
-                Action::AssertBodyField { path, equals } => {
-                    let Some((_, _, text)) = &last_response else {
-                        failures.push("ASSERT_BODY_FIELD with no prior REQUEST".to_string());
-                        continue;
-                    };
-                    let parsed: Result<serde_json::Value, _> = serde_json::from_str(text);
-                    match parsed {
-                        Ok(json) => {
-                            let actual = path.split('.').fold(Some(&json), |acc, key| acc.and_then(|v| v.get(key)));
-                            let passed = actual == Some(equals);
-                            if !passed {
-                                failures.push(format!("expected body field {path:?} == {equals}, got real value {:?}", actual));
-                            }
-                            log.push_str(&format!("ASSERT_BODY_FIELD {path} == {equals} -> actual {:?}\n", actual));
-                            assertion_results.push(ApiAssertionResult {
-                                description: format!("Body field {path} equals {equals}"),
-                                actual: actual.map(|v| v.to_string()).unwrap_or_else(|| "null".to_string()),
-                                passed,
-                            });
-                        }
-                        Err(e) => {
-                            failures.push(format!("response body is not valid JSON, cannot check field {path:?}: {e}"));
-                            assertion_results.push(ApiAssertionResult { description: format!("Body field {path} equals {equals}"), actual: format!("(not valid JSON: {e})"), passed: false });
-                        }
+                    Err(e) => {
+                        let classified = classify_reqwest_error(&e);
+                        log.push_str(&format!("REQUEST FAILED: {classified}\n"));
+                        return PlanExecutionResult {
+                            status: TaskStatus::InfraError,
+                            reason: Some(classified),
+                            http_status: None,
+                            duration_ms: 0,
+                            response_headers: Vec::new(),
+                            assertions: Vec::new(),
+                            log,
+                        };
                     }
-                }
-                // Browser-only actions never reach this executor —
-                // `execution_plan::materialize_task_def` only ever routes
-                // an `ExecutionType::Api` plan here.
-                Action::Navigate { .. } | Action::Click { .. } | Action::Fill { .. } | Action::AssertVisible { .. } | Action::AssertText { .. } | Action::AssertUrl { .. } => {
-                    failures.push(format!("browser action {action:?} cannot run in the API executor — this plan was misrouted"));
                 }
             }
+            Action::AssertStatus { status } => {
+                let Some((actual, _, _)) = &last_response else {
+                    failures.push("ASSERT_STATUS with no prior REQUEST".to_string());
+                    continue;
+                };
+                let passed = actual.as_u16() == *status;
+                if !passed {
+                    failures.push(format!(
+                        "expected HTTP status {status}, got real status {actual}"
+                    ));
+                }
+                log.push_str(&format!("ASSERT_STATUS {status} -> actual {actual}\n"));
+                assertion_results.push(ApiAssertionResult {
+                    description: format!("Status equals {status}"),
+                    actual: actual.to_string(),
+                    passed,
+                });
+            }
+            Action::AssertHeader { name, value } => {
+                let Some((_, headers, _)) = &last_response else {
+                    failures.push("ASSERT_HEADER with no prior REQUEST".to_string());
+                    continue;
+                };
+                let actual = headers
+                    .get(name)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("");
+                let passed = actual == value;
+                if !passed {
+                    failures.push(format!(
+                        "expected header {name:?} = {value:?}, got real value {actual:?}"
+                    ));
+                }
+                log.push_str(&format!(
+                    "ASSERT_HEADER {name}={value} -> actual {actual:?}\n"
+                ));
+                let display_actual = if is_sensitive_header(name) {
+                    "***REDACTED***".to_string()
+                } else {
+                    actual.to_string()
+                };
+                assertion_results.push(ApiAssertionResult {
+                    description: format!("Header {name} equals {value}"),
+                    actual: display_actual,
+                    passed,
+                });
+            }
+            Action::AssertBodyField { path, equals } => {
+                let Some((_, _, text)) = &last_response else {
+                    failures.push("ASSERT_BODY_FIELD with no prior REQUEST".to_string());
+                    continue;
+                };
+                let parsed: Result<serde_json::Value, _> = serde_json::from_str(text);
+                match parsed {
+                    Ok(json) => {
+                        let actual = path
+                            .split('.')
+                            .fold(Some(&json), |acc, key| acc.and_then(|v| v.get(key)));
+                        let passed = actual == Some(equals);
+                        if !passed {
+                            failures.push(format!(
+                                "expected body field {path:?} == {equals}, got real value {:?}",
+                                actual
+                            ));
+                        }
+                        log.push_str(&format!(
+                            "ASSERT_BODY_FIELD {path} == {equals} -> actual {:?}\n",
+                            actual
+                        ));
+                        assertion_results.push(ApiAssertionResult {
+                            description: format!("Body field {path} equals {equals}"),
+                            actual: actual
+                                .map(|v| v.to_string())
+                                .unwrap_or_else(|| "null".to_string()),
+                            passed,
+                        });
+                    }
+                    Err(e) => {
+                        failures.push(format!(
+                            "response body is not valid JSON, cannot check field {path:?}: {e}"
+                        ));
+                        assertion_results.push(ApiAssertionResult {
+                            description: format!("Body field {path} equals {equals}"),
+                            actual: format!("(not valid JSON: {e})"),
+                            passed: false,
+                        });
+                    }
+                }
+            }
+            // Browser-only actions never reach this executor —
+            // `execution_plan::materialize_task_def` only ever routes
+            // an `ExecutionType::Api` plan here.
+            Action::Navigate { .. }
+            | Action::Click { .. }
+            | Action::Fill { .. }
+            | Action::AssertVisible { .. }
+            | Action::AssertText { .. }
+            | Action::AssertUrl { .. } => {
+                failures.push(format!("browser action {action:?} cannot run in the API executor — this plan was misrouted"));
+            }
         }
+    }
 
-        let (status, reason) = if failures.is_empty() {
-            (TaskStatus::Passed, None)
+    let (status, reason) = if failures.is_empty() {
+        (TaskStatus::Passed, None)
+    } else {
+        log.push_str(&format!("\nFAILED ASSERTIONS:\n{}\n", failures.join("\n")));
+        (TaskStatus::Failed, Some(tail_lines(&log, 15)))
+    };
+
+    PlanExecutionResult {
+        status,
+        reason,
+        http_status: if last_status == 0 {
+            None
         } else {
-            log.push_str(&format!("\nFAILED ASSERTIONS:\n{}\n", failures.join("\n")));
-            (TaskStatus::Failed, Some(tail_lines(&log, 15)))
-        };
-
-        PlanExecutionResult {
-            status,
-            reason,
-            http_status: if last_status == 0 { None } else { Some(last_status) },
-            duration_ms: last_duration_ms,
-            response_headers: last_redacted_headers,
-            assertions: assertion_results,
-            log,
-        }
+            Some(last_status)
+        },
+        duration_ms: last_duration_ms,
+        response_headers: last_redacted_headers,
+        assertions: assertion_results,
+        log,
+    }
 }
 
 #[async_trait]
 impl Executor for CompiledApiExecutor {
     async fn execute(&self, task: &TaskDef) -> ExecutionOutcome {
-        let plan: crate::execution_plan::ExecutionPlan = match serde_json::from_value(task.params.clone()) {
-            Ok(p) => p,
-            Err(e) => {
-                return ExecutionOutcome {
-                    status: TaskStatus::InfraError,
-                    reason: Some(format!("compiled-api executor received a malformed execution plan: {e}")),
-                    evidence: None,
+        let plan: crate::execution_plan::ExecutionPlan =
+            match serde_json::from_value(task.params.clone()) {
+                Ok(p) => p,
+                Err(e) => {
+                    return ExecutionOutcome {
+                        status: TaskStatus::InfraError,
+                        reason: Some(format!(
+                            "compiled-api executor received a malformed execution plan: {e}"
+                        )),
+                        evidence: None,
+                    }
                 }
-            }
-        };
+            };
 
         // Re-validated here, not just trusted from compile time — this
         // executor is reachable via the exact same generic `executor`/
@@ -1039,7 +1201,10 @@ impl Executor for CompiledApiExecutor {
         if let Err(reasons) = crate::execution_plan::validate_plan(&plan).await {
             return ExecutionOutcome {
                 status: TaskStatus::InfraError,
-                reason: Some(format!("compiled plan failed re-validation at execution time: {}", reasons.join("; "))),
+                reason: Some(format!(
+                    "compiled plan failed re-validation at execution time: {}",
+                    reasons.join("; ")
+                )),
                 evidence: None,
             };
         }
@@ -1060,7 +1225,11 @@ impl Executor for CompiledApiExecutor {
             log.push_str(&format!("RESULT_SUMMARY_JSON:{summary_json}\n"));
         }
 
-        ExecutionOutcome { status: result.status, reason: result.reason, evidence: Some(log) }
+        ExecutionOutcome {
+            status: result.status,
+            reason: result.reason,
+            evidence: Some(log),
+        }
     }
 }
 
@@ -1074,7 +1243,10 @@ impl Executor for CompiledApiExecutor {
 /// string interpolation of untrusted content into source code. The action
 /// vocabulary itself is closed (matched exhaustively below); there is no
 /// path from a plan to arbitrary generated code.
-pub fn materialize_playwright_spec(task_id: &str, plan: &crate::execution_plan::ExecutionPlan) -> Result<String, String> {
+pub fn materialize_playwright_spec(
+    task_id: &str,
+    plan: &crate::execution_plan::ExecutionPlan,
+) -> Result<String, String> {
     use crate::execution_plan::Action;
 
     fn js_str(s: &str) -> String {
@@ -1084,25 +1256,54 @@ pub fn materialize_playwright_spec(task_id: &str, plan: &crate::execution_plan::
     let mut body = String::new();
     for action in &plan.actions {
         match action {
-            Action::Navigate { url } => body.push_str(&format!("  await page.goto({});\n", js_str(url))),
-            Action::Click { selector } => body.push_str(&format!("  await page.locator({}).click();\n", js_str(selector))),
-            Action::Fill { selector, value } => body.push_str(&format!("  await page.locator({}).fill({});\n", js_str(selector), js_str(value))),
-            Action::AssertVisible { selector } => body.push_str(&format!("  await expect(page.locator({})).toBeVisible();\n", js_str(selector))),
-            Action::AssertText { selector, text } => body.push_str(&format!("  await expect(page.locator({})).toHaveText({});\n", js_str(selector), js_str(text))),
-            Action::AssertUrl { url_contains } => body.push_str(&format!("  await expect(page).toHaveURL(new RegExp({}));\n", js_str(&regex::escape(url_contains)))),
-            Action::Request { .. } | Action::AssertStatus { .. } | Action::AssertHeader { .. } | Action::AssertBodyField { .. } => {
+            Action::Navigate { url } => {
+                body.push_str(&format!("  await page.goto({});\n", js_str(url)))
+            }
+            Action::Click { selector } => body.push_str(&format!(
+                "  await page.locator({}).click();\n",
+                js_str(selector)
+            )),
+            Action::Fill { selector, value } => body.push_str(&format!(
+                "  await page.locator({}).fill({});\n",
+                js_str(selector),
+                js_str(value)
+            )),
+            Action::AssertVisible { selector } => body.push_str(&format!(
+                "  await expect(page.locator({})).toBeVisible();\n",
+                js_str(selector)
+            )),
+            Action::AssertText { selector, text } => body.push_str(&format!(
+                "  await expect(page.locator({})).toHaveText({});\n",
+                js_str(selector),
+                js_str(text)
+            )),
+            Action::AssertUrl { url_contains } => body.push_str(&format!(
+                "  await expect(page).toHaveURL(new RegExp({}));\n",
+                js_str(&regex::escape(url_contains))
+            )),
+            Action::Request { .. }
+            | Action::AssertStatus { .. }
+            | Action::AssertHeader { .. }
+            | Action::AssertBodyField { .. } => {
                 return Err(format!("API action {action:?} cannot appear in a BROWSER plan — this plan was misrouted"));
             }
         }
     }
 
-    let safe_id: String = task_id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
+    let safe_id: String = task_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .collect();
     if safe_id.is_empty() {
-        return Err("task id produced no safe characters for a generated spec filename".to_string());
+        return Err(
+            "task id produced no safe characters for a generated spec filename".to_string(),
+        );
     }
     let file_name = format!("compiled-{safe_id}.spec.ts");
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../executors/playwright/tests/generated");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create generated-spec directory: {e}"))?;
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../executors/playwright/tests/generated");
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("failed to create generated-spec directory: {e}"))?;
     let full_path = dir.join(&file_name);
     let source = format!(
         "// Generated by execution_plan::materialize_playwright_spec from a real, compiled\n\
@@ -1111,7 +1312,8 @@ pub fn materialize_playwright_spec(task_id: &str, plan: &crate::execution_plan::
          import {{ test, expect }} from \"@playwright/test\";\n\n\
          test(\"compiled plan for test case {safe_id}\", async ({{ page }}) => {{\n{body}}});\n"
     );
-    std::fs::write(&full_path, source).map_err(|e| format!("failed to write generated spec file: {e}"))?;
+    std::fs::write(&full_path, source)
+        .map_err(|e| format!("failed to write generated spec file: {e}"))?;
 
     Ok(format!("tests/generated/{file_name}"))
 }
@@ -1133,14 +1335,30 @@ mod tests {
 
     #[test]
     fn sensitive_response_header_names_are_recognized_case_insensitively() {
-        for name in ["Authorization", "authorization", "AUTHORIZATION", "Set-Cookie", "cookie", "X-Api-Key", "Proxy-Authorization"] {
-            assert!(is_sensitive_header(name), "{name} must be treated as sensitive");
+        for name in [
+            "Authorization",
+            "authorization",
+            "AUTHORIZATION",
+            "Set-Cookie",
+            "cookie",
+            "X-Api-Key",
+            "Proxy-Authorization",
+        ] {
+            assert!(
+                is_sensitive_header(name),
+                "{name} must be treated as sensitive"
+            );
         }
     }
 
     #[test]
     fn ordinary_response_headers_are_not_flagged_sensitive() {
-        for name in ["Content-Type", "Content-Length", "X-Request-Id", "Cache-Control"] {
+        for name in [
+            "Content-Type",
+            "Content-Length",
+            "X-Request-Id",
+            "Cache-Control",
+        ] {
             assert!(!is_sensitive_header(name), "{name} must not be redacted");
         }
     }
@@ -1155,10 +1373,20 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         drop(listener);
-        let client = reqwest::Client::builder().timeout(Duration::from_secs(3)).build().unwrap();
-        let err = client.get(format!("http://127.0.0.1:{port}/")).send().await.unwrap_err();
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(3))
+            .build()
+            .unwrap();
+        let err = client
+            .get(format!("http://127.0.0.1:{port}/"))
+            .send()
+            .await
+            .unwrap_err();
         let classified = classify_reqwest_error(&err);
-        assert!(classified.starts_with("CONNECTION_FAILED:"), "classified={classified}");
+        assert!(
+            classified.starts_with("CONNECTION_FAILED:"),
+            "classified={classified}"
+        );
     }
 
     #[tokio::test]
@@ -1174,11 +1402,21 @@ mod tests {
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
         });
-        let client = reqwest::Client::builder().timeout(Duration::from_millis(200)).build().unwrap();
-        let err = client.get(format!("http://{addr}/")).send().await.unwrap_err();
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(200))
+            .build()
+            .unwrap();
+        let err = client
+            .get(format!("http://{addr}/"))
+            .send()
+            .await
+            .unwrap_err();
         assert!(err.is_timeout(), "err={err}");
         let classified = classify_reqwest_error(&err);
-        assert!(classified.starts_with("REQUEST_TIMEOUT:"), "classified={classified}");
+        assert!(
+            classified.starts_with("REQUEST_TIMEOUT:"),
+            "classified={classified}"
+        );
     }
 
     /// This is the regression test for the fix: `params` are attacker-
@@ -1199,7 +1437,10 @@ mod tests {
             "../../etc/passwd",
             "",
         ] {
-            assert!(sanitize_token(bad).is_err(), "expected rejection for {bad:?}");
+            assert!(
+                sanitize_token(bad).is_err(),
+                "expected rejection for {bad:?}"
+            );
         }
     }
 
@@ -1234,15 +1475,27 @@ mod tests {
     /// not a hypothetical one.
     #[tokio::test]
     async fn validate_target_url_rejects_cloud_metadata_address() {
-        let err = validate_target_url("http://169.254.169.254/latest/meta-data/").await.unwrap_err();
-        assert!(err.contains("disallowed"), "expected a disallowed-range rejection, got: {err}");
+        let err = validate_target_url("http://169.254.169.254/latest/meta-data/")
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("disallowed"),
+            "expected a disallowed-range rejection, got: {err}"
+        );
     }
 
     #[tokio::test]
     async fn validate_target_url_rejects_rfc1918_private_ranges() {
-        for target in ["http://10.0.0.5:80", "http://172.16.0.5:80", "http://192.168.1.1:80"] {
+        for target in [
+            "http://10.0.0.5:80",
+            "http://172.16.0.5:80",
+            "http://192.168.1.1:80",
+        ] {
             match validate_target_url(target).await {
-                Err(err) => assert!(err.contains("disallowed"), "expected a disallowed-range rejection for {target}, got: {err}"),
+                Err(err) => assert!(
+                    err.contains("disallowed"),
+                    "expected a disallowed-range rejection for {target}, got: {err}"
+                ),
                 Ok(()) => panic!("expected {target} to be rejected as a private range"),
             }
         }
@@ -1251,7 +1504,10 @@ mod tests {
     #[tokio::test]
     async fn validate_target_url_rejects_non_http_schemes() {
         let err = validate_target_url("file:///etc/passwd").await.unwrap_err();
-        assert!(err.contains("scheme"), "expected a scheme rejection, got: {err}");
+        assert!(
+            err.contains("scheme"),
+            "expected a scheme rejection, got: {err}"
+        );
     }
 
     #[tokio::test]
@@ -1259,14 +1515,23 @@ mod tests {
         // Loopback is allowed *only* on the orchestrator's own real port —
         // otherwise this guard could be used to probe whatever else is
         // quietly listening on 127.0.0.1 on this host.
-        let err = validate_target_url("http://127.0.0.1:9999/").await.unwrap_err();
-        assert!(err.contains("disallowed"), "expected a disallowed-range rejection, got: {err}");
+        let err = validate_target_url("http://127.0.0.1:9999/")
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("disallowed"),
+            "expected a disallowed-range rejection, got: {err}"
+        );
     }
 
     #[tokio::test]
     async fn validate_target_url_allows_the_documented_orchestrator_target() {
-        validate_target_url("http://127.0.0.1:8080").await.expect("the documented default target must remain allowed");
-        validate_target_url("http://localhost:8080").await.expect("localhost resolves to loopback and must remain allowed");
+        validate_target_url("http://127.0.0.1:8080")
+            .await
+            .expect("the documented default target must remain allowed");
+        validate_target_url("http://localhost:8080")
+            .await
+            .expect("localhost resolves to loopback and must remain allowed");
     }
 
     /// End-to-end proof, not just the isolated guard function: a real
@@ -1277,7 +1542,9 @@ mod tests {
     /// launch/timeout.
     #[tokio::test]
     async fn pytest_executor_rejects_metadata_range_base_url_before_spawning() {
-        let executor = PytestExecutor { project_dir: PathBuf::from(".") };
+        let executor = PytestExecutor {
+            project_dir: PathBuf::from("."),
+        };
         let task = TaskDef {
             id: "t".into(),
             name: "t".into(),
@@ -1302,11 +1569,26 @@ mod tests {
         // already uses (not a hand-rolled invocation) — this proves
         // `run_contained` doesn't change how a real executor's command
         // actually runs, only that it's now contained while doing so.
-        let cmd = shell_command("echo", &["hello-from-contained-process"], std::path::Path::new("."));
-        let output = run_contained(cmd, "test").await.expect("spawn must succeed");
-        assert!(output.status.success(), "status={:?} stderr={}", output.status, String::from_utf8_lossy(&output.stderr));
+        let cmd = shell_command(
+            "echo",
+            &["hello-from-contained-process"],
+            std::path::Path::new("."),
+        );
+        let output = run_contained(cmd, "test")
+            .await
+            .expect("spawn must succeed");
+        assert!(
+            output.status.success(),
+            "status={:?} stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
         let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(stdout.contains("hello-from-contained-process"), "stdout={stdout:?} stderr={}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            stdout.contains("hello-from-contained-process"),
+            "stdout={stdout:?} stderr={}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     /// The actual attack this closes: a process that `kill_on_drop` alone
@@ -1322,12 +1604,17 @@ mod tests {
     #[tokio::test]
     async fn job_object_kill_on_close_actually_terminates_a_running_process() {
         let mut cmd = tokio::process::Command::new("cmd");
-        cmd.args(["/C", "ping -n 30 127.0.0.1 >NUL"]).kill_on_drop(false);
+        cmd.args(["/C", "ping -n 30 127.0.0.1 >NUL"])
+            .kill_on_drop(false);
         let mut child = cmd.spawn().expect("spawn must succeed");
 
-        let job = job_containment::ProcessJob::new(EXECUTOR_JOB_MAX_PROCESSES, EXECUTOR_JOB_MAX_MEMORY_BYTES)
-            .expect("job creation must succeed on any Windows version this targets");
-        let handle = job_containment::raw_handle(&child).expect("a freshly spawned child must have a raw handle");
+        let job = job_containment::ProcessJob::new(
+            EXECUTOR_JOB_MAX_PROCESSES,
+            EXECUTOR_JOB_MAX_MEMORY_BYTES,
+        )
+        .expect("job creation must succeed on any Windows version this targets");
+        let handle = job_containment::raw_handle(&child)
+            .expect("a freshly spawned child must have a raw handle");
         job.assign(handle).expect("assignment must succeed");
 
         assert!(
@@ -1354,7 +1641,9 @@ mod tests {
 
     #[tokio::test]
     async fn schemathesis_executor_rejects_metadata_range_url_before_spawning() {
-        let executor = SchemathesisExecutor { project_dir: PathBuf::from(".") };
+        let executor = SchemathesisExecutor {
+            project_dir: PathBuf::from("."),
+        };
         let task = TaskDef {
             id: "t".into(),
             name: "t".into(),

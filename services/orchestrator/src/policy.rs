@@ -34,8 +34,8 @@ impl PolicyConfig {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(8);
-        let require_approval_for = std::env::var("AIQA_REQUIRE_APPROVAL_FOR")
-            .unwrap_or_else(|_| "maestro".to_string());
+        let require_approval_for =
+            std::env::var("AIQA_REQUIRE_APPROVAL_FOR").unwrap_or_else(|_| "maestro".to_string());
         let blocked_executors = std::env::var("AIQA_BLOCKED_EXECUTORS").unwrap_or_default();
         Self {
             max_concurrency,
@@ -139,7 +139,10 @@ mod tests {
             require_approval_for: split_csv("maestro"),
             blocked_executors: HashSet::new(),
         };
-        assert_eq!(evaluate(&cfg, &plan_with_executor("playwright")), PolicyDecision::Allow);
+        assert_eq!(
+            evaluate(&cfg, &plan_with_executor("playwright")),
+            PolicyDecision::Allow
+        );
     }
 
     #[test]

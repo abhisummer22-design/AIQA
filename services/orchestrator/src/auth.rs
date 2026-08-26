@@ -25,7 +25,9 @@ use rand::Rng;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
     Viewer,
@@ -87,7 +89,13 @@ pub async fn bootstrap_admin_key_if_needed(store: &Store) -> anyhow::Result<Opti
     }
     let raw = generate_key();
     store
-        .insert_api_key(Uuid::new_v4(), "bootstrap-admin", &hash_key(&raw), "admin", None)
+        .insert_api_key(
+            Uuid::new_v4(),
+            "bootstrap-admin",
+            &hash_key(&raw),
+            "admin",
+            None,
+        )
         .await?;
     Ok(Some(raw))
 }
@@ -103,13 +111,27 @@ pub async fn require_auth(State(store): State<Store>, mut req: Request, next: Ne
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
-    let token = match header_val.as_deref().and_then(|h| h.strip_prefix("Bearer ")) {
+    let token = match header_val
+        .as_deref()
+        .and_then(|h| h.strip_prefix("Bearer "))
+    {
         Some(t) if !t.is_empty() => t,
         _ => {
             let _ = store
-                .insert_audit(None, None, None, "auth.fail", None, Some("missing or malformed Authorization header"), "denied")
+                .insert_audit(
+                    None,
+                    None,
+                    None,
+                    "auth.fail",
+                    None,
+                    Some("missing or malformed Authorization header"),
+                    "denied",
+                )
                 .await;
-            return ApiError::unauthenticated("missing or malformed Authorization: Bearer <key> header").into_response();
+            return ApiError::unauthenticated(
+                "missing or malformed Authorization: Bearer <key> header",
+            )
+            .into_response();
         }
     };
 
@@ -126,7 +148,15 @@ pub async fn require_auth(State(store): State<Store>, mut req: Request, next: Ne
         }
         Ok(None) => {
             let _ = store
-                .insert_audit(None, None, None, "auth.fail", None, Some("unknown or revoked API key"), "denied")
+                .insert_audit(
+                    None,
+                    None,
+                    None,
+                    "auth.fail",
+                    None,
+                    Some("unknown or revoked API key"),
+                    "denied",
+                )
                 .await;
             ApiError::unauthenticated("invalid or revoked API key").into_response()
         }
@@ -151,14 +181,19 @@ pub fn require_role(ctx: &AuthContext, min: Role) -> Result<(), ApiError> {
 /// Multi-tenancy gate: an `Admin`/global key (`project_id: None`) may act on
 /// anything; a scoped key may only act on its own project. `resource_pid`
 /// is the project the target run/resource actually belongs to.
-pub fn require_project_access(ctx: &AuthContext, resource_pid: Option<&str>) -> Result<(), ApiError> {
+pub fn require_project_access(
+    ctx: &AuthContext,
+    resource_pid: Option<&str>,
+) -> Result<(), ApiError> {
     match &ctx.project_id {
         None => Ok(()),
         Some(pid) => {
             if resource_pid == Some(pid.as_str()) {
                 Ok(())
             } else {
-                Err(ApiError::forbidden("resource belongs to a different project"))
+                Err(ApiError::forbidden(
+                    "resource belongs to a different project",
+                ))
             }
         }
     }

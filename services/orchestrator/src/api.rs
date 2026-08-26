@@ -34,12 +34,21 @@ use uuid::Uuid;
 pub fn router(state: AppState) -> Router {
     let protected = Router::new()
         // BE-8 — API Contract §5.1-5.4.
-        .route("/api/v1/projects", post(create_project).get(list_projects_handler))
-        .route("/api/v1/projects/:id", get(get_project_handler).patch(update_project_handler))
+        .route(
+            "/api/v1/projects",
+            post(create_project).get(list_projects_handler),
+        )
+        .route(
+            "/api/v1/projects/:id",
+            get(get_project_handler).patch(update_project_handler),
+        )
         // BE-12 — API Contract §23.1-23.2 Dashboard/KPI JSON endpoints,
         // project-scoped the same way as the executions/evidence routes
         // below (`require_scoped_project`).
-        .route("/api/v1/projects/:project_id/dashboard", get(get_project_dashboard))
+        .route(
+            "/api/v1/projects/:project_id/dashboard",
+            get(get_project_dashboard),
+        )
         .route("/api/v1/projects/:project_id/kpis", get(get_project_kpis))
         // "Actual BE-9" (Integration Plan's own numbering) — project-scoped
         // routing for the execution/evidence resources. See the module doc
@@ -51,64 +60,144 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/projects/:project_id/executions",
             post(create_run_scoped).get(list_runs_scoped),
         )
-        .route("/api/v1/projects/:project_id/executions/:run_id", get(get_run_scoped))
-        .route("/api/v1/projects/:project_id/executions/:run_id/events", get(get_events_scoped))
-        .route("/api/v1/projects/:project_id/executions/:run_id/approve", post(approve_run_scoped))
-        .route("/api/v1/projects/:project_id/executions/:run_id/reject", post(reject_run_scoped))
+        .route(
+            "/api/v1/projects/:project_id/executions/:run_id",
+            get(get_run_scoped),
+        )
+        .route(
+            "/api/v1/projects/:project_id/executions/:run_id/events",
+            get(get_events_scoped),
+        )
+        .route(
+            "/api/v1/projects/:project_id/executions/:run_id/approve",
+            post(approve_run_scoped),
+        )
+        .route(
+            "/api/v1/projects/:project_id/executions/:run_id/reject",
+            post(reject_run_scoped),
+        )
         // BE-13 — API Contract §12.3-12.5. Cancel + the standalone task list
         // /detail endpoints (previously only reachable embedded inside
         // `GET .../executions/:run_id`'s `tasks` array).
-        .route("/api/v1/projects/:project_id/executions/:run_id/cancel", post(cancel_run_scoped))
-        .route("/api/v1/projects/:project_id/executions/:run_id/tasks", get(list_run_tasks_scoped))
-        .route("/api/v1/projects/:project_id/executions/:run_id/tasks/:task_id", get(get_run_task_detail_scoped))
-        .route("/api/v1/projects/:project_id/executions/:run_id/evidence", get(list_evidence_scoped))
+        .route(
+            "/api/v1/projects/:project_id/executions/:run_id/cancel",
+            post(cancel_run_scoped),
+        )
+        .route(
+            "/api/v1/projects/:project_id/executions/:run_id/tasks",
+            get(list_run_tasks_scoped),
+        )
+        .route(
+            "/api/v1/projects/:project_id/executions/:run_id/tasks/:task_id",
+            get(get_run_task_detail_scoped),
+        )
+        .route(
+            "/api/v1/projects/:project_id/executions/:run_id/evidence",
+            get(list_evidence_scoped),
+        )
         // BE-15 — API Contract §15.2/§16/§25. `/evidence/:evidence_id` now
         // returns metadata (Detail), not raw bytes — see
         // `get_evidence_detail_scoped`'s doc comment; the bytes moved to
         // the new `/content` sibling, not removed.
-        .route("/api/v1/projects/:project_id/evidence/:evidence_id", get(get_evidence_detail_scoped))
-        .route("/api/v1/projects/:project_id/evidence/:evidence_id/content", get(get_evidence_content_scoped))
-        .route("/api/v1/projects/:project_id/findings", get(list_findings_scoped))
-        .route("/api/v1/projects/:project_id/findings/:finding_id", get(get_finding_detail_scoped))
-        .route("/api/v1/projects/:project_id/findings/:finding_id/analysis", post(get_finding_analysis_scoped))
+        .route(
+            "/api/v1/projects/:project_id/evidence/:evidence_id",
+            get(get_evidence_detail_scoped),
+        )
+        .route(
+            "/api/v1/projects/:project_id/evidence/:evidence_id/content",
+            get(get_evidence_content_scoped),
+        )
+        .route(
+            "/api/v1/projects/:project_id/findings",
+            get(list_findings_scoped),
+        )
+        .route(
+            "/api/v1/projects/:project_id/findings/:finding_id",
+            get(get_finding_detail_scoped),
+        )
+        .route(
+            "/api/v1/projects/:project_id/findings/:finding_id/analysis",
+            post(get_finding_analysis_scoped),
+        )
         // Build order item 4 — on-demand AI-assisted hypothesis, additive
         // to the real, deterministic `.../analysis` above (never a
         // replacement for it). See `generate_finding_ai_hypothesis_scoped`.
-        .route("/api/v1/projects/:project_id/findings/:finding_id/ai-hypothesis", post(generate_finding_ai_hypothesis_scoped))
-        .route("/api/v1/projects/:project_id/findings/:finding_id/review", post(review_finding_scoped))
-        .route("/api/v1/projects/:project_id/audit", get(get_audit_log_scoped))
+        .route(
+            "/api/v1/projects/:project_id/findings/:finding_id/ai-hypothesis",
+            post(generate_finding_ai_hypothesis_scoped),
+        )
+        .route(
+            "/api/v1/projects/:project_id/findings/:finding_id/review",
+            post(review_finding_scoped),
+        )
+        .route(
+            "/api/v1/projects/:project_id/audit",
+            get(get_audit_log_scoped),
+        )
         // Phase 4 BE-10 — see `list_test_intelligence_scoped`'s doc comment.
-        .route("/api/v1/projects/:project_id/intelligence/tests", get(list_test_intelligence_scoped))
+        .route(
+            "/api/v1/projects/:project_id/intelligence/tests",
+            get(list_test_intelligence_scoped),
+        )
         // AUD-005 — real, persisted Test Case CRUD + lifecycle + execution
         // handoff. See the "test cases" section below for every handler.
-        .route("/api/v1/projects/:project_id/test-cases", post(create_test_case_scoped).get(list_test_cases_scoped))
+        .route(
+            "/api/v1/projects/:project_id/test-cases",
+            post(create_test_case_scoped).get(list_test_cases_scoped),
+        )
         .route(
             "/api/v1/projects/:project_id/test-cases/:id",
-            get(get_test_case_scoped).patch(update_test_case_scoped).delete(delete_test_case_scoped),
+            get(get_test_case_scoped)
+                .patch(update_test_case_scoped)
+                .delete(delete_test_case_scoped),
         )
-        .route("/api/v1/projects/:project_id/test-cases/:id/validate", post(validate_test_case_scoped))
-        .route("/api/v1/projects/:project_id/test-cases/:id/approve", post(approve_test_case_scoped))
-        .route("/api/v1/projects/:project_id/test-cases/:id/reject", post(reject_test_case_scoped))
-        .route("/api/v1/projects/:project_id/test-cases/:id/handoff", post(handoff_test_case_scoped))
+        .route(
+            "/api/v1/projects/:project_id/test-cases/:id/validate",
+            post(validate_test_case_scoped),
+        )
+        .route(
+            "/api/v1/projects/:project_id/test-cases/:id/approve",
+            post(approve_test_case_scoped),
+        )
+        .route(
+            "/api/v1/projects/:project_id/test-cases/:id/reject",
+            post(reject_test_case_scoped),
+        )
+        .route(
+            "/api/v1/projects/:project_id/test-cases/:id/handoff",
+            post(handoff_test_case_scoped),
+        )
         // Phase 2.1 — real, read-only compilation preview (no state mutation).
-        .route("/api/v1/projects/:project_id/test-cases/:id/compile", post(compile_test_case_scoped))
+        .route(
+            "/api/v1/projects/:project_id/test-cases/:id/compile",
+            post(compile_test_case_scoped),
+        )
         // Phase 2 — real, skill-aware AI test case generation. Produces
         // drafts only (never persists) — the caller then uses the existing
         // `POST .../test-cases` (above) to save whichever drafts it wants,
         // exactly like the pre-existing local-template drafts already do.
-        .route("/api/v1/projects/:project_id/test-cases/generate-ai", post(generate_ai_test_cases_scoped))
+        .route(
+            "/api/v1/projects/:project_id/test-cases/generate-ai",
+            post(generate_ai_test_cases_scoped),
+        )
         // Phase 3 — Custom Testing: real requirement -> AI strategy ->
         // test cases (`custom_testing.rs`). Produces drafts only, exactly
         // like `generate-ai` above — the caller saves whichever drafts it
         // wants via the same existing `POST .../test-cases`, no second
         // persistence path.
-        .route("/api/v1/projects/:project_id/custom-testing/generate", post(generate_custom_testing_scoped))
+        .route(
+            "/api/v1/projects/:project_id/custom-testing/generate",
+            post(generate_custom_testing_scoped),
+        )
         // Phase 4 — API Testing page: real, ad-hoc HTTP request execution
         // (`api_testing.rs`). Reuses the exact Phase 2.1 execution pipeline
         // (ExecutionPlan -> validate_plan -> materialize_task_def ->
         // create_run_core -> CompiledApiExecutor) — no new executor, no new
         // execution engine.
-        .route("/api/v1/projects/:project_id/api-testing/execute", post(execute_api_test_scoped))
+        .route(
+            "/api/v1/projects/:project_id/api-testing/execute",
+            post(execute_api_test_scoped),
+        )
         // Truthfulness Cleanup Step 1 — real Application Source connectivity
         // verification (`app_source.rs`). Replaces the Test Case Generator's
         // former fully client-side setTimeout+Math.random() simulation
@@ -116,23 +205,41 @@ pub fn router(state: AppState) -> Router {
         // a genuine backend check reusing the same, unmodified SSRF guard
         // and transport-error classification every other outbound target in
         // this app already uses.
-        .route("/api/v1/projects/:project_id/verify-application-source", post(verify_application_source_scoped))
+        .route(
+            "/api/v1/projects/:project_id/verify-application-source",
+            post(verify_application_source_scoped),
+        )
         // Phase 6 — Performance Testing: real Load/Stress/Spike/Volume
         // workload generation (`performance_testing.rs`). Reuses the exact
         // Phase 4 per-request execution core (`executor::execute_plan_once`,
         // extracted from `CompiledApiExecutor` in this same phase) as the
         // repeated worker underneath a new, minimal concurrency-bounded
         // scheduler — no second HTTP execution engine.
-        .route("/api/v1/projects/:project_id/performance-testing/start", post(start_performance_test_scoped))
-        .route("/api/v1/projects/:project_id/performance-testing", get(list_performance_runs_scoped))
-        .route("/api/v1/projects/:project_id/performance-testing/:run_id/status", get(get_performance_run_status_scoped))
-        .route("/api/v1/projects/:project_id/performance-testing/:run_id/cancel", post(cancel_performance_run_scoped))
+        .route(
+            "/api/v1/projects/:project_id/performance-testing/start",
+            post(start_performance_test_scoped),
+        )
+        .route(
+            "/api/v1/projects/:project_id/performance-testing",
+            get(list_performance_runs_scoped),
+        )
+        .route(
+            "/api/v1/projects/:project_id/performance-testing/:run_id/status",
+            get(get_performance_run_status_scoped),
+        )
+        .route(
+            "/api/v1/projects/:project_id/performance-testing/:run_id/cancel",
+            post(cancel_performance_run_scoped),
+        )
         // Central AI Provider & Model Intelligence Layer — platform-wide,
         // not project-scoped (the router itself is one shared instance
         // across the whole deployment, exactly like `/admin/api-keys`
         // below is a platform-wide, not project-scoped, resource).
         .route("/api/v1/ai/status", get(get_ai_status))
-        .route("/api/v1/ai/settings", get(get_ai_settings_handler).put(put_ai_settings_handler))
+        .route(
+            "/api/v1/ai/settings",
+            get(get_ai_settings_handler).put(put_ai_settings_handler),
+        )
         .route("/api/v1/ai/refresh", post(refresh_ai_providers))
         // Phase B cleanup — the legacy flat, unscoped routes (`/runs*`,
         // `/evidence/:id/content`, `/intelligence/*`, `/bug-drafts*`,
@@ -145,10 +252,16 @@ pub fn router(state: AppState) -> Router {
         // built; removing these would leave no way to create or revoke a
         // key).
         .route("/metrics", get(get_metrics))
-        .route("/admin/api-keys", post(create_api_key).get(list_api_keys_handler))
+        .route(
+            "/admin/api-keys",
+            post(create_api_key).get(list_api_keys_handler),
+        )
         .route("/admin/api-keys/:id", delete(revoke_api_key_handler))
         .route("/admin/audit-log", get(get_audit_log))
-        .layer(axum::middleware::from_fn_with_state(state.store.clone(), auth::require_auth));
+        .layer(axum::middleware::from_fn_with_state(
+            state.store.clone(),
+            auth::require_auth,
+        ));
 
     Router::new()
         .route("/health", get(health))
@@ -157,7 +270,10 @@ pub fn router(state: AppState) -> Router {
         // a WebSocket upgrade can't carry an `Authorization` header,
         // so this authenticates itself via `?key=` instead (see
         // `project_events_ws_handler`).
-        .route("/api/v1/projects/:project_id/events", get(project_events_ws_handler))
+        .route(
+            "/api/v1/projects/:project_id/events",
+            get(project_events_ws_handler),
+        )
         .merge(protected)
         .with_state(state)
 }
@@ -185,7 +301,11 @@ pub fn cors_layer_from_env() -> CorsLayer {
     let origins = std::env::var("AIQA_CORS_ALLOWED_ORIGINS")
         .ok()
         .filter(|s| !s.trim().is_empty())
-        .map(|s| s.split(',').map(|o| o.trim().to_string()).collect::<Vec<_>>())
+        .map(|s| {
+            s.split(',')
+                .map(|o| o.trim().to_string())
+                .collect::<Vec<_>>()
+        })
         .unwrap_or_else(|| {
             vec![
                 "http://localhost:3000".to_string(),
@@ -203,7 +323,10 @@ pub fn cors_layer_from_env() -> CorsLayer {
 /// (declared in `lib.rs`), not a child of this one, so it needs at least
 /// crate-visibility to call this directly.
 pub(crate) fn cors_layer_for_origins(origins: &[String]) -> CorsLayer {
-    let headers: Vec<HeaderValue> = origins.iter().filter_map(|o| HeaderValue::from_str(o).ok()).collect();
+    let headers: Vec<HeaderValue> = origins
+        .iter()
+        .filter_map(|o| HeaderValue::from_str(o).ok())
+        .collect();
     CorsLayer::new()
         .allow_origin(AllowOrigin::list(headers))
         .allow_methods(Any)
@@ -228,7 +351,15 @@ async fn audit(
 ) {
     let _ = state
         .store
-        .insert_audit(Some(&ctx.name), Some(ctx.role.as_str()), ctx.project_id.as_deref(), action, target, detail, outcome)
+        .insert_audit(
+            Some(&ctx.name),
+            Some(ctx.role.as_str()),
+            ctx.project_id.as_deref(),
+            action,
+            target,
+            detail,
+            outcome,
+        )
         .await;
 }
 
@@ -261,7 +392,11 @@ async fn audit(
 /// matching this file's own established convention elsewhere (`get_run`,
 /// `get_project_handler`): a project that doesn't exist can't be "yours"
 /// either way, so 404 is the more informative answer than 403.
-async fn require_scoped_project(state: &AppState, ctx: &AuthContext, project_id: Uuid) -> Result<(), ApiError> {
+async fn require_scoped_project(
+    state: &AppState,
+    ctx: &AuthContext,
+    project_id: Uuid,
+) -> Result<(), ApiError> {
     state
         .store
         .get_project(project_id)
@@ -273,7 +408,10 @@ async fn require_scoped_project(state: &AppState, ctx: &AuthContext, project_id:
 }
 
 /// Requirement #2 above.
-fn require_resource_in_project(resource_project_id: Option<&str>, url_project_id: Uuid) -> Result<(), ApiError> {
+fn require_resource_in_project(
+    resource_project_id: Option<&str>,
+    url_project_id: Uuid,
+) -> Result<(), ApiError> {
     if resource_project_id == Some(url_project_id.to_string().as_str()) {
         Ok(())
     } else {
@@ -321,7 +459,15 @@ async fn create_project(
         .await
         .map_err(to_500)?;
 
-    audit(&state, &ctx, "project.create", Some(&id.to_string()), Some(name), "ok").await;
+    audit(
+        &state,
+        &ctx,
+        "project.create",
+        Some(&id.to_string()),
+        Some(name),
+        "ok",
+    )
+    .await;
 
     let project = state
         .store
@@ -399,7 +545,11 @@ async fn update_project_handler(
         .ok_or_else(|| ApiError::not_found("project not found"))?;
     auth::require_project_access(&ctx, Some(existing.id.to_string().as_str()))?;
 
-    let name = body.name.as_deref().map(validate_project_name).transpose()?;
+    let name = body
+        .name
+        .as_deref()
+        .map(validate_project_name)
+        .transpose()?;
 
     let updated = state
         .store
@@ -410,7 +560,15 @@ async fn update_project_handler(
         return Err(ApiError::not_found("project not found"));
     }
 
-    audit(&state, &ctx, "project.update", Some(&id.to_string()), name, "ok").await;
+    audit(
+        &state,
+        &ctx,
+        "project.update",
+        Some(&id.to_string()),
+        name,
+        "ok",
+    )
+    .await;
 
     let project = state
         .store
@@ -440,8 +598,17 @@ fn validate_test_case_request(req: &CreateTestCaseRequest) -> Result<(), ApiErro
     if req.steps.is_empty() {
         return Err(ApiError::validation("at least one step is required"));
     }
-    if req.expected_result.as_deref().map(str::trim).unwrap_or("").is_empty() && req.assertions.iter().all(|a| a.trim().is_empty()) {
-        return Err(ApiError::validation("expected_result or at least one assertion is required"));
+    if req
+        .expected_result
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("")
+        .is_empty()
+        && req.assertions.iter().all(|a| a.trim().is_empty())
+    {
+        return Err(ApiError::validation(
+            "expected_result or at least one assertion is required",
+        ));
     }
     Ok(())
 }
@@ -461,9 +628,21 @@ async fn create_test_case_scoped(
     require_scoped_project(&state, &ctx, project_id).await?;
     validate_test_case_request(&body)?;
 
-    let id = state.store.insert_test_case(&project_id.to_string(), &body, Some(&ctx.name)).await.map_err(to_500)?;
+    let id = state
+        .store
+        .insert_test_case(&project_id.to_string(), &body, Some(&ctx.name))
+        .await
+        .map_err(to_500)?;
 
-    audit(&state, &ctx, "test_case.create", Some(&id.to_string()), Some(&body.title), "ok").await;
+    audit(
+        &state,
+        &ctx,
+        "test_case.create",
+        Some(&id.to_string()),
+        Some(&body.title),
+        "ok",
+    )
+    .await;
 
     let row = state
         .store
@@ -489,7 +668,11 @@ async fn list_test_cases_scoped(
     ApiQuery(q): ApiQuery<ListTestCasesQuery>,
 ) -> Result<Json<Vec<crate::store::TestCaseRow>>, ApiError> {
     require_scoped_project(&state, &ctx, project_id).await?;
-    let rows = state.store.list_test_cases(&project_id.to_string(), q.status.as_deref()).await.map_err(to_500)?;
+    let rows = state
+        .store
+        .list_test_cases(&project_id.to_string(), q.status.as_deref())
+        .await
+        .map_err(to_500)?;
     Ok(Json(rows))
 }
 
@@ -500,8 +683,18 @@ async fn list_test_cases_scoped(
 /// project than the URL says — never leaks a cross-project id's existence),
 /// then `require_project_access` against the row's own real `project_id`
 /// (403 if the caller's key is scoped to a different project).
-async fn scoped_test_case(state: &AppState, ctx: &AuthContext, project_id: Uuid, id: Uuid) -> Result<crate::store::TestCaseRow, ApiError> {
-    let row = state.store.get_test_case(id).await.map_err(to_500)?.ok_or_else(|| ApiError::not_found("test case not found"))?;
+async fn scoped_test_case(
+    state: &AppState,
+    ctx: &AuthContext,
+    project_id: Uuid,
+    id: Uuid,
+) -> Result<crate::store::TestCaseRow, ApiError> {
+    let row = state
+        .store
+        .get_test_case(id)
+        .await
+        .map_err(to_500)?
+        .ok_or_else(|| ApiError::not_found("test case not found"))?;
     if row.project_id != project_id.to_string() {
         return Err(ApiError::not_found("test case not found"));
     }
@@ -570,7 +763,15 @@ async fn update_test_case_scoped(
     if !updated {
         return Err(ApiError::not_found("test case not found"));
     }
-    audit(&state, &ctx, "test_case.update", Some(&id.to_string()), None, "ok").await;
+    audit(
+        &state,
+        &ctx,
+        "test_case.update",
+        Some(&id.to_string()),
+        None,
+        "ok",
+    )
+    .await;
     let row = scoped_test_case(&state, &ctx, project_id, id).await?;
     Ok(Json(row))
 }
@@ -587,7 +788,15 @@ async fn delete_test_case_scoped(
     if !deleted {
         return Err(ApiError::not_found("test case not found"));
     }
-    audit(&state, &ctx, "test_case.delete", Some(&id.to_string()), None, "ok").await;
+    audit(
+        &state,
+        &ctx,
+        "test_case.delete",
+        Some(&id.to_string()),
+        None,
+        "ok",
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -619,7 +828,11 @@ async fn validate_test_case_scoped(
     if row.steps.is_empty() {
         problems.push("no steps defined");
     }
-    if row.steps.iter().any(|s| s.action.trim().is_empty() || s.expected_result.trim().is_empty()) {
+    if row
+        .steps
+        .iter()
+        .any(|s| s.action.trim().is_empty() || s.expected_result.trim().is_empty())
+    {
         problems.push("a step is missing an action or an expected result");
     }
     if row.expected_result.trim().is_empty() {
@@ -627,15 +840,34 @@ async fn validate_test_case_scoped(
     }
 
     if !problems.is_empty() {
-        return Err(ApiError::conflict(format!("structural validation failed: {}", problems.join("; "))));
+        return Err(ApiError::conflict(format!(
+            "structural validation failed: {}",
+            problems.join("; ")
+        )));
     }
 
-    let notes = "structural validation passed: title, description, steps and expected result are present";
-    let ok = state.store.validate_test_case(id, notes).await.map_err(to_500)?;
+    let notes =
+        "structural validation passed: title, description, steps and expected result are present";
+    let ok = state
+        .store
+        .validate_test_case(id, notes)
+        .await
+        .map_err(to_500)?;
     if !ok {
-        return Err(ApiError::conflict(format!("test case is not in GENERATED state (current: {})", row.status.as_db_str())));
+        return Err(ApiError::conflict(format!(
+            "test case is not in GENERATED state (current: {})",
+            row.status.as_db_str()
+        )));
     }
-    audit(&state, &ctx, "test_case.validate", Some(&id.to_string()), None, "ok").await;
+    audit(
+        &state,
+        &ctx,
+        "test_case.validate",
+        Some(&id.to_string()),
+        None,
+        "ok",
+    )
+    .await;
     let row = scoped_test_case(&state, &ctx, project_id, id).await?;
     Ok(Json(row))
 }
@@ -653,9 +885,20 @@ async fn approve_test_case_scoped(
     let row = scoped_test_case(&state, &ctx, project_id, id).await?;
     let ok = state.store.approve_test_case(id).await.map_err(to_500)?;
     if !ok {
-        return Err(ApiError::conflict(format!("test case must be VALIDATED before approval (current: {})", row.status.as_db_str())));
+        return Err(ApiError::conflict(format!(
+            "test case must be VALIDATED before approval (current: {})",
+            row.status.as_db_str()
+        )));
     }
-    audit(&state, &ctx, "test_case.approve", Some(&id.to_string()), None, "ok").await;
+    audit(
+        &state,
+        &ctx,
+        "test_case.approve",
+        Some(&id.to_string()),
+        None,
+        "ok",
+    )
+    .await;
     let row = scoped_test_case(&state, &ctx, project_id, id).await?;
     Ok(Json(row))
 }
@@ -673,9 +916,20 @@ async fn reject_test_case_scoped(
     let row = scoped_test_case(&state, &ctx, project_id, id).await?;
     let ok = state.store.reject_test_case(id).await.map_err(to_500)?;
     if !ok {
-        return Err(ApiError::conflict(format!("test case cannot be rejected from its current state ({})", row.status.as_db_str())));
+        return Err(ApiError::conflict(format!(
+            "test case cannot be rejected from its current state ({})",
+            row.status.as_db_str()
+        )));
     }
-    audit(&state, &ctx, "test_case.reject", Some(&id.to_string()), None, "ok").await;
+    audit(
+        &state,
+        &ctx,
+        "test_case.reject",
+        Some(&id.to_string()),
+        None,
+        "ok",
+    )
+    .await;
     let row = scoped_test_case(&state, &ctx, project_id, id).await?;
     Ok(Json(row))
 }
@@ -726,10 +980,18 @@ async fn handoff_test_case_scoped(
     let row = scoped_test_case(&state, &ctx, project_id, id).await?;
 
     if row.status != TestCaseStatus::Approved {
-        return Err(ApiError::conflict(format!("test case must be APPROVED before handoff (current: {})", row.status.as_db_str())));
+        return Err(ApiError::conflict(format!(
+            "test case must be APPROVED before handoff (current: {})",
+            row.status.as_db_str()
+        )));
     }
 
-    let ApiJson(body) = body.unwrap_or(ApiJson(TestCaseHandoffRequest { executor: None, params: serde_json::Value::Null, simulate: None, compile_and_execute: false }));
+    let ApiJson(body) = body.unwrap_or(ApiJson(TestCaseHandoffRequest {
+        executor: None,
+        params: serde_json::Value::Null,
+        simulate: None,
+        compile_and_execute: false,
+    }));
 
     let task_id = id.to_string();
     let task = if body.compile_and_execute {
@@ -740,16 +1002,29 @@ async fn handoff_test_case_scoped(
         // mixed with compiled output.
         match crate::execution_plan::compile(&state.ai_infra, &row).await {
             crate::execution_plan::CompilationOutcome::Ready(plan) => {
-                crate::execution_plan::materialize_task_def(task_id.clone(), row.title.clone(), &plan).map_err(ApiError::validation)?
+                crate::execution_plan::materialize_task_def(
+                    task_id.clone(),
+                    row.title.clone(),
+                    &plan,
+                )
+                .map_err(ApiError::validation)?
             }
             crate::execution_plan::CompilationOutcome::NotExecutable { reasons } => {
-                return Err(ApiError::validation(format!("NOT_EXECUTABLE: {}", reasons.join("; "))));
+                return Err(ApiError::validation(format!(
+                    "NOT_EXECUTABLE: {}",
+                    reasons.join("; ")
+                )));
             }
             crate::execution_plan::CompilationOutcome::CompilationFailed { reasons } => {
-                return Err(ApiError::validation(format!("COMPILATION_FAILED: {}", reasons.join("; "))));
+                return Err(ApiError::validation(format!(
+                    "COMPILATION_FAILED: {}",
+                    reasons.join("; ")
+                )));
             }
             crate::execution_plan::CompilationOutcome::CompilationUnavailable { reason } => {
-                return Err(ApiError::validation(format!("COMPILATION_UNAVAILABLE: {reason}")));
+                return Err(ApiError::validation(format!(
+                    "COMPILATION_UNAVAILABLE: {reason}"
+                )));
             }
         }
     } else {
@@ -767,11 +1042,20 @@ async fn handoff_test_case_scoped(
             params: body.params.clone(),
         }
     };
-    let run_plan = RunPlan { name: format!("Test Case: {}", row.title), tasks: vec![task], concurrency: 1 };
+    let run_plan = RunPlan {
+        name: format!("Test Case: {}", row.title),
+        tasks: vec![task],
+        concurrency: 1,
+    };
 
-    let (status_code, Json(created)) = create_run_core(&state, &ctx, Some(project_id.to_string()), run_plan).await?;
+    let (status_code, Json(created)) =
+        create_run_core(&state, &ctx, Some(project_id.to_string()), run_plan).await?;
 
-    let marked = state.store.mark_test_case_executed(id, created.run_id, &task_id).await.map_err(to_500)?;
+    let marked = state
+        .store
+        .mark_test_case_executed(id, created.run_id, &task_id)
+        .await
+        .map_err(to_500)?;
     if !marked {
         // The run was genuinely created either way (real, not fabricated);
         // this only means this test case's own back-link didn't apply —
@@ -779,9 +1063,24 @@ async fn handoff_test_case_scoped(
         tracing::warn!("test case {id} handed off as run {} but its own status transition to EXECUTED did not apply", created.run_id);
     }
 
-    audit(&state, &ctx, "test_case.handoff", Some(&id.to_string()), Some(&created.run_id.to_string()), "ok").await;
+    audit(
+        &state,
+        &ctx,
+        "test_case.handoff",
+        Some(&id.to_string()),
+        Some(&created.run_id.to_string()),
+        "ok",
+    )
+    .await;
 
-    Ok((status_code, Json(CreateExecutionResponse { run_id: created.run_id, status: created.state, policy_notes: created.policy_notes })))
+    Ok((
+        status_code,
+        Json(CreateExecutionResponse {
+            run_id: created.run_id,
+            status: created.state,
+            policy_notes: created.policy_notes,
+        }),
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -840,13 +1139,23 @@ async fn generate_ai_test_cases_scoped(
     let skills: Vec<crate::ai_generation::SkillInput> = body
         .skills
         .into_iter()
-        .map(|s| crate::ai_generation::SkillInput { id: s.id, name: s.name, description: s.description })
+        .map(|s| crate::ai_generation::SkillInput {
+            id: s.id,
+            name: s.name,
+            description: s.description,
+        })
         .collect();
 
-    let outcome = crate::ai_generation::generate_test_cases(&state.ai_infra, &body.requirement_text, &skills).await;
+    let outcome =
+        crate::ai_generation::generate_test_cases(&state.ai_infra, &body.requirement_text, &skills)
+            .await;
 
     let response = match outcome {
-        crate::ai_generation::GenerationOutcome::Ai { cases, provider, model } => {
+        crate::ai_generation::GenerationOutcome::Ai {
+            cases,
+            provider,
+            model,
+        } => {
             audit(
                 &state,
                 &ctx,
@@ -865,7 +1174,15 @@ async fn generate_ai_test_cases_scoped(
             }
         }
         crate::ai_generation::GenerationOutcome::Failed { reason } => {
-            audit(&state, &ctx, "test_case.generate_ai", None, Some(&reason), "fallback").await;
+            audit(
+                &state,
+                &ctx,
+                "test_case.generate_ai",
+                None,
+                Some(&reason),
+                "fallback",
+            )
+            .await;
             GenerateAiTestCasesResponse {
                 test_cases: Vec::new(),
                 generation_method: "fallback".to_string(),
@@ -935,13 +1252,28 @@ async fn generate_custom_testing_scoped(
     let skills: Vec<crate::ai_generation::SkillInput> = body
         .skills
         .into_iter()
-        .map(|s| crate::ai_generation::SkillInput { id: s.id, name: s.name, description: s.description })
+        .map(|s| crate::ai_generation::SkillInput {
+            id: s.id,
+            name: s.name,
+            description: s.description,
+        })
         .collect();
 
-    let outcome = crate::custom_testing::run(&state.ai_infra, &body.requirement_text, body.scope.as_deref(), &skills).await;
+    let outcome = crate::custom_testing::run(
+        &state.ai_infra,
+        &body.requirement_text,
+        body.scope.as_deref(),
+        &skills,
+    )
+    .await;
 
     let response = match outcome {
-        crate::custom_testing::CustomTestingOutcome::Ready { analysis, cases, provider, model } => {
+        crate::custom_testing::CustomTestingOutcome::Ready {
+            analysis,
+            cases,
+            provider,
+            model,
+        } => {
             audit(
                 &state,
                 &ctx,
@@ -961,7 +1293,15 @@ async fn generate_custom_testing_scoped(
             }
         }
         crate::custom_testing::CustomTestingOutcome::Failed { reason, analysis } => {
-            audit(&state, &ctx, "custom_testing.generate", None, Some(&reason), "unavailable").await;
+            audit(
+                &state,
+                &ctx,
+                "custom_testing.generate",
+                None,
+                Some(&reason),
+                "unavailable",
+            )
+            .await;
             CustomTestingGenerateResponse {
                 generation_source: "UNAVAILABLE".to_string(),
                 analysis,
@@ -1020,28 +1360,59 @@ async fn execute_api_test_scoped(
     require_scoped_project(&state, &ctx, project_id).await?;
 
     let task_id = Uuid::new_v4().to_string();
-    let task_name = format!("API Test: {} {}", body.method.trim().to_uppercase(), body.url);
+    let task_name = format!(
+        "API Test: {} {}",
+        body.method.trim().to_uppercase(),
+        body.url
+    );
 
-    let plan = crate::api_testing::validate_and_build_plan(task_id.clone(), &body).map_err(|(code, msg)| ApiError::validation(format!("{code}: {msg}")))?;
+    let plan = crate::api_testing::validate_and_build_plan(task_id.clone(), &body)
+        .map_err(|(code, msg)| ApiError::validation(format!("{code}: {msg}")))?;
 
     // The real SSRF/structural guard — reused unmodified. A disallowed
     // target (private IP, cloud metadata address, non-http(s) scheme that
     // slipped past the earlier scheme check, etc.) is rejected here, before
     // any run is created and before any real network call happens.
     if let Err(reasons) = crate::execution_plan::validate_plan(&plan).await {
-        return Err(ApiError::validation(format!("TARGET_NOT_ALLOWED: {}", reasons.join("; "))));
+        return Err(ApiError::validation(format!(
+            "TARGET_NOT_ALLOWED: {}",
+            reasons.join("; ")
+        )));
     }
 
-    let task = crate::execution_plan::materialize_task_def(task_id.clone(), task_name.clone(), &plan).map_err(ApiError::validation)?;
-    let run_plan = RunPlan { name: task_name, tasks: vec![task], concurrency: 1 };
+    let task =
+        crate::execution_plan::materialize_task_def(task_id.clone(), task_name.clone(), &plan)
+            .map_err(ApiError::validation)?;
+    let run_plan = RunPlan {
+        name: task_name,
+        tasks: vec![task],
+        concurrency: 1,
+    };
 
-    let (_, Json(created)) = create_run_core(&state, &ctx, Some(project_id.to_string()), run_plan).await?;
+    let (_, Json(created)) =
+        create_run_core(&state, &ctx, Some(project_id.to_string()), run_plan).await?;
 
-    let wait_ceiling_secs: u64 = std::env::var("API_TEST_WAIT_CEILING_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(45);
-    let terminal = crate::api_testing::run_to_completion(&state, created.run_id, std::time::Duration::from_secs(wait_ceiling_secs)).await;
+    let wait_ceiling_secs: u64 = std::env::var("API_TEST_WAIT_CEILING_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(45);
+    let terminal = crate::api_testing::run_to_completion(
+        &state,
+        created.run_id,
+        std::time::Duration::from_secs(wait_ceiling_secs),
+    )
+    .await;
 
     let Some(task_state) = terminal else {
-        audit(&state, &ctx, "api_testing.execute", None, Some("did not reach a terminal state within the wait ceiling"), "still_running").await;
+        audit(
+            &state,
+            &ctx,
+            "api_testing.execute",
+            None,
+            Some("did not reach a terminal state within the wait ceiling"),
+            "still_running",
+        )
+        .await;
         return Ok(Json(ApiTestExecutionResponse {
             run_id: created.run_id,
             task_status: crate::domain::TaskStatus::Running,
@@ -1057,14 +1428,32 @@ async fn execute_api_test_scoped(
         }));
     };
 
-    let (evidence_id, log) = match crate::api_testing::read_task_evidence(&state, created.run_id, &task_id).await {
-        Some((id, content)) => (Some(id), Some(content)),
-        None => (None, None),
-    };
-    let result = log.as_deref().and_then(crate::api_testing::parse_result_summary);
-    let response_body_preview = log.as_deref().and_then(crate::api_testing::parse_response_body_preview);
+    let (evidence_id, log) =
+        match crate::api_testing::read_task_evidence(&state, created.run_id, &task_id).await {
+            Some((id, content)) => (Some(id), Some(content)),
+            None => (None, None),
+        };
+    let result = log
+        .as_deref()
+        .and_then(crate::api_testing::parse_result_summary);
+    let response_body_preview = log
+        .as_deref()
+        .and_then(crate::api_testing::parse_response_body_preview);
 
-    audit(&state, &ctx, "api_testing.execute", None, Some(&format!("{} {} -> {:?}", body.method.trim().to_uppercase(), body.url, task_state.status)), "ok").await;
+    audit(
+        &state,
+        &ctx,
+        "api_testing.execute",
+        None,
+        Some(&format!(
+            "{} {} -> {:?}",
+            body.method.trim().to_uppercase(),
+            body.url,
+            task_state.status
+        )),
+        "ok",
+    )
+    .await;
 
     Ok(Json(ApiTestExecutionResponse {
         run_id: created.run_id,
@@ -1103,7 +1492,19 @@ async fn verify_application_source_scoped(
     require_scoped_project(&state, &ctx, project_id).await?;
 
     let result = crate::app_source::verify(&body.url).await;
-    audit(&state, &ctx, "app_source.verify", None, Some(&format!("{} -> {}", body.url, result.status)), if result.reachable { "ok" } else { "not_reachable" }).await;
+    audit(
+        &state,
+        &ctx,
+        "app_source.verify",
+        None,
+        Some(&format!("{} -> {}", body.url, result.status)),
+        if result.reachable {
+            "ok"
+        } else {
+            "not_reachable"
+        },
+    )
+    .await;
     Ok(Json(result))
 }
 
@@ -1165,30 +1566,55 @@ async fn start_performance_test_scoped(
     require_scoped_project(&state, &ctx, project_id).await?;
 
     let limits = crate::performance_testing::SafetyLimits::from_env();
-    crate::performance_testing::validate_schedule(&body.schedule, &limits).map_err(|(code, msg)| ApiError::validation(format!("{code}: {msg}")))?;
+    crate::performance_testing::validate_schedule(&body.schedule, &limits)
+        .map_err(|(code, msg)| ApiError::validation(format!("{code}: {msg}")))?;
 
     let run_id = Uuid::new_v4();
-    let plan = crate::performance_testing::build_request_plan(&run_id.to_string(), &body.request, body.expected_status).map_err(|(code, msg)| ApiError::validation(format!("{code}: {msg}")))?;
+    let plan = crate::performance_testing::build_request_plan(
+        &run_id.to_string(),
+        &body.request,
+        body.expected_status,
+    )
+    .map_err(|(code, msg)| ApiError::validation(format!("{code}: {msg}")))?;
 
     // The real SSRF/structural guard — reused unmodified, run once before
     // the workload starts (every repeated request inside the workload
     // reuses this same, already-validated plan; see `executor::
     // execute_plan_once`'s doc comment for why it is not re-run per sample).
     if let Err(reasons) = crate::execution_plan::validate_plan(&plan).await {
-        return Err(ApiError::validation(format!("TARGET_NOT_ALLOWED: {}", reasons.join("; "))));
+        return Err(ApiError::validation(format!(
+            "TARGET_NOT_ALLOWED: {}",
+            reasons.join("; ")
+        )));
     }
 
     let test_type = body.schedule.type_name();
-    let name = format!("{test_type} test: {} {}", body.request.method.trim().to_uppercase(), body.request.url);
+    let name = format!(
+        "{test_type} test: {} {}",
+        body.request.method.trim().to_uppercase(),
+        body.request.url
+    );
     let config_json = serde_json::to_string(&body).map_err(to_500)?;
 
     let handle = crate::performance_testing::PerformanceRunHandle::new(run_id);
     state
         .store
-        .insert_performance_run(run_id, &project_id.to_string(), &name, test_type, &config_json, Some(&ctx.name), handle.started_at)
+        .insert_performance_run(
+            run_id,
+            &project_id.to_string(),
+            &name,
+            test_type,
+            &config_json,
+            Some(&ctx.name),
+            handle.started_at,
+        )
         .await
         .map_err(to_500)?;
-    state.performance_tests.write().await.insert(run_id, handle.clone());
+    state
+        .performance_tests
+        .write()
+        .await
+        .insert(run_id, handle.clone());
 
     // One real `reqwest::Client` built here and reused for every request
     // this whole workload makes — real HTTP keep-alive connection pooling,
@@ -1196,7 +1622,10 @@ async fn start_performance_test_scoped(
     // single request. Same `API_TEST_TIMEOUT_SECS` convention `CompiledApiExecutor`
     // already uses for its own per-request timeout.
     let timeout = crate::executor::CompiledApiExecutor::from_env().timeout;
-    let client = reqwest::Client::builder().timeout(timeout).build().map_err(to_500)?;
+    let client = reqwest::Client::builder()
+        .timeout(timeout)
+        .build()
+        .map_err(to_500)?;
     let plan = Arc::new(plan);
     let schedule = body.schedule;
     let config = body.clone();
@@ -1219,13 +1648,26 @@ async fn start_performance_test_scoped(
         .await;
         match outcome {
             Ok(()) => finalize_performance_run(&state2, run_id, &config, &handle2).await,
-            Err(failure) => finalize_performance_run_as_error(&state2, run_id, &handle2, &failure).await,
+            Err(failure) => {
+                finalize_performance_run_as_error(&state2, run_id, &handle2, &failure).await
+            }
         }
     });
 
-    audit(&state, &ctx, "performance_testing.start", Some(&run_id.to_string()), Some(&name), "ok").await;
+    audit(
+        &state,
+        &ctx,
+        "performance_testing.start",
+        Some(&run_id.to_string()),
+        Some(&name),
+        "ok",
+    )
+    .await;
 
-    Ok(Json(PerformanceTestStartResponse { run_id, status: "RUNNING" }))
+    Ok(Json(PerformanceTestStartResponse {
+        run_id,
+        status: "RUNNING",
+    }))
 }
 
 /// Runs exactly once, right after `run_workload` returns — computes real
@@ -1233,7 +1675,12 @@ async fn start_performance_test_scoped(
 /// samples via the *existing* evidence store (same convention
 /// `CompiledApiExecutor`'s own evidence already uses), and writes the one
 /// terminal `performance_runs` row update.
-async fn finalize_performance_run(state: &AppState, run_id: Uuid, config: &crate::performance_testing::PerformanceTestConfig, handle: &crate::performance_testing::PerformanceRunHandle) {
+async fn finalize_performance_run(
+    state: &AppState,
+    run_id: Uuid,
+    config: &crate::performance_testing::PerformanceTestConfig,
+    handle: &crate::performance_testing::PerformanceRunHandle,
+) {
     let samples = handle.samples.read().await.clone();
     // `run_workload` freezes this the instant it actually finishes — use
     // it in preference to a fresh `now - started_at` read, which would
@@ -1241,22 +1688,47 @@ async fn finalize_performance_run(state: &AppState, run_id: Uuid, config: &crate
     // between `run_workload` returning and this function actually running).
     let actual_duration_ms = match *handle.finished_elapsed_ms.read().await {
         Some(ms) => ms,
-        None => (chrono::Utc::now() - handle.started_at).num_milliseconds().max(0) as u64,
+        None => (chrono::Utc::now() - handle.started_at)
+            .num_milliseconds()
+            .max(0) as u64,
     };
     let metrics = crate::performance_testing::compute_metrics(&samples, actual_duration_ms);
-    let cancelled = handle.user_cancelled.load(std::sync::atomic::Ordering::SeqCst);
-    let (verdict, reasons) = crate::performance_testing::evaluate_verdict(config, &metrics, cancelled);
+    let cancelled = handle
+        .user_cancelled
+        .load(std::sync::atomic::Ordering::SeqCst);
+    let (verdict, reasons) =
+        crate::performance_testing::evaluate_verdict(config, &metrics, cancelled);
 
     let evidence_id = match serde_json::to_string(&samples) {
-        Ok(samples_json) => match state.evidence.put(&run_id.to_string(), "performance-test", "raw-samples", &samples_json) {
-            Ok((object_key, size)) => state.store.insert_evidence(run_id, "performance-test", "raw-samples", &object_key, "application/json", size).await.ok(),
+        Ok(samples_json) => match state.evidence.put(
+            &run_id.to_string(),
+            "performance-test",
+            "raw-samples",
+            &samples_json,
+        ) {
+            Ok((object_key, size)) => state
+                .store
+                .insert_evidence(
+                    run_id,
+                    "performance-test",
+                    "raw-samples",
+                    &object_key,
+                    "application/json",
+                    size,
+                )
+                .await
+                .ok(),
             Err(e) => {
-                tracing::error!("failed to persist performance test raw samples for run {run_id}: {e}");
+                tracing::error!(
+                    "failed to persist performance test raw samples for run {run_id}: {e}"
+                );
                 None
             }
         },
         Err(e) => {
-            tracing::error!("failed to serialize performance test raw samples for run {run_id}: {e}");
+            tracing::error!(
+                "failed to serialize performance test raw samples for run {run_id}: {e}"
+            );
             None
         }
     };
@@ -1264,7 +1736,19 @@ async fn finalize_performance_run(state: &AppState, run_id: Uuid, config: &crate
     let status_str = if cancelled { "CANCELLED" } else { "COMPLETED" };
     let metrics_json = serde_json::to_string(&metrics).ok();
     let reasons_json = serde_json::to_string(&reasons).ok();
-    if let Err(e) = state.store.finalize_performance_run(run_id, status_str, Some(verdict.as_str()), metrics_json.as_deref(), reasons_json.as_deref(), None, evidence_id).await {
+    if let Err(e) = state
+        .store
+        .finalize_performance_run(
+            run_id,
+            status_str,
+            Some(verdict.as_str()),
+            metrics_json.as_deref(),
+            reasons_json.as_deref(),
+            None,
+            evidence_id,
+        )
+        .await
+    {
         tracing::error!("failed to persist final performance test result for run {run_id}: {e}");
     }
 }
@@ -1290,9 +1774,16 @@ async fn finalize_performance_run(state: &AppState, run_id: Uuid, config: &crate
 /// Load/Stress/Spike/Volume workload logic itself panic, which this fix
 /// deliberately leaves untouched — see the fix report's own test-design
 /// section for the full reasoning.
-pub(crate) async fn finalize_performance_run_as_error(state: &AppState, run_id: Uuid, handle: &crate::performance_testing::PerformanceRunHandle, failure: &crate::performance_testing::SupervisionFailure) {
+pub(crate) async fn finalize_performance_run_as_error(
+    state: &AppState,
+    run_id: Uuid,
+    handle: &crate::performance_testing::PerformanceRunHandle,
+    failure: &crate::performance_testing::SupervisionFailure,
+) {
     let samples = handle.samples.read().await.clone();
-    let elapsed_ms = (chrono::Utc::now() - handle.started_at).num_milliseconds().max(0) as u64;
+    let elapsed_ms = (chrono::Utc::now() - handle.started_at)
+        .num_milliseconds()
+        .max(0) as u64;
     *handle.finished_elapsed_ms.write().await = Some(elapsed_ms);
     let metrics = crate::performance_testing::compute_metrics(&samples, elapsed_ms);
 
@@ -1300,8 +1791,24 @@ pub(crate) async fn finalize_performance_run_as_error(state: &AppState, run_id: 
     *handle.state.write().await = crate::performance_testing::PerfRunState::Error;
 
     let evidence_id = match serde_json::to_string(&samples) {
-        Ok(samples_json) => match state.evidence.put(&run_id.to_string(), "performance-test", "raw-samples", &samples_json) {
-            Ok((object_key, size)) => state.store.insert_evidence(run_id, "performance-test", "raw-samples", &object_key, "application/json", size).await.ok(),
+        Ok(samples_json) => match state.evidence.put(
+            &run_id.to_string(),
+            "performance-test",
+            "raw-samples",
+            &samples_json,
+        ) {
+            Ok((object_key, size)) => state
+                .store
+                .insert_evidence(
+                    run_id,
+                    "performance-test",
+                    "raw-samples",
+                    &object_key,
+                    "application/json",
+                    size,
+                )
+                .await
+                .ok(),
             Err(e) => {
                 tracing::error!("failed to persist partial performance test raw samples for run {run_id} after an internal execution failure: {e}");
                 None
@@ -1324,10 +1831,21 @@ pub(crate) async fn finalize_performance_run_as_error(state: &AppState, run_id: 
     // showed no reason at all even though `error_reason` was separately
     // persisted.
     let reasons_json = serde_json::to_string(&[failure.safe_message.clone()]).ok();
-    tracing::error!("performance test run {run_id} failed with a genuine internal execution error: {}", failure.safe_message);
+    tracing::error!(
+        "performance test run {run_id} failed with a genuine internal execution error: {}",
+        failure.safe_message
+    );
     if let Err(e) = state
         .store
-        .finalize_performance_run(run_id, "ERROR", Some(crate::performance_testing::PerfVerdict::Error.as_str()), metrics_json.as_deref(), reasons_json.as_deref(), Some(&failure.safe_message), evidence_id)
+        .finalize_performance_run(
+            run_id,
+            "ERROR",
+            Some(crate::performance_testing::PerfVerdict::Error.as_str()),
+            metrics_json.as_deref(),
+            reasons_json.as_deref(),
+            Some(&failure.safe_message),
+            evidence_id,
+        )
         .await
     {
         tracing::error!("failed to persist ERROR result for performance test run {run_id}: {e}");
@@ -1345,11 +1863,17 @@ async fn get_performance_run_status_scoped(
     ApiPath((project_id, run_id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<Json<PerformanceRunStatusResponse>, ApiError> {
     require_scoped_project(&state, &ctx, project_id).await?;
-    let row = state.store.get_performance_run(run_id).await.map_err(to_500)?.ok_or_else(|| ApiError::not_found("performance test run not found"))?;
+    let row = state
+        .store
+        .get_performance_run(run_id)
+        .await
+        .map_err(to_500)?
+        .ok_or_else(|| ApiError::not_found("performance test run not found"))?;
     require_resource_in_project(Some(&row.project_id), project_id)?;
 
     if let Some(handle) = state.performance_tests.read().await.get(&run_id).cloned() {
-        let config: crate::performance_testing::PerformanceTestConfig = serde_json::from_str(&row.config_json).map_err(to_500)?;
+        let config: crate::performance_testing::PerformanceTestConfig =
+            serde_json::from_str(&row.config_json).map_err(to_500)?;
         let samples = handle.samples.read().await.clone();
         let sample_count = samples.len() as u64;
         // While RUNNING, real, live elapsed time (`now - started_at`) is
@@ -1365,7 +1889,9 @@ async fn get_performance_run_status_scoped(
         let frozen_elapsed = *handle.finished_elapsed_ms.read().await;
         let elapsed_ms = match frozen_elapsed {
             Some(ms) => ms,
-            None => (chrono::Utc::now() - handle.started_at).num_milliseconds().max(0) as u64,
+            None => (chrono::Utc::now() - handle.started_at)
+                .num_milliseconds()
+                .max(0) as u64,
         };
         let metrics = crate::performance_testing::compute_metrics(&samples, elapsed_ms);
         let run_state = *handle.state.read().await;
@@ -1379,12 +1905,26 @@ async fn get_performance_run_status_scoped(
         let (verdict, reasons, error_reason) = match run_state {
             crate::performance_testing::PerfRunState::Running => (None, Vec::new(), None),
             crate::performance_testing::PerfRunState::Error => {
-                let reason = handle.error_reason.read().await.clone().unwrap_or_else(|| "performance execution terminated unexpectedly".to_string());
-                (Some(crate::performance_testing::PerfVerdict::Error.as_str().to_string()), vec![reason.clone()], Some(reason))
+                let reason =
+                    handle.error_reason.read().await.clone().unwrap_or_else(|| {
+                        "performance execution terminated unexpectedly".to_string()
+                    });
+                (
+                    Some(
+                        crate::performance_testing::PerfVerdict::Error
+                            .as_str()
+                            .to_string(),
+                    ),
+                    vec![reason.clone()],
+                    Some(reason),
+                )
             }
             _ => {
-                let cancelled = handle.user_cancelled.load(std::sync::atomic::Ordering::SeqCst);
-                let (v, r) = crate::performance_testing::evaluate_verdict(&config, &metrics, cancelled);
+                let cancelled = handle
+                    .user_cancelled
+                    .load(std::sync::atomic::Ordering::SeqCst);
+                let (v, r) =
+                    crate::performance_testing::evaluate_verdict(&config, &metrics, cancelled);
                 (Some(v.as_str().to_string()), r, None)
             }
         };
@@ -1397,7 +1937,9 @@ async fn get_performance_run_status_scoped(
             verdict_reasons: reasons,
             error_reason,
             elapsed_ms,
-            current_concurrency: handle.current_concurrency.load(std::sync::atomic::Ordering::SeqCst),
+            current_concurrency: handle
+                .current_concurrency
+                .load(std::sync::atomic::Ordering::SeqCst),
             sample_count,
             metrics: Some(metrics),
             samples,
@@ -1409,10 +1951,23 @@ async fn get_performance_run_status_scoped(
         }));
     }
 
-    let config: crate::performance_testing::PerformanceTestConfig = serde_json::from_str(&row.config_json).map_err(to_500)?;
-    let metrics = row.metrics_json.as_deref().and_then(|s| serde_json::from_str(s).ok());
-    let reasons: Vec<String> = row.verdict_reasons_json.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default();
-    let elapsed_ms = row.finished_at.unwrap_or_else(chrono::Utc::now).signed_duration_since(row.started_at).num_milliseconds().max(0) as u64;
+    let config: crate::performance_testing::PerformanceTestConfig =
+        serde_json::from_str(&row.config_json).map_err(to_500)?;
+    let metrics = row
+        .metrics_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok());
+    let reasons: Vec<String> = row
+        .verdict_reasons_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default();
+    let elapsed_ms = row
+        .finished_at
+        .unwrap_or_else(chrono::Utc::now)
+        .signed_duration_since(row.started_at)
+        .num_milliseconds()
+        .max(0) as u64;
     Ok(Json(PerformanceRunStatusResponse {
         run_id,
         name: row.name,
@@ -1455,11 +2010,24 @@ async fn cancel_performance_run_scoped(
 ) -> Result<Json<PerformanceTestCancelResponse>, ApiError> {
     auth::require_role(&ctx, Role::Operator)?;
     require_scoped_project(&state, &ctx, project_id).await?;
-    let row = state.store.get_performance_run(run_id).await.map_err(to_500)?.ok_or_else(|| ApiError::not_found("performance test run not found"))?;
+    let row = state
+        .store
+        .get_performance_run(run_id)
+        .await
+        .map_err(to_500)?
+        .ok_or_else(|| ApiError::not_found("performance test run not found"))?;
     require_resource_in_project(Some(&row.project_id), project_id)?;
 
     let Some(handle) = state.performance_tests.read().await.get(&run_id).cloned() else {
-        audit(&state, &ctx, "performance_testing.cancel", Some(&run_id.to_string()), Some("no live handle in this process"), "unavailable").await;
+        audit(
+            &state,
+            &ctx,
+            "performance_testing.cancel",
+            Some(&run_id.to_string()),
+            Some("no live handle in this process"),
+            "unavailable",
+        )
+        .await;
         return Ok(Json(PerformanceTestCancelResponse {
             run_id,
             cancelled: false,
@@ -1467,15 +2035,39 @@ async fn cancel_performance_run_scoped(
         }));
     };
     let cancelled = handle.request_cancel().await;
-    audit(&state, &ctx, "performance_testing.cancel", Some(&run_id.to_string()), None, if cancelled { "ok" } else { "already_terminal" }).await;
-    Ok(Json(PerformanceTestCancelResponse { run_id, cancelled, reason: if cancelled { None } else { Some("run was already terminal") } }))
+    audit(
+        &state,
+        &ctx,
+        "performance_testing.cancel",
+        Some(&run_id.to_string()),
+        None,
+        if cancelled { "ok" } else { "already_terminal" },
+    )
+    .await;
+    Ok(Json(PerformanceTestCancelResponse {
+        run_id,
+        cancelled,
+        reason: if cancelled {
+            None
+        } else {
+            Some("run was already terminal")
+        },
+    }))
 }
 
 /// GET /api/v1/projects/:project_id/performance-testing — real, persisted
 /// run history for this project, newest first.
-async fn list_performance_runs_scoped(State(state): State<AppState>, Extension(ctx): Extension<AuthContext>, ApiPath(project_id): ApiPath<Uuid>) -> Result<Json<Vec<crate::store::PerformanceRunRow>>, ApiError> {
+async fn list_performance_runs_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+) -> Result<Json<Vec<crate::store::PerformanceRunRow>>, ApiError> {
     require_scoped_project(&state, &ctx, project_id).await?;
-    let rows = state.store.list_performance_runs(&project_id.to_string()).await.map_err(to_500)?;
+    let rows = state
+        .store
+        .list_performance_runs(&project_id.to_string())
+        .await
+        .map_err(to_500)?;
     Ok(Json(rows))
 }
 
@@ -1493,7 +2085,10 @@ async fn list_performance_runs_scoped(State(state): State<AppState>, Extension(c
 /// function real generation uses — never a separate, hand-picked "here's
 /// what looks good" summary. `null` when no compatible model currently
 /// exists, exactly like a real generation attempt would honestly fail.
-async fn get_ai_status(State(state): State<AppState>, Extension(_ctx): Extension<AuthContext>) -> Json<serde_json::Value> {
+async fn get_ai_status(
+    State(state): State<AppState>,
+    Extension(_ctx): Extension<AuthContext>,
+) -> Json<serde_json::Value> {
     let providers = state.ai_infra.providers_snapshot().await;
     let settings = state.ai_infra.settings().await;
     let routing_preview = crate::ai_router::AiInfrastructure::route_among(
@@ -1504,10 +2099,15 @@ async fn get_ai_status(State(state): State<AppState>, Extension(_ctx): Extension
         None,
     )
     .ok();
-    Json(serde_json::json!({ "providers": providers, "settings": settings, "routing_preview": routing_preview }))
+    Json(
+        serde_json::json!({ "providers": providers, "settings": settings, "routing_preview": routing_preview }),
+    )
 }
 
-async fn get_ai_settings_handler(State(state): State<AppState>, Extension(_ctx): Extension<AuthContext>) -> Json<crate::ai_router::AiSettings> {
+async fn get_ai_settings_handler(
+    State(state): State<AppState>,
+    Extension(_ctx): Extension<AuthContext>,
+) -> Json<crate::ai_router::AiSettings> {
     Json(state.ai_infra.settings().await)
 }
 
@@ -1528,21 +2128,45 @@ async fn put_ai_settings_handler(
     };
     state
         .store
-        .upsert_ai_settings(mode_str, body.preferred_provider.as_deref(), body.preferred_model.as_deref(), body.fallback_enabled)
+        .upsert_ai_settings(
+            mode_str,
+            body.preferred_provider.as_deref(),
+            body.preferred_model.as_deref(),
+            body.fallback_enabled,
+        )
         .await
         .map_err(to_500)?;
     state.ai_infra.set_settings(body.clone()).await;
-    audit(&state, &ctx, "ai.settings.update", None, Some(mode_str), "ok").await;
+    audit(
+        &state,
+        &ctx,
+        "ai.settings.update",
+        None,
+        Some(mode_str),
+        "ok",
+    )
+    .await;
     Ok(Json(body))
 }
 
 /// POST /api/v1/ai/refresh — the explicit, on-demand re-discovery brief
 /// §15 calls for ("Manual refresh"), distinct from the TTL-bounded lazy
 /// refresh `generate` itself uses.
-async fn refresh_ai_providers(State(state): State<AppState>, Extension(ctx): Extension<AuthContext>) -> Result<Json<Vec<crate::ai_router::AiProviderInfo>>, ApiError> {
+async fn refresh_ai_providers(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+) -> Result<Json<Vec<crate::ai_router::AiProviderInfo>>, ApiError> {
     auth::require_role(&ctx, Role::Operator)?;
     let providers = state.ai_infra.discover_all().await;
-    audit(&state, &ctx, "ai.providers.refresh", None, Some(&format!("{} provider(s)", providers.len())), "ok").await;
+    audit(
+        &state,
+        &ctx,
+        "ai.providers.refresh",
+        None,
+        Some(&format!("{} provider(s)", providers.len())),
+        "ok",
+    )
+    .await;
     Ok(Json(providers))
 }
 
@@ -1577,7 +2201,9 @@ async fn create_run_core(
 
     let (initial_state, policy_notes, spawn_now) = match &decision {
         PolicyDecision::Allow => (RunState::Scheduled, None, true),
-        PolicyDecision::RequireApproval(reason) => (RunState::PendingApproval, Some(reason.clone()), false),
+        PolicyDecision::RequireApproval(reason) => {
+            (RunState::PendingApproval, Some(reason.clone()), false)
+        }
         PolicyDecision::Deny(reason) => {
             audit(state, ctx, "run.create", None, Some(reason), "denied").await;
             return Err(ApiError::forbidden(format!("policy denied: {reason}")));
@@ -1587,7 +2213,14 @@ async fn create_run_core(
     let run_id = Uuid::new_v4();
     state
         .store
-        .insert_run(run_id, &plan, project_id.as_deref(), Some(&ctx.name), initial_state, policy_notes.as_deref())
+        .insert_run(
+            run_id,
+            &plan,
+            project_id.as_deref(),
+            Some(&ctx.name),
+            initial_state,
+            policy_notes.as_deref(),
+        )
         .await
         .map_err(to_500)?;
 
@@ -1598,10 +2231,26 @@ async fn create_run_core(
         Some(pid) => Some(state.project_stream(pid).await),
         None => None,
     };
-    let record = RunRecord::new(run_id, &plan, project_id.clone(), Some(ctx.name.clone()), initial_state, policy_notes.clone(), project_stream);
+    let record = RunRecord::new(
+        run_id,
+        &plan,
+        project_id.clone(),
+        Some(ctx.name.clone()),
+        initial_state,
+        policy_notes.clone(),
+        project_stream,
+    );
     state.runs.write().await.insert(run_id, record.clone());
 
-    audit(state, ctx, "run.create", Some(&run_id.to_string()), policy_notes.as_deref(), "ok").await;
+    audit(
+        state,
+        ctx,
+        "run.create",
+        Some(&run_id.to_string()),
+        policy_notes.as_deref(),
+        "ok",
+    )
+    .await;
 
     if spawn_now {
         engine::spawn_run(
@@ -1616,7 +2265,11 @@ async fn create_run_core(
 
     Ok((
         StatusCode::CREATED,
-        Json(CreateRunResponse { run_id, state: initial_state, policy_notes }),
+        Json(CreateRunResponse {
+            run_id,
+            state: initial_state,
+            policy_notes,
+        }),
     ))
 }
 
@@ -1662,9 +2315,15 @@ struct EventsQuery {
 /// `GET`, cancellation, WS subscription once it starts running — sees it
 /// exactly as if this process had created it. `Ok(None)` (not an error)
 /// when the run simply doesn't exist in the store at all.
-async fn rehydrate_run_record(state: &AppState, run_id: Uuid) -> Result<Option<Arc<RunRecord>>, ApiError> {
-    let Some((plan, project_id, requested_by, policy_notes, run_state)) =
-        state.store.get_run_for_rehydration(run_id).await.map_err(to_500)?
+async fn rehydrate_run_record(
+    state: &AppState,
+    run_id: Uuid,
+) -> Result<Option<Arc<RunRecord>>, ApiError> {
+    let Some((plan, project_id, requested_by, policy_notes, run_state)) = state
+        .store
+        .get_run_for_rehydration(run_id)
+        .await
+        .map_err(to_500)?
     else {
         return Ok(None);
     };
@@ -1672,7 +2331,15 @@ async fn rehydrate_run_record(state: &AppState, run_id: Uuid) -> Result<Option<A
         Some(pid) => Some(state.project_stream(pid).await),
         None => None,
     };
-    let record = RunRecord::new(run_id, &plan, project_id, requested_by, run_state, policy_notes, project_stream);
+    let record = RunRecord::new(
+        run_id,
+        &plan,
+        project_id,
+        requested_by,
+        run_state,
+        policy_notes,
+        project_stream,
+    );
     state.runs.write().await.insert(run_id, record.clone());
     Ok(Some(record))
 }
@@ -1685,7 +2352,9 @@ async fn find_or_rehydrate_run(state: &AppState, run_id: Uuid) -> Result<Arc<Run
     if let Some(record) = state.runs.read().await.get(&run_id).cloned() {
         return Ok(record);
     }
-    rehydrate_run_record(state, run_id).await?.ok_or_else(|| ApiError::not_found("run not found"))
+    rehydrate_run_record(state, run_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("run not found"))
 }
 
 #[derive(Deserialize)]
@@ -1748,8 +2417,16 @@ async fn create_run_scoped(
     ApiJson(plan): ApiJson<RunPlan>,
 ) -> Result<(StatusCode, Json<CreateExecutionResponse>), ApiError> {
     require_scoped_project(&state, &ctx, project_id).await?;
-    let (status_code, Json(body)) = create_run_core(&state, &ctx, Some(project_id.to_string()), plan).await?;
-    Ok((status_code, Json(CreateExecutionResponse { run_id: body.run_id, status: body.state, policy_notes: body.policy_notes })))
+    let (status_code, Json(body)) =
+        create_run_core(&state, &ctx, Some(project_id.to_string()), plan).await?;
+    Ok((
+        status_code,
+        Json(CreateExecutionResponse {
+            run_id: body.run_id,
+            status: body.state,
+            policy_notes: body.policy_notes,
+        }),
+    ))
 }
 
 /// GET /api/v1/projects/:project_id/executions — filtered to exactly the
@@ -1763,7 +2440,11 @@ async fn list_runs_scoped(
 ) -> Result<Json<Vec<RunListItem>>, ApiError> {
     require_scoped_project(&state, &ctx, project_id).await?;
     let pid_str = project_id.to_string();
-    let ids = state.store.list_run_ids(Some(&pid_str)).await.map_err(to_500)?;
+    let ids = state
+        .store
+        .list_run_ids(Some(&pid_str))
+        .await
+        .map_err(to_500)?;
     let limit = q.limit.unwrap_or(50).max(1) as usize;
 
     let mut items = Vec::new();
@@ -1793,7 +2474,11 @@ async fn list_runs_scoped(
 /// to the DB, same as every legacy handler) and confirms it belongs to
 /// `project_id` — the shared core every `_scoped` run-detail handler below
 /// uses, so that check is written exactly once.
-async fn scoped_run_summary(state: &AppState, run_id: Uuid, project_id: Uuid) -> Result<RunSummary, ApiError> {
+async fn scoped_run_summary(
+    state: &AppState,
+    run_id: Uuid,
+    project_id: Uuid,
+) -> Result<RunSummary, ApiError> {
     let summary = if let Some(record) = state.runs.read().await.get(&run_id).cloned() {
         record.summary().await
     } else {
@@ -1818,7 +2503,11 @@ async fn scoped_run_tasks(state: &AppState, run_id: Uuid) -> Result<Vec<TaskStat
     let mut tasks = if let Some(record) = state.runs.read().await.get(&run_id).cloned() {
         record.engine.read().await.tasks.values().cloned().collect()
     } else {
-        state.store.list_tasks_for_run(run_id).await.map_err(to_500)?
+        state
+            .store
+            .list_tasks_for_run(run_id)
+            .await
+            .map_err(to_500)?
     };
     tasks.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(tasks)
@@ -1909,7 +2598,10 @@ async fn cancel_run_scoped(
         ));
     }
     if summary.state.is_terminal() {
-        return Err(ApiError::conflict(format!("run is already in a terminal state ({:?}), cannot be cancelled", summary.state)));
+        return Err(ApiError::conflict(format!(
+            "run is already in a terminal state ({:?}), cannot be cancelled",
+            summary.state
+        )));
     }
 
     // A run whose persisted state is non-terminal but that is *not* held in
@@ -1923,13 +2615,28 @@ async fn cancel_run_scoped(
         .await
         .get(&run_id)
         .cloned()
-        .ok_or_else(|| ApiError::internal("run reports a live state but is not tracked in this process; cannot safely cancel"))?;
+        .ok_or_else(|| {
+            ApiError::internal(
+                "run reports a live state but is not tracked in this process; cannot safely cancel",
+            )
+        })?;
 
     record.request_cancel(&ctx.name).await;
-    audit(&state, &ctx, "run.cancel", Some(&run_id.to_string()), None, "ok").await;
+    audit(
+        &state,
+        &ctx,
+        "run.cancel",
+        Some(&run_id.to_string()),
+        None,
+        "ok",
+    )
+    .await;
 
     let current_state = *record.state.read().await;
-    Ok(Json(CancelRunResponse { run_id, status: current_state }))
+    Ok(Json(CancelRunResponse {
+        run_id,
+        status: current_state,
+    }))
 }
 
 // ------------------------------------------------------- dashboard / kpis
@@ -1985,13 +2692,27 @@ async fn get_project_dashboard(
         .map_err(to_500)?
         .ok_or_else(|| ApiError::not_found("project not found"))?;
 
-    let execution_counts: std::collections::BTreeMap<String, i64> =
-        state.store.dashboard_run_counts(&pid).await.map_err(to_500)?.into_iter().collect();
-    let task_counts: std::collections::BTreeMap<String, i64> =
-        state.store.dashboard_task_counts(&pid).await.map_err(to_500)?.into_iter().collect();
+    let execution_counts: std::collections::BTreeMap<String, i64> = state
+        .store
+        .dashboard_run_counts(&pid)
+        .await
+        .map_err(to_500)?
+        .into_iter()
+        .collect();
+    let task_counts: std::collections::BTreeMap<String, i64> = state
+        .store
+        .dashboard_task_counts(&pid)
+        .await
+        .map_err(to_500)?
+        .into_iter()
+        .collect();
     let passed = *task_counts.get("PASSED").unwrap_or(&0);
     let failed = *task_counts.get("FAILED").unwrap_or(&0);
-    let test_count = state.store.dashboard_test_count(&pid).await.map_err(to_500)?;
+    let test_count = state
+        .store
+        .dashboard_test_count(&pid)
+        .await
+        .map_err(to_500)?;
 
     Ok(Json(DashboardResponse {
         project_id,
@@ -2039,17 +2760,33 @@ async fn get_project_kpis(
     require_scoped_project(&state, &ctx, project_id).await?;
     let pid = project_id.to_string();
 
-    let task_counts: std::collections::BTreeMap<String, i64> =
-        state.store.dashboard_task_counts(&pid).await.map_err(to_500)?.into_iter().collect();
+    let task_counts: std::collections::BTreeMap<String, i64> = state
+        .store
+        .dashboard_task_counts(&pid)
+        .await
+        .map_err(to_500)?
+        .into_iter()
+        .collect();
     let passed = *task_counts.get("PASSED").unwrap_or(&0);
     let failed = *task_counts.get("FAILED").unwrap_or(&0);
     let timeout = *task_counts.get("TIMEOUT").unwrap_or(&0);
     let terminal_product_outcomes = passed + failed + timeout;
-    let execution_reliability =
-        if terminal_product_outcomes > 0 { Some(passed as f64 / terminal_product_outcomes as f64) } else { None };
+    let execution_reliability = if terminal_product_outcomes > 0 {
+        Some(passed as f64 / terminal_product_outcomes as f64)
+    } else {
+        None
+    };
 
-    let execution_efficiency_ms = state.store.dashboard_avg_task_duration_ms(&pid).await.map_err(to_500)?;
-    let execution_avg_run_duration_ms = state.store.dashboard_avg_run_duration_ms(&pid).await.map_err(to_500)?;
+    let execution_efficiency_ms = state
+        .store
+        .dashboard_avg_task_duration_ms(&pid)
+        .await
+        .map_err(to_500)?;
+    let execution_avg_run_duration_ms = state
+        .store
+        .dashboard_avg_run_duration_ms(&pid)
+        .await
+        .map_err(to_500)?;
 
     Ok(Json(KpisResponse {
         project_id,
@@ -2072,10 +2809,21 @@ async fn get_events_scoped(
     let since = q.since.unwrap_or(0);
 
     if let Some(record) = state.runs.read().await.get(&run_id).cloned() {
-        let events: Vec<RunEvent> = record.events.read().await.iter().filter(|e| e.sequence >= since).cloned().collect();
+        let events: Vec<RunEvent> = record
+            .events
+            .read()
+            .await
+            .iter()
+            .filter(|e| e.sequence >= since)
+            .cloned()
+            .collect();
         return Ok(Json(events));
     }
-    let events = state.store.list_events_since(run_id, since).await.map_err(to_500)?;
+    let events = state
+        .store
+        .list_events_since(run_id, since)
+        .await
+        .map_err(to_500)?;
     Ok(Json(events))
 }
 
@@ -2092,7 +2840,9 @@ async fn approve_run_scoped(
     {
         let cur = *record.state.read().await;
         if cur != RunState::PendingApproval {
-            return Err(ApiError::conflict(format!("run is in state {cur:?}, not PENDING_APPROVAL")));
+            return Err(ApiError::conflict(format!(
+                "run is in state {cur:?}, not PENDING_APPROVAL"
+            )));
         }
     }
     let concurrency = record.plan.concurrency;
@@ -2107,7 +2857,15 @@ async fn approve_run_scoped(
     )
     .await
     .map_err(to_500)?;
-    audit(&state, &ctx, "run.approve", Some(&run_id.to_string()), None, "ok").await;
+    audit(
+        &state,
+        &ctx,
+        "run.approve",
+        Some(&run_id.to_string()),
+        None,
+        "ok",
+    )
+    .await;
     Ok(Json(record.summary().await))
 }
 
@@ -2125,14 +2883,26 @@ async fn reject_run_scoped(
     {
         let cur = *record.state.read().await;
         if cur != RunState::PendingApproval {
-            return Err(ApiError::conflict(format!("run is in state {cur:?}, not PENDING_APPROVAL")));
+            return Err(ApiError::conflict(format!(
+                "run is in state {cur:?}, not PENDING_APPROVAL"
+            )));
         }
     }
-    let reason = body.and_then(|b| b.0.reason.clone()).unwrap_or_else(|| "no reason given".to_string());
+    let reason = body
+        .and_then(|b| b.0.reason.clone())
+        .unwrap_or_else(|| "no reason given".to_string());
     engine::reject_run(record.clone(), &state.store, &ctx.name, &reason)
         .await
         .map_err(to_500)?;
-    audit(&state, &ctx, "run.reject", Some(&run_id.to_string()), Some(&reason), "ok").await;
+    audit(
+        &state,
+        &ctx,
+        "run.reject",
+        Some(&run_id.to_string()),
+        Some(&reason),
+        "ok",
+    )
+    .await;
     Ok(Json(record.summary().await))
 }
 
@@ -2145,7 +2915,11 @@ async fn list_evidence_scoped(
 ) -> Result<Json<Vec<crate::store::EvidenceRow>>, ApiError> {
     require_scoped_project(&state, &ctx, project_id).await?;
     scoped_run_summary(&state, run_id, project_id).await?;
-    let rows = state.store.list_evidence_for_run(run_id).await.map_err(to_500)?;
+    let rows = state
+        .store
+        .list_evidence_for_run(run_id)
+        .await
+        .map_err(to_500)?;
     Ok(Json(rows))
 }
 
@@ -2210,7 +2984,10 @@ async fn get_evidence_content_scoped(
         .map_err(|e| ApiError::not_found(format!("evidence file unavailable: {e}")))?;
     Ok((
         StatusCode::OK,
-        [("Content-Type", content_type.unwrap_or_else(|| "text/plain".to_string()))],
+        [(
+            "Content-Type",
+            content_type.unwrap_or_else(|| "text/plain".to_string()),
+        )],
         bytes,
     )
         .into_response())
@@ -2231,7 +3008,11 @@ async fn list_findings_scoped(
     ApiPath(project_id): ApiPath<Uuid>,
 ) -> Result<Json<Vec<crate::store::BugDraftRow>>, ApiError> {
     require_scoped_project(&state, &ctx, project_id).await?;
-    let rows = state.store.list_bug_drafts(Some(project_id.to_string().as_str())).await.map_err(to_500)?;
+    let rows = state
+        .store
+        .list_bug_drafts(Some(project_id.to_string().as_str()))
+        .await
+        .map_err(to_500)?;
     Ok(Json(rows))
 }
 
@@ -2239,7 +3020,11 @@ async fn list_findings_scoped(
 /// ownership resolves through its failure cluster, exactly like
 /// `review_bug_draft`'s existing project check. Shared so every findings
 /// route below checks it identically.
-async fn require_finding_in_project(state: &AppState, finding_id: Uuid, project_id: Uuid) -> Result<(), ApiError> {
+async fn require_finding_in_project(
+    state: &AppState,
+    finding_id: Uuid,
+    project_id: Uuid,
+) -> Result<(), ApiError> {
     let owner = state
         .store
         .bug_draft_project(finding_id)
@@ -2303,9 +3088,22 @@ async fn get_finding_analysis_scoped(
         .get_failure_cluster_by_id(finding.failure_cluster_id)
         .await
         .map_err(to_500)?
-        .ok_or_else(|| ApiError::internal("finding references a failure cluster that no longer exists"))?;
-    audit(&state, &ctx, "finding.analysis", Some(&finding_id.to_string()), None, "ok").await;
-    Ok(Json(FindingAnalysisResponse { finding, failure_cluster }))
+        .ok_or_else(|| {
+            ApiError::internal("finding references a failure cluster that no longer exists")
+        })?;
+    audit(
+        &state,
+        &ctx,
+        "finding.analysis",
+        Some(&finding_id.to_string()),
+        None,
+        "ok",
+    )
+    .await;
+    Ok(Json(FindingAnalysisResponse {
+        finding,
+        failure_cluster,
+    }))
 }
 
 /// POST /api/v1/projects/:project_id/findings/:finding_id/ai-hypothesis —
@@ -2352,9 +3150,14 @@ async fn generate_finding_ai_hypothesis_scoped(
         .get_failure_cluster_by_id(finding.failure_cluster_id)
         .await
         .map_err(to_500)?
-        .ok_or_else(|| ApiError::internal("finding references a failure cluster that no longer exists"))?;
+        .ok_or_else(|| {
+            ApiError::internal("finding references a failure cluster that no longer exists")
+        })?;
 
-    let rule_based_hypothesis = failure_cluster.root_cause_hypothesis.clone().unwrap_or_default();
+    let rule_based_hypothesis = failure_cluster
+        .root_cause_hypothesis
+        .clone()
+        .unwrap_or_default();
     let outcome = crate::intelligence::generate_ai_hypothesis(
         &state.ai_infra,
         &failure_cluster.signature,
@@ -2364,7 +3167,11 @@ async fn generate_finding_ai_hypothesis_scoped(
     .await;
 
     let response = match outcome {
-        crate::intelligence::AiHypothesisOutcome::Ai { hypothesis, provider, model } => {
+        crate::intelligence::AiHypothesisOutcome::Ai {
+            hypothesis,
+            provider,
+            model,
+        } => {
             state
                 .store
                 .set_ai_hypothesis(failure_cluster.id, &hypothesis, &provider, &model)
@@ -2375,7 +3182,9 @@ async fn generate_finding_ai_hypothesis_scoped(
                 .get_failure_cluster_by_id(failure_cluster.id)
                 .await
                 .map_err(to_500)?
-                .ok_or_else(|| ApiError::internal("failure cluster vanished immediately after being updated"))?;
+                .ok_or_else(|| {
+                    ApiError::internal("failure cluster vanished immediately after being updated")
+                })?;
             audit(
                 &state,
                 &ctx,
@@ -2395,7 +3204,15 @@ async fn generate_finding_ai_hypothesis_scoped(
             }
         }
         crate::intelligence::AiHypothesisOutcome::Failed { reason } => {
-            audit(&state, &ctx, "finding.ai_hypothesis", Some(&finding_id.to_string()), Some(&reason), "fallback").await;
+            audit(
+                &state,
+                &ctx,
+                "finding.ai_hypothesis",
+                Some(&finding_id.to_string()),
+                Some(&reason),
+                "fallback",
+            )
+            .await;
             FindingAiHypothesisResponse {
                 finding,
                 failure_cluster,
@@ -2431,10 +3248,26 @@ async fn review_finding_scoped(
     let new_state = match body.action.as_str() {
         "confirm" => "CONFIRMED",
         "dismiss" => "DISMISSED",
-        other => return Err(ApiError::validation(format!("unknown action '{other}', expected 'confirm' or 'dismiss'"))),
+        other => {
+            return Err(ApiError::validation(format!(
+                "unknown action '{other}', expected 'confirm' or 'dismiss'"
+            )))
+        }
     };
-    state.store.review_bug_draft(finding_id, new_state, &ctx.name).await.map_err(to_500)?;
-    audit(&state, &ctx, "finding.review", Some(&finding_id.to_string()), Some(new_state), "ok").await;
+    state
+        .store
+        .review_bug_draft(finding_id, new_state, &ctx.name)
+        .await
+        .map_err(to_500)?;
+    audit(
+        &state,
+        &ctx,
+        "finding.review",
+        Some(&finding_id.to_string()),
+        Some(new_state),
+        "ok",
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2458,7 +3291,10 @@ async fn get_audit_log_scoped(
     auth::require_role(&ctx, Role::Operator)?;
     let rows = state
         .store
-        .list_audit(Some(project_id.to_string().as_str()), q.limit.unwrap_or(100).clamp(1, 1000))
+        .list_audit(
+            Some(project_id.to_string().as_str()),
+            q.limit.unwrap_or(100).clamp(1, 1000),
+        )
         .await
         .map_err(to_500)?;
     Ok(Json(rows))
@@ -2538,10 +3374,24 @@ async fn create_api_key(
     let raw = auth::generate_key();
     state
         .store
-        .insert_api_key(id, &body.name, &auth::hash_key(&raw), role, body.project_id.as_deref())
+        .insert_api_key(
+            id,
+            &body.name,
+            &auth::hash_key(&raw),
+            role,
+            body.project_id.as_deref(),
+        )
         .await
         .map_err(to_500)?;
-    audit(&state, &ctx, "apikey.create", Some(&id.to_string()), Some(&format!("name={} role={role}", body.name)), "ok").await;
+    audit(
+        &state,
+        &ctx,
+        "apikey.create",
+        Some(&id.to_string()),
+        Some(&format!("name={} role={role}", body.name)),
+        "ok",
+    )
+    .await;
     Ok(Json(CreateApiKeyResponse { id, key: raw }))
 }
 
@@ -2561,7 +3411,15 @@ async fn revoke_api_key_handler(
 ) -> Result<StatusCode, ApiError> {
     auth::require_role(&ctx, Role::Admin)?;
     state.store.revoke_api_key(id).await.map_err(to_500)?;
-    audit(&state, &ctx, "apikey.revoke", Some(&id.to_string()), None, "ok").await;
+    audit(
+        &state,
+        &ctx,
+        "apikey.revoke",
+        Some(&id.to_string()),
+        None,
+        "ok",
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2576,15 +3434,27 @@ async fn get_audit_log(
     ApiQuery(q): ApiQuery<AuditQuery>,
 ) -> Result<Json<Vec<crate::store::AuditRow>>, ApiError> {
     auth::require_role(&ctx, Role::Admin)?;
-    let rows = state.store.list_audit(None, q.limit.unwrap_or(100).clamp(1, 1000)).await.map_err(to_500)?;
+    let rows = state
+        .store
+        .list_audit(None, q.limit.unwrap_or(100).clamp(1, 1000))
+        .await
+        .map_err(to_500)?;
     Ok(Json(rows))
 }
 
 // ----------------------------------------------------------- observability
 
-async fn get_metrics(State(state): State<AppState>, Extension(_ctx): Extension<AuthContext>) -> Response {
+async fn get_metrics(
+    State(state): State<AppState>,
+    Extension(_ctx): Extension<AuthContext>,
+) -> Response {
     let body = crate::metrics::render(&state.store.pool).await;
-    (StatusCode::OK, [("Content-Type", "text/plain; version=0.0.4")], body).into_response()
+    (
+        StatusCode::OK,
+        [("Content-Type", "text/plain; version=0.0.4")],
+        body,
+    )
+        .into_response()
 }
 
 // --------------------------------------------------------------------- ws
@@ -2635,7 +3505,11 @@ async fn project_events_ws_handler(
         }
     }
     if auth::require_project_access(&ctx, Some(project_id.to_string().as_str())).is_err() {
-        return (StatusCode::FORBIDDEN, "resource belongs to a different project").into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            "resource belongs to a different project",
+        )
+            .into_response();
     }
 
     // No backlog replay here: unlike a single run's small, bounded event

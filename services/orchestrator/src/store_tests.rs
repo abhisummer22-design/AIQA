@@ -27,13 +27,20 @@ fn task(id: &str, name: &str, prereqs: &[&str]) -> TaskDef {
         id: id.into(),
         name: name.into(),
         prerequisites: prereqs.iter().map(|s| s.to_string()).collect(),
-        simulate: Some(SimSpec { outcome: SimOutcome::Pass, delay_ms: 0 }),
+        simulate: Some(SimSpec {
+            outcome: SimOutcome::Pass,
+            delay_ms: 0,
+        }),
         ..Default::default()
     }
 }
 
 fn plan(name: &str, tasks: Vec<TaskDef>) -> RunPlan {
-    RunPlan { name: name.into(), tasks, concurrency: 4 }
+    RunPlan {
+        name: name.into(),
+        tasks,
+        concurrency: 4,
+    }
 }
 
 // -------------------------------------------------------------------- B1
@@ -79,7 +86,14 @@ async fn b1_concurrent_writes_do_not_silently_disappear() {
         .map(|i| task(&format!("t{i}"), &format!("task-{i}"), &[]))
         .collect();
     store
-        .insert_run(run_id, &plan("concurrent", tasks), Some("p1"), Some("tester"), RunState::Running, None)
+        .insert_run(
+            run_id,
+            &plan("concurrent", tasks),
+            Some("p1"),
+            Some("tester"),
+            RunState::Running,
+            None,
+        )
         .await
         .expect("insert_run");
 
@@ -88,7 +102,15 @@ async fn b1_concurrent_writes_do_not_silently_disappear() {
     for i in 0..N {
         let s = store.clone();
         handles.push(tokio::spawn(async move {
-            s.set_task_status(run_id, &format!("t{i}"), TaskStatus::Passed, None, false, true).await
+            s.set_task_status(
+                run_id,
+                &format!("t{i}"),
+                TaskStatus::Passed,
+                None,
+                false,
+                true,
+            )
+            .await
         }));
     }
 
@@ -98,12 +120,21 @@ async fn b1_concurrent_writes_do_not_silently_disappear() {
             failures.push(format!("t{i}: {e}"));
         }
     }
-    assert!(failures.is_empty(), "concurrent writes returned errors: {failures:?}");
+    assert!(
+        failures.is_empty(),
+        "concurrent writes returned errors: {failures:?}"
+    );
 
     // And the writes must actually be on disk, not merely un-errored.
     let persisted = store.list_tasks_for_run(run_id).await.expect("list tasks");
-    let passed = persisted.iter().filter(|t| t.status == TaskStatus::Passed).count();
-    assert_eq!(passed, N, "every concurrent write must be durably persisted");
+    let passed = persisted
+        .iter()
+        .filter(|t| t.status == TaskStatus::Passed)
+        .count();
+    assert_eq!(
+        passed, N,
+        "every concurrent write must be durably persisted"
+    );
 }
 
 // -------------------------------------------------------------------- B6
@@ -120,10 +151,21 @@ async fn b6_insert_run_rolls_back_completely_on_failure() {
     // through the insert, forcing a mid-transaction failure.
     let bad = plan(
         "rollback",
-        vec![task("a", "a", &[]), task("b", "b", &[]), task("a", "dup", &[])],
+        vec![
+            task("a", "a", &[]),
+            task("b", "b", &[]),
+            task("a", "dup", &[]),
+        ],
     );
     let result = store
-        .insert_run(run_id, &bad, Some("p1"), Some("tester"), RunState::Scheduled, None)
+        .insert_run(
+            run_id,
+            &bad,
+            Some("p1"),
+            Some("tester"),
+            RunState::Scheduled,
+            None,
+        )
         .await;
     assert!(result.is_err(), "duplicate task id must fail the insert");
 
@@ -135,7 +177,10 @@ async fn b6_insert_run_rolls_back_completely_on_failure() {
         tasks.len()
     );
     let summary = store.get_run_summary(run_id).await.expect("summary");
-    assert!(summary.is_none(), "a failed insert_run must leave no run row behind");
+    assert!(
+        summary.is_none(),
+        "a failed insert_run must leave no run row behind"
+    );
 }
 
 /// B6: large plans must insert successfully. Pre-fix ~100 tasks returned
@@ -150,17 +195,31 @@ async fn b6_insert_run_handles_large_plans() {
     let mut tasks = vec![task("t0", "task-0", &[])];
     for i in 1..1000 {
         let prev = format!("t{}", i - 1);
-        tasks.push(task(&format!("t{i}"), &format!("task-{i}"), &[prev.as_str()]));
+        tasks.push(task(
+            &format!("t{i}"),
+            &format!("task-{i}"),
+            &[prev.as_str()],
+        ));
     }
 
     store
-        .insert_run(run_id, &plan("large", tasks), Some("p1"), Some("tester"), RunState::Scheduled, None)
+        .insert_run(
+            run_id,
+            &plan("large", tasks),
+            Some("p1"),
+            Some("tester"),
+            RunState::Scheduled,
+            None,
+        )
         .await
         .expect("1000-task plan must insert");
 
     let persisted = store.list_tasks_for_run(run_id).await.expect("list tasks");
     assert_eq!(persisted.len(), 1000, "all tasks must persist");
-    let with_prereqs = persisted.iter().filter(|t| !t.prerequisites.is_empty()).count();
+    let with_prereqs = persisted
+        .iter()
+        .filter(|t| !t.prerequisites.is_empty())
+        .count();
     assert_eq!(with_prereqs, 999, "every dependency edge must persist");
 }
 
@@ -228,7 +287,11 @@ async fn b3_task_history_does_not_cross_projects() {
         .task_history_by_name(SHARED, Some("beta"), 20)
         .await
         .expect("beta history");
-    assert_eq!(beta.len(), 1, "beta ran this task once; it must not see alpha's 3 executions");
+    assert_eq!(
+        beta.len(),
+        1,
+        "beta ran this task once; it must not see alpha's 3 executions"
+    );
     assert!(
         beta.iter().all(|h| h.status == TaskStatus::Passed),
         "beta's only execution passed"
@@ -238,7 +301,11 @@ async fn b3_task_history_does_not_cross_projects() {
         .task_history_by_name(SHARED, Some("alpha"), 20)
         .await
         .expect("alpha history");
-    assert_eq!(alpha.len(), 3, "alpha must see exactly its own 3 executions");
+    assert_eq!(
+        alpha.len(),
+        3,
+        "alpha must see exactly its own 3 executions"
+    );
     assert!(
         alpha.iter().all(|h| h.status == TaskStatus::Failed),
         "alpha's executions all failed"
@@ -272,11 +339,17 @@ async fn b14_bug_drafts_are_project_scoped() {
         .await
         .expect("beta draft");
 
-    let alpha = store.list_bug_drafts(Some("alpha")).await.expect("alpha drafts");
+    let alpha = store
+        .list_bug_drafts(Some("alpha"))
+        .await
+        .expect("alpha drafts");
     assert_eq!(alpha.len(), 1, "alpha must see only its own draft");
     assert_eq!(alpha[0].title, "alpha draft");
 
-    let beta = store.list_bug_drafts(Some("beta")).await.expect("beta drafts");
+    let beta = store
+        .list_bug_drafts(Some("beta"))
+        .await
+        .expect("beta drafts");
     assert_eq!(beta.len(), 1, "beta must see only its own draft");
     assert_eq!(beta[0].title, "beta draft");
 
@@ -307,8 +380,14 @@ async fn b14_bug_draft_project_is_resolvable_for_authorization() {
         "draft must resolve to its owning project"
     );
 
-    let missing = store.bug_draft_project(Uuid::new_v4()).await.expect("lookup missing");
-    assert!(missing.is_none(), "an unknown draft id must not resolve to a project");
+    let missing = store
+        .bug_draft_project(Uuid::new_v4())
+        .await
+        .expect("lookup missing");
+    assert!(
+        missing.is_none(),
+        "an unknown draft id must not resolve to a project"
+    );
 }
 
 // -------------------------------------------------------------------- BE-8
@@ -326,14 +405,27 @@ async fn be8_project_create_and_get_round_trip() {
         .await
         .expect("insert_project");
 
-    let fetched = store.get_project(id).await.expect("get_project").expect("project exists");
+    let fetched = store
+        .get_project(id)
+        .await
+        .expect("get_project")
+        .expect("project exists");
     assert_eq!(fetched.id, id);
     assert_eq!(fetched.name, "Alpha Project");
     assert_eq!(fetched.description.as_deref(), Some("first project"));
-    assert_eq!(fetched.created_at, fetched.updated_at, "a freshly created project has identical created/updated timestamps");
+    assert_eq!(
+        fetched.created_at, fetched.updated_at,
+        "a freshly created project has identical created/updated timestamps"
+    );
 
-    let missing = store.get_project(Uuid::new_v4()).await.expect("get_project on unknown id");
-    assert!(missing.is_none(), "a project id that was never created must not resolve to a row");
+    let missing = store
+        .get_project(Uuid::new_v4())
+        .await
+        .expect("get_project on unknown id");
+    assert!(
+        missing.is_none(),
+        "a project id that was never created must not resolve to a row"
+    );
 }
 
 /// BE-8: `list_projects`'s `Some(pid)` filter must return *at most* the one
@@ -345,18 +437,42 @@ async fn be8_list_projects_respects_project_filter() {
     let (store, _dir) = temp_store().await;
     let alpha = Uuid::new_v4();
     let beta = Uuid::new_v4();
-    store.insert_project(alpha, "Alpha", None).await.expect("insert alpha");
-    store.insert_project(beta, "Beta", None).await.expect("insert beta");
+    store
+        .insert_project(alpha, "Alpha", None)
+        .await
+        .expect("insert alpha");
+    store
+        .insert_project(beta, "Beta", None)
+        .await
+        .expect("insert beta");
 
-    let scoped = store.list_projects(Some(&alpha.to_string())).await.expect("scoped list");
-    assert_eq!(scoped.len(), 1, "a scoped filter must return only the matching project");
+    let scoped = store
+        .list_projects(Some(&alpha.to_string()))
+        .await
+        .expect("scoped list");
+    assert_eq!(
+        scoped.len(),
+        1,
+        "a scoped filter must return only the matching project"
+    );
     assert_eq!(scoped[0].id, alpha);
 
     let unscoped = store.list_projects(None).await.expect("unscoped list");
-    assert_eq!(unscoped.len(), 2, "an unscoped (global) caller must see every project");
+    assert_eq!(
+        unscoped.len(),
+        2,
+        "an unscoped (global) caller must see every project"
+    );
 
-    let unknown = store.list_projects(Some(&Uuid::new_v4().to_string())).await.expect("filter on unknown id");
-    assert_eq!(unknown.len(), 0, "a filter naming a project that was never created must return empty, not an error");
+    let unknown = store
+        .list_projects(Some(&Uuid::new_v4().to_string()))
+        .await
+        .expect("filter on unknown id");
+    assert_eq!(
+        unknown.len(),
+        0,
+        "a filter naming a project that was never created must return empty, not an error"
+    );
 }
 
 /// BE-8: `update_project` leaves an omitted (`None`) field unchanged
@@ -366,25 +482,53 @@ async fn be8_list_projects_respects_project_filter() {
 async fn be8_update_project_is_a_genuine_partial_update() {
     let (store, _dir) = temp_store().await;
     let id = Uuid::new_v4();
-    store.insert_project(id, "Original Name", Some("original description")).await.expect("insert");
+    store
+        .insert_project(id, "Original Name", Some("original description"))
+        .await
+        .expect("insert");
     let before = store.get_project(id).await.expect("get").expect("exists");
 
     // Update only the name; description must survive untouched.
-    let touched = store.update_project(id, Some("Renamed"), None).await.expect("update name only");
-    assert!(touched, "updating an existing project must report a row was affected");
+    let touched = store
+        .update_project(id, Some("Renamed"), None)
+        .await
+        .expect("update name only");
+    assert!(
+        touched,
+        "updating an existing project must report a row was affected"
+    );
     let after_name_only = store.get_project(id).await.expect("get").expect("exists");
     assert_eq!(after_name_only.name, "Renamed");
-    assert_eq!(after_name_only.description.as_deref(), Some("original description"), "an omitted field must not be clobbered");
-    assert!(after_name_only.updated_at >= before.updated_at, "updated_at must advance");
+    assert_eq!(
+        after_name_only.description.as_deref(),
+        Some("original description"),
+        "an omitted field must not be clobbered"
+    );
+    assert!(
+        after_name_only.updated_at >= before.updated_at,
+        "updated_at must advance"
+    );
 
     // Update only the description; the just-renamed name must survive.
-    store.update_project(id, None, Some("new description")).await.expect("update description only");
+    store
+        .update_project(id, None, Some("new description"))
+        .await
+        .expect("update description only");
     let after_both = store.get_project(id).await.expect("get").expect("exists");
-    assert_eq!(after_both.name, "Renamed", "a prior partial update must not be reverted by a later one");
+    assert_eq!(
+        after_both.name, "Renamed",
+        "a prior partial update must not be reverted by a later one"
+    );
     assert_eq!(after_both.description.as_deref(), Some("new description"));
 
     // Updating an id that was never created must report no row affected —
     // this is what lets the API handler return 404 instead of a false "ok".
-    let phantom = store.update_project(Uuid::new_v4(), Some("x"), None).await.expect("update unknown id");
-    assert!(!phantom, "updating a nonexistent project must report zero rows affected, not silently succeed");
+    let phantom = store
+        .update_project(Uuid::new_v4(), Some("x"), None)
+        .await
+        .expect("update unknown id");
+    assert!(
+        !phantom,
+        "updating a nonexistent project must report zero rows affected, not silently succeed"
+    );
 }
