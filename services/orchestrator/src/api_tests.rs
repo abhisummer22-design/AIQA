@@ -100,7 +100,8 @@ async fn test_state() -> (AppState, tempfile::TempDir) {
         .await
         .expect("connect");
     let evidence = LocalEvidenceStore::new(dir.path().join("evidence")).expect("evidence store");
-    let registry = ExecutorRegistry::new(Arc::new(SimulatedExecutor));
+    let registry = ExecutorRegistry::new(Arc::new(SimulatedExecutor))
+        .register("maestro", Arc::new(SimulatedExecutor));
     let policy = PolicyConfig {
         max_concurrency: 8,
         // Matches the production default (`PolicyConfig::from_env`'s
@@ -133,10 +134,12 @@ async fn test_state_with_compiled_api() -> (AppState, tempfile::TempDir) {
         .await
         .expect("connect");
     let evidence = LocalEvidenceStore::new(dir.path().join("evidence")).expect("evidence store");
-    let registry = ExecutorRegistry::new(Arc::new(SimulatedExecutor)).register(
-        "compiled-api",
-        Arc::new(crate::executor::CompiledApiExecutor::from_env()),
-    );
+    let registry = ExecutorRegistry::new(Arc::new(SimulatedExecutor))
+        .register("maestro", Arc::new(SimulatedExecutor))
+        .register(
+            "compiled-api",
+            Arc::new(crate::executor::CompiledApiExecutor::from_env()),
+        );
     let policy = PolicyConfig {
         max_concurrency: 8,
         require_approval_for: ["maestro".to_string()].into_iter().collect(),
@@ -167,7 +170,8 @@ async fn test_state_with_ai_router(
         .await
         .expect("connect");
     let evidence = LocalEvidenceStore::new(dir.path().join("evidence")).expect("evidence store");
-    let registry = ExecutorRegistry::new(Arc::new(SimulatedExecutor));
+    let registry = ExecutorRegistry::new(Arc::new(SimulatedExecutor))
+        .register("maestro", Arc::new(SimulatedExecutor));
     let policy = PolicyConfig {
         max_concurrency: 8,
         require_approval_for: ["maestro".to_string()].into_iter().collect(),
@@ -913,7 +917,7 @@ async fn actual_be9_scoped_approve_and_reject_through_router() {
     let gated_plan = serde_json::json!({
         "name": "gated-run",
         "concurrency": 1,
-        "tasks": [{"id": "t1", "name": "t1", "executor": "maestro", "simulate": {"outcome": "pass", "delay_ms": 0}}],
+        "tasks": [{"id": "t1", "name": "t1", "executor": "maestro", "simulate": {"outcome": "pass", "delay_ms": 100}}],
     });
     let (status, created) = send(
         &state,
@@ -6529,7 +6533,8 @@ async fn restart_test_state(
 ) -> AppState {
     let store = Store::connect(db_path).await.expect("connect");
     let evidence = LocalEvidenceStore::new(evidence_dir).expect("evidence store");
-    let registry = ExecutorRegistry::new(Arc::new(SimulatedExecutor));
+    let registry = ExecutorRegistry::new(Arc::new(SimulatedExecutor))
+        .register("maestro", Arc::new(SimulatedExecutor));
     AppState::new(
         Arc::new(registry),
         store,
@@ -6543,7 +6548,7 @@ fn gated_plan(name: &str) -> Value {
     serde_json::json!({
         "name": name,
         "concurrency": 1,
-        "tasks": [{"id": "t1", "name": "t1", "executor": "maestro", "simulate": {"outcome": "pass", "delay_ms": 0}}],
+        "tasks": [{"id": "t1", "name": "t1", "executor": "maestro", "simulate": {"outcome": "pass", "delay_ms": 100}}],
     })
 }
 
