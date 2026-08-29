@@ -2,7 +2,7 @@
  * AIQA Test Case Generator Page — Main Content Area
  * Futuristic AI Quality Engineering Test Generation Control Plane
  * Consumes:
- * - 5 Document Slots (PRD, FRD, SRD, MRD, Additional Document)
+ * - 4 Document Slots (PRD, FRD, SRD, Additional Document)
  * - 4 Application Sources (Staging, Demo, Live, Figma)
  * - 14 Exact Test Categories
  * - Dual-branch navigation (Source & Generation vs Generated Test Cases)
