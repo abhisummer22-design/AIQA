@@ -49,6 +49,7 @@ import type {
   CustomSkillRow,
   MobileFleet,
   NeuralPipelineResponse,
+  ResolvedSkillInstruction,
   OrchestratorStateResponse,
   WhoAmIResponse,
   CreateExecutionResponse,
@@ -668,6 +669,10 @@ export const aiqaApi = {
     create: (body: CreateCustomSkillRequest, signal?: AbortSignal) =>
       requestJson<CustomSkillRow>('/skills', { method: 'POST', body, signal }),
     delete: (id: string, signal?: AbortSignal) => requestVoid(`/skills/${encodeURIComponent(id)}`, { method: 'DELETE', signal }),
+    /** The real instruction each skill resolves to — the same text the
+     *  generator embeds in its prompt (`api.rs::resolve_skills`). */
+    resolve: (skills: Array<{ id: string; name: string; description: string }>, signal?: AbortSignal) =>
+      requestJson<ResolvedSkillInstruction[]>('/skills/resolve', { method: 'POST', body: { skills }, signal }),
   },
 
   /** Real-time Orchestrator Live Activity Logs (`api.rs::list_logs_handler`). */

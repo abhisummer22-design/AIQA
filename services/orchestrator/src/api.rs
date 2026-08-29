@@ -56,6 +56,9 @@ pub fn router(state: AppState) -> Router {
             post(create_custom_skill).get(list_custom_skills_handler),
         )
         .route("/api/v1/skills/:id", delete(delete_custom_skill_handler))
+        // The real instruction each skill resolves to — same function the
+        // generator uses, so the UI cannot show a drifted copy.
+        .route("/api/v1/skills/resolve", post(resolve_skills))
         // BE-8 — API Contract §5.1-5.4.
         .route(
             "/api/v1/projects",
@@ -888,6 +891,29 @@ async fn create_custom_skill(
         .find(|s| s.id == id)
         .ok_or_else(|| to_500("skill vanished immediately after insert"))?;
     Ok((StatusCode::CREATED, Json(created)))
+}
+
+#[derive(Deserialize)]
+struct ResolveSkillsBody {
+    skills: Vec<crate::ai_generation::SkillInput>,
+}
+
+/// POST /api/v1/skills/resolve — returns the real instruction each supplied
+/// skill resolves to.
+///
+/// This deliberately calls `ai_generation::resolve_skill_instructions` — the
+/// exact function the generator itself uses — rather than re-deriving the
+/// text. That is the whole point: what a user reads here is provably the
+/// same string that gets embedded in the real prompt, so this view cannot
+/// drift from generation behaviour the way a second, display-only copy of
+/// the instructions would.
+///
+/// Viewer+, matching `GET /skills`: reading what a skill instructs is not a
+/// privileged action.
+async fn resolve_skills(
+    ApiJson(body): ApiJson<ResolveSkillsBody>,
+) -> Json<Vec<crate::ai_generation::ResolvedSkillInstruction>> {
+    Json(crate::ai_generation::resolve_skill_instructions(&body.skills))
 }
 
 /// GET /api/v1/skills — any authenticated key (Viewer+) may list; selecting

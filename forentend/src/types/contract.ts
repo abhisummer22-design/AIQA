@@ -78,6 +78,17 @@ export interface CustomSkillRow {
   created_at: string;
 }
 
+/** `ai_generation.rs::ResolvedSkillInstruction` — the real instruction a
+ *  skill resolves to, returned by `POST /api/v1/skills/resolve`. This is the
+ *  exact string the generator embeds in the prompt: the endpoint calls the
+ *  same `resolve_skill_instructions` the generator does, so what is shown
+ *  cannot drift from what actually runs. */
+export interface ResolvedSkillInstruction {
+  id: string;
+  name: string;
+  instruction: string;
+}
+
 export interface CreateCustomSkillRequest {
   name: string;
   description?: string;

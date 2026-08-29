@@ -1355,6 +1355,114 @@ describe('TestCaseGeneratorPage — Skills & MCP Phase 1', () => {
     await waitFor(() => expect(screen.getByText('Localization Testing')).toBeTruthy());
   });
 
+  it('opening a skill shows the REAL instruction resolved by the backend, not the local label', async () => {
+    setApiKey(RAW_KEY);
+    let resolveBody: any = null;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        const u = String(url);
+        if (u.includes('/skills/resolve') && init?.method === 'POST') {
+          resolveBody = JSON.parse(String(init.body));
+          return jsonResponse(200, [
+            {
+              id: 'skill-security-testing',
+              name: 'Security Testing',
+              instruction:
+                'Identify applicable authentication, authorization, privilege-escalation, input-validation, injection, session-handling, sensitive-data-exposure, and API-abuse scenarios.',
+            },
+          ]);
+        }
+        return jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await goToSourcesBranch();
+
+    await act(async () => {
+      document.getElementById('skill-view-skill-security-testing')!.click();
+    });
+
+    await waitFor(() => expect(document.getElementById('skill-detail-modal')).toBeTruthy());
+    // The real backend-resolved instruction is rendered — not the short
+    // local `description` the registry carries for the row label.
+    await waitFor(() =>
+      expect(screen.getByText(/privilege-escalation, input-validation, injection/)).toBeTruthy(),
+    );
+    // It asked the real resolver, passing the real skill identity.
+    expect(resolveBody.skills[0].id).toBe('skill-security-testing');
+    expect(resolveBody.skills[0].name).toBe('Security Testing');
+  });
+
+  it('viewing a skill never changes whether it is selected', async () => {
+    setApiKey(RAW_KEY);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        if (String(url).includes('/skills/resolve')) {
+          return jsonResponse(200, [
+            { id: 'skill-security-testing', name: 'Security Testing', instruction: 'Real instruction text.' },
+          ]);
+        }
+        return jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await goToSourcesBranch();
+
+    const before = document
+      .getElementById('skill-toggle-skill-security-testing')!
+      .getAttribute('aria-checked');
+
+    await act(async () => {
+      document.getElementById('skill-view-skill-security-testing')!.click();
+    });
+    await waitFor(() => expect(document.getElementById('skill-detail-modal')).toBeTruthy());
+
+    // Reading what a skill says must not mutate real applied configuration.
+    expect(
+      document.getElementById('skill-toggle-skill-security-testing')!.getAttribute('aria-checked'),
+    ).toBe(before);
+  });
+
+  it('a failed instruction read is reported honestly — never silently shown as the local description', async () => {
+    setApiKey(RAW_KEY);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        if (String(url).includes('/skills/resolve')) {
+          return jsonResponse(500, {
+            error: { code: 'INTERNAL', message: 'resolver exploded', details: {}, request_id: 'r1' },
+          });
+        }
+        return jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await goToSourcesBranch();
+
+    await act(async () => {
+      document.getElementById('skill-view-skill-security-testing')!.click();
+    });
+
+    await waitFor(() => expect(document.getElementById('btn-skill-detail-retry')).toBeTruthy());
+    // No instruction body is rendered at all when the real read failed.
+    expect(document.getElementById('skill-detail-instruction')).toBeNull();
+    // And the registry's own one-line label is not passed off as the skill.
+    expect(
+      screen.queryByText('Authentication, authorization, and input-handling risk coverage.'),
+    ).toBeNull();
+  });
+
   it('Connect MCP shows a truthful "Not Configured" status and never claims a live connection', async () => {
     renderApp();
     await verifyKey();
