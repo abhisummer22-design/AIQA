@@ -38,7 +38,7 @@ export type FailureClassification =
   | 'INFRASTRUCTURE_FAILURE'
   | 'UNCLASSIFIED';
 
-export type Environment = 'production' | 'staging' | 'uat' | 'ephemeral-pr';
+export type Environment = 'demo' | 'uat' | 'live';
 
 export type ProjectStatus = 'Healthy' | 'Running' | 'Warning' | 'Degraded' | 'Critical' | 'Offline';
 

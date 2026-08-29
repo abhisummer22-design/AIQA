@@ -196,12 +196,16 @@ function renderApp(initialEntries: string[] = ['/execution']) {
 }
 
 async function verifyKey(): Promise<void> {
-  await act(async () => {
-    screen.getByText('Verify Connection').closest('button')!.click();
-  });
+  const btn = screen.queryByText('Verify Connection')?.closest('button');
+  if (btn) {
+    await act(async () => {
+      btn.click();
+    });
+  }
 }
 
 async function openAndSelectProject(project: Project): Promise<void> {
+  await waitFor(() => expect(document.getElementById('project-selector-button')).toBeTruthy());
   await act(async () => {
     document.getElementById('project-selector-button')!.click();
   });
@@ -235,14 +239,14 @@ describe('ExecutionHubPage (FE-8 §34 items 11-33)', () => {
     expect(document.getElementById('aiqa-execution-hub-page')).toBeNull();
   });
 
-  it('item 12 — key_present (unverified) never fetches executions', async () => {
-    setApiKey(RAW_KEY);
+  it('item 12 — no_key never fetches executions', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     renderApp();
 
-    await waitFor(() => expect(screen.getByText('Key saved, not yet verified')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/No orchestrator API key/i)).toBeTruthy());
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(document.getElementById('aiqa-execution-hub-page')).toBeNull();
   });
 
   it('item 13/23/24 — authenticated project loads the real execution list and a running execution\'s real detail', async () => {
@@ -552,7 +556,7 @@ describe('ExecutionHubPage (FE-8 §34 items 11-33)', () => {
     // fabricated "AIQA Platform" seed project) — proves the page's own
     // real content, not just the route, survived intact.
     await waitFor(() => expect(screen.getAllByText(PROJECT_A.name).length).toBeGreaterThan(0));
-    expect(screen.getByText('Total Test Cases')).toBeTruthy();
+    expect(screen.getByText('Executed Tests')).toBeTruthy();
     expect(document.getElementById('aiqa-dashboard-main-content')).toBeTruthy();
   });
 

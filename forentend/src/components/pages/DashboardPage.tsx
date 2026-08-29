@@ -132,11 +132,12 @@ import { useRealtime } from '../../context/RealtimeContext';
 import { ApiError, aiqaApi } from '../../services/aiqaApi';
 import { StateCard, renderResourceErrorState } from '../state/StateViews';
 import { EmptyState } from '../common/EmptyState';
-import { AIQualityCoreOrb } from '../dashboard/AIQualityCoreOrb';
+import { AIEnginePanel } from '../dashboard/AIEnginePanel';
 import { ProjectStatusDonut } from '../dashboard/ProjectStatusDonut';
 import { ProjectExecutionGraph } from '../dashboard/ProjectExecutionGraph';
+import { OrchestratorLogsPanel } from '../dashboard/OrchestratorLogsPanel';
 import type { ProjectMetrics, ProjectStatus } from '../../types';
-import type { DashboardResponse, KpisResponse, RunListItem, RunDetail } from '../../types/contract';
+import type { AiStatusResponse, DashboardResponse, KpisResponse, RunListItem, RunDetail } from '../../types/contract';
 
 /** A burst of task/run events for the same project collapses into one
  *  resync, never one per event (same pattern/reasoning as FE-9's own
@@ -201,6 +202,47 @@ export const DashboardPage: React.FC = () => {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  /** Real AI engine state (`GET /api/v1/ai/status`). Kept in its own state
+   *  rather than folded into `DashboardData` because it is platform-wide,
+   *  not project-scoped: it must not be cleared or reloaded just because
+   *  the selected project changed, and a failure to reach it must not
+   *  blank out the project dashboard beside it. */
+  const [aiStatus, setAiStatus] = useState<AiStatusResponse | null>(null);
+  const [aiLoading, setAiLoading] = useState(true);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const aiAbortRef = useRef<AbortController | null>(null);
+
+  const loadAiStatus = useCallback(async () => {
+    aiAbortRef.current?.abort();
+    const controller = new AbortController();
+    aiAbortRef.current = controller;
+    setAiLoading(true);
+    try {
+      const s = await aiqaApi.ai.status(controller.signal);
+      if (controller.signal.aborted) return;
+      // Structural guard before this reaches the panel. A payload that is
+      // not actually an `AiStatusResponse` (a proxy error body, an
+      // unexpected array) would otherwise crash on `status.providers.map`
+      // and, because this panel sits inside the Dashboard tree, take the
+      // whole Dashboard down with it — the same failure mode already fixed
+      // in `OrchestratorLogsPanel`. Treated as a real load failure instead.
+      if (!s || typeof s !== 'object' || !Array.isArray((s as AiStatusResponse).providers)) {
+        setAiStatus(null);
+        setAiError('The orchestrator returned an unexpected AI status payload.');
+        return;
+      }
+      setAiStatus(s);
+      setAiError(null);
+    } catch (err) {
+      if (controller.signal.aborted) return;
+      // Never leave a stale engine snapshot on screen looking current.
+      setAiStatus(null);
+      setAiError(err instanceof Error ? err.message : 'Failed to load AI engine status.');
+    } finally {
+      if (!controller.signal.aborted) setAiLoading(false);
+    }
+  }, []);
 
   const fetchAll = useCallback(async (projectId: string, isRefresh: boolean) => {
     abortRef.current?.abort();
@@ -277,6 +319,19 @@ export const DashboardPage: React.FC = () => {
   // Depends on `realtime.subscribe` specifically (stable identity), not
   // the whole `realtime` object — see FE-9's own live-discovered bug about
   // exactly this mistake (`RealtimeContext.tsx`'s module doc comment).
+  // Platform-wide, not project-scoped: loaded once on mount and refreshed
+  // on the same slow cadence the AI router itself re-discovers on. It is
+  // deliberately NOT tied to `selectedProjectId` — the engine is the same
+  // regardless of which project is open.
+  useEffect(() => {
+    void loadAiStatus();
+    const timer = setInterval(() => void loadAiStatus(), 30000);
+    return () => {
+      clearInterval(timer);
+      aiAbortRef.current?.abort();
+    };
+  }, [loadAiStatus]);
+
   const resyncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (!selectedProjectId) return;
@@ -405,23 +460,31 @@ export const DashboardPage: React.FC = () => {
         {/* 2. KPI Cards Row */}
         <section id="dashboard-kpi-row" aria-label="Key Performance Indicators">
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
-            {/* Total Test Cases */}
+            {/* Executed Tests.
+
+                This card was previously labelled "Total Test Cases", which
+                was wrong: `dashboard.test_count` is
+                `COUNT(quality_nodes WHERE node_type = 'test')` — the number
+                of distinct tests the execution engine has actually *run* in
+                this project (upserted per task name by
+                `store.rs::upsert_quality_node`). It has nothing to do with
+                the `test_cases` table, so a project with zero saved test
+                cases could still show a non-zero number here purely from
+                execution runs — exactly the contradiction the old label
+                produced. The value was always real; only the name was not. */}
             <div className="p-3 rounded-lg bg-[#0B1120] border border-slate-800 hover:border-slate-700 transition-all shadow-sm flex flex-col justify-between">
               <div className="flex items-center justify-between text-slate-400">
                 <span className="text-[10px] uppercase font-mono font-medium tracking-wider">
-                  Total Test Cases
+                  Executed Tests
                 </span>
                 <Layers className="w-3.5 h-3.5 text-slate-400" />
               </div>
               <div className="mt-2">
-                {/* Real `dashboard.test_count`, not the donut's task-sum
-                    total below — two distinct real concepts (see this
-                    file's own module doc comment). */}
                 <div className="text-xl font-bold font-mono text-slate-100">
                   {dashboard.test_count.toLocaleString()}
                 </div>
                 <div className="text-[10px] text-slate-400 font-sans truncate mt-0.5">
-                  {dashboard.project_name}
+                  distinct tests run
                 </div>
               </div>
             </div>
@@ -635,9 +698,17 @@ export const DashboardPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Right: Futuristic AI Orb Centerpiece (5 Cols on desktop) */}
-          <div id="ai-quality-core-orb-column" className="lg:col-span-5 flex flex-col">
-            <AIQualityCoreOrb status={status} hasActiveRun={!!activeRun} projectName={dashboard.project_name} />
+          {/* Right: the real AI engine (5 Cols on desktop).
+
+              Was `AIQualityCoreOrb`, a decorative orb whose "Autonomous
+              Verification Engine" / "ACTIVE INFERENCE" / "CORE STABLE"
+              labels were computed from `ProjectStatus` alone — no model, no
+              inference, no engine behind any of it. This shows the real
+              routing layer (`ai_router.rs`) instead: real provider health,
+              the real model that would be routed to, its real score and
+              reason, and its real capability levels. */}
+          <div id="ai-engine-column" className="lg:col-span-5 flex flex-col">
+            <AIEnginePanel status={aiStatus} loading={aiLoading} error={aiError} onRetry={() => void loadAiStatus()} />
           </div>
         </section>
 
@@ -744,7 +815,38 @@ export const DashboardPage: React.FC = () => {
         </div>
       </header>
 
-      {renderBody()}
+      {/* 2. Two-column workspace: existing dashboard content (left) and the
+          real, live orchestrator log stream (right).
+
+          Breakpoint choice is deliberate: the split happens at `xl`
+          (1280px+), not `lg`. Several of the dashboard's own sections
+          already use `lg:grid-cols-12` internally, so splitting at `lg`
+          would squeeze those into a ~2/3-width column right at the
+          breakpoint where they first expand — visibly shrinking existing
+          content for the sake of the new panel. At `xl` the left column is
+          still wider than the whole dashboard was at `lg`, so nothing the
+          user already had gets narrower; below `xl` the log panel simply
+          stacks underneath at full width.
+
+          The log column is a fixed 400px rather than a fraction: log lines
+          are timestamp + level + source + message on one row, and a
+          percentage column kept them wrapping to three or four lines each at
+          1280–1600px. Fixing the width makes every extra pixel of a wider
+          screen go to the dashboard, which actually benefits from it. */}
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_400px] gap-4 items-start">
+        <div className="space-y-4 min-w-0">{renderBody()}</div>
+
+        {/* Real backend activity — history over REST, then a live WebSocket
+            (`OrchestratorLogsPanel`, reused as-is: it already owns the real
+            stream, reconnect backoff, id-based dedup, bounded buffer, and
+            near-bottom-only auto-scroll). Scoped to the selected project
+            when there is one; global orchestrator logs otherwise — the
+            backend includes unscoped entries in a project stream on
+            purpose (`log_bus.rs::recent_logs`). */}
+        <div className="min-w-0 xl:sticky xl:top-4">
+          <OrchestratorLogsPanel projectId={selectedProjectId} />
+        </div>
+      </div>
     </div>
   );
 };

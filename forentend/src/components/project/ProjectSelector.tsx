@@ -15,17 +15,22 @@
  */
 
 import React, { useEffect, useRef, useState } from 'react';
-import { AlertTriangle, Check, ChevronDown, FolderOpen, FolderX, Loader2, Plus, RefreshCw, WifiOff, X } from 'lucide-react';
+import { AlertTriangle, Check, ChevronDown, FolderOpen, FolderX, Loader2, Plus, RefreshCw, Trash2, WifiOff, X } from 'lucide-react';
 import { ApiError } from '../../services/aiqaApi';
 import { useProject } from '../../context/ProjectContext';
 import { useAuth } from '../../context/AuthContext';
+import { DeleteProjectDialog } from './DeleteProjectDialog';
 
 export const ProjectSelector: React.FC = () => {
   const auth = useAuth();
-  const { projects, selectedProject, selectedProjectId, loading, error, selectProject, refreshProjects, createProject } =
+  const { projects, selectedProject, selectedProjectId, loading, error, selectProject, refreshProjects, createProject, deleteProject } =
     useProject();
   const [isOpen, setIsOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+
+  // Delete project state
+  const [projectToDelete, setProjectToDelete] = useState<typeof projects[0] | null>(null);
+  const [deleteSuccessMessage, setDeleteSuccessMessage] = useState<string | null>(null);
 
   // FE-14 — real project creation (GAP-01). Entirely local UI state; the
   // only real side effect is `createProject` itself (`ProjectContext` →
@@ -300,28 +305,56 @@ export const ProjectSelector: React.FC = () => {
             </div>
           )}
 
+          {deleteSuccessMessage && !isCreating && (
+            <div className="mx-1 mb-1.5 px-2.5 py-1.5 rounded-md bg-emerald-950/40 border border-emerald-800/60 text-emerald-300 text-[11px]">
+              {deleteSuccessMessage}
+            </div>
+          )}
+
           {!isCreating &&
             !error &&
-            projects.map((p) => (
-              <button
-                key={p.id}
-                type="button"
-                role="option"
-                aria-selected={p.id === selectedProjectId}
-                onClick={() => {
-                  selectProject(p.id);
-                  setIsOpen(false);
-                }}
-                className={`w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-md text-left transition-colors cursor-pointer ${
-                  p.id === selectedProjectId
-                    ? 'bg-slate-800/90 text-slate-100 font-semibold'
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
-                }`}
-              >
-                <span className="truncate">{p.name}</span>
-                {p.id === selectedProjectId && <Check className="w-3.5 h-3.5 text-indigo-400 shrink-0" />}
-              </button>
-            ))}
+            projects.map((p) => {
+              const isSelected = p.id === selectedProjectId;
+              return (
+                <div
+                  key={p.id}
+                  className={`group w-full flex items-center justify-between gap-1.5 px-2.5 py-1.5 rounded-md transition-colors ${
+                    isSelected
+                      ? 'bg-slate-800/90 text-slate-100 font-semibold'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
+                  }`}
+                >
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={isSelected}
+                    onClick={() => {
+                      selectProject(p.id);
+                      setIsOpen(false);
+                    }}
+                    className="flex-1 flex items-center justify-between gap-2 text-left truncate cursor-pointer bg-transparent border-0 p-0 text-inherit font-inherit"
+                  >
+                    <span className="truncate">{p.name}</span>
+                    {isSelected && <Check className="w-3.5 h-3.5 text-indigo-400 shrink-0 mr-1" />}
+                  </button>
+
+                  {auth.status === 'authenticated' && (
+                    <button
+                      type="button"
+                      aria-label={`Delete project ${p.name}`}
+                      title={`Delete project ${p.name}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setProjectToDelete(p);
+                      }}
+                      className="p-1 rounded text-slate-500 hover:text-rose-400 hover:bg-rose-950/40 opacity-70 group-hover:opacity-100 focus:opacity-100 transition-all cursor-pointer shrink-0"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+              );
+            })}
 
           {/* FE-14 (GAP-01) — real creation entry point. Available whenever
               authenticated, regardless of whether `projects` is empty or
@@ -340,6 +373,18 @@ export const ProjectSelector: React.FC = () => {
           )}
         </div>
       )}
+
+      <DeleteProjectDialog
+        isOpen={Boolean(projectToDelete)}
+        project={projectToDelete}
+        isActiveProject={projectToDelete?.id === selectedProjectId}
+        onClose={() => setProjectToDelete(null)}
+        onConfirmDelete={deleteProject}
+        onSuccess={(name) => {
+          setDeleteSuccessMessage(`Project "${name}" deleted successfully.`);
+          setTimeout(() => setDeleteSuccessMessage(null), 4000);
+        }}
+      />
     </div>
   );
 };

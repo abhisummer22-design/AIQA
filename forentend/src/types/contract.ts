@@ -63,6 +63,27 @@ export type ReviewState = 'NEEDS_REVIEW' | 'CONFIRMED' | 'DISMISSED';
 
 export type Role = 'admin' | 'operator' | 'viewer';
 
+// --------------------------------------------------------------- custom skills
+
+/** `store.rs::CustomSkillRow`, `POST/GET /api/v1/skills`. A real, persisted
+ *  custom skill — `description` is embedded verbatim into the AI generation
+ *  prompt for any skill name `ai_generation.rs` doesn't recognize as
+ *  built-in (see that module's `resolve_skill_instructions`). */
+export interface CustomSkillRow {
+  id: string;
+  name: string;
+  description: string;
+  source_file: string | null;
+  created_by: string;
+  created_at: string;
+}
+
+export interface CreateCustomSkillRequest {
+  name: string;
+  description?: string;
+  source_file?: string | null;
+}
+
 // ------------------------------------------------------------------- projects
 
 /** `store.rs::Project` (Contract §5). */
@@ -906,6 +927,149 @@ export interface AiStatusResponse {
   routing_preview: AiRoutingDecision | null;
 }
 
+// ------------------------------------------------------------------ rbac
+
+/** `api.rs::WhoAmIResponse` — the caller's own real identity as resolved
+ *  from the presented key. `name` is the API key's label, not a user
+ *  account: this backend has no user/profile concept. */
+export interface WhoAmIResponse {
+  name: string;
+  role: Role;
+  /** `null` = global scope (sees every project). */
+  project_id: string | null;
+  /** The real role ordering `auth.rs::Role::at_least` enforces, least to
+   *  most privileged. Served by the backend so this taxonomy is never
+   *  duplicated (and never drifts) on the client. */
+  role_hierarchy: Role[];
+}
+
+/** `store.rs::ApiKeyListRow` — `GET /admin/api-keys` (Admin only). Only the
+ *  key's metadata is ever returned; the key itself is shown exactly once at
+ *  creation and only its SHA-256 hash is stored. */
+export interface ApiKeyListRow {
+  id: string;
+  name: string;
+  role: Role;
+  project_id: string | null;
+  created_at: string;
+  revoked_at: string | null;
+}
+
+// --------------------------------------------------------------- mobile
+
+/** `mobile.rs::MobileDevice` — a real device or emulator `adb` can see. */
+export interface MobileDevice {
+  serial: string;
+  /** Real adb state verbatim: `device` | `offline` | `unauthorized` | ... */
+  state: string;
+  model: string | null;
+  /** Only `state === 'device'` can actually run a test. */
+  ready: boolean;
+  emulator: boolean;
+}
+
+/** `mobile.rs::AvdDefinition` — an AVD that exists and could be booted. A
+ *  definition, not a running device. */
+export interface AvdDefinition {
+  name: string;
+  running: boolean;
+}
+
+/** `mobile.rs::IosDevice` — a real iOS Simulator (macOS only) or a real
+ *  physically attached iPhone/iPad (via libimobiledevice). Kept separate
+ *  from `MobileDevice` because the two platforms have genuinely different
+ *  identifiers, states and tooling. */
+export interface IosDevice {
+  udid: string;
+  name: string;
+  /** Real runtime/OS version when the tool reports one. */
+  runtime: string | null;
+  /** Real state verbatim: simctl's `Booted`/`Shutdown`, or `Connected`. */
+  state: string;
+  ready: boolean;
+  simulator: boolean;
+}
+
+/** `mobile.rs::MobileToolStatus` — real presence/version of one CLI. */
+export interface MobileToolStatus {
+  path: string | null;
+  available: boolean;
+  /** Real version string, or the real reason it is unusable. */
+  detail: string;
+}
+
+/** `GET /api/v1/mobile/fleet`. */
+export interface MobileFleet {
+  devices: MobileDevice[];
+  avds: AvdDefinition[];
+  adb: MobileToolStatus;
+  emulator_tool: MobileToolStatus;
+  maestro: MobileToolStatus;
+  /** Real iOS devices — Simulators and/or attached hardware. */
+  ios_devices: IosDevice[];
+  /** `xcrun simctl`. Unavailable off macOS, with that as the real reason. */
+  simctl: MobileToolStatus;
+  /** libimobiledevice — the only real path to a physical iPhone off macOS. */
+  libimobiledevice: MobileToolStatus;
+  /** Real host OS, so platform limits can be stated truthfully. */
+  host_os: string;
+}
+
+// ------------------------------------------------------------- pipeline
+
+/** `api.rs::PipelineStage` — one stage of the real execution pipeline.
+ *  `available: false` is a first-class, honestly-reported state: the stage
+ *  is listed with the real reason it does not exist, rather than hidden
+ *  (which would imply completeness) or animated (which would fabricate it). */
+export interface PipelineStage {
+  id: string;
+  label: string;
+  /** The real module/route implementing it, or why it is absent. */
+  backing: string;
+  available: boolean;
+  metric: number | null;
+  metric_label: string | null;
+}
+
+/** `GET /api/v1/projects/:id/pipeline`. */
+export interface NeuralPipelineResponse {
+  stages: PipelineStage[];
+  graph_nodes: number;
+  graph_relations: number;
+  active_runs: number;
+  completed_runs: number;
+}
+
+// ---------------------------------------------------------------- orchestrator
+
+/** `api.rs::ExecutorRoute` — one real executor kind the scheduler can route
+ *  a task to, plus the real policy gate applied to it. */
+export interface ExecutorRoute {
+  kind: string;
+  gate: 'AUTO' | 'REQUIRES_APPROVAL' | 'BLOCKED';
+}
+
+/** `api.rs::ActiveRunView` — a run this backend process is actively
+ *  driving, with its real live task states (the live DAG). Only in-process
+ *  runs appear; finished runs from a previous process are history, served
+ *  by the project-scoped execution endpoints instead. */
+export interface ActiveRunView {
+  run_id: string;
+  name: string;
+  project_id: string | null;
+  state: string;
+  concurrency: number;
+  tasks: TaskState[];
+}
+
+/** `GET /api/v1/orchestrator/state` — the real coordination surface:
+ *  capability routing table, enforced policy limits, and the live DAG. */
+export interface OrchestratorStateResponse {
+  executors: ExecutorRoute[];
+  max_concurrency: number;
+  active_runs: ActiveRunView[];
+}
+
 // ----------------------------------------------------------------------- errors
 
 /** `errors.rs::ErrorBody` — API Contract §2.5's structured envelope, which
@@ -920,3 +1084,19 @@ export interface ApiErrorEnvelope {
     request_id: string;
   };
 }
+
+// ------------------------------------------------------------- orchestrator logs
+
+/** `log_bus.rs::OrchestratorLogEntry` — structured live log entry emitted by
+ *  the real AIQA Orchestrator runtime. */
+export interface OrchestratorLogEntry {
+  id: string;
+  timestamp: string; // ISO 8601
+  level: string; // 'INFO' | 'WARN' | 'ERROR' | 'DEBUG' | 'SUCCESS'
+  source: string; // 'ai_router' | 'generation' | 'validation' | 'execution' | 'executor' | 'policy' | 'store' | 'engine' | 'auth' | etc.
+  message: string;
+  run_id?: string;
+  project_id?: string;
+  task_id?: string;
+}
+

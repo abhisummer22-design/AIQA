@@ -44,6 +44,13 @@ import type {
   CancelRunResponse,
   AdHocApiRequest,
   ApiTestExecutionResponse,
+  ApiKeyListRow,
+  CreateCustomSkillRequest,
+  CustomSkillRow,
+  MobileFleet,
+  NeuralPipelineResponse,
+  OrchestratorStateResponse,
+  WhoAmIResponse,
   CreateExecutionResponse,
   CreateProjectRequest,
   CompilationOutcome,
@@ -77,6 +84,7 @@ import type {
   UpdateProjectRequest,
   UpdateTestCaseRequest,
   CreateTestCaseRequest,
+  OrchestratorLogEntry,
 } from '../types/contract';
 
 /** Base path for orchestrator calls. Dev: proxy this to the orchestrator
@@ -385,6 +393,20 @@ export function projectEventsWsUrl(projectId: string): string | null {
   return `${wsProtocol}//${base.host}${path}?key=${encodeURIComponent(key)}`;
 }
 
+/** Real-time WebSocket URL for AIQA orchestrator structured log streaming. */
+export function orchestratorLogsWsUrl(projectId?: string | null): string | null {
+  const key = getApiKey();
+  if (!key) return null;
+  const base = new URL(API_BASE, window.location.origin);
+  const wsProtocol = base.protocol === 'https:' ? 'wss:' : 'ws:';
+  if (projectId) {
+    const path = `${base.pathname.replace(/\/+$/, '')}/projects/${encodeURIComponent(projectId)}/logs/ws`;
+    return `${wsProtocol}//${base.host}${path}?key=${encodeURIComponent(key)}`;
+  }
+  const path = `${base.pathname.replace(/\/+$/, '')}/logs/ws`;
+  return `${wsProtocol}//${base.host}${path}?key=${encodeURIComponent(key)}`;
+}
+
 // ------------------------------------------------------------- typed calls
 //
 // One function per real, implemented backend endpoint (BE-8..BE-15). Every
@@ -402,6 +424,8 @@ export const aiqaApi = {
       requestJson<Project>('/projects', { method: 'POST', body, signal }),
     update: (projectId: string, body: UpdateProjectRequest, signal?: AbortSignal) =>
       requestJson<Project>(`/projects/${projectId}`, { method: 'PATCH', body, signal }),
+    delete: (projectId: string, signal?: AbortSignal) =>
+      requestVoid(`/projects/${projectId}`, { method: 'DELETE', signal }),
   },
 
   executions: {
@@ -595,5 +619,70 @@ export const aiqaApi = {
    *  `/api/v1/...`). */
   metrics: {
     get: (signal?: AbortSignal) => requestText('/metrics', { signal, skipBase: true }),
+  },
+
+  /** Real RBAC surface. `whoami` is the caller's own identity/role/scope
+   *  (`api.rs::whoami`); `apiKeys` is the real key inventory with each key's
+   *  real role and project scope (`GET /admin/api-keys`, Admin only — a
+   *  non-admin caller gets a real 403, which this app surfaces rather than
+   *  hiding the control). `/admin/...` is a real flat route, not under
+   *  `/api/v1`, hence `skipBase`. */
+  rbac: {
+    whoami: (signal?: AbortSignal) => requestJson<WhoAmIResponse>('/auth/whoami', { signal }),
+    apiKeys: (signal?: AbortSignal) => requestJson<ApiKeyListRow[]>('/admin/api-keys', { signal, skipBase: true }),
+  },
+
+  /** Real mobile device fleet (`mobile.rs`) — real `adb devices -l`, real
+   *  AVDs, and the real Maestro CLI's real version. Host-level, not
+   *  project-scoped: adb sees one set of devices per machine. */
+  mobile: {
+    fleet: (signal?: AbortSignal) => requestJson<MobileFleet>('/mobile/fleet', { signal }),
+    bootEmulator: (avd: string, signal?: AbortSignal) =>
+      requestJson<{ message: string }>('/mobile/emulators/boot', { method: 'POST', body: { avd }, signal }),
+    bootSimulator: (udid: string, signal?: AbortSignal) =>
+      requestJson<{ message: string }>('/mobile/simulators/boot', { method: 'POST', body: { udid }, signal }),
+  },
+
+  /** Real stage-by-stage pipeline state for one project
+   *  (`api.rs::get_neural_pipeline`), including stages that genuinely do
+   *  not exist, reported as unavailable with the real reason. */
+  pipeline: {
+    get: (projectId: string, signal?: AbortSignal) =>
+      requestJson<NeuralPipelineResponse>(`/projects/${projectId}/pipeline`, { signal }),
+  },
+
+  /** The real coordination surface behind the Orchestrator view
+   *  (`api.rs::get_orchestrator_state`) — executor capability routing,
+   *  enforced policy gates, and the live DAG of in-process runs.
+   *  Platform-wide, not project-scoped (same as `ai`). */
+  orchestrator: {
+    state: (signal?: AbortSignal) => requestJson<OrchestratorStateResponse>('/orchestrator/state', { signal }),
+  },
+
+  /** Real, persisted custom skills for AI test-case generation
+   *  (`services/orchestrator/src/api.rs`'s `create_custom_skill` /
+   *  `list_custom_skills_handler` / `delete_custom_skill_handler`).
+   *  Platform-wide, not project-scoped — same as `ai`. */
+  skills: {
+    list: (signal?: AbortSignal) => requestJson<CustomSkillRow[]>('/skills', { signal }),
+    create: (body: CreateCustomSkillRequest, signal?: AbortSignal) =>
+      requestJson<CustomSkillRow>('/skills', { method: 'POST', body, signal }),
+    delete: (id: string, signal?: AbortSignal) => requestVoid(`/skills/${encodeURIComponent(id)}`, { method: 'DELETE', signal }),
+  },
+
+  /** Real-time Orchestrator Live Activity Logs (`api.rs::list_logs_handler`). */
+  logs: {
+    list: (opts: { projectId?: string | null; limit?: number } = {}, signal?: AbortSignal) => {
+      if (opts.projectId) {
+        return requestJson<OrchestratorLogEntry[]>(`/projects/${encodeURIComponent(opts.projectId)}/logs`, {
+          query: { limit: opts.limit },
+          signal,
+        });
+      }
+      return requestJson<OrchestratorLogEntry[]>('/logs', {
+        query: { limit: opts.limit },
+        signal,
+      });
+    },
   },
 };

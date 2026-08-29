@@ -532,3 +532,23 @@ async fn be8_update_project_is_a_genuine_partial_update() {
         "updating a nonexistent project must report zero rows affected, not silently succeed"
     );
 }
+
+#[tokio::test]
+async fn delete_project_removes_project_and_all_scoped_records_atomically() {
+    let (store, _dir) = temp_store().await;
+    let id = Uuid::new_v4();
+    store
+        .insert_project(id, "To Be Deleted", Some("temporary project"))
+        .await
+        .expect("insert project");
+
+    assert!(store.get_project(id).await.expect("get").is_some());
+
+    let deleted = store.delete_project(id).await.expect("delete_project");
+    assert!(deleted, "delete_project must return true for existing project");
+
+    assert!(store.get_project(id).await.expect("get").is_none());
+
+    let deleted_again = store.delete_project(id).await.expect("delete_project again");
+    assert!(!deleted_again, "delete_project must return false when project is absent");
+}

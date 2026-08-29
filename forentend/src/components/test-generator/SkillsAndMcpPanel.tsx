@@ -18,7 +18,7 @@ interface SkillsAndMcpPanelProps {
   skills: SkillDefinition[];
   selectedSkillIds: string[];
   onToggleSkill: (id: string) => void;
-  onAddCustomSkill: (draft: { name: string; description: string }) => void;
+  onAddCustomSkill: (draft: { name: string; description: string }) => Promise<SkillDefinition>;
   disabled?: boolean;
 }
 

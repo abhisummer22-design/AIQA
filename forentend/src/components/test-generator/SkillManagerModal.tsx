@@ -7,16 +7,31 @@
  * reusable `<Modal>`/`<Drawer>` component exists to import instead), so
  * this feels native rather than introducing a second design language.
  */
-import React, { useState } from 'react';
-import { Search, X, CheckSquare, Square, Plus, Info } from 'lucide-react';
+import React, { useRef, useState } from 'react';
+import { Search, X, CheckSquare, Square, Plus, Info, Upload, Loader2, AlertTriangle } from 'lucide-react';
 import type { SkillDefinition, SkillSourceType } from '../../types/skills';
 
 interface SkillManagerModalProps {
   skills: SkillDefinition[];
   selectedSkillIds: string[];
   onToggleSkill: (id: string) => void;
-  onAddCustomSkill: (draft: { name: string; description: string }) => void;
+  onAddCustomSkill: (draft: { name: string; description: string }) => Promise<SkillDefinition>;
   onClose: () => void;
+}
+
+/** Read a text file client-side for the "attach a skill file" flow. Only
+ *  plain-text formats are accepted (`.txt`/`.md`/`.json`/`.yaml`/`.yml`) —
+ *  its content becomes the skill's real `description`, the exact text
+ *  `ai_generation.rs::resolve_skill_instructions` embeds into the
+ *  generation prompt, so anything that isn't readable text would silently
+ *  become a useless instruction. */
+function readTextFile(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ''));
+    reader.onerror = () => reject(reader.error ?? new Error('Failed to read file'));
+    reader.readAsText(file);
+  });
 }
 
 function typeBadge(type: SkillSourceType): React.ReactNode {
@@ -50,7 +65,11 @@ export const SkillManagerModal: React.FC<SkillManagerModalProps> = ({
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [draftName, setDraftName] = useState('');
   const [draftDescription, setDraftDescription] = useState('');
+  const [attachedFileName, setAttachedFileName] = useState<string | null>(null);
   const [justAddedId, setJustAddedId] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const filtered = skills.filter((s) => {
     const q = search.trim().toLowerCase();
@@ -58,13 +77,37 @@ export const SkillManagerModal: React.FC<SkillManagerModalProps> = ({
     return s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q);
   });
 
-  const handleCreate = () => {
-    if (!draftName.trim()) return;
-    onAddCustomSkill({ name: draftName.trim(), description: draftDescription.trim() || 'No description provided.' });
-    setJustAddedId(draftName.trim());
-    setDraftName('');
-    setDraftDescription('');
-    setShowCreateForm(false);
+  const handleFileSelected = async (file: File | undefined) => {
+    if (!file) return;
+    setSaveError(null);
+    try {
+      const text = await readTextFile(file);
+      setDraftDescription((prev) => (prev.trim() ? `${prev.trim()}\n\n${text}` : text));
+      setAttachedFileName(file.name);
+    } catch {
+      setSaveError(`Could not read "${file.name}" as text.`);
+    }
+  };
+
+  const handleCreate = async () => {
+    if (!draftName.trim() || saving) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const created = await onAddCustomSkill({
+        name: draftName.trim(),
+        description: draftDescription.trim() || 'No description provided.',
+      });
+      setJustAddedId(created.name);
+      setDraftName('');
+      setDraftDescription('');
+      setAttachedFileName(null);
+      setShowCreateForm(false);
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : 'Failed to save this skill.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -156,7 +199,7 @@ export const SkillManagerModal: React.FC<SkillManagerModalProps> = ({
           {justAddedId && !showCreateForm && (
             <p className="text-[11px] font-mono text-cyan-300 flex items-center gap-1.5">
               <Info className="w-3.5 h-3.5 shrink-0" />
-              "{justAddedId}" added for this session only — not saved anywhere, and will be gone on reload.
+              "{justAddedId}" saved — available to every project from now on.
             </p>
           )}
           {showCreateForm ? (
@@ -167,34 +210,72 @@ export const SkillManagerModal: React.FC<SkillManagerModalProps> = ({
                 placeholder="Skill name"
                 value={draftName}
                 onChange={(e) => setDraftName(e.target.value)}
-                className="w-full px-2.5 py-1.5 rounded bg-[#0B1120] border border-slate-700 text-xs font-mono text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                disabled={saving}
+                className="w-full px-2.5 py-1.5 rounded bg-[#0B1120] border border-slate-700 text-xs font-mono text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 disabled:opacity-50"
               />
               <textarea
                 aria-label="New skill description"
-                placeholder="Description (optional)"
-                rows={2}
+                placeholder="Description — the exact instruction the AI generator will follow for this skill (optional if you attach a file below)"
+                rows={3}
                 value={draftDescription}
                 onChange={(e) => setDraftDescription(e.target.value)}
-                className="w-full px-2.5 py-1.5 rounded bg-[#0B1120] border border-slate-700 text-xs font-mono text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 resize-none"
+                disabled={saving}
+                className="w-full px-2.5 py-1.5 rounded bg-[#0B1120] border border-slate-700 text-xs font-mono text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 resize-none disabled:opacity-50"
               />
-              <p className="text-[10px] font-mono text-amber-300 flex items-start gap-1.5">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".txt,.md,.markdown,.json,.yaml,.yml"
+                className="hidden"
+                onChange={(e) => {
+                  void handleFileSelected(e.target.files?.[0]);
+                  e.target.value = '';
+                }}
+              />
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={saving}
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-[#0B1120] border border-slate-700 hover:border-cyan-600 text-slate-300 hover:text-cyan-300 font-mono text-[11px] font-semibold cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  Attach file (.txt/.md/.json/.yaml)
+                </button>
+                {attachedFileName && <span className="text-[10px] font-mono text-slate-500 truncate">{attachedFileName}</span>}
+              </div>
+              <p className="text-[10px] font-mono text-slate-500 flex items-start gap-1.5">
                 <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                <span>Custom-skill persistence is not implemented yet. This skill will exist only for this browser session.</span>
+                <span>
+                  Saved to the real orchestrator backend — persists across reloads and is available to every project. The
+                  description text (attached file content included) is what the AI generator actually reads for this skill.
+                </span>
               </p>
+              {saveError && (
+                <p className="text-[10px] font-mono text-rose-300 flex items-start gap-1.5">
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                  <span>{saveError}</span>
+                </p>
+              )}
               <div className="flex items-center gap-2">
                 <button
                   type="button"
                   id="btn-confirm-add-custom-skill"
-                  onClick={handleCreate}
-                  disabled={!draftName.trim()}
-                  className="px-3.5 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-mono text-xs font-bold cursor-pointer"
+                  onClick={() => void handleCreate()}
+                  disabled={!draftName.trim() || saving}
+                  className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-mono text-xs font-bold cursor-pointer"
                 >
-                  Add to this session
+                  {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                  {saving ? 'Saving…' : 'Save Skill'}
                 </button>
                 <button
                   type="button"
-                  onClick={() => setShowCreateForm(false)}
-                  className="px-3.5 py-1.5 rounded-md bg-[#0B1120] border border-slate-700 text-slate-300 font-mono text-xs cursor-pointer"
+                  onClick={() => {
+                    setShowCreateForm(false);
+                    setSaveError(null);
+                  }}
+                  disabled={saving}
+                  className="px-3.5 py-1.5 rounded-md bg-[#0B1120] border border-slate-700 text-slate-300 font-mono text-xs cursor-pointer disabled:opacity-50"
                 >
                   Cancel
                 </button>

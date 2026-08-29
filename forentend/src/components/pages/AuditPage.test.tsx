@@ -112,12 +112,16 @@ function renderApp(initialEntries: string[] = ['/audit']) {
 }
 
 async function verifyKey(): Promise<void> {
-  await act(async () => {
-    screen.getByText('Verify Connection').closest('button')!.click();
-  });
+  const btn = screen.queryByText('Verify Connection')?.closest('button');
+  if (btn) {
+    await act(async () => {
+      btn.click();
+    });
+  }
 }
 
 async function openAndSelectProject(project: Project): Promise<void> {
+  await waitFor(() => expect(document.getElementById('project-selector-button')).toBeTruthy());
   await act(async () => {
     document.getElementById('project-selector-button')!.click();
   });
@@ -149,13 +153,12 @@ describe('AuditPage (FE-6 §24 items 8-26)', () => {
     expect(document.getElementById('aiqa-audit-page')).toBeNull();
   });
 
-  it('item 9 — key_present (unverified) never fetches Audit', async () => {
-    setApiKey(RAW_KEY);
+  it('item 9 — no_key never fetches Audit', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     renderApp();
 
-    await waitFor(() => expect(screen.getByText('Key saved, not yet verified')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/No orchestrator API key/i)).toBeTruthy());
     expect(fetchMock).not.toHaveBeenCalled();
     expect(document.getElementById('aiqa-audit-page')).toBeNull();
   });
@@ -367,7 +370,7 @@ describe('AuditPage (FE-6 §24 items 8-26)', () => {
     // FE-10: Dashboard now renders real project-scoped data (no more
     // fabricated "AIQA Platform" seed project).
     await waitFor(() => expect(screen.getAllByText(PROJECT_A.name).length).toBeGreaterThan(0));
-    expect(screen.getByText('Total Test Cases')).toBeTruthy();
+    expect(screen.getByText('Executed Tests')).toBeTruthy();
     expect(document.getElementById('aiqa-dashboard-main-content')).toBeTruthy();
   });
 

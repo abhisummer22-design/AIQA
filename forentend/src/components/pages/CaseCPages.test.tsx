@@ -16,25 +16,47 @@
  *   via `POST .../custom-testing/generate` (`custom_testing.rs`), the
  *   real central AI router, and a handoff into the existing Test Case
  *   Generator pipeline. See its own `CustomTestingPage.test.tsx`.
- * - The remaining 4 — `AIQAOrchestratorPage`, `RBACTestingPage`,
- *   `MobileTestingPage`, `FeatureMapFlowPage` — had **only their copy**
- *   updated in that same later unit (`deferredCases` below): each is now a
- *   direct product-owner decision (`AIQA_PRD_FRD_SRD_v6.1_SCOPE_
- *   CORRECTIONS.md` §2) — real, intended future scope, deliberately
- *   *deferred* with a named revisit condition, not an unexplained gap.
- *   Nothing about backend/frontend behavior changed; only whether the page
- *   states this specifically (new copy) instead of generically (the old
- *   "NOT IMPLEMENTED"/"NO BACKEND CAPABILITY" badges, now asserted absent).
+ * - `AIQAOrchestratorPage` — moved out entirely (28 Aug 2026): the page now
+ *   renders the orchestration that genuinely *does* run — real AI provider
+ *   routing (`GET /api/v1/ai/status`'s `routing_preview`, produced by
+ *   `ai_router.rs::score_model`), real executor capability routing and
+ *   policy gates plus the live DAG (`GET /api/v1/orchestrator/state`), and
+ *   the real WebSocket log stream. Only AI-assisted *autonomous* agent
+ *   routing (ACC-006) stays deferred, and the page still says so. Its own
+ *   real-behavior tests live in the `AIQA Orchestrator — real realtime
+ *   orchestration` describe block at the bottom of this file.
+ * - `RBACTestingPage` — moved out entirely (28 Aug 2026): the page now
+ *   shows the real authorization surface that ships — the caller's real
+ *   role/scope (`GET /api/v1/auth/whoami`), the real API-key inventory with
+ *   real roles and scopes (`GET /admin/api-keys`), and real recorded/live
+ *   authorization denials (now emitted by `auth::require_auth`). Only the
+ *   ACC-011 scenario-matrix *tool* stays deferred, and the page still says
+ *   so. Its own tests live in `RBACTestingPage.test.tsx`.
+ * - `MobileTestingPage` — moved out entirely (29 Aug 2026): the page now
+ *   shows the real device fleet this host actually has — real
+ *   `adb devices -l`, real `emulator -list-avds` (bootable for real), and
+ *   the real Maestro CLI version (`GET /api/v1/mobile/fleet`, `mobile.rs`).
+ *   Zero devices is rendered as a real empty fleet. Its own tests live in
+ *   `MobileTestingPage.test.tsx`.
+ * - The remaining 1 — `FeatureMapFlowPage` — had
+ *   **only their copy** updated in that same
+ *   later unit (`deferredCases` below): each is now a direct product-owner
+ *   decision (`AIQA_PRD_FRD_SRD_v6.1_SCOPE_CORRECTIONS.md` §2) — real,
+ *   intended future scope, deliberately *deferred* with a named revisit
+ *   condition, not an unexplained gap. Nothing about backend/frontend
+ *   behavior changed; only whether the page states this specifically (new
+ *   copy) instead of generically (the old "NOT IMPLEMENTED"/"NO BACKEND
+ *   CAPABILITY" badges, now asserted absent).
  *
  * These tests assert the truthful state renders (generic for Custom
- * Testing, specific-and-sourced for the 4 deferred pages), that no
+ * Testing, specific-and-sourced for the remaining deferred page), that no
  * page-specific fabricated content (the original hardcoded demo records/
  * metrics) survives on any of them, and that each page still has a real
  * root element and stays reachable via the same real, authenticated route
  * table every other page uses.
  */
 import React from 'react';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppShell } from '../../App';
@@ -45,6 +67,26 @@ function jsonResponse(status: number, body: unknown): Response {
 }
 
 const RAW_KEY = 'aiqa_casectest00000000000';
+
+/** A real-shaped project, for the pipeline tests that need one selected
+ *  (the pipeline endpoint is project-scoped). */
+const PROJECT_A = {
+  id: 'proj-pipeline',
+  name: 'Pipeline Project',
+  description: null,
+  created_at: '2026-01-01T00:00:00Z',
+  updated_at: '2026-01-01T00:00:00Z',
+};
+
+async function openAndSelectProject(project: { name: string }): Promise<void> {
+  await waitFor(() => expect(document.getElementById('project-selector-button')).toBeTruthy());
+  await act(async () => {
+    document.getElementById('project-selector-button')!.click();
+  });
+  await act(async () => {
+    within(screen.getByRole('listbox', { name: 'Projects' })).getByRole('option', { name: project.name }).click();
+  });
+}
 
 function mockBackend() {
   const fetchMock = vi.fn().mockImplementation(async () => jsonResponse(200, []));
@@ -61,9 +103,12 @@ function renderApp(path: string) {
 }
 
 async function verifyKey(): Promise<void> {
-  await act(async () => {
-    screen.getByText('Verify Connection').closest('button')!.click();
-  });
+  const btn = screen.queryByText('Verify Connection')?.closest('button');
+  if (btn) {
+    await act(async () => {
+      btn.click();
+    });
+  }
 }
 
 beforeEach(() => {
@@ -75,7 +120,7 @@ afterEach(() => {
   localStorage.clear();
 });
 
-// ---------------------------------------------- Deferred-scope pages (4)
+// ---------------------------------------------- Deferred-scope pages (1)
 
 const deferredCases: Array<{
   path: string;
@@ -90,30 +135,6 @@ const deferredCases: Array<{
   accRef: string;
 }> = [
   {
-    path: '/orchestrator',
-    rootId: 'aiqa-orchestrator-page',
-    heading: 'AIQA Orchestrator',
-    bannedText: ['PLAN-901', 'PLAN-902', 'Dispatch Selected Plan', 'Release Gating'],
-    revisitSnippet: 'shifts toward autonomous routing',
-    accRef: 'ACC-006',
-  },
-  {
-    path: '/rbac',
-    rootId: 'rbac-testing-page',
-    heading: 'RBAC Security Testing Matrix',
-    bannedText: ['Enterprise Organization & Financial Asset Access Control', 'Evaluate Authorization Matrix', 'BillingManager'],
-    revisitSnippet: 'enforcement remains fully committed and already shipped',
-    accRef: 'ACC-011',
-  },
-  {
-    path: '/mobile-testing',
-    rootId: 'mobile-testing-page',
-    heading: 'Mobile Testing Hub',
-    bannedText: ['Samsung Galaxy S24 Ultra', 'DEV-AND-01', 'Execute Non-UI Suite', 'Lock & Reserve Device'],
-    revisitSnippet: 'device-farm budget decision',
-    accRef: 'ACC-014',
-  },
-  {
     path: '/feature-map',
     rootId: 'feature-map-flow-page',
     heading: 'Feature Map / System Call Flow',
@@ -123,7 +144,7 @@ const deferredCases: Array<{
   },
 ];
 
-describe('Case-C pages — deferred-scope copy (4 pages, updated 22 Aug 2026)', () => {
+describe('Case-C pages — deferred-scope copy (1 page, updated 22 Aug 2026)', () => {
   for (const c of deferredCases) {
     describe(c.path, () => {
       it('unauthenticated (no key) shows the real auth-state card, not page content', async () => {
@@ -195,7 +216,7 @@ describe('Case-C pages — deferred-scope copy (4 pages, updated 22 Aug 2026)', 
     });
   }
 
-  it('each of the 4 pages\' revisit condition is genuinely distinct, not one sentence reused four times', async () => {
+  it('each of the 3 pages\' revisit condition is genuinely distinct, not one sentence reused three times', async () => {
     setApiKey(RAW_KEY);
     mockBackend();
     const seen = new Set<string>();
@@ -215,7 +236,7 @@ describe('Case-C pages — deferred-scope copy (4 pages, updated 22 Aug 2026)', 
 });
 
 describe('Case-C pages — route-table non-regression', () => {
-  it('Dashboard remains unregressed with Custom Testing and all 4 deferred-scope pages present in the route table', async () => {
+  it('Dashboard remains unregressed with Custom Testing and all 4 deferred-scope pages plus the real Orchestrator present in the route table', async () => {
     setApiKey(RAW_KEY);
     mockBackend();
     renderApp('/dashboard');
@@ -224,7 +245,7 @@ describe('Case-C pages — route-table non-regression', () => {
     await waitFor(() => expect(document.getElementById('aiqa-dashboard-main-content')).toBeTruthy());
   });
 
-  it('Test Generator remains unregressed with Custom Testing and all 4 deferred-scope pages present in the route table', async () => {
+  it('Test Generator remains unregressed with Custom Testing and all 4 deferred-scope pages plus the real Orchestrator present in the route table', async () => {
     setApiKey(RAW_KEY);
     mockBackend();
     renderApp('/test-generator');
@@ -232,5 +253,334 @@ describe('Case-C pages — route-table non-regression', () => {
 
     await waitFor(() => expect(document.getElementById('aiqa-test-case-generator-page')).toBeTruthy());
     expect(screen.getByText('Ready to Generate')).toBeTruthy();
+  });
+});
+
+// ------------------------------- AIQA Orchestrator — now genuinely real
+
+/** A real-shaped `GET /api/v1/ai/status` body — field-for-field the
+ *  `AiStatusResponse` contract type, mirroring the live backend response
+ *  observed from `ai_router.rs`. Used only as mocked transport output. */
+const AI_STATUS = {
+  providers: [
+    {
+      id: 'ollama',
+      name: 'Ollama',
+      provider_type: 'LOCAL',
+      endpoint: 'http://localhost:11434',
+      configured: true,
+      reachable: true,
+      status: 'HEALTHY',
+      models: [{ id: 'qwen3:14b', provider_id: 'ollama', display_name: 'qwen3:14b', status: 'AVAILABLE' }],
+    },
+    {
+      id: 'mj-gateway',
+      name: 'MJ AI Gateway',
+      provider_type: 'OPEN_AI_COMPATIBLE',
+      endpoint: 'http://127.0.0.1:8000',
+      configured: false,
+      reachable: false,
+      status: 'NOT_CONFIGURED',
+      models: [],
+    },
+  ],
+  settings: { mode: 'AUTO', preferred_provider: null, preferred_model: null, fallback_enabled: true },
+  routing_preview: {
+    provider_id: 'ollama',
+    model_id: 'qwen3:14b',
+    routing_score: 211.48,
+    reason: 'AUTO mode: best available model for TestCaseGeneration by routing score',
+  },
+};
+
+/** A real-shaped `GET /api/v1/orchestrator/state` body — matches
+ *  `api.rs::OrchestratorStateResponse`, including the real default policy
+ *  gate (`maestro` requires approval, everything else auto-schedules). */
+const ORCH_STATE = {
+  executors: [
+    { kind: 'maestro', gate: 'REQUIRES_APPROVAL' },
+    { kind: 'newman', gate: 'AUTO' },
+    { kind: 'playwright', gate: 'AUTO' },
+  ],
+  max_concurrency: 8,
+  active_runs: [
+    {
+      run_id: 'run-1',
+      name: 'Smoke Run',
+      project_id: 'proj-1',
+      state: 'RUNNING',
+      concurrency: 2,
+      tasks: [
+        { id: 't1', name: 'Login smoke check', prerequisites: [], status: 'PASSED', reason: null, started_at: null, finished_at: null },
+        { id: 't2', name: 'Checkout flow', prerequisites: ['t1'], status: 'RUNNING', reason: null, started_at: null, finished_at: null },
+      ],
+    },
+  ],
+};
+
+/** Real-shaped `GET /api/v1/projects/:id/pipeline` body, matching
+ *  `api.rs::NeuralPipelineResponse` — including the genuinely unavailable
+ *  stages the backend reports with their real reasons. */
+const PIPELINE = {
+  stages: [
+    { id: 'brain', label: 'Model Router', backing: 'ai_router.rs', available: true, metric: null, metric_label: null },
+    { id: 'planning', label: 'Planning', backing: 'scheduler.rs::validate_plan', available: true, metric: null, metric_label: null },
+    { id: 'tools', label: 'Tool Routing', backing: 'executor.rs::ExecutorRegistry', available: true, metric: 6, metric_label: 'executors' },
+    { id: 'execution', label: 'Execution', backing: 'engine.rs', available: true, metric: 0, metric_label: 'tasks running' },
+    { id: 'observation', label: 'Observation', backing: 'log_bus.rs', available: true, metric: null, metric_label: null },
+    { id: 'memory', label: 'Quality Graph', backing: 'quality_nodes + quality_relations', available: true, metric: 6, metric_label: 'nodes' },
+    { id: 'goal', label: 'Goal State', backing: 'engine.rs terminal state', available: true, metric: 2, metric_label: 'completed runs' },
+    { id: 'replanning', label: 'Re-planning', backing: 'Not implemented. Nothing re-plans a failed run.', available: false, metric: null, metric_label: null },
+    { id: 'vector', label: 'Vector Store', backing: 'Not implemented. No embedding endpoint and no vector database exist.', available: false, metric: null, metric_label: null },
+    { id: 'rag', label: 'RAG Retrieval', backing: 'Not implemented. Nothing is retrieved.', available: false, metric: null, metric_label: null },
+  ],
+  graph_nodes: 6,
+  graph_relations: 0,
+  active_runs: 0,
+  completed_runs: 2,
+};
+
+function mockOrchestratorBackend(pipeline: unknown = PIPELINE) {
+  const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+    const u = String(url);
+    if (u.includes('/ai/status')) return jsonResponse(200, AI_STATUS);
+    if (u.includes('/orchestrator/state')) return jsonResponse(200, ORCH_STATE);
+    if (u.includes('/pipeline')) return jsonResponse(200, pipeline);
+    if (u.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+    return jsonResponse(200, []);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  return fetchMock;
+}
+
+describe('AIQA Orchestrator — real realtime orchestration', () => {
+  it('unauthenticated (no key) shows the real auth-state card and makes no orchestrator request', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    renderApp('/orchestrator');
+
+    await waitFor(() => expect(screen.getByText('No orchestrator API key configured')).toBeTruthy());
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('renders the REAL routing decision from the backend — provider, model, score, and stated reason', async () => {
+    setApiKey(RAW_KEY);
+    mockOrchestratorBackend();
+    renderApp('/orchestrator');
+    await verifyKey();
+
+    await waitFor(() => expect(document.getElementById('aiqa-orchestrator-page')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('ollama / qwen3:14b')).toBeTruthy());
+    // The real backend-supplied reason and score, not a client-side guess.
+    expect(screen.getByText(/best available model for TestCaseGeneration by routing score/)).toBeTruthy();
+    expect(screen.getByText(/routing score 211\.48/)).toBeTruthy();
+    expect(screen.getByText('AUTO mode')).toBeTruthy();
+  });
+
+  it('calls the real orchestrator + ai-status endpoints (this page is no longer a no-backend page)', async () => {
+    setApiKey(RAW_KEY);
+    const fetchMock = mockOrchestratorBackend();
+    renderApp('/orchestrator');
+    await verifyKey();
+    await waitFor(() => expect(document.getElementById('aiqa-orchestrator-page')).toBeTruthy());
+
+    // Re-read `mock.calls` inside each assertion — a snapshot taken before
+    // the real requests settle would assert against a stale array.
+    const calledUrls = () => (fetchMock.mock.calls as [string][]).map(([u]) => String(u));
+    await waitFor(() => expect(calledUrls().some((u) => u.includes('/api/v1/ai/status'))).toBe(true));
+    await waitFor(() => expect(calledUrls().some((u) => u.includes('/api/v1/orchestrator/state'))).toBe(true));
+  });
+
+  it('renders the real executor capability-routing table with its real policy gates', async () => {
+    setApiKey(RAW_KEY);
+    mockOrchestratorBackend();
+    renderApp('/orchestrator');
+    await verifyKey();
+
+    await waitFor(() => expect(screen.getByText('maestro')).toBeTruthy());
+    expect(screen.getByText('playwright')).toBeTruthy();
+    // The real default gate: maestro is approval-gated, others auto-schedule.
+    expect(screen.getByText('REQUIRES APPROVAL')).toBeTruthy();
+    expect(screen.getAllByText('AUTO').length).toBeGreaterThan(0);
+    expect(screen.getByText(/Policy-enforced max concurrency: 8/)).toBeTruthy();
+  });
+
+  it('renders the real live DAG — task states and genuine prerequisite edges', async () => {
+    setApiKey(RAW_KEY);
+    mockOrchestratorBackend();
+    renderApp('/orchestrator');
+    await verifyKey();
+
+    await waitFor(() => expect(screen.getByText('Login smoke check')).toBeTruthy());
+    expect(screen.getByText('Checkout flow')).toBeTruthy();
+    // The real dependency edge the backend actually published.
+    expect(screen.getByText('after: t1')).toBeTruthy();
+    expect(screen.getByText(/concurrency 2 · 2 tasks/)).toBeTruthy();
+  });
+
+  it('labels each lane by its real transport — push for the DAG, polled for provider health', async () => {
+    setApiKey(RAW_KEY);
+    mockOrchestratorBackend();
+    renderApp('/orchestrator');
+    await verifyKey();
+
+    await waitFor(() => expect(screen.getByText('ollama / qwen3:14b')).toBeTruthy());
+    // Provider health genuinely has no backend event stream, so this lane
+    // must say polled rather than claim a push feed that does not exist.
+    expect(screen.getByText(/polled 30s/)).toBeTruthy();
+    // The DAG lane reports the real WebSocket state from RealtimeContext —
+    // with no project selected in this test, that is honestly not "live".
+    expect(screen.getByText(/^push: /)).toBeTruthy();
+    expect(screen.queryByText('push: live')).toBeNull();
+  });
+
+  it('never claims the routing score is an accuracy or quality benchmark', async () => {
+    setApiKey(RAW_KEY);
+    mockOrchestratorBackend();
+    renderApp('/orchestrator');
+    await verifyKey();
+
+    await waitFor(() => expect(screen.getByText('ollama / qwen3:14b')).toBeTruthy());
+    expect(screen.getByText(/not an accuracy or quality\s+benchmark/)).toBeTruthy();
+  });
+
+  it('shows no fabricated route when the backend reports no compatible model', async () => {
+    setApiKey(RAW_KEY);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        if (String(url).includes('/ai/status')) return jsonResponse(200, { ...AI_STATUS, routing_preview: null });
+        if (String(url).includes('/orchestrator/state')) return jsonResponse(200, ORCH_STATE);
+        return jsonResponse(200, []);
+      }),
+    );
+    renderApp('/orchestrator');
+    await verifyKey();
+
+    await waitFor(() => expect(screen.getByText(/No compatible model is currently available/)).toBeTruthy());
+    expect(screen.queryByText('ollama / qwen3:14b')).toBeNull();
+    expect(screen.queryByText(/routing score/)).toBeNull();
+  });
+
+  it('a real backend failure replaces the panels outright — never leaves stale numbers looking current', async () => {
+    setApiKey(RAW_KEY);
+    let failNow = false;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        const u = String(url);
+        if (u.includes('/ai/status')) {
+          if (failNow) return jsonResponse(500, { error: { code: 'INTERNAL', message: 'boom', details: {}, request_id: 'r1' } });
+          return jsonResponse(200, AI_STATUS);
+        }
+        if (u.includes('/orchestrator/state')) return jsonResponse(200, ORCH_STATE);
+        return jsonResponse(200, []);
+      }),
+    );
+    renderApp('/orchestrator');
+    await verifyKey();
+    await waitFor(() => expect(screen.getByText('ollama / qwen3:14b')).toBeTruthy());
+
+    failNow = true;
+    await act(async () => {
+      document.getElementById('btn-orchestrator-refresh')!.click();
+    });
+
+    await waitFor(() => expect(screen.queryByText('ollama / qwen3:14b')).toBeNull());
+    expect(screen.queryByText(/routing score 211\.48/)).toBeNull();
+  });
+
+  it('renders none of the page\'s previous fabricated demo content', async () => {
+    setApiKey(RAW_KEY);
+    mockOrchestratorBackend();
+    renderApp('/orchestrator');
+    await verifyKey();
+    await waitFor(() => expect(screen.getByText('ollama / qwen3:14b')).toBeTruthy());
+
+    for (const banned of ['PLAN-901', 'PLAN-902', 'Dispatch Selected Plan', 'Release Gating']) {
+      expect(screen.queryByText(new RegExp(banned))).toBeNull();
+    }
+  });
+});
+
+
+// ------------------------------------ Neural Pipeline (real loop, honest gaps)
+
+describe('AIQA Orchestrator — Neural Pipeline', () => {
+  async function openWithProject() {
+    setApiKey(RAW_KEY);
+    mockOrchestratorBackend();
+    renderApp('/orchestrator');
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(document.getElementById('neural-pipeline-panel')).toBeTruthy());
+  }
+
+  it('renders the real loop stages backed by real modules', async () => {
+    await openWithProject();
+
+    for (const id of ['brain', 'planning', 'tools', 'execution', 'observation', 'goal']) {
+      expect(document.getElementById(`pipeline-stage-${id}`)).toBeTruthy();
+    }
+    // Real live counters from the backend, not decoration. Scoped to the
+    // stage that owns each one — the same number legitimately appears in
+    // more than one real place on this page.
+    const tools = document.getElementById('pipeline-stage-tools')!;
+    expect(within(tools).getByText('6')).toBeTruthy();
+    expect(within(tools).getByText('executors')).toBeTruthy();
+    const goal = document.getElementById('pipeline-stage-goal')!;
+    expect(within(goal).getByText('2')).toBeTruthy();
+  });
+
+  it("reports vector store and RAG as NOT IMPLEMENTED with the backend's real reason", async () => {
+    await openWithProject();
+
+    const vector = document.getElementById('pipeline-stage-vector')!;
+    const rag = document.getElementById('pipeline-stage-rag')!;
+    expect(within(vector).getByText('not implemented')).toBeTruthy();
+    expect(within(rag).getByText('not implemented')).toBeTruthy();
+    // The real reason is surfaced, not just a generic label.
+    expect(screen.getByText(/No embedding endpoint and no vector database exist/)).toBeTruthy();
+    expect(screen.getByText(/Nothing is retrieved/)).toBeTruthy();
+  });
+
+  it('reports re-planning as not implemented rather than drawing a closed agent loop', async () => {
+    await openWithProject();
+
+    expect(within(document.getElementById('pipeline-stage-replanning')!).getByText('not implemented')).toBeTruthy();
+    expect(screen.getByText(/Nothing re-plans a failed run/)).toBeTruthy();
+  });
+
+  it('shows IDLE when no task is executing — the animation never implies activity that is not happening', async () => {
+    await openWithProject();
+    expect(screen.getByText('IDLE')).toBeTruthy();
+    expect(screen.queryByText('EXECUTING')).toBeNull();
+  });
+
+  it('shows EXECUTING only when the backend reports genuinely running tasks', async () => {
+    setApiKey(RAW_KEY);
+    const live = {
+      ...PIPELINE,
+      stages: PIPELINE.stages.map((s) => (s.id === 'execution' ? { ...s, metric: 3 } : s)),
+      active_runs: 1,
+    };
+    mockOrchestratorBackend(live);
+    renderApp('/orchestrator');
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+
+    await waitFor(() => expect(screen.getByText('EXECUTING')).toBeTruthy());
+    expect(screen.queryByText('IDLE')).toBeNull();
+  });
+
+  it('renders the real quality-graph size, including a genuine zero', async () => {
+    await openWithProject();
+    const panel = document.getElementById('neural-pipeline-panel')!;
+    // Real counts, including a genuine zero for relations — not hidden.
+    // The counts row renders numbers and units as separate nodes, so match
+    // the row's own text content rather than a single element.
+    expect(panel.textContent).toContain('nodes');
+    expect(panel.textContent).toContain('relations');
+    expect(panel.textContent).toContain('Quality Graph');
   });
 });

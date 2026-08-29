@@ -4410,33 +4410,29 @@ impl crate::executor::Executor for MarkerExecutor {
     }
 }
 
-fn test_state_with_marker_executor(
-) -> impl std::future::Future<Output = (AppState, tempfile::TempDir)> {
-    async {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let store = Store::connect(&dir.path().join("api.sqlite3"))
-            .await
-            .expect("connect");
-        let evidence =
-            LocalEvidenceStore::new(dir.path().join("evidence")).expect("evidence store");
-        let registry = ExecutorRegistry::new(Arc::new(SimulatedExecutor))
-            .register("marker", Arc::new(MarkerExecutor));
-        let policy = PolicyConfig {
-            max_concurrency: 8,
-            require_approval_for: ["maestro".to_string()].into_iter().collect(),
-            blocked_executors: HashSet::new(),
-        };
-        (
-            AppState::new(
-                Arc::new(registry),
-                store,
-                policy,
-                evidence,
-                inert_ai_router(),
-            ),
-            dir,
-        )
-    }
+async fn test_state_with_marker_executor() -> (AppState, tempfile::TempDir) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = Store::connect(&dir.path().join("api.sqlite3"))
+        .await
+        .expect("connect");
+    let evidence = LocalEvidenceStore::new(dir.path().join("evidence")).expect("evidence store");
+    let registry = ExecutorRegistry::new(Arc::new(SimulatedExecutor))
+        .register("marker", Arc::new(MarkerExecutor));
+    let policy = PolicyConfig {
+        max_concurrency: 8,
+        require_approval_for: ["maestro".to_string()].into_iter().collect(),
+        blocked_executors: HashSet::new(),
+    };
+    (
+        AppState::new(
+            Arc::new(registry),
+            store,
+            policy,
+            evidence,
+            inert_ai_router(),
+        ),
+        dir,
+    )
 }
 
 /// The core Phase 2 backend proof: `POST .../handoff` with a real
@@ -6692,4 +6688,147 @@ async fn rejection_survives_a_process_restart_and_can_still_be_rejected() {
         );
         assert_eq!(rejected["state"], "REJECTED");
     }
+}
+
+#[tokio::test]
+async fn delete_project_admin_success_with_cascading_cleanup() {
+    let (state, _dir) = test_state().await;
+    let admin = mint_key(&state, "admin", None).await;
+    let project = make_project(&state, "To Delete").await;
+
+    // Verify project exists
+    let (status, got) = send(
+        &state,
+        req("GET", &format!("/api/v1/projects/{project}"), Some(&admin), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(got["name"], "To Delete");
+
+    // DELETE project
+    let (status, _) = send(
+        &state,
+        req("DELETE", &format!("/api/v1/projects/{project}"), Some(&admin), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // Verify GET now returns 404
+    let (status, _) = send(
+        &state,
+        req("GET", &format!("/api/v1/projects/{project}"), Some(&admin), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Verify audit log has project.delete entry
+    let audit_rows = state
+        .store
+        .list_audit(None, 100)
+        .await
+        .expect("audit log");
+    let delete_entry = audit_rows
+        .iter()
+        .find(|a| a.action == "project.delete" && a.target.as_deref() == Some(&project.to_string()));
+    assert!(delete_entry.is_some(), "audit log must record project.delete");
+}
+
+#[tokio::test]
+async fn delete_project_forbidden_for_non_admin_roles() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "Role Check").await;
+    let operator = mint_key(&state, "operator", None).await;
+    let viewer = mint_key(&state, "viewer", None).await;
+
+    let (status, _) = send(
+        &state,
+        req("DELETE", &format!("/api/v1/projects/{project}"), Some(&operator), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, _) = send(
+        &state,
+        req("DELETE", &format!("/api/v1/projects/{project}"), Some(&viewer), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn delete_project_returns_404_for_unknown_project() {
+    let (state, _dir) = test_state().await;
+    let admin = mint_key(&state, "admin", None).await;
+    let random_id = Uuid::new_v4();
+
+    let (status, _) = send(
+        &state,
+        req("DELETE", &format!("/api/v1/projects/{random_id}"), Some(&admin), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn delete_project_scoped_admin_cannot_delete_different_project() {
+    let (state, _dir) = test_state().await;
+    let proj_a = make_project(&state, "Project A").await;
+    let proj_b = make_project(&state, "Project B").await;
+
+    let scoped_admin_a = mint_key(&state, "admin", Some(&proj_a.to_string())).await;
+
+    let (status, _) = send(
+        &state,
+        req("DELETE", &format!("/api/v1/projects/{proj_b}"), Some(&scoped_admin_a), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn list_logs_returns_recent_history_and_respects_project_scoping() {
+    let (state, _dir) = test_state().await;
+    let proj_a = make_project(&state, "Proj Logs A").await;
+    let proj_b = make_project(&state, "Proj Logs B").await;
+
+    let admin = mint_key(&state, "admin", None).await;
+    let operator_a = mint_key(&state, "operator", Some(&proj_a.to_string())).await;
+
+    // Emit logs
+    state.log_bus.emit("INFO", "ai_router", "Global discovery started", None, None, None).await;
+    state.log_bus.emit("INFO", "generation", "Generating for A", None, Some(&proj_a.to_string()), None).await;
+    state.log_bus.emit("INFO", "execution", "Running B", None, Some(&proj_b.to_string()), None).await;
+
+    // Admin sees all logs
+    let (status, logs) = send(
+        &state,
+        req("GET", "/api/v1/logs", Some(&admin), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let arr = logs.as_array().expect("array");
+    assert_eq!(arr.len(), 3);
+
+    // Operator A sees global + Proj A logs, but not Proj B
+    let (status, logs_a) = send(
+        &state,
+        req("GET", "/api/v1/logs", Some(&operator_a), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let arr_a = logs_a.as_array().expect("array");
+    assert_eq!(arr_a.len(), 2);
+    let msgs: Vec<&str> = arr_a.iter().map(|l| l["message"].as_str().unwrap()).collect();
+    assert!(msgs.contains(&"Global discovery started"));
+    assert!(msgs.contains(&"Generating for A"));
+    assert!(!msgs.contains(&"Running B"));
+
+    // Scoped route GET /api/v1/projects/:id/logs
+    let (status, proj_logs) = send(
+        &state,
+        req("GET", &format!("/api/v1/projects/{proj_a}/logs"), Some(&operator_a), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(proj_logs.as_array().unwrap().len(), 2);
 }

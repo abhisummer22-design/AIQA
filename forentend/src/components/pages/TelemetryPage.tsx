@@ -40,7 +40,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Activity, AlertTriangle, Gauge, Inbox, RotateCcw } from 'lucide-react';
+import { Activity, Gauge, Inbox, Info, RotateCcw } from 'lucide-react';
 import { ApiError, aiqaApi } from '../../services/aiqaApi';
 import { StateCard, renderResourceErrorState } from '../state/StateViews';
 import { EmptyState } from '../common/EmptyState';
@@ -219,6 +219,13 @@ export const TelemetryPage: React.FC = () => {
       runsByState.length > 0 || tasksByStatus.length > 0 || bugDraftsByReviewState.length > 0 ||
       (failureClusters ?? 0) > 0 || (activeApiKeys ?? 0) > 0 || (auditLogTotal ?? 0) > 0;
 
+    /** Which of ACC-013's real "timeouts"/"errors" task statuses actually
+     *  appear in this snapshot — used so the note below can only name series
+     *  the page is really rendering. */
+    const presentStatuses = ['TIMEOUT', 'FAILED', 'INFRA_ERROR'].filter((s) =>
+      tasksByStatus.some((row) => row.label === s),
+    );
+
     if (!hasAnyData) {
       return (
         <EmptyState
@@ -231,13 +238,19 @@ export const TelemetryPage: React.FC = () => {
 
     return (
       <div className="space-y-3">
-        <div id="telemetry-disclosure" className="p-3 rounded-lg bg-amber-950/20 border border-amber-800/50 text-[11px] font-mono text-amber-200/90 flex items-start gap-2">
-          <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-400" />
+        {/* Scope note, deliberately NOT styled as a warning. This used to be
+            an amber `AlertTriangle` panel, which made a page where nothing is
+            actually wrong lead with what reads as a fault — the most
+            prominent element on a healthy page looked like an error. The
+            content is unchanged and just as explicit; only the severity
+            signal was wrong. */}
+        <div id="telemetry-disclosure" className="p-3 rounded-lg bg-[#0B1120] border border-slate-800 text-[11px] font-mono text-slate-400 flex items-start gap-2">
+          <Info className="w-3.5 h-3.5 shrink-0 mt-0.5 text-slate-500" />
           <span>
-            <strong>What this does not show:</strong> latency, response time, p95, or p99 — the real{' '}
+            <strong className="text-slate-300">What this does not show:</strong> latency, response time, p95, or p99 — the real{' '}
             <code>/metrics</code> endpoint has no timing data of any kind today, only state/status counts. Real
             average run/task duration exists on the{' '}
-            <button type="button" onClick={() => navigate('/dashboard')} className="underline text-amber-300 hover:text-amber-100 cursor-pointer">
+            <button type="button" onClick={() => navigate('/dashboard')} className="underline text-indigo-400 hover:text-indigo-300 cursor-pointer">
               Dashboard
             </button>{' '}
             (project-scoped, a different real endpoint) — not repeated here.
@@ -254,10 +267,29 @@ export const TelemetryPage: React.FC = () => {
         {tasksByStatus.length > 0 && (
           <div>
             {seriesCard('Tasks by Status', tasksByStatus)}
+            {/* Only name the series that are genuinely rendered above. The
+                previous copy said "the real TIMEOUT series above"
+                unconditionally, so whenever no task had actually timed out —
+                the normal case — it pointed at a row that was not on screen. */}
             <p className="mt-1.5 text-[10px] font-mono text-slate-500 px-1">
-              Closest real signal to ACC-013&apos;s &quot;timeouts&quot; (the real <code>TIMEOUT</code> series
-              above) and &quot;errors&quot; (<code>FAILED</code>/<code>INFRA_ERROR</code>) — task-level, not
-              HTTP-request-level.
+              {presentStatuses.length > 0 ? (
+                <>
+                  Closest real signal to ACC-013&apos;s &quot;timeouts&quot;/&quot;errors&quot; — the{' '}
+                  {presentStatuses.map((s, i) => (
+                    <React.Fragment key={s}>
+                      {i > 0 && ' / '}
+                      <code>{s}</code>
+                    </React.Fragment>
+                  ))}{' '}
+                  {presentStatuses.length === 1 ? 'series' : 'series'} above. Task-level, not
+                  HTTP-request-level.
+                </>
+              ) : (
+                <>
+                  No <code>TIMEOUT</code>, <code>FAILED</code>, or <code>INFRA_ERROR</code> tasks recorded, so
+                  ACC-013&apos;s &quot;timeouts&quot;/&quot;errors&quot; signal has nothing to show yet.
+                </>
+              )}
             </p>
           </div>
         )}

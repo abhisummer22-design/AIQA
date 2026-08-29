@@ -62,6 +62,7 @@ pub struct RunRecord {
     /// of `engine_tests.rs`) — such a run simply never appears on any
     /// project stream, which is the correct behavior, not a gap.
     project_stream: Option<Arc<ProjectStream>>,
+    pub log_bus: Option<Arc<crate::log_bus::LogBus>>,
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub finished_at: RwLock<Option<chrono::DateTime<chrono::Utc>>>,
     pub policy_notes: RwLock<Option<String>>,
@@ -100,6 +101,28 @@ impl RunRecord {
         policy_notes: Option<String>,
         project_stream: Option<Arc<ProjectStream>>,
     ) -> Arc<Self> {
+        Self::new_with_log_bus(
+            run_id,
+            plan,
+            project_id,
+            requested_by,
+            initial_state,
+            policy_notes,
+            project_stream,
+            None,
+        )
+    }
+
+    pub fn new_with_log_bus(
+        run_id: RunId,
+        plan: &RunPlan,
+        project_id: Option<String>,
+        requested_by: Option<String>,
+        initial_state: RunState,
+        policy_notes: Option<String>,
+        project_stream: Option<Arc<ProjectStream>>,
+        log_bus: Option<Arc<crate::log_bus::LogBus>>,
+    ) -> Arc<Self> {
         let (tx, _rx) = broadcast::channel(1024);
         let (cancel, _cancel_rx) = watch::channel(false);
         Arc::new(Self {
@@ -113,6 +136,7 @@ impl RunRecord {
             events: RwLock::new(Vec::new()),
             tx,
             project_stream,
+            log_bus,
             started_at: chrono::Utc::now(),
             finished_at: RwLock::new(None),
             policy_notes: RwLock::new(policy_notes),
@@ -209,6 +233,35 @@ impl RunRecord {
             let mut project_ev = ev.clone();
             project_ev.project_sequence = Some(ps.seq.fetch_add(1, Ordering::SeqCst));
             let _ = ps.tx.send(project_ev);
+        }
+        if let Some(lb) = &self.log_bus {
+            let (lvl, src, msg) = match &ev.event_type {
+                EventType::RunScheduled => ("INFO", "execution", format!("Execution run '{}' scheduled with {} task(s)", self.name, self.plan.tasks.len())),
+                EventType::TaskStarted => ("INFO", "execution", format!("Task '{}' started on executor", ev.task_id.as_deref().unwrap_or("unknown"))),
+                EventType::TaskPassed => ("SUCCESS", "execution", format!("Task '{}' passed successfully", ev.task_id.as_deref().unwrap_or("unknown"))),
+                EventType::TaskFailed => ("ERROR", "execution", format!("Task '{}' failed: {}", ev.task_id.as_deref().unwrap_or("unknown"), ev.summary.as_deref().unwrap_or("task failed"))),
+                EventType::TaskBlocked => ("WARN", "execution", format!("Task '{}' blocked by dependency", ev.task_id.as_deref().unwrap_or("unknown"))),
+                EventType::TaskSkipped => ("INFO", "execution", format!("Task '{}' skipped", ev.task_id.as_deref().unwrap_or("unknown"))),
+                EventType::TaskCancelled => ("WARN", "execution", format!("Task '{}' cancelled", ev.task_id.as_deref().unwrap_or("unknown"))),
+                EventType::TaskTimeout => ("ERROR", "execution", format!("Task '{}' timed out", ev.task_id.as_deref().unwrap_or("unknown"))),
+                EventType::TaskInfraError => ("ERROR", "execution", format!("Task '{}' infrastructure error: {}", ev.task_id.as_deref().unwrap_or("unknown"), ev.summary.as_deref().unwrap_or("error"))),
+                EventType::TaskNeedsReview => ("WARN", "execution", format!("Task '{}' needs review: {}", ev.task_id.as_deref().unwrap_or("unknown"), ev.summary.as_deref().unwrap_or("review required"))),
+                EventType::RunCompleted => {
+                    let st = *self.state.read().await;
+                    let (lvl, verdict) = match st {
+                        RunState::Completed => ("SUCCESS", "completed successfully"),
+                        RunState::Failed => ("ERROR", "finished with failures"),
+                        RunState::Cancelled => ("WARN", "cancelled"),
+                        RunState::Partial => ("WARN", "completed with partial failures"),
+                        _ => ("INFO", "completed"),
+                    };
+                    (lvl, "execution", format!("Execution run '{}' {verdict}", self.name))
+                }
+            };
+            let run_id_str = self.run_id.to_string();
+            let proj_id_str = self.project_id.as_deref();
+            let task_id_str = ev.task_id.as_deref();
+            lb.emit(lvl, src, &msg, Some(&run_id_str), proj_id_str, task_id_str).await;
         }
         if let Err(e) = store.insert_event(&ev).await {
             // B1 — a lost event leaves a permanent gap in a log SRD §5

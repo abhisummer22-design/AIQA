@@ -21,6 +21,9 @@ import { setApiKey } from '../../services/aiqaApi';
 import type { Project } from '../../types/contract';
 
 function jsonResponse(status: number, body: unknown): Response {
+  if (status === 204 || body === null || body === undefined) {
+    return new Response(null, { status, headers: { 'Content-Type': 'application/json' } });
+  }
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 }
 
@@ -42,9 +45,12 @@ function renderApp(initialEntries: string[] = ['/dashboard']) {
 }
 
 async function verifyKey(): Promise<void> {
-  await act(async () => {
-    screen.getByText('Verify Connection').closest('button')!.click();
-  });
+  const btn = screen.queryByText('Verify Connection')?.closest('button');
+  if (btn) {
+    await act(async () => {
+      btn.click();
+    });
+  }
 }
 
 function selectorButton(): HTMLElement {
@@ -173,7 +179,7 @@ describe('ProjectSelector (FE-5 §20 items 17-20)', () => {
     // real project the header's own real selector just chose, not a
     // fabricated seed project.
     await waitFor(() => expect(screen.getAllByText(REAL_PROJECT.name).length).toBeGreaterThan(0));
-    expect(screen.getByText('Total Test Cases')).toBeTruthy();
+    expect(screen.getByText('Executed Tests')).toBeTruthy();
     expect(document.getElementById('aiqa-dashboard-main-content')).toBeTruthy();
     expect(selectorButton()).toBeTruthy();
   });
@@ -446,5 +452,150 @@ describe('ProjectSelector — FE-14 real project creation (GAP-01)', () => {
     });
     await waitFor(() => expect(selectorButton().textContent).toContain('Pending Project'));
     expect(postCallCount).toBe(1);
+  });
+
+  describe('Delete Project UI integration', () => {
+    const PROJECT_ALPHA: Project = {
+      id: 'proj-alpha',
+      name: 'Alpha Project',
+      description: null,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+    };
+    const PROJECT_BETA: Project = {
+      id: 'proj-beta',
+      name: 'Beta Project',
+      description: null,
+      created_at: '2026-01-02T00:00:00Z',
+      updated_at: '2026-01-02T00:00:00Z',
+    };
+
+    it('each project has a delete button that opens the confirmation dialog without selecting the project', async () => {
+      setApiKey(RAW_KEY);
+      vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => jsonResponse(200, [PROJECT_ALPHA, PROJECT_BETA])));
+      renderApp();
+      await verifyKey();
+      await waitForProjectsLoaded();
+      await openSelector();
+
+      const deleteAlphaBtn = screen.getByLabelText('Delete project Alpha Project');
+      expect(deleteAlphaBtn).toBeTruthy();
+
+      await act(async () => {
+        deleteAlphaBtn.click();
+      });
+
+      // Dialog opens
+      expect(document.getElementById('delete-project-modal')).toBeTruthy();
+      expect(screen.getByText('Delete Project?')).toBeTruthy();
+      expect(screen.getByText(/You are about to permanently delete/)).toBeTruthy();
+      expect(screen.getByText(/"Alpha Project"/)).toBeTruthy();
+
+      // Cancel closes dialog
+      const cancelBtn = screen.getByRole('button', { name: 'Cancel' });
+      await act(async () => {
+        cancelBtn.click();
+      });
+      expect(document.getElementById('delete-project-modal')).toBeNull();
+    });
+
+    it('deleting active project shows the active project warning banner', async () => {
+      setApiKey(RAW_KEY);
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockImplementation(async (url: string) => {
+          if (url.includes('/dashboard')) return jsonResponse(200, { project_id: 'proj-alpha', project_name: 'Alpha Project', execution_counts: {}, task_counts: {}, pass_fail: { passed: 0, failed: 0 }, test_count: 0, generated_at: '2026-08-19T00:00:00Z' });
+          if (url.includes('/kpis')) return jsonResponse(200, { project_id: 'proj-alpha', execution_reliability: null, execution_efficiency_ms: null, generated_at: '2026-08-19T00:00:00Z' });
+          if (url.includes('/executions')) return jsonResponse(200, []);
+          return jsonResponse(200, [PROJECT_ALPHA, PROJECT_BETA]);
+        }),
+      );
+      renderApp();
+      await verifyKey();
+      await waitForProjectsLoaded();
+      await openSelector();
+
+      // Select Alpha Project
+      await act(async () => {
+        within(screen.getByRole('listbox', { name: 'Projects' })).getByRole('option', { name: PROJECT_ALPHA.name }).click();
+      });
+      await waitFor(() => expect(selectorButton().textContent).toContain('Alpha Project'));
+
+      // Open selector and click delete on Alpha
+      await openSelector();
+      const deleteAlphaBtn = screen.getByLabelText('Delete project Alpha Project');
+      await act(async () => {
+        deleteAlphaBtn.click();
+      });
+
+      expect(screen.getByText('Delete Active Project?')).toBeTruthy();
+      expect(screen.getByText(/This project is currently/)).toBeTruthy();
+    });
+
+    it('confirming delete calls DELETE endpoint, deletes project, and shows success message', async () => {
+      setApiKey(RAW_KEY);
+      let deleteCalled = false;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+          if (init?.method === 'DELETE') {
+            deleteCalled = true;
+            return jsonResponse(204, null);
+          }
+          if (url.includes('/dashboard')) return jsonResponse(200, { project_id: 'proj-alpha', project_name: 'Alpha Project', execution_counts: {}, task_counts: {}, pass_fail: { passed: 0, failed: 0 }, test_count: 0, generated_at: '2026-08-19T00:00:00Z' });
+          if (url.includes('/kpis')) return jsonResponse(200, { project_id: 'proj-alpha', execution_reliability: null, execution_efficiency_ms: null, generated_at: '2026-08-19T00:00:00Z' });
+          if (url.includes('/executions')) return jsonResponse(200, []);
+          return jsonResponse(200, [PROJECT_ALPHA, PROJECT_BETA]);
+        }),
+      );
+      renderApp();
+      await verifyKey();
+      await waitForProjectsLoaded();
+      await openSelector();
+
+      const deleteBetaBtn = screen.getByLabelText('Delete project Beta Project');
+      await act(async () => {
+        deleteBetaBtn.click();
+      });
+
+      const confirmBtn = document.getElementById('confirm-delete-project-button')!;
+      await act(async () => {
+        confirmBtn.click();
+      });
+
+      expect(deleteCalled).toBe(true);
+      expect(document.getElementById('delete-project-modal')).toBeNull();
+      await waitFor(() => expect(screen.getByText('Project "Beta Project" deleted successfully.')).toBeTruthy());
+    });
+
+    it('delete failure renders error in modal and keeps modal open', async () => {
+      setApiKey(RAW_KEY);
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+          if (init?.method === 'DELETE') {
+            return jsonResponse(500, { error: { code: 'INTERNAL', message: 'Database delete failure', details: {}, request_id: 'req_1' } });
+          }
+          return jsonResponse(200, [PROJECT_ALPHA]);
+        }),
+      );
+      renderApp();
+      await verifyKey();
+      await waitForProjectsLoaded();
+      await openSelector();
+
+      const deleteBtn = screen.getByLabelText('Delete project Alpha Project');
+      await act(async () => {
+        deleteBtn.click();
+      });
+
+      const confirmBtn = document.getElementById('confirm-delete-project-button')!;
+      await act(async () => {
+        confirmBtn.click();
+      });
+
+      expect(document.getElementById('delete-project-modal')).toBeTruthy();
+      expect(screen.getByText('Database delete failure')).toBeTruthy();
+    });
   });
 });

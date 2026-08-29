@@ -47,6 +47,18 @@ impl ExecutorRegistry {
         self
     }
 
+    /// The real capability-routing table: every executor kind a task may
+    /// name and actually be routed to. Sorted so the orchestrator view
+    /// (`api.rs::get_orchestrator_state`) renders a stable list rather than
+    /// HashMap iteration order. A task naming none of these runs on the
+    /// default (`SimulatedExecutor`); a task naming something outside this
+    /// list is a real error, never a silent substitution (see `resolve`).
+    pub fn registered_kinds(&self) -> Vec<String> {
+        let mut kinds: Vec<String> = self.by_kind.keys().cloned().collect();
+        kinds.sort();
+        kinds
+    }
+
     /// Phase 2.1 (brief §13) — a task naming *no* executor at all still
     /// means "run the default (`SimulatedExecutor`)" (an explicit,
     /// disclosed, pre-existing convention every simulate-only task and
@@ -1104,9 +1116,7 @@ pub async fn execute_plan_once(
                 let parsed: Result<serde_json::Value, _> = serde_json::from_str(text);
                 match parsed {
                     Ok(json) => {
-                        let actual = path
-                            .split('.')
-                            .fold(Some(&json), |acc, key| acc.and_then(|v| v.get(key)));
+                        let actual = path.split('.').try_fold(&json, |acc, key| acc.get(key));
                         let passed = actual == Some(equals);
                         if !passed {
                             failures.push(format!(

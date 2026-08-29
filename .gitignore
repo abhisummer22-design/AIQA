@@ -46,3 +46,16 @@ Thumbs.db
 # Pre-audit runtime DB snapshots (local only)
 infra/data/*.preaudit
 infra/data/*.bak-preaudit
+
+# Logs and scratch
+orch.log
+*.log
+brain/
+Doc2/
+*.csv
+file_list.txt
+errors_out.json
+mocks_out.json
+secrets_out.json
+generate_*.py
+

@@ -371,12 +371,12 @@ impl ProviderDiscovery for OllamaDiscovery {
     }
 }
 
-/// Phase B cleanup: the former `ApiKeyProviderDiscovery` stubs (Gemini /
-/// OpenAI / Anthropic, "configured = env var present, reachable always
-/// false, no models, no executor") are removed entirely — they were
-/// dead configuration surface that could never execute a generation.
-/// The one externally-reachable API gateway this deployment actually uses
-/// is the MJ AI Gateway below: real discovery, real execution.
+// Phase B cleanup: the former `ApiKeyProviderDiscovery` stubs (Gemini /
+// OpenAI / Anthropic, "configured = env var present, reachable always
+// false, no models, no executor") are removed entirely — they were
+// dead configuration surface that could never execute a generation.
+// The one externally-reachable API gateway this deployment actually uses
+// is the MJ AI Gateway below: real discovery, real execution.
 
 /// Real MJ AI Gateway discovery (`G:\mj-ai-gateway` — an OpenAI-compatible
 /// gateway in front of a local Ollama). Configured = `MJ_AI_API_KEY` holds
@@ -535,6 +535,61 @@ impl std::fmt::Display for ExecutionError {
 /// Executes a prompt against one specific, already-selected model. Real
 /// providers implement this for real inference; test doubles implement it
 /// deterministically (brief §28: mocks are for tests only).
+/// The standard JSON Schema required for structured test case generation
+/// with Ollama. Explicitly requires top-level `test_cases` and every required
+/// field of `GeneratedTestCaseDraft` / `AiGenerationResponse`.
+pub fn test_case_generation_json_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "test_cases": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string" },
+                        "category": { "type": "string" },
+                        "skill_id": { "type": "string" },
+                        "preconditions": {
+                            "type": "array",
+                            "items": { "type": "string" }
+                        },
+                        "steps": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "action": { "type": "string" },
+                                    "expected_result": { "type": "string" }
+                                },
+                                "required": ["action", "expected_result"]
+                            }
+                        },
+                        "expected_result": { "type": "string" },
+                        "priority": { "type": "string" },
+                        "severity": { "type": "string" },
+                        "evidence": { "type": "string" },
+                        "source_reference": { "type": ["string", "null"] }
+                    },
+                    "required": [
+                        "title",
+                        "category",
+                        "skill_id",
+                        "preconditions",
+                        "steps",
+                        "expected_result",
+                        "priority",
+                        "severity",
+                        "evidence",
+                        "source_reference"
+                    ]
+                }
+            }
+        },
+        "required": ["test_cases"]
+    })
+}
+
 #[async_trait::async_trait]
 pub trait AiExecutor: Send + Sync {
     async fn execute(
@@ -543,6 +598,17 @@ pub trait AiExecutor: Send + Sync {
         model_id: &str,
         prompt: &str,
     ) -> Result<String, ExecutionError>;
+
+    async fn execute_task(
+        &self,
+        provider_id: &str,
+        model_id: &str,
+        prompt: &str,
+        task: AiTask,
+    ) -> Result<String, ExecutionError> {
+        let _ = task;
+        self.execute(provider_id, model_id, prompt).await
+    }
 }
 
 pub struct OllamaExecutor {
@@ -563,6 +629,25 @@ impl OllamaExecutor {
             timeout: Duration::from_secs(timeout_secs),
         }
     }
+
+    pub fn build_generate_body(
+        model_id: &str,
+        prompt: &str,
+        task: Option<AiTask>,
+    ) -> serde_json::Value {
+        let format = match task {
+            Some(AiTask::TestCaseGeneration) => test_case_generation_json_schema(),
+            _ if prompt.contains("test_cases") => test_case_generation_json_schema(),
+            _ => serde_json::json!("json"),
+        };
+        serde_json::json!({
+            "model": model_id,
+            "prompt": prompt,
+            "format": format,
+            "stream": false,
+            "think": false,
+        })
+    }
 }
 
 #[async_trait::async_trait]
@@ -573,12 +658,23 @@ impl AiExecutor for OllamaExecutor {
         model_id: &str,
         prompt: &str,
     ) -> Result<String, ExecutionError> {
+        self.execute_task(provider_id, model_id, prompt, AiTask::GeneralAi)
+            .await
+    }
+
+    async fn execute_task(
+        &self,
+        provider_id: &str,
+        model_id: &str,
+        prompt: &str,
+        task: AiTask,
+    ) -> Result<String, ExecutionError> {
         if provider_id != "ollama" {
             return Err(ExecutionError::ProviderUnavailable(provider_id.to_string()));
         }
         let client = reqwest::Client::new();
         let url = format!("{}/api/generate", self.base_url.trim_end_matches('/'));
-        let body = serde_json::json!({ "model": model_id, "prompt": prompt, "format": "json", "stream": false });
+        let body = Self::build_generate_body(model_id, prompt, Some(task));
         let resp = client
             .post(&url)
             .json(&body)
@@ -1088,7 +1184,12 @@ impl AiInfrastructure {
         };
 
         match executor
-            .execute(&decision.provider_id, &decision.model_id, &request.prompt)
+            .execute_task(
+                &decision.provider_id,
+                &decision.model_id,
+                &request.prompt,
+                request.task,
+            )
             .await
         {
             Ok(text) => GenerationOutcome2::Ok(GenerationResult {
@@ -1119,7 +1220,7 @@ impl AiInfrastructure {
                             continue;
                         };
                         if let Ok(text) = fallback_executor
-                            .execute(&provider.id, &model.id, &request.prompt)
+                            .execute_task(&provider.id, &model.id, &request.prompt, request.task)
                             .await
                         {
                             return GenerationOutcome2::Ok(GenerationResult {
@@ -1995,5 +2096,92 @@ mod tests {
                 panic!("expected a real end-to-end generation, got Failed: {reason}")
             }
         }
+    }
+
+    // -------------------------------------------------- Ollama structured output
+
+    #[test]
+    fn ollama_request_includes_think_false_and_stream_false() {
+        let body_tc = OllamaExecutor::build_generate_body(
+            "qwen3:14b",
+            "Generate test cases",
+            Some(AiTask::TestCaseGeneration),
+        );
+        assert_eq!(body_tc["think"], false, "think must explicitly be false");
+        assert_eq!(body_tc["stream"], false, "stream must explicitly be false");
+        assert_eq!(body_tc["model"], "qwen3:14b");
+
+        let body_general = OllamaExecutor::build_generate_body(
+            "qwen3:14b",
+            "Hello world",
+            Some(AiTask::GeneralAi),
+        );
+        assert_eq!(body_general["think"], false);
+        assert_eq!(body_general["stream"], false);
+    }
+
+    #[test]
+    fn structured_json_schema_requires_test_cases_and_all_mandatory_fields() {
+        let schema = test_case_generation_json_schema();
+        assert_eq!(schema["type"], "object");
+        let required = schema["required"]
+            .as_array()
+            .expect("required must be an array");
+        assert!(
+            required.iter().any(|v| v == "test_cases"),
+            "schema must require test_cases at top level"
+        );
+
+        let items = &schema["properties"]["test_cases"]["items"];
+        assert_eq!(items["type"], "object");
+        let item_required: Vec<&str> = items["required"]
+            .as_array()
+            .expect("item required array")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+
+        for mandatory in [
+            "title",
+            "category",
+            "skill_id",
+            "preconditions",
+            "steps",
+            "expected_result",
+            "priority",
+            "severity",
+            "evidence",
+            "source_reference",
+        ] {
+            assert!(
+                item_required.contains(&mandatory),
+                "schema must require mandatory field: {mandatory}"
+            );
+        }
+
+        let step_required: Vec<&str> = items["properties"]["steps"]["items"]["required"]
+            .as_array()
+            .expect("step required array")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(step_required.contains(&"action"));
+        assert!(step_required.contains(&"expected_result"));
+    }
+
+    #[test]
+    fn ollama_request_uses_structured_schema_for_test_case_generation() {
+        let body = OllamaExecutor::build_generate_body(
+            "qwen3:14b",
+            "some prompt",
+            Some(AiTask::TestCaseGeneration),
+        );
+        assert_eq!(body["format"]["type"], "object");
+        assert!(body["format"]["properties"]["test_cases"].is_object());
+
+        // Also when prompt contains test_cases
+        let body_prompt =
+            OllamaExecutor::build_generate_body("qwen3:14b", "Return json with test_cases", None);
+        assert_eq!(body_prompt["format"]["type"], "object");
     }
 }

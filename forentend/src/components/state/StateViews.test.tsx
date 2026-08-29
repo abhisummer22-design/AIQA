@@ -193,14 +193,36 @@ describe('no automatic retry, manual actions (items 14-15)', () => {
 });
 
 describe('StateGate (reusable gate for future real pages)', () => {
-  it('renders children only when authenticated', () => {
+  it('renders children when key is configured and not unauthenticated', () => {
     const { rerender } = render(
-      <StateGate auth={makeAuth({ status: 'checking' })}>
+      <StateGate auth={makeAuth({ status: 'no_key' })}>
         <div>REAL AUTHENTICATED CONTENT</div>
       </StateGate>,
     );
     expect(screen.queryByText('REAL AUTHENTICATED CONTENT')).toBeNull();
-    expect(screen.getByText('VERIFYING…')).toBeTruthy();
+    expect(screen.getByText('NO KEY CONFIGURED')).toBeTruthy();
+
+    rerender(
+      <StateGate auth={makeAuth({ status: 'unauthenticated' })}>
+        <div>REAL AUTHENTICATED CONTENT</div>
+      </StateGate>,
+    );
+    expect(screen.queryByText('REAL AUTHENTICATED CONTENT')).toBeNull();
+    expect(screen.getByText(/AUTHENTICATION REQUIRED · 401/)).toBeTruthy();
+
+    rerender(
+      <StateGate auth={makeAuth({ status: 'key_present' })}>
+        <div>REAL AUTHENTICATED CONTENT</div>
+      </StateGate>,
+    );
+    expect(screen.getByText('REAL AUTHENTICATED CONTENT')).toBeTruthy();
+
+    rerender(
+      <StateGate auth={makeAuth({ status: 'checking' })}>
+        <div>REAL AUTHENTICATED CONTENT</div>
+      </StateGate>,
+    );
+    expect(screen.getByText('REAL AUTHENTICATED CONTENT')).toBeTruthy();
 
     rerender(
       <StateGate auth={makeAuth({ status: 'authenticated' })}>

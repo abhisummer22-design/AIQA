@@ -54,10 +54,9 @@ const defaultSettings: SystemSettings = {
     isolateInfraFailures: true,
   },
   environments: [
-    { id: 'production', name: 'Production Cloud (US-East)', baseUrl: 'https://app.enterprise.com', healthEndpoint: '/healthz', isActive: true },
-    { id: 'staging', name: 'Staging Cluster (US-West)', baseUrl: 'https://staging.enterprise.com', healthEndpoint: '/healthz', isActive: true },
+    { id: 'demo', name: 'DEMO Sandbox', baseUrl: 'https://demo.enterprise.com', healthEndpoint: '/healthz', isActive: true },
     { id: 'uat', name: 'UAT Acceptance Tier', baseUrl: 'https://uat.enterprise.com', healthEndpoint: '/healthz', isActive: true },
-    { id: 'ephemeral-pr', name: 'PR-1482 Ephemeral Sandbox', baseUrl: 'https://pr-1482.preview.enterprise.internal', healthEndpoint: '/health', isActive: true },
+    { id: 'live', name: 'LIVE Production (US-East)', baseUrl: 'https://app.enterprise.com', healthEndpoint: '/healthz', isActive: true },
   ],
   policies: {
     blockOnProductFailures: true,
@@ -79,6 +78,8 @@ const defaultSettings: SystemSettings = {
   },
 };
 
+const VALID_ENVIRONMENTS: Environment[] = ['demo', 'uat', 'live'];
+
 const AIQAContext = createContext<AIQAContextType | undefined>(undefined);
 
 const SETTINGS_STORAGE_KEY = 'aiqa.settings';
@@ -88,9 +89,13 @@ function loadStoredSettings(): SystemSettings {
     const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
     if (!raw) return defaultSettings;
     const parsed = JSON.parse(raw);
+    const storedEnvs = Array.isArray(parsed.environments)
+      ? parsed.environments.filter((e: any) => VALID_ENVIRONMENTS.includes(e?.id))
+      : [];
     return {
       ...defaultSettings,
       ...parsed,
+      environments: storedEnvs.length > 0 ? storedEnvs : defaultSettings.environments,
       general: { ...defaultSettings.general, ...parsed.general },
       authentication: { ...defaultSettings.authentication, ...parsed.authentication },
       execution: { ...defaultSettings.execution, ...parsed.execution },
@@ -105,7 +110,7 @@ function loadStoredSettings(): SystemSettings {
 
 export const AIQAProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
-  const [currentEnvironment, setCurrentEnvironment] = useState<Environment>('staging');
+  const [currentEnvironment, setCurrentEnvironment] = useState<Environment>('demo');
   const [isCommandPaletteOpen, setCommandPaletteOpen] = useState<boolean>(false);
 
   // Settings — persisted to localStorage so a refresh doesn't silently

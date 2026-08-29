@@ -17,7 +17,7 @@ use crate::errors::ApiError;
 use crate::store::Store;
 use axum::{
     extract::{Request, State},
-    http::header,
+    http::{header, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -104,12 +104,19 @@ pub async fn bootstrap_admin_key_if_needed(store: &Store) -> anyhow::Result<Opti
 /// <key>`. `/health` is intentionally routed outside this layer (see
 /// `api.rs::router`) so basic liveness checks stay unauthenticated, matching
 /// common orchestrator/k8s conventions.
-pub async fn require_auth(State(store): State<Store>, mut req: Request, next: Next) -> Response {
+pub async fn require_auth(
+    State(state): State<crate::state::AppState>,
+    mut req: Request,
+    next: Next,
+) -> Response {
+    let store = state.store.clone();
     let header_val = req
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
+    let path = req.uri().path().to_string();
+    let method = req.method().to_string();
 
     let token = match header_val
         .as_deref()
@@ -128,6 +135,17 @@ pub async fn require_auth(State(store): State<Store>, mut req: Request, next: Ne
                     "denied",
                 )
                 .await;
+            state
+                .log_bus
+                .emit(
+                    "WARN",
+                    "auth",
+                    &format!("401 {method} {path} — missing or malformed Authorization header"),
+                    None,
+                    None,
+                    None,
+                )
+                .await;
             return ApiError::unauthenticated(
                 "missing or malformed Authorization: Bearer <key> header",
             )
@@ -138,13 +156,57 @@ pub async fn require_auth(State(store): State<Store>, mut req: Request, next: Ne
     let hash = hash_key(token);
     match store.find_api_key_by_hash(&hash).await {
         Ok(Some(row)) => {
-            req.extensions_mut().insert(AuthContext {
+            let ctx = AuthContext {
                 key_id: row.id,
                 name: row.name,
                 role: Role::parse(&row.role),
                 project_id: row.project_id,
-            });
-            next.run(req).await
+            };
+            // Kept for the post-response authorization check below — the
+            // request itself takes ownership of `ctx`.
+            let actor = ctx.name.clone();
+            let actor_role = ctx.role.as_str();
+            let actor_project = ctx.project_id.clone();
+            req.extensions_mut().insert(ctx);
+
+            let response = next.run(req).await;
+
+            // Authorization denials (403) are produced by `require_role` /
+            // `require_project_access`, which are pure functions with no
+            // access to the store or the log bus. Recording them here — the
+            // one place every protected request already passes through —
+            // captures every denial without duplicating a call into dozens
+            // of handlers, and without either helper growing a dependency on
+            // application state. Before this, a 403 was returned to the
+            // caller and left no trace anywhere: the audit log only ever
+            // recorded 401s, so there was no real record of role-boundary
+            // enforcement to show.
+            if response.status() == StatusCode::FORBIDDEN {
+                let detail = format!("{method} {path} denied for role '{actor_role}'");
+                let _ = store
+                    .insert_audit(
+                        Some(&actor),
+                        Some(actor_role),
+                        actor_project.as_deref(),
+                        "authz.deny",
+                        None,
+                        Some(&detail),
+                        "denied",
+                    )
+                    .await;
+                state
+                    .log_bus
+                    .emit(
+                        "WARN",
+                        "auth",
+                        &format!("403 {method} {path} — role '{actor_role}' not permitted"),
+                        None,
+                        actor_project.as_deref(),
+                        None,
+                    )
+                    .await;
+            }
+            response
         }
         Ok(None) => {
             let _ = store
@@ -156,6 +218,17 @@ pub async fn require_auth(State(store): State<Store>, mut req: Request, next: Ne
                     None,
                     Some("unknown or revoked API key"),
                     "denied",
+                )
+                .await;
+            state
+                .log_bus
+                .emit(
+                    "WARN",
+                    "auth",
+                    &format!("401 {method} {path} — unknown or revoked API key"),
+                    None,
+                    None,
+                    None,
                 )
                 .await;
             ApiError::unauthenticated("invalid or revoked API key").into_response()

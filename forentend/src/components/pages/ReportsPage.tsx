@@ -308,7 +308,10 @@ export function buildTestReportRows(
 ): (string | number)[][] {
   if (!dashboard) return [];
   const rows: (string | number)[][] = [
-    ['Total Tests', dashboard.test_count],
+    // `test_count` is COUNT(quality_nodes node_type='test') — distinct
+    // tests actually executed, not saved test cases. Labelled precisely so
+    // an exported report cannot be read as a test-case inventory.
+    ['Executed Tests', dashboard.test_count],
     ['Passed', dashboard.pass_fail.passed],
     ['Failed', dashboard.pass_fail.failed],
   ];

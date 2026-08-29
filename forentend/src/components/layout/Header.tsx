@@ -108,10 +108,9 @@ export const Header: React.FC = () => {
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
 
   const envOptions: Array<{ id: Environment; label: string; badge: string; color: string }> = [
-    { id: 'staging', label: 'Staging Cluster', badge: 'US-West', color: 'text-amber-400 border-amber-800/60 bg-amber-950/40' },
-    { id: 'production', label: 'Production Tier', badge: 'US-East', color: 'text-rose-400 border-rose-800/60 bg-rose-950/40' },
-    { id: 'uat', label: 'UAT Acceptance', badge: 'v4.18', color: 'text-cyan-400 border-cyan-800/60 bg-cyan-950/40' },
-    { id: 'ephemeral-pr', label: 'Ephemeral PR-1482', badge: 'Auto-Tear', color: 'text-purple-400 border-purple-800/60 bg-purple-950/40' },
+    { id: 'demo', label: 'DEMO', badge: 'Active', color: 'text-amber-400 border-amber-800/60 bg-amber-950/40' },
+    { id: 'uat', label: 'UAT', badge: 'v4.18', color: 'text-cyan-400 border-cyan-800/60 bg-cyan-950/40' },
+    { id: 'live', label: 'LIVE', badge: 'US-East', color: 'text-emerald-400 border-emerald-800/60 bg-emerald-950/40' },
   ];
 
   const currentEnvConfig = envOptions.find((e) => e.id === currentEnvironment) || envOptions[0];

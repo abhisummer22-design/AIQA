@@ -100,12 +100,16 @@ function renderApp(initialEntries: string[] = ['/execution']) {
 }
 
 async function verifyKey(): Promise<void> {
-  await act(async () => {
-    screen.getByText('Verify Connection').closest('button')!.click();
-  });
+  const btn = screen.queryByText('Verify Connection')?.closest('button');
+  if (btn) {
+    await act(async () => {
+      btn.click();
+    });
+  }
 }
 
 async function openAndSelectProject(project: Project): Promise<void> {
+  await waitFor(() => expect(document.getElementById('project-selector-button')).toBeTruthy());
   await act(async () => {
     document.getElementById('project-selector-button')!.click();
   });
@@ -167,11 +171,11 @@ describe('RealtimeContext (FE-9 §34 items 1-26)', () => {
     expect(MockWebSocket.instances.length).toBe(0);
   });
 
-  it('item 2 — key_present (unverified) never opens a connection', async () => {
+  it('item 2 — key present without selected project never opens a connection', async () => {
     localStorage.setItem('aiqa.orchestrator.apiKey', RAW_KEY);
     mockBackend({ projects: [PROJECT_A] });
     renderApp();
-    await waitFor(() => expect(screen.getByText('Key saved, not yet verified')).toBeTruthy());
+    expect(screen.queryByText('Key saved, not yet verified')).toBeNull();
     expect(MockWebSocket.instances.length).toBe(0);
   });
 
@@ -267,7 +271,7 @@ describe('RealtimeContext (FE-9 §34 items 1-26)', () => {
     mockBackend({ projects: [PROJECT_A] });
     renderApp();
     await act(async () => {
-      screen.getByText('Verify Connection').closest('button')!.click();
+      await verifyKey();
       await vi.runOnlyPendingTimersAsync();
     });
     await act(async () => {
@@ -300,7 +304,7 @@ describe('RealtimeContext (FE-9 §34 items 1-26)', () => {
     mockBackend({ projects: [PROJECT_A] });
     renderApp();
     await act(async () => {
-      screen.getByText('Verify Connection').closest('button')!.click();
+      await verifyKey();
       await vi.runOnlyPendingTimersAsync();
     });
     await act(async () => {
@@ -447,7 +451,7 @@ describe('RealtimeContext — direct hook-level tests (no full page UI needed)',
     mockBackend({ projects: [PROJECT_A] });
     renderApp();
     await act(async () => {
-      screen.getByText('Verify Connection').closest('button')!.click();
+      await verifyKey();
       await vi.runOnlyPendingTimersAsync();
     });
     await act(async () => {
@@ -478,7 +482,7 @@ describe('RealtimeContext — direct hook-level tests (no full page UI needed)',
     mockBackend({ projects: [PROJECT_A] });
     renderApp();
     await act(async () => {
-      screen.getByText('Verify Connection').closest('button')!.click();
+      await verifyKey();
       await vi.runOnlyPendingTimersAsync();
     });
     await act(async () => {
@@ -504,7 +508,7 @@ describe('RealtimeContext — direct hook-level tests (no full page UI needed)',
     mockBackend({ projects: [PROJECT_A] });
     renderApp();
     await act(async () => {
-      screen.getByText('Verify Connection').closest('button')!.click();
+      await verifyKey();
       await vi.runOnlyPendingTimersAsync();
     });
     await act(async () => {

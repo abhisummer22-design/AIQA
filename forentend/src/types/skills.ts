@@ -61,11 +61,11 @@ export interface SkillDefinition {
   configurable: boolean;
 }
 
-/** A user-created skill this session. Deliberately does not persist
- *  anywhere (no backend endpoint exists for it — see the Skill Manager's
- *  own disclosure copy) — every `CustomSkillDraft` becomes a `CUSTOM`
- *  `SkillDefinition` that lives only in this browser tab's memory and is
- *  gone on reload, exactly as disclosed to the user when they create it. */
+/** A user-submitted custom skill. Persisted for real via `POST
+ *  /api/v1/skills` (`useSkillSelection.ts::addCustomSkill`) — every
+ *  `CustomSkillDraft` becomes a real `custom_skills` row (see that
+ *  migration's doc comment) and a `CUSTOM` `SkillDefinition` returned from
+ *  the backend, not a local-only fabrication. */
 export interface CustomSkillDraft {
   name: string;
   description: string;
