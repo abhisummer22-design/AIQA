@@ -242,7 +242,10 @@ describe('RBACTestingPage — real authorization surface', () => {
     mockBackend();
     renderApp('/rbac');
     await verifyKey();
-    await waitFor(() => expect(document.getElementById('rbac-testing-page')).toBeTruthy());
+    // Wait for real, authenticated-only content. `rbac-testing-page` is
+    // also the root of the auth-checking card, so asserting on the root
+    // alone could pass vacuously before the real page ever rendered.
+    await waitFor(() => expect(screen.getByText('manual-admin')).toBeTruthy());
 
     for (const banned of [
       'Enterprise Organization & Financial Asset Access Control',

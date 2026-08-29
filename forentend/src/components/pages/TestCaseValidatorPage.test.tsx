@@ -143,8 +143,11 @@ describe('TestCaseValidatorPage — real validation lifecycle', () => {
     renderApp('/validator');
     await verifyKey();
 
-    await waitFor(() => expect(document.getElementById('test-case-validator-page')).toBeTruthy());
-    expect(screen.getByText('No project selected')).toBeTruthy();
+    // `test-case-validator-page` shares its id across the auth-checking
+    // card and the real content — waiting on it alone races the auth
+    // transition on a slower CI runner. Wait for the real, authenticated-
+    // only empty state instead.
+    await waitFor(() => expect(screen.getByText('No project selected')).toBeTruthy());
     const urls = (fetchMock.mock.calls as [string][]).map(([u]) => String(u));
     expect(urls.some((u) => u.includes('/test-cases'))).toBe(false);
   });
@@ -252,9 +255,10 @@ describe('TestCaseValidatorPage — real validation lifecycle', () => {
     mockBackend();
     renderApp('/validator');
     await verifyKey();
-    await waitFor(() => expect(document.getElementById('test-case-validator-page')).toBeTruthy());
 
-    expect(screen.getByText(/Validation is structural only/)).toBeTruthy();
+    // Same shared-id race as above — wait for real, authenticated-only
+    // content rather than the root, which also renders during auth-checking.
+    await waitFor(() => expect(screen.getByText(/Validation is structural only/)).toBeTruthy());
     expect(screen.getByText(/Duplicate detection, quality\s+scoring/)).toBeTruthy();
   });
 
@@ -263,9 +267,8 @@ describe('TestCaseValidatorPage — real validation lifecycle', () => {
     mockBackend();
     renderApp('/validator');
     await verifyKey();
-    await waitFor(() => expect(document.getElementById('test-case-validator-page')).toBeTruthy());
 
-    expect(document.getElementById('aiqa-orchestrator-logs-panel')).toBeTruthy();
+    await waitFor(() => expect(document.getElementById('aiqa-orchestrator-logs-panel')).toBeTruthy());
     // The panel loads its real history before it can say anything about
     // content, so wait for that to settle rather than racing it.
     await waitFor(() => expect(screen.getByText('No orchestrator activity yet')).toBeTruthy());
@@ -277,7 +280,10 @@ describe('TestCaseValidatorPage — real validation lifecycle', () => {
     renderApp('/validator');
     await verifyKey();
     await selectProject();
-    await waitFor(() => expect(document.getElementById('test-case-validator-page')).toBeTruthy());
+    // Wait for the real persisted case to actually render — proof we are
+    // past the auth-checking card and looking at real content, not just the
+    // shared root id (which both states render).
+    await waitFor(() => expect(screen.getByText(testCaseRow().title)).toBeTruthy());
 
     for (const banned of ['VAL-101', 'TC-AUTH-001', 'Batch Remediate All', 'Auto-Fix & Approve']) {
       expect(screen.queryByText(new RegExp(banned.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))).toBeNull();
