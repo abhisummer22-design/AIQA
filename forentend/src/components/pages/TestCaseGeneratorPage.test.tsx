@@ -1181,12 +1181,14 @@ describe('TestCaseGeneratorPage — AUD-005 real persistence, validation, execut
     renderApp();
     await verifyKey();
     await waitFor(() => expect(page()).toBeTruthy());
-    await act(async () => {
-      document.getElementById('project-selector-button')!.click();
-    });
-    await act(async () => {
-      within(screen.getByRole('listbox', { name: 'Projects' })).getByRole('option', { name: PROJECT_A.name }).click();
-    });
+    // Wait for the real project-selector button to actually render before
+    // clicking it — a fixed CI flake: on a slower runner the header's
+    // project list fetch hadn't resolved yet, so `getElementById` returned
+    // null and `.click()` threw "Cannot read properties of null". Every
+    // other project-selecting test in this file already goes through
+    // `openAndSelectProject`, which waits first; this one had inlined the
+    // same steps without the wait.
+    await openAndSelectProject(PROJECT_A);
 
     // Phase A cleanup: with no pre-seeded session the page opens on the
     // "Source & Generation" branch — switch to the "Generated Test Cases"
