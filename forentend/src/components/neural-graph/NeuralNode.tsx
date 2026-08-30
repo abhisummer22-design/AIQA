@@ -34,7 +34,8 @@ const NeuralNodeImpl: React.FC<NeuralNodeProps> = ({ node, position, dimmed, hig
   return (
     <g
       id={`neural-node-${node.id}`}
-      transform={`translate(${position.x}, ${position.y})`}
+      transform={`translate(${position.x}, ${position.y}) scale(${highlighted ? 1.15 : 1})`}
+      style={{ transition: 'transform 0.2s ease-out, opacity 0.2s ease-out' }}
       opacity={dimmed ? 0.28 : 1}
       className="cursor-pointer"
       onMouseEnter={() => onHover(node.id)}

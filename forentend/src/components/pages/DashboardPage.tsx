@@ -779,37 +779,23 @@ export const DashboardPage: React.FC = () => {
         </div>
       </header>
 
-      {/* 2. Two-column workspace: existing dashboard content (left) and the
-          real, live orchestrator log stream (right).
+      {/* 2. Full-width dashboard content, then the real, live orchestrator
+          log stream as its own section at the bottom — moved out of the
+          former right-side sticky column so the whole page reads top to
+          bottom, log activity last. */}
+      <div className="space-y-4 min-w-0">{renderBody()}</div>
 
-          Breakpoint choice is deliberate: the split happens at `xl`
-          (1280px+), not `lg`. Several of the dashboard's own sections
-          already use `lg:grid-cols-12` internally, so splitting at `lg`
-          would squeeze those into a ~2/3-width column right at the
-          breakpoint where they first expand — visibly shrinking existing
-          content for the sake of the new panel. At `xl` the left column is
-          still wider than the whole dashboard was at `lg`, so nothing the
-          user already had gets narrower; below `xl` the log panel simply
-          stacks underneath at full width.
-
-          The log column is a fixed 400px rather than a fraction: log lines
-          are timestamp + level + source + message on one row, and a
-          percentage column kept them wrapping to three or four lines each at
-          1280–1600px. Fixing the width makes every extra pixel of a wider
-          screen go to the dashboard, which actually benefits from it. */}
-      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_400px] gap-4 items-start">
-        <div className="space-y-4 min-w-0">{renderBody()}</div>
-
-        {/* Real backend activity — history over REST, then a live WebSocket
-            (`OrchestratorLogsPanel`, reused as-is: it already owns the real
-            stream, reconnect backoff, id-based dedup, bounded buffer, and
-            near-bottom-only auto-scroll). Scoped to the selected project
-            when there is one; global orchestrator logs otherwise — the
-            backend includes unscoped entries in a project stream on
-            purpose (`log_bus.rs::recent_logs`). */}
-        <div className="min-w-0 xl:sticky xl:top-4">
-          <OrchestratorLogsPanel projectId={selectedProjectId} />
-        </div>
+      {/* Real backend activity — history over REST, then a live WebSocket
+          (`OrchestratorLogsPanel`, reused as-is: it already owns the real
+          stream, reconnect backoff, id-based dedup, bounded buffer, and
+          near-bottom-only auto-scroll). Scoped to the selected project
+          when there is one; global orchestrator logs otherwise — the
+          backend includes unscoped entries in a project stream on
+          purpose (`log_bus.rs::recent_logs`). Fixed height (rather than the
+          old sticky-sidebar's full-page height) since it now sits at the
+          bottom of the page instead of running alongside everything else. */}
+      <div id="dashboard-log-stream-section" className="min-w-0">
+        <OrchestratorLogsPanel projectId={selectedProjectId} />
       </div>
     </div>
   );

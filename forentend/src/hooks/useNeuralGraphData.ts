@@ -22,9 +22,19 @@
  * to be `null` after a successful load, because a ratio over zero test
  * cases and "no compatible model routed" are both real absences, not
  * missing data.
+ *
+ * Genuinely realtime, not just "load once": subscribes to the same
+ * project-scoped `RealtimeContext` WebSocket `NeuralPipeline.tsx`/
+ * `DashboardPage.tsx` already use, and debounce-resyncs on any real event
+ * for this project (same `EVENT_RESYNC_DEBOUNCE_MS` reasoning as
+ * `DashboardPage.tsx` — a burst of task events collapses into one real
+ * refetch, not one per event). A test case saved, a run finishing, new
+ * evidence captured — the graph reflects it within the debounce window,
+ * with no manual refresh.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { aiqaApi } from '../services/aiqaApi';
+import { useRealtime } from '../context/RealtimeContext';
 import { CATEGORY_NODES, MAJOR_STAGES } from '../components/neural-graph/neuralGraph.config';
 import type {
   NeuralEdgeData,
@@ -56,6 +66,7 @@ export function useNeuralGraphData(
   dashboard: DashboardResponse | null,
   aiStatus: AiStatusResponse | null,
 ): UseNeuralGraphDataResult {
+  const realtime = useRealtime();
   const [data, setData] = useState<NeuralGraphData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -122,6 +133,33 @@ export function useNeuralGraphData(
       abortRef.current?.abort();
     };
   }, [projectId, load]);
+
+  // Real event -> real debounced resync (400ms, same window
+  // `DashboardPage.tsx`'s own `EVENT_RESYNC_DEBOUNCE_MS` uses) — a burst of
+  // task events for this project collapses into one real refetch, never
+  // one request per event.
+  const resyncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!projectId) return;
+    const unsubscribe = realtime.subscribe(() => {
+      if (resyncTimeoutRef.current) clearTimeout(resyncTimeoutRef.current);
+      resyncTimeoutRef.current = setTimeout(() => {
+        resyncTimeoutRef.current = null;
+        void load(projectId);
+      }, 400);
+    });
+    return () => {
+      unsubscribe();
+      if (resyncTimeoutRef.current) clearTimeout(resyncTimeoutRef.current);
+    };
+    // Depends on `realtime.subscribe` specifically (stable identity), not
+    // the whole `realtime` object — that object's identity changes on
+    // every real event (`connectionState`/`lastEventAt` are part of its
+    // own memo deps), so depending on it here would tear down and
+    // resubscribe on every single event instead of once per project. Same
+    // mistake, same fix, as `DashboardPage.tsx`'s own resync effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, realtime.subscribe, load]);
 
   return {
     data,
