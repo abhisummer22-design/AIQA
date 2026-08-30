@@ -18,6 +18,7 @@ pub mod mobile;
 pub mod performance_testing;
 pub mod policy;
 pub mod scheduler;
+pub mod skill_files;
 pub mod state;
 pub mod store;
 pub mod webhook;

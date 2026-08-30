@@ -39,6 +39,14 @@ infra/data/*.sqlite3-*
 infra/data/evidence/*
 !infra/data/evidence/.gitkeep
 
+# Real SKILL.md files a user drops into the backend's filesystem skills
+# folder (see services/orchestrator/src/skill_files.rs) — a personal/local
+# skill library, not this repo's source. The folder itself, and the README
+# `ensure_skills_dir()` generates in it at startup, stay out of git too;
+# only the placeholder keeping the empty directory real is tracked.
+services/orchestrator/skills/*
+!services/orchestrator/skills/.gitkeep
+
 # OS
 .DS_Store
 Thumbs.db

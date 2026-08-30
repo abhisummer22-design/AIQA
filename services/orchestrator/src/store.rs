@@ -119,6 +119,13 @@ fn custom_skill_from_row(r: sqlx::sqlite::SqliteRow) -> CustomSkillRow {
         name: r.get("name"),
         description: r.get("description"),
         source_file: r.get("source_file"),
+        // Real frontmatter from an imported SKILL.md, as the file wrote it.
+        // Unparseable or absent stays `None` rather than becoming `{}` — a
+        // hand-made skill genuinely has no frontmatter, and that is a
+        // different fact from "it had empty frontmatter".
+        metadata: r
+            .get::<Option<String>, _>("metadata")
+            .and_then(|m| serde_json::from_str(&m).ok()),
         created_by: r.get("created_by"),
         created_at: parse_ts(&r.get::<String, _>("created_at")),
     }
@@ -728,16 +735,18 @@ impl Store {
         name: &str,
         description: &str,
         source_file: Option<&str>,
+        metadata: Option<&serde_json::Value>,
         created_by: &str,
     ) -> Result<()> {
         let now = now_rfc3339();
         sqlx::query(
-            "INSERT INTO custom_skills (id, name, description, source_file, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO custom_skills (id, name, description, source_file, metadata, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(id)
         .bind(name)
         .bind(description)
         .bind(source_file)
+        .bind(metadata.map(|m| m.to_string()))
         .bind(created_by)
         .bind(&now)
         .execute(&self.pool)
@@ -751,7 +760,7 @@ impl Store {
     /// owned by one project.
     pub async fn list_custom_skills(&self) -> Result<Vec<CustomSkillRow>> {
         let rows = sqlx::query(
-            "SELECT id, name, description, source_file, created_by, created_at FROM custom_skills ORDER BY created_at",
+            "SELECT id, name, description, source_file, metadata, created_by, created_at FROM custom_skills ORDER BY created_at",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -2137,6 +2146,10 @@ pub struct CustomSkillRow {
     pub name: String,
     pub description: String,
     pub source_file: Option<String>,
+    /// Real YAML frontmatter from an imported SKILL.md (version, author,
+    /// frameworks, ...), preserved as the file wrote it. `None` for a skill
+    /// created by hand.
+    pub metadata: Option<serde_json::Value>,
     pub created_by: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }

@@ -38,12 +38,14 @@ function typeBadge(type: SkillSourceType): React.ReactNode {
   const styles: Record<SkillSourceType, string> = {
     BUILT_IN: 'bg-indigo-950/80 border-indigo-700 text-indigo-300',
     CUSTOM: 'bg-cyan-950/80 border-cyan-700 text-cyan-300',
+    FILE: 'bg-amber-950/80 border-amber-700 text-amber-300',
     PLUGIN: 'bg-slate-900 border-slate-700 text-slate-400',
     MCP: 'bg-slate-900 border-slate-700 text-slate-400',
   };
   const labels: Record<SkillSourceType, string> = {
     BUILT_IN: 'Built-in',
     CUSTOM: 'Custom',
+    FILE: 'File',
     PLUGIN: 'Plugin',
     MCP: 'MCP',
   };

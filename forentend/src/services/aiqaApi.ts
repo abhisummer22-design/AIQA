@@ -47,6 +47,7 @@ import type {
   ApiKeyListRow,
   CreateCustomSkillRequest,
   CustomSkillRow,
+  FileSkillScan,
   MobileFleet,
   NeuralPipelineResponse,
   ResolvedSkillInstruction,
@@ -673,6 +674,10 @@ export const aiqaApi = {
      *  generator embeds in its prompt (`api.rs::resolve_skills`). */
     resolve: (skills: Array<{ id: string; name: string; description: string }>, signal?: AbortSignal) =>
       requestJson<ResolvedSkillInstruction[]>('/skills/resolve', { method: 'POST', body: { skills }, signal }),
+    /** Real `SKILL.md` files read live from `services/orchestrator/skills/`
+     *  on disk (`api.rs::list_file_skills_handler`) — re-scanned on every
+     *  call, so a file dropped in after the app loaded still shows up. */
+    files: (signal?: AbortSignal) => requestJson<FileSkillScan>('/skills/files', { signal }),
   },
 
   /** Real-time Orchestrator Live Activity Logs (`api.rs::list_logs_handler`). */

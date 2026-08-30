@@ -59,6 +59,11 @@ pub fn router(state: AppState) -> Router {
         // The real instruction each skill resolves to — same function the
         // generator uses, so the UI cannot show a drifted copy.
         .route("/api/v1/skills/resolve", post(resolve_skills))
+        // Real SKILL.md files a user has dropped into
+        // `skill_files::skills_dir()` on this machine — re-read from disk on
+        // every call (see that module's doc comment), never cached, so a
+        // file added after the server started shows up without a restart.
+        .route("/api/v1/skills/files", get(list_file_skills_handler))
         // BE-8 — API Contract §5.1-5.4.
         .route(
             "/api/v1/projects",
@@ -851,6 +856,10 @@ struct CreateCustomSkillBody {
     description: String,
     #[serde(default)]
     source_file: Option<String>,
+    /// Real YAML frontmatter of an imported SKILL.md, passed through as the
+    /// file wrote it. Absent for a hand-made skill.
+    #[serde(default)]
+    metadata: Option<serde_json::Value>,
 }
 
 fn validate_skill_name(name: &str) -> Result<&str, ApiError> {
@@ -879,7 +888,14 @@ async fn create_custom_skill(
 
     state
         .store
-        .insert_custom_skill(&id, name, body.description.trim(), body.source_file.as_deref(), &ctx.name)
+        .insert_custom_skill(
+            &id,
+            name,
+            body.description.trim(),
+            body.source_file.as_deref(),
+            body.metadata.as_ref(),
+            &ctx.name,
+        )
         .await
         .map_err(to_500)?;
 
@@ -923,6 +939,14 @@ async fn list_custom_skills_handler(
 ) -> Result<Json<Vec<crate::store::CustomSkillRow>>, ApiError> {
     let rows = state.store.list_custom_skills().await.map_err(to_500)?;
     Ok(Json(rows))
+}
+
+/// GET /api/v1/skills/files — Viewer+, matching `GET /skills`: reading the
+/// real SKILL.md files currently sitting in `skill_files::skills_dir()` is
+/// not a privileged action. No `AppState` needed — this is a direct
+/// filesystem read, not a database query.
+async fn list_file_skills_handler() -> Json<crate::skill_files::FileSkillScan> {
+    Json(crate::skill_files::scan_skills_dir())
 }
 
 /// DELETE /api/v1/skills/:id — Operator+, matching `create_custom_skill`.

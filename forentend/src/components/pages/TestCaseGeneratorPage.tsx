@@ -9,7 +9,7 @@
  * - Traceability Chain Inspection & Test Case Approval
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Sparkles,
@@ -37,7 +37,7 @@ import { GenerationConfigSection, TEST_CATEGORIES } from '../test-generator/Gene
 import { GeneratedTestCasesView } from '../test-generator/GeneratedTestCasesView';
 import { SkillsAndMcpPanel } from '../test-generator/SkillsAndMcpPanel';
 import { useSkillSelection } from '../../hooks/useSkillSelection';
-import { DEFAULT_SELECTED_SKILL_IDS } from '../../services/skillRegistry';
+import { categoryMatchedSkillIds, DEFAULT_SELECTED_SKILL_IDS } from '../../services/skillRegistry';
 import {
   UploadedRequirementDoc,
   AppSourceType,
@@ -237,8 +237,25 @@ export const TestCaseGeneratorPage: React.FC = () => {
   // hook, not inline state here, so a future generation-engine unit can
   // reuse the exact same selection contract without depending on this
   // page's other internals.
-  const { skills, selectedSkillIds, toggleSkill, addCustomSkill } = useSkillSelection(
+  const { skills, selectedSkillIds, toggleSkill, addCustomSkill, fileSkillErrors, fileSkillsDirectory } = useSkillSelection(
     activeGenerationSession?.selectedSkillIds || DEFAULT_SELECTED_SKILL_IDS,
+  );
+  // A skill whose name genuinely is a selected category (e.g. category
+  // "Performance" <-> skill "Performance Testing") is used for generation
+  // automatically, without also requiring its own checkbox — see
+  // `categoryMatchedSkillIds`'s doc comment for why the match is exact-stem
+  // only, never a fuzzy guess.
+  const autoMatchedSkillIds = useMemo(
+    () => categoryMatchedSkillIds(selectedCategories, skills),
+    [selectedCategories, skills],
+  );
+  // What actually gets sent to the real generator: every manually-checked
+  // skill plus every auto-matched one — the same set `handleTriggerGenerate`
+  // sends, so the "Skills:" summary below can never under-report what a
+  // real generation call used.
+  const effectiveSkillIds = useMemo(
+    () => [...new Set([...selectedSkillIds, ...autoMatchedSkillIds.keys()])],
+    [selectedSkillIds, autoMatchedSkillIds],
   );
   const isGeneratingNow = ['VALIDATING', 'PROCESSING', 'GENERATING'].includes(generationState);
 
@@ -588,7 +605,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
     setGenerationError(null);
     setGenerationState('GENERATING');
 
-    const requestSkills: GenerateAiSkillInput[] = selectedSkillIds
+    const requestSkills: GenerateAiSkillInput[] = effectiveSkillIds
       .map((id) => skills.find((s) => s.id === id))
       .filter((s): s is (typeof skills)[number] => Boolean(s))
       .map((s) => ({ id: s.id, name: s.name, description: s.description }));
@@ -812,8 +829,8 @@ export const TestCaseGeneratorPage: React.FC = () => {
               </div>
               <div className="col-span-2 sm:col-span-1">
                 <span className="text-slate-500">Skills: </span>
-                {selectedSkillIds.length > 0
-                  ? selectedSkillIds.map((id) => skills.find((s) => s.id === id)?.name ?? id).join(', ')
+                {effectiveSkillIds.length > 0
+                  ? effectiveSkillIds.map((id) => skills.find((s) => s.id === id)?.name ?? id).join(', ')
                   : 'None selected'}
               </div>
               <div>
@@ -971,6 +988,9 @@ export const TestCaseGeneratorPage: React.FC = () => {
               onToggleSkill={toggleSkill}
               onAddCustomSkill={addCustomSkill}
               disabled={isGeneratingNow}
+              fileSkillErrors={fileSkillErrors}
+              fileSkillsDirectory={fileSkillsDirectory}
+              autoMatchedSkills={autoMatchedSkillIds}
             />
           </div>
         </div>

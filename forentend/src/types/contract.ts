@@ -74,8 +74,43 @@ export interface CustomSkillRow {
   name: string;
   description: string;
   source_file: string | null;
+  /** Real YAML frontmatter of an imported SKILL.md, preserved as the file
+   *  wrote it. `null`/absent for a skill created by hand. */
+  metadata?: Record<string, unknown> | null;
   created_by: string;
   created_at: string;
+}
+
+/** `skill_files.rs::FileSkill` — one real `SKILL.md` file read live from
+ *  `services/orchestrator/skills/` on disk (`GET /api/v1/skills/files`).
+ *  Unlike `CustomSkillRow`, `description` here is genuinely the file's own
+ *  short frontmatter summary; `instruction` is the real text used for
+ *  generation (the markdown body). */
+export interface FileSkill {
+  id: string;
+  file_name: string;
+  name: string;
+  description: string | null;
+  instruction: string;
+  metadata: Record<string, unknown>;
+  had_frontmatter: boolean;
+  instruction_bytes: number;
+}
+
+/** `skill_files.rs::FileSkillError` — one file in the skills folder that
+ *  could not be read as a skill, with the real reason. */
+export interface FileSkillError {
+  file_name: string;
+  error: string;
+}
+
+/** `skill_files.rs::FileSkillScan`, `GET /api/v1/skills/files` — the real,
+ *  live state of the filesystem skills folder right now. Re-read on every
+ *  call, not cached (see that module's doc comment). */
+export interface FileSkillScan {
+  directory: string;
+  skills: FileSkill[];
+  errors: FileSkillError[];
 }
 
 /** `ai_generation.rs::ResolvedSkillInstruction` — the real instruction a

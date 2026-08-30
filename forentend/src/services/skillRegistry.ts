@@ -89,6 +89,54 @@ export const BUILT_IN_SKILLS: SkillDefinition[] = [
 
 export const DEFAULT_SELECTED_SKILL_IDS: string[] = ['skill-functional-testing', 'skill-edge-case-analysis'];
 
+/** A skill's name with its generic testing-verb suffix removed, so it can
+ *  be compared to a test-category id — "Performance Testing" ->
+ *  "performance", matching category id "Performance". Only a fixed,
+ *  short suffix list is stripped; nothing else about the name is guessed
+ *  at or fuzzy-matched. */
+function skillStem(name: string): string {
+  return name.replace(/\s+(Testing|Analysis)$/i, '').trim().toLowerCase();
+}
+
+/**
+ * Skills genuinely equivalent to a currently-selected test category — e.g.
+ * category `"Performance"` matches skill `"Performance Testing"` — so that
+ * skill's real instruction is included in generation automatically, without
+ * requiring the user to also check its own box. Returns a map from matched
+ * skill id to the real category name it matched, so a caller can say *why*
+ * a skill is included rather than just *that* it is.
+ *
+ * Matching is exact stem equality only, never a partial/fuzzy guess: a
+ * skill is included here only when it unambiguously names the same concept
+ * as a selected category. This deliberately leaves most categories
+ * unmatched (no built-in skill named "Load Testing" or "UI/UX Testing"
+ * exists today) and most non-built-in skills unmatched too (a custom or
+ * SKILL.md-file skill only participates if its own name happens to equal a
+ * category, e.g. a file literally named "Performance Testing") — those
+ * stay exactly as selectable-by-hand as before. This is why a skill with no
+ * category counterpart (Database Testing, RBAC Testing, most real SKILL.md
+ * files) is never silently added or dropped by this function.
+ *
+ * Works identically for built-in, custom, and filesystem skills alike,
+ * since it only ever reads `SkillDefinition.name` — never `type` — so a
+ * newly-dropped SKILL.md file participates with zero extra wiring the
+ * moment its name matches a category.
+ */
+export function categoryMatchedSkillIds(
+  selectedCategories: readonly string[],
+  skills: readonly SkillDefinition[],
+): Map<string, string> {
+  const stemToCategory = new Map(selectedCategories.map((c) => [c.trim().toLowerCase(), c]));
+  const matched = new Map<string, string>();
+  for (const skill of skills) {
+    const category = stemToCategory.get(skillStem(skill.name));
+    if (category) {
+      matched.set(skill.id, category);
+    }
+  }
+  return matched;
+}
+
 /** Real, evidence-based MCP status for this phase — re-stated here (not
  *  just in the UI copy) so any future code importing this module gets the
  *  same true fact from one place: no MCP connector backend exists yet. */

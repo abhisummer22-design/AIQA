@@ -81,6 +81,14 @@ export const SkillDetailModal: React.FC<SkillDetailModalProps> = ({ skill, onClo
   }, [onClose]);
 
   const isCustom = skill.type === 'CUSTOM';
+  const isFile = skill.type === 'FILE';
+  const badgeLabel = isFile ? 'File' : isCustom ? 'Custom' : 'Built-in';
+  const badgeClass = isFile
+    ? 'bg-amber-950/80 border-amber-700 text-amber-300'
+    : isCustom
+      ? 'bg-cyan-950/80 border-cyan-700 text-cyan-300'
+      : 'bg-indigo-950/80 border-indigo-700 text-indigo-300';
+  const metadataEntries = Object.entries(skill.fileSource?.metadata ?? {}).filter(([, v]) => v !== null && v !== undefined);
 
   return (
     <div
@@ -100,13 +108,9 @@ export const SkillDetailModal: React.FC<SkillDetailModalProps> = ({ skill, onClo
             <div className="flex items-center gap-2 flex-wrap">
               <h2 className="text-sm font-bold text-slate-100 font-sans truncate">{skill.name}</h2>
               <span
-                className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold uppercase tracking-wide border ${
-                  isCustom
-                    ? 'bg-cyan-950/80 border-cyan-700 text-cyan-300'
-                    : 'bg-indigo-950/80 border-indigo-700 text-indigo-300'
-                }`}
+                className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold uppercase tracking-wide border ${badgeClass}`}
               >
-                {isCustom ? 'Custom' : 'Built-in'}
+                {badgeLabel}
               </span>
             </div>
             <p className="text-[10px] font-mono text-slate-500 mt-0.5 truncate">{skill.id}</p>
@@ -122,6 +126,23 @@ export const SkillDetailModal: React.FC<SkillDetailModalProps> = ({ skill, onClo
         </div>
 
         <div className="p-4 space-y-3 overflow-y-auto">
+          {isFile && skill.fileSource && (
+            <div id="skill-detail-file-source" className="space-y-1.5 rounded-md border border-amber-900/60 bg-amber-950/20 p-2.5">
+              <p className="text-[10px] font-mono text-amber-300 truncate">Read from {skill.fileSource.fileName}</p>
+              {skill.fileSource.summary && <p className="text-[11px] text-slate-300">{skill.fileSource.summary}</p>}
+              {metadataEntries.length > 0 && (
+                <dl className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 pt-1 text-[10px] font-mono">
+                  {metadataEntries.map(([key, value]) => (
+                    <React.Fragment key={key}>
+                      <dt className="text-slate-500">{key}</dt>
+                      <dd className="text-slate-300 truncate">{Array.isArray(value) ? value.join(', ') : String(value)}</dd>
+                    </React.Fragment>
+                  ))}
+                </dl>
+              )}
+            </div>
+          )}
+
           <div className="flex items-center gap-1.5">
             <FileText className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
             <h3 className="text-[11px] font-mono font-semibold text-slate-300 uppercase tracking-wider">
@@ -162,9 +183,11 @@ export const SkillDetailModal: React.FC<SkillDetailModalProps> = ({ skill, onClo
             <p className="text-[10px] font-mono text-slate-500 flex items-start gap-1.5">
               <Info className="w-3 h-3 shrink-0 mt-0.5" />
               <span>
-                {isCustom
-                  ? 'This is your own saved description, passed to the model verbatim — exactly the text above.'
-                  : 'This is the backend’s built-in instruction for this skill.'}{' '}
+                {isFile
+                  ? 'This is the real markdown body of the file above, passed to the model verbatim — its YAML frontmatter is never sent.'
+                  : isCustom
+                    ? 'This is your own saved description, passed to the model verbatim — exactly the text above.'
+                    : 'This is the backend’s built-in instruction for this skill.'}{' '}
                 Read live from the orchestrator’s own resolver, so it is the same text the generator embeds in
                 its prompt.
               </span>

@@ -1,0 +1,15 @@
+-- A real SKILL.md file carries more than a name and a body: its YAML
+-- frontmatter states version, author, license, and the testing types /
+-- frameworks / languages / domains the skill actually applies to. Importing
+-- one and keeping only name+body would silently discard facts the file
+-- genuinely asserts about itself.
+--
+-- Stored as a JSON object rather than as columns because the set of keys is
+-- the *file's*, not ours — different skill authors publish different
+-- frontmatter, and inventing a fixed schema here would force every file into
+-- a shape it was not written in. `NULL` means the skill was created by hand
+-- (no file), which is a real distinction from an imported one.
+--
+-- `description` deliberately keeps its existing meaning: the instruction
+-- text sent to the model. Nothing about generation changes.
+ALTER TABLE custom_skills ADD COLUMN metadata TEXT;

@@ -19,8 +19,13 @@
 
 /** Where a skill definition came from.
  *  - `BUILT_IN` — shipped with this app, always available for selection.
- *  - `CUSTOM` — created by a user this session (see `SkillManagerModal`);
- *    explicitly session-only today, never claimed as persisted.
+ *  - `CUSTOM` — created by hand through the Skill Manager and persisted as a
+ *    real `custom_skills` row (`services/orchestrator/src/store.rs`).
+ *  - `FILE` — read live from a real `SKILL.md` file the user dropped into
+ *    `services/orchestrator/skills/` on disk (`skill_files.rs`,
+ *    `GET /api/v1/skills/files`). Re-scanned from disk on every fetch, so a
+ *    file added while the app is open shows up without a restart — see
+ *    `fileSource` below for the real facts the file itself stated.
  *  - `PLUGIN` — reserved for a future, real plugin registry. No plugin
  *    registry exists in this codebase today, so no skill of this type is
  *    ever produced by the current registry — the type exists so a future
@@ -31,7 +36,7 @@
  *    codebase today (confirmed by inspection — see
  *    `services/skillRegistry.ts`'s own module doc comment), so no skill of
  *    this type is ever produced today either. */
-export type SkillSourceType = 'BUILT_IN' | 'CUSTOM' | 'PLUGIN' | 'MCP';
+export type SkillSourceType = 'BUILT_IN' | 'CUSTOM' | 'FILE' | 'PLUGIN' | 'MCP';
 
 /** Truthful availability label (brief §5A). `AVAILABLE` means "this skill
  *  can be selected as a real generation-scope configuration value" — it
@@ -59,6 +64,20 @@ export interface SkillDefinition {
    *  connected MCP server) but cannot yet be selected for another real
    *  reason — every skill produced by the current registry is `true`. */
   configurable: boolean;
+  /** Real facts about a `FILE` skill's source file — absent for every other
+   *  `type`. Kept separate from `description` (which already carries the
+   *  real instruction for a `FILE` skill, exactly like `CUSTOM`) so the
+   *  file's own short frontmatter summary and remaining frontmatter keys
+   *  are still shown, not discarded. */
+  fileSource?: {
+    fileName: string;
+    /** The file's own frontmatter `description` — a short summary, not the
+     *  instruction. `null` when the file declared none. */
+    summary: string | null;
+    /** Every other real frontmatter key (version, author, frameworks, ...)
+     *  as the file wrote it. */
+    metadata: Record<string, unknown>;
+  };
 }
 
 /** A user-submitted custom skill. Persisted for real via `POST

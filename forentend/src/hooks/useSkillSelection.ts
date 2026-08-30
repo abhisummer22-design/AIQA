@@ -21,6 +21,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { aiqaApi } from '../services/aiqaApi';
 import { BUILT_IN_SKILLS } from '../services/skillRegistry';
+import type { FileSkill } from '../types/contract';
 import type { CustomSkillDraft, SkillDefinition } from '../types/skills';
 
 function customSkillRowToDefinition(row: { id: string; name: string; description: string }): SkillDefinition {
@@ -34,8 +35,31 @@ function customSkillRowToDefinition(row: { id: string; name: string; description
   };
 }
 
+/** A `FileSkill`'s `instruction` — not its short `description` — becomes
+ *  `SkillDefinition.description`: that field is what every consumer
+ *  (generation, `SkillDetailModal`'s resolve call) already treats as "the
+ *  real text this skill applies", exactly like a `CUSTOM` skill's own
+ *  stored description. The file's own short summary and remaining
+ *  frontmatter survive separately in `fileSource`, not discarded. */
+function fileSkillToDefinition(row: FileSkill): SkillDefinition {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.instruction,
+    type: 'FILE',
+    availability: 'AVAILABLE',
+    configurable: true,
+    fileSource: {
+      fileName: row.file_name,
+      summary: row.description,
+      metadata: row.metadata,
+    },
+  };
+}
+
 export interface UseSkillSelectionResult {
-  /** Built-in skills plus every real, persisted custom skill. */
+  /** Built-in skills, every real persisted custom skill, and every real
+   *  SKILL.md file currently sitting in the backend's skills folder. */
   skills: SkillDefinition[];
   selectedSkillIds: string[];
   isSelected: (id: string) => boolean;
@@ -48,6 +72,19 @@ export interface UseSkillSelectionResult {
   customSkills: SkillDefinition[];
   /** True while the initial real custom-skill list is loading. */
   customSkillsLoading: boolean;
+  /** Every real SKILL.md file currently readable from the backend's skills
+   *  folder, mapped to a selectable `FILE` skill. */
+  fileSkills: SkillDefinition[];
+  /** True while the initial real file-skill scan is loading. */
+  fileSkillsLoading: boolean;
+  /** Real per-file parse failures from the backend's last scan (e.g. a
+   *  `.md` file using block-style YAML lists) — surfaced verbatim so a
+   *  broken file is a visible, actionable state rather than one that
+   *  silently vanishes from the list. */
+  fileSkillErrors: Array<{ fileName: string; error: string }>;
+  /** The real backend folder path files should be dropped into, once the
+   *  first scan has returned it. */
+  fileSkillsDirectory: string | null;
 }
 
 export function useSkillSelection(
@@ -56,6 +93,10 @@ export function useSkillSelection(
 ): UseSkillSelectionResult {
   const [customSkills, setCustomSkills] = useState<SkillDefinition[]>(initialCustomSkills);
   const [customSkillsLoading, setCustomSkillsLoading] = useState(true);
+  const [fileSkills, setFileSkills] = useState<SkillDefinition[]>([]);
+  const [fileSkillsLoading, setFileSkillsLoading] = useState(true);
+  const [fileSkillErrors, setFileSkillErrors] = useState<Array<{ fileName: string; error: string }>>([]);
+  const [fileSkillsDirectory, setFileSkillsDirectory] = useState<string | null>(null);
   const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>(initialSelectedIds);
 
   useEffect(() => {
@@ -88,7 +129,31 @@ export function useSkillSelection(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const skills = useMemo(() => [...BUILT_IN_SKILLS, ...customSkills], [customSkills]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const scan = await aiqaApi.skills.files();
+        if (cancelled) return;
+        setFileSkills(scan.skills.map(fileSkillToDefinition));
+        setFileSkillErrors(scan.errors.map((e) => ({ fileName: e.file_name, error: e.error })));
+        setFileSkillsDirectory(scan.directory);
+      } catch {
+        // Real backend unreachable/unauthenticated — same honest
+        // do-nothing-locally behaviour as the custom-skill fetch above.
+      } finally {
+        if (!cancelled) setFileSkillsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const skills = useMemo(
+    () => [...BUILT_IN_SKILLS, ...customSkills, ...fileSkills],
+    [customSkills, fileSkills],
+  );
 
   const isSelected = useCallback((id: string) => selectedSkillIds.includes(id), [selectedSkillIds]);
 
@@ -104,5 +169,17 @@ export function useSkillSelection(
     return skill;
   }, []);
 
-  return { skills, selectedSkillIds, isSelected, toggleSkill, addCustomSkill, customSkills, customSkillsLoading };
+  return {
+    skills,
+    selectedSkillIds,
+    isSelected,
+    toggleSkill,
+    addCustomSkill,
+    customSkills,
+    customSkillsLoading,
+    fileSkills,
+    fileSkillsLoading,
+    fileSkillErrors,
+    fileSkillsDirectory,
+  };
 }
