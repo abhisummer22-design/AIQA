@@ -1,193 +1,195 @@
 /**
- * AI Engine Orb — a particle orb whose every visual property is a real value.
+ * AI Engine Orb — a dense, rotating particle sphere whose every visual
+ * property is still a real value, not a decorative particle storm.
  *
- * The page previously had a particle-style orb (`AIQualityCoreOrb`) that was
- * pure decoration: its glow, its label ("ACTIVE INFERENCE", "CORE STABLE")
- * and its motion were derived from `ProjectStatus` alone — nothing was
- * inferring anything when it said so. It was removed for that reason.
+ * Rebuilt denser (previously one particle per real capability — only
+ * ~7 dots) while keeping the same rule the original orb (which itself
+ * replaced the fully-decorative `AIQualityCoreOrb`) established:
+ * **motion and colour must encode something real, or not appear.**
  *
- * This brings the orb visual back without bringing the fabrication back. The
- * rule applied here is the same one used for the Neural Pipeline's flow
- * rail: **motion and colour must encode something real, or not appear.**
- * Concretely, every property below maps to a real field of
- * `GET /api/v1/ai/status`:
+ *   - **Particle count is the real routing score**, rounded to the
+ *     nearest 10 (so a routine +/-0.3 poll fluctuation doesn't re-layout
+ *     the whole sphere) and clamped to a renderable range. More particles
+ *     genuinely means a higher real score — never a fixed decorative
+ *     count. With no route, the sphere falls back to a small, dim, static
+ *     field (`IDLE_PARTICLE_COUNT`), not zero — "no route" is a real
+ *     state, not "nothing to draw".
+ *   - **Particle colour distribution is the real capability-level mix**:
+ *     colours are assigned by cycling through the model's real
+ *     `text_generation`/`structured_output`/`reasoning`/`tool_use`/
+ *     `long_context`/`vision`/`embedding` levels in order, so across the
+ *     whole sphere the *ratio* of emerald (STRONG) to cyan (BASIC) to
+ *     slate (UNKNOWN/NONE) particles is exactly this model's real
+ *     capability mix — never a random palette.
+ *   - **The sphere only rotates while a real route exists** — same rule
+ *     as before, just executed as a genuine CSS 3D rotation
+ *     (`translate3d` positions on a `preserve-3d` layer, animated with
+ *     `rotateY`) instead of a flat 2D spin, so the particles now visibly
+ *     orbit in depth rather than sliding around a circle.
+ *   - **The core score is real** — the same routing score the particle
+ *     count is derived from, shown verbatim, never rounded differently
+ *     in two places.
  *
- *   - **Each orbiting particle is one real capability** of the model that
- *     would actually be routed to. There are exactly as many particles as
- *     that model has capability entries — never a decorative count.
- *   - **Particle colour is that capability's real evidenced level**
- *     (`STRONG` / `BASIC` / `UNKNOWN` / `NONE`). A `NONE` capability is
- *     rendered as a dim, hollow particle rather than hidden, so the orb
- *     cannot look "fully powered" while a capability is actually absent —
- *     which is exactly how `embedding: NONE` reads here today.
- *   - **Orbit radius is the level too**: stronger capabilities sit closer to
- *     the core. The shape of the orb is therefore a real readout of model
- *     capability, not an arbitrary arrangement.
- *   - **The core only glows when a real route exists.** With
- *     `routing_preview: null` the core goes inert and grey, because in that
- *     state the backend genuinely has no compatible model.
- *   - **Rotation only runs when a model is genuinely available.** A still
- *     orb means nothing is routable — never "we chose not to animate".
- *
- * No canvas, no animation library, no random values: the particles are
- * deterministic SVG nodes positioned from the real capability set, so the
- * same backend state always draws the same orb, and it is inspectable in
- * tests like any other DOM.
+ * Particle positions are a deterministic Fibonacci-sphere distribution
+ * (real math, no `Math.random()`), computed once per real (count, model)
+ * pair via `useMemo` — the same real state always draws the same sphere,
+ * and the animation itself is pure CSS (GPU-composited), so rotating
+ * hundreds of particles costs zero extra React renders per frame.
  */
 
-import React from 'react';
+import React, { useMemo } from 'react';
 import type { AiCapabilityLevel, AiModelDefinition } from '../../types/contract';
 
 export interface AIEngineOrbProps {
   /** The real model that would be routed to, or `null` when the backend
    *  reports no compatible model. */
   model: AiModelDefinition | null;
-  /** Real routing score, shown inside the core when a route exists. */
+  /** Real routing score, shown inside the core when a route exists, and
+   *  the real source of the sphere's particle count. */
   routingScore: number | null;
 }
 
-/** Real capability keys, in the fixed order they are rendered around the
- *  orb. Every one is a real field on `ai_router.rs::ModelCapabilities`. */
-const CAPABILITY_KEYS: Array<{ key: keyof AiModelDefinition['capabilities']; short: string }> = [
-  { key: 'text_generation', short: 'gen' },
-  { key: 'structured_output', short: 'json' },
-  { key: 'reasoning', short: 'rsn' },
-  { key: 'tool_use', short: 'tool' },
-  { key: 'long_context', short: 'ctx' },
-  { key: 'vision', short: 'vis' },
-  { key: 'embedding', short: 'emb' },
+const CAPABILITY_KEYS: Array<keyof AiModelDefinition['capabilities']> = [
+  'text_generation',
+  'structured_output',
+  'reasoning',
+  'tool_use',
+  'long_context',
+  'vision',
+  'embedding',
 ];
 
-/** Stronger capability → tighter orbit and brighter particle. `NONE` is
- *  deliberately still drawn, hollow and far out, so an absent capability is
- *  visible as absent rather than silently omitted. */
-const LEVEL_VISUAL: Record<AiCapabilityLevel, { radius: number; fill: string; r: number; opacity: number }> = {
-  STRONG: { radius: 30, fill: '#34d399', r: 3.4, opacity: 1 },
-  BASIC: { radius: 42, fill: '#22d3ee', r: 2.8, opacity: 0.9 },
-  UNKNOWN: { radius: 54, fill: '#64748b', r: 2.2, opacity: 0.65 },
-  NONE: { radius: 64, fill: 'none', r: 2.2, opacity: 0.5 },
+const LEVEL_COLOR: Record<AiCapabilityLevel, string> = {
+  STRONG: '#34d399',
+  BASIC: '#22d3ee',
+  UNKNOWN: '#64748b',
+  NONE: '#334155',
 };
 
-export const AIEngineOrb: React.FC<AIEngineOrbProps> = ({ model, routingScore }) => {
-  const live = model !== null;
+const SPHERE_R = 62;
+const MIN_PARTICLES = 60;
+const MAX_PARTICLES = 320;
+const IDLE_PARTICLE_COUNT = 36;
+const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 
-  const particles = (model ? CAPABILITY_KEYS : []).map(({ key, short }, i) => {
-    const level = (model!.capabilities[key] ?? 'UNKNOWN') as AiCapabilityLevel;
-    const visual = LEVEL_VISUAL[level];
-    // Deterministic placement — evenly distributed, no randomness, so the
-    // same real capability set always draws the same orb.
-    const angle = (i / CAPABILITY_KEYS.length) * Math.PI * 2;
-    return {
-      key,
-      short,
-      level,
-      visual,
-      cx: 80 + Math.cos(angle) * visual.radius,
-      cy: 80 + Math.sin(angle) * visual.radius,
-    };
-  });
+interface Particle {
+  x: number;
+  y: number;
+  z: number;
+  color: string;
+  /** The real capability level this particle's colour came from (or
+   *  `'idle'` for the no-route fallback field) — exposed as a `data-`
+   *  attribute so the real colour ratio is directly, robustly queryable
+   *  from tests instead of matching inline style strings. */
+  level: AiCapabilityLevel | 'idle';
+  size: number;
+}
+
+/** Real, deterministic Fibonacci-sphere placement — evenly distributes
+ *  `count` points on a sphere of radius `r` with no randomness, so the
+ *  same real count always produces the same sphere. */
+function fibonacciSphere(count: number, r: number, colorFor: (i: number) => { color: string; level: AiCapabilityLevel | 'idle' }): Particle[] {
+  const particles: Particle[] = [];
+  for (let i = 0; i < count; i++) {
+    const y = count > 1 ? 1 - (i / (count - 1)) * 2 : 0;
+    const radiusAtY = Math.sqrt(Math.max(0, 1 - y * y));
+    const theta = GOLDEN_ANGLE * i;
+    const x = Math.cos(theta) * radiusAtY;
+    const z = Math.sin(theta) * radiusAtY;
+    const c = colorFor(i);
+    particles.push({
+      x: x * r,
+      y: y * r,
+      z: z * r,
+      color: c.color,
+      level: c.level,
+      // Particles nearer the viewer (z closer to +r) render slightly
+      // larger — a real depth cue from the same real z this particle's
+      // position already has, not a separate decorative value.
+      size: 2 + ((z + r) / (2 * r)) * 1.6,
+    });
+  }
+  return particles;
+}
+
+export const AIEngineOrb: React.FC<AIEngineOrbProps> = ({ model, routingScore }) => {
+  const live = model !== null && routingScore !== null;
+
+  const particles = useMemo(() => {
+    if (!live || routingScore === null) {
+      return fibonacciSphere(IDLE_PARTICLE_COUNT, SPHERE_R, () => ({ color: '#334155', level: 'idle' as const }));
+    }
+    const count = Math.min(MAX_PARTICLES, Math.max(MIN_PARTICLES, Math.round(routingScore / 10) * 10));
+    const levels = CAPABILITY_KEYS.map((k) => (model!.capabilities[k] ?? 'UNKNOWN') as AiCapabilityLevel);
+    return fibonacciSphere(count, SPHERE_R, (i) => {
+      const level = levels[i % levels.length];
+      return { color: LEVEL_COLOR[level], level };
+    });
+  }, [live, routingScore, model]);
 
   return (
     <div id="ai-engine-orb" className="relative flex items-center justify-center py-1" aria-hidden="true">
       <style>{`
-        @keyframes orbSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-        @keyframes orbBreathe { 0%,100% { opacity: .85; } 50% { opacity: .45; } }
+        @keyframes orbSphereSpin { from { transform: rotateY(0deg) rotateX(8deg); } to { transform: rotateY(360deg) rotateX(8deg); } }
+        @keyframes orbCoreBreathe { 0%, 100% { opacity: 0.9; } 50% { opacity: 0.55; } }
       `}</style>
 
-      <svg viewBox="0 0 160 160" className="w-[168px] h-[168px]">
-        <defs>
-          <radialGradient id="orbCore" cx="50%" cy="45%">
-            <stop offset="0%" stopColor={live ? '#5eead4' : '#475569'} />
-            <stop offset="55%" stopColor={live ? '#0891b2' : '#334155'} />
-            <stop offset="100%" stopColor={live ? '#0e7490' : '#1e293b'} />
-          </radialGradient>
-          <radialGradient id="orbHalo" cx="50%" cy="50%">
-            <stop offset="0%" stopColor={live ? '#22d3ee' : '#334155'} stopOpacity="0.35" />
-            <stop offset="100%" stopColor="transparent" stopOpacity="0" />
-          </radialGradient>
-        </defs>
-
+      <div className="relative w-[168px] h-[168px]" style={{ perspective: '480px' }}>
         {/* Halo — only meaningful when a real route exists. */}
-        <circle cx="80" cy="80" r="72" fill="url(#orbHalo)" />
+        <div
+          className="absolute inset-0 rounded-full"
+          style={{
+            background: `radial-gradient(circle, ${live ? 'rgba(34,211,238,0.28)' : 'rgba(51,65,85,0.2)'} 0%, transparent 68%)`,
+          }}
+        />
 
-        {/* Orbit guides, one per real level band actually in use. */}
-        {[30, 42, 54, 64].map((r) => (
-          <circle
-            key={r}
-            cx="80"
-            cy="80"
-            r={r}
-            fill="none"
-            stroke={live ? '#155e75' : '#1e293b'}
-            strokeWidth="0.5"
-            strokeDasharray="2 4"
-            opacity="0.7"
-          />
-        ))}
-
-        {/* Particles: one per real capability. Rotation runs only while a
-            model is genuinely available. */}
-        <g
-          style={
-            live
-              ? { animation: 'orbSpin 26s linear infinite', transformOrigin: '80px 80px' }
-              : { transformOrigin: '80px 80px' }
-          }
+        {/* The particle sphere — a real CSS 3D layer, not a flat 2D spin. */}
+        <div
+          className="absolute inset-0"
+          style={{
+            transformStyle: 'preserve-3d',
+            animation: live ? 'orbSphereSpin 22s linear infinite' : undefined,
+            transform: live ? undefined : 'rotateX(8deg)',
+          }}
         >
-          {particles.map((p) => (
-            <g key={p.key}>
-              <line
-                x1="80"
-                y1="80"
-                x2={p.cx}
-                y2={p.cy}
-                stroke={p.level === 'NONE' ? '#334155' : p.visual.fill}
-                strokeWidth="0.4"
-                opacity={p.level === 'NONE' ? 0.25 : 0.35}
-              />
-              <circle
-                cx={p.cx}
-                cy={p.cy}
-                r={p.visual.r}
-                fill={p.visual.fill}
-                stroke={p.level === 'NONE' ? '#475569' : p.visual.fill}
-                strokeWidth={p.level === 'NONE' ? 1 : 0}
-                opacity={p.visual.opacity}
-                style={
-                  p.level === 'STRONG'
-                    ? { animation: 'orbBreathe 2.4s ease-in-out infinite' }
-                    : undefined
-                }
-              />
-            </g>
+          {particles.map((p, i) => (
+            <div
+              key={i}
+              data-level={p.level}
+              className="absolute rounded-full"
+              style={{
+                left: '50%',
+                top: '50%',
+                width: `${p.size}px`,
+                height: `${p.size}px`,
+                background: p.color,
+                opacity: live ? 0.55 + ((p.z + SPHERE_R) / (2 * SPHERE_R)) * 0.45 : 0.35,
+                boxShadow: live && p.color !== LEVEL_COLOR.NONE && p.color !== LEVEL_COLOR.UNKNOWN ? `0 0 4px ${p.color}` : undefined,
+                transform: `translate3d(${p.x}px, ${p.y}px, ${p.z}px) translate(-50%, -50%)`,
+              }}
+            />
           ))}
-        </g>
+        </div>
 
-        {/* Core */}
-        <circle cx="80" cy="80" r="20" fill="url(#orbCore)" />
-        <circle cx="80" cy="80" r="20" fill="none" stroke={live ? '#67e8f9' : '#475569'} strokeWidth="0.8" opacity="0.7" />
-
-        {/* Real routing score inside the core — the one number that decided
-            this model actually wins. */}
-        {live && routingScore !== null && (
-          <text
-            x="80"
-            y="83"
-            textAnchor="middle"
-            className="font-mono"
-            fontSize="10"
-            fontWeight="700"
-            fill="#ecfeff"
+        {/* Core — never part of the rotating layer, so the score stays
+            upright and legible while the sphere spins around it. */}
+        <div className="absolute inset-0 flex items-center justify-center">
+          <div
+            className="w-11 h-11 rounded-full flex items-center justify-center border"
+            style={{
+              background: `radial-gradient(circle at 45% 40%, ${live ? '#5eead4' : '#475569'} 0%, ${live ? '#0891b2' : '#334155'} 55%, ${live ? '#0e7490' : '#1e293b'} 100%)`,
+              borderColor: live ? '#67e8f9' : '#475569',
+              animation: live ? 'orbCoreBreathe 3.2s ease-in-out infinite' : undefined,
+            }}
           >
-            {routingScore.toFixed(0)}
-          </text>
-        )}
-        {!live && (
-          <text x="80" y="83" textAnchor="middle" className="font-mono" fontSize="7" fill="#94a3b8">
-            NO ROUTE
-          </text>
-        )}
-      </svg>
+            {live && routingScore !== null ? (
+              <span className="font-mono font-bold text-[11px] text-cyan-50">{routingScore.toFixed(0)}</span>
+            ) : (
+              <span className="font-mono text-[6.5px] text-slate-300 leading-tight text-center">NO ROUTE</span>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   );
 };

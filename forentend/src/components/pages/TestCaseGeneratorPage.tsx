@@ -36,6 +36,7 @@ import { ApplicationSourceSection } from '../test-generator/ApplicationSourceSec
 import { GenerationConfigSection, TEST_CATEGORIES } from '../test-generator/GenerationConfigSection';
 import { GeneratedTestCasesView } from '../test-generator/GeneratedTestCasesView';
 import { SkillsAndMcpPanel } from '../test-generator/SkillsAndMcpPanel';
+import { TestGenerationFlow } from '../test-generator/TestGenerationFlow';
 import { useSkillSelection } from '../../hooks/useSkillSelection';
 import { categoryMatchedSkillIds, DEFAULT_SELECTED_SKILL_IDS } from '../../services/skillRegistry';
 import {
@@ -919,8 +920,14 @@ export const TestCaseGeneratorPage: React.FC = () => {
            not a new ratio system) puts the Skills & MCP panel beside this
            existing input area on desktop, and stacks it below on
            tablet/mobile via the default `grid-cols-1`. Nothing inside
-           either column below was redesigned — only re-parented. */
-        <div id="project-sources-workspace" className="grid grid-cols-1 lg:grid-cols-10 gap-4 items-start">
+           either column below was redesigned — only re-parented.
+           Widened to `lg:grid-cols-12` (same two columns keep their
+           `col-span-7`/`col-span-3`, just narrower relative to a 12-wide
+           row) to make room for a third `col-span-2` column: the AI Engine
+           rail, the same real orb `DashboardPage` shows, filling what was
+           previously dead margin space rather than adding a decorative
+           graphic with no real data behind it. */
+        <div id="project-sources-workspace" className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
           <div className="lg:col-span-7 space-y-6 min-w-0">
             {/* Section Banner: Project Sources */}
             <div className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 space-y-1">
@@ -991,6 +998,17 @@ export const TestCaseGeneratorPage: React.FC = () => {
               fileSkillErrors={fileSkillErrors}
               fileSkillsDirectory={fileSkillsDirectory}
               autoMatchedSkills={autoMatchedSkillIds}
+            />
+          </div>
+
+          <div className="hidden lg:block lg:col-span-2 min-w-0">
+            <TestGenerationFlow
+              documents={documents}
+              appSources={appSources}
+              skillCount={effectiveSkillIds.length}
+              generationState={generationState}
+              lastGenerationResult={lastGenerationResult}
+              generatedCasesCount={generatedCases.length}
             />
           </div>
         </div>

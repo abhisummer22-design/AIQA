@@ -62,6 +62,7 @@ import {
 import { SectionHeader } from '../common/SectionHeader';
 import { OrchestratorLogsPanel } from '../dashboard/OrchestratorLogsPanel';
 import { NeuralPipeline } from '../orchestrator/NeuralPipeline';
+import { OrchestratorRadar } from '../orchestrator/OrchestratorRadar';
 import { aiqaApi, ApiError } from '../../services/aiqaApi';
 import { useAuth } from '../../context/AuthContext';
 import { useProject } from '../../context/ProjectContext';
@@ -301,7 +302,13 @@ export const AIQAOrchestratorPage: React.FC = () => {
         })}
 
       {!error && aiStatus && orchState && (
-        <>
+        // `lg:grid-cols-12` (`col-span-10` main / `col-span-2` rail): the
+        // same layout idiom `TestCaseGeneratorPage`'s own generation-flow
+        // rail uses, so the previously-empty margin at wide viewports
+        // holds a real, live glance at this page's own routing/executor/
+        // run state instead of dead space.
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+        <div className="lg:col-span-9 space-y-4 min-w-0">
           {/* The real execution loop, end to end — including the stages
               this backend genuinely does not have, reported as such. */}
           <NeuralPipeline projectId={selectedProject?.id ?? null} />
@@ -464,7 +471,12 @@ export const AIQAOrchestratorPage: React.FC = () => {
 
           {/* ------------------------------------- realtime activity stream */}
           <OrchestratorLogsPanel projectId={selectedProject?.id ?? null} />
-        </>
+        </div>
+
+        <div className="hidden lg:block lg:col-span-3 min-w-0">
+          <OrchestratorRadar orchState={orchState} />
+        </div>
+        </div>
       )}
     </div>
   );

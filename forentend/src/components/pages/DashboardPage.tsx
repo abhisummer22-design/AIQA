@@ -129,15 +129,17 @@ import {
 } from 'lucide-react';
 import { useProject } from '../../context/ProjectContext';
 import { useRealtime } from '../../context/RealtimeContext';
+import { useAiStatus } from '../../hooks/useAiStatus';
 import { ApiError, aiqaApi } from '../../services/aiqaApi';
 import { StateCard, renderResourceErrorState } from '../state/StateViews';
 import { EmptyState } from '../common/EmptyState';
 import { AIEnginePanel } from '../dashboard/AIEnginePanel';
+import { NeuralGraph } from '../neural-graph/NeuralGraph';
 import { ProjectStatusDonut } from '../dashboard/ProjectStatusDonut';
 import { ProjectExecutionGraph } from '../dashboard/ProjectExecutionGraph';
 import { OrchestratorLogsPanel } from '../dashboard/OrchestratorLogsPanel';
 import type { ProjectMetrics, ProjectStatus } from '../../types';
-import type { AiStatusResponse, DashboardResponse, KpisResponse, RunListItem, RunDetail } from '../../types/contract';
+import type { DashboardResponse, KpisResponse, RunListItem, RunDetail } from '../../types/contract';
 
 /** A burst of task/run events for the same project collapses into one
  *  resync, never one per event (same pattern/reasoning as FE-9's own
@@ -203,46 +205,13 @@ export const DashboardPage: React.FC = () => {
   const [error, setError] = useState<ApiError | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  /** Real AI engine state (`GET /api/v1/ai/status`). Kept in its own state
-   *  rather than folded into `DashboardData` because it is platform-wide,
-   *  not project-scoped: it must not be cleared or reloaded just because
-   *  the selected project changed, and a failure to reach it must not
-   *  blank out the project dashboard beside it. */
-  const [aiStatus, setAiStatus] = useState<AiStatusResponse | null>(null);
-  const [aiLoading, setAiLoading] = useState(true);
-  const [aiError, setAiError] = useState<string | null>(null);
-  const aiAbortRef = useRef<AbortController | null>(null);
-
-  const loadAiStatus = useCallback(async () => {
-    aiAbortRef.current?.abort();
-    const controller = new AbortController();
-    aiAbortRef.current = controller;
-    setAiLoading(true);
-    try {
-      const s = await aiqaApi.ai.status(controller.signal);
-      if (controller.signal.aborted) return;
-      // Structural guard before this reaches the panel. A payload that is
-      // not actually an `AiStatusResponse` (a proxy error body, an
-      // unexpected array) would otherwise crash on `status.providers.map`
-      // and, because this panel sits inside the Dashboard tree, take the
-      // whole Dashboard down with it — the same failure mode already fixed
-      // in `OrchestratorLogsPanel`. Treated as a real load failure instead.
-      if (!s || typeof s !== 'object' || !Array.isArray((s as AiStatusResponse).providers)) {
-        setAiStatus(null);
-        setAiError('The orchestrator returned an unexpected AI status payload.');
-        return;
-      }
-      setAiStatus(s);
-      setAiError(null);
-    } catch (err) {
-      if (controller.signal.aborted) return;
-      // Never leave a stale engine snapshot on screen looking current.
-      setAiStatus(null);
-      setAiError(err instanceof Error ? err.message : 'Failed to load AI engine status.');
-    } finally {
-      if (!controller.signal.aborted) setAiLoading(false);
-    }
-  }, []);
+  /** Real AI engine state (`GET /api/v1/ai/status`), shared with the Test
+   *  Case Generator's own AI Engine rail (`hooks/useAiStatus.ts`) so both
+   *  pages read the same fetch/poll logic rather than two copies drifting
+   *  apart. Platform-wide, not project-scoped: it must not be cleared or
+   *  reloaded just because the selected project changed, and a failure to
+   *  reach it must not blank out the project dashboard beside it. */
+  const { status: aiStatus, loading: aiLoading, error: aiError, retry: loadAiStatus } = useAiStatus();
 
   const fetchAll = useCallback(async (projectId: string, isRefresh: boolean) => {
     abortRef.current?.abort();
@@ -319,19 +288,6 @@ export const DashboardPage: React.FC = () => {
   // Depends on `realtime.subscribe` specifically (stable identity), not
   // the whole `realtime` object — see FE-9's own live-discovered bug about
   // exactly this mistake (`RealtimeContext.tsx`'s module doc comment).
-  // Platform-wide, not project-scoped: loaded once on mount and refreshed
-  // on the same slow cadence the AI router itself re-discovers on. It is
-  // deliberately NOT tied to `selectedProjectId` — the engine is the same
-  // regardless of which project is open.
-  useEffect(() => {
-    void loadAiStatus();
-    const timer = setInterval(() => void loadAiStatus(), 30000);
-    return () => {
-      clearInterval(timer);
-      aiAbortRef.current?.abort();
-    };
-  }, [loadAiStatus]);
-
   const resyncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (!selectedProjectId) return;
@@ -581,6 +537,14 @@ export const DashboardPage: React.FC = () => {
           </div>
         </section>
 
+        {/* 2.5. AIQA Neural Intelligence Graph — real, project-scoped test-
+            case/execution/evidence/risk/audit intelligence. Its own data
+            adapter (`useNeuralGraphData`) fetches what the KPI row above
+            doesn't already have; `dashboard`/`aiStatus` are passed down
+            rather than re-fetched, so this can never show a number that
+            disagrees with the KPI cards above it. */}
+        <NeuralGraph projectId={selectedProjectId} projectName={dashboard.project_name} dashboard={dashboard} aiStatus={aiStatus} />
+
         {/* 3. Middle Section: Current Project Details + Futuristic AI Orb */}
         <section id="dashboard-middle-section" className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
           {/* Left: Current Project Detail (7 Cols on desktop) */}
@@ -708,7 +672,7 @@ export const DashboardPage: React.FC = () => {
               the real model that would be routed to, its real score and
               reason, and its real capability levels. */}
           <div id="ai-engine-column" className="lg:col-span-5 flex flex-col">
-            <AIEnginePanel status={aiStatus} loading={aiLoading} error={aiError} onRetry={() => void loadAiStatus()} />
+            <AIEnginePanel status={aiStatus} loading={aiLoading} error={aiError} onRetry={loadAiStatus} />
           </div>
         </section>
 

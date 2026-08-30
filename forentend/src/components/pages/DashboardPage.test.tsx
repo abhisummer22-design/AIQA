@@ -707,8 +707,13 @@ describe('DashboardPage (FE-10 §28 items 1-32)', () => {
       screen.getByText('Retry').closest('button')!.click();
     });
     await waitFor(() => expect(within(kpiRow()).getByText('4')).toBeTruthy());
-    // Exactly the three real calls a fresh load makes (dashboard/kpis/executions) — no duplicate storm.
-    expect(fetchMock.mock.calls.length - before).toBe(3);
+    // Exactly the real calls a fresh load makes — no duplicate storm. Three
+    // for the Dashboard itself (dashboard/kpis/executions) plus three for
+    // the Neural Intelligence Graph mounting for the first time now that
+    // `data` is finally non-null (test-cases/executions/audit — its own
+    // real data adapter, `useNeuralGraphData`) — not a second copy of the
+    // same three, a genuinely different real fetch for a real feature.
+    expect(fetchMock.mock.calls.length - before).toBe(6);
   });
 
   // ------------------------------------------------------------ regression
@@ -958,7 +963,7 @@ describe('DashboardPage — real AI Engine panel', () => {
     expect(within(panel).getByText('NOT_CONFIGURED')).toBeTruthy();
   });
 
-  it('renders the particle orb with exactly one particle per REAL capability', async () => {
+  it('the particle sphere size and colour mix are both real, derived from the real routing score and real capability levels', async () => {
     setApiKey(RAW_KEY);
     mockWithAiStatus();
     renderApp();
@@ -966,15 +971,24 @@ describe('DashboardPage — real AI Engine panel', () => {
     await openAndSelectProject(PROJECT_A);
 
     const orb = await waitFor(() => document.getElementById('ai-engine-orb')!);
-    // 7 real capability fields on `ModelCapabilities` -> 7 particles. The
-    // count is derived from real data, never a decorative number.
-    const particles = orb.querySelectorAll('circle[r="3.4"], circle[r="2.8"], circle[r="2.2"]');
-    expect(particles.length).toBe(7);
+    // Real routing score 211.48 -> round(211.48/10)*10 = 210 particles —
+    // the count is derived from real data, never a decorative number.
+    const allParticles = orb.querySelectorAll('[data-level]');
+    expect(allParticles.length).toBe(210);
+    // Real capability levels (text_generation/tool_use STRONG,
+    // structured_output/reasoning BASIC, long_context UNKNOWN,
+    // vision/embedding NONE) cycle evenly across 210 particles (210 / 7
+    // real capability fields = 30 each) — the real *ratio*, not a random
+    // palette.
+    expect(orb.querySelectorAll('[data-level="STRONG"]').length).toBe(60);
+    expect(orb.querySelectorAll('[data-level="BASIC"]').length).toBe(60);
+    expect(orb.querySelectorAll('[data-level="UNKNOWN"]').length).toBe(30);
+    expect(orb.querySelectorAll('[data-level="NONE"]').length).toBe(60);
     // The real routing score is rendered inside the core.
     expect(orb.textContent).toContain('211');
   });
 
-  it('the orb goes inert with no route — no spin, no score, and it says so', async () => {
+  it('the orb goes inert with no route — no spin, no score, a small idle field, and it says so', async () => {
     setApiKey(RAW_KEY);
     mockWithAiStatus({ ...AI_STATUS_BODY, routing_preview: null });
     renderApp();
@@ -984,9 +998,12 @@ describe('DashboardPage — real AI Engine panel', () => {
     const orb = await waitFor(() => document.getElementById('ai-engine-orb')!);
     expect(orb.textContent).toContain('NO ROUTE');
     expect(orb.textContent).not.toContain('211');
+    // No route -> the small idle fallback field, never the real-score-sized
+    // sphere left over from a stale render.
+    expect(orb.querySelectorAll('[data-level="idle"]').length).toBe(36);
     // Nothing animates when nothing is routable — motion must always mean
     // something real is true.
-    expect(orb.innerHTML).not.toContain('orbSpin 26s');
+    expect(orb.innerHTML).not.toContain('orbSphereSpin 22s');
   });
 
   it('shows no route at all when the backend reports none — nothing fabricated in its place', async () => {
