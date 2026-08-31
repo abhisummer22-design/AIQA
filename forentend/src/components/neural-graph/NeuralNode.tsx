@@ -8,7 +8,7 @@
  * needs to re-render when its own data or interaction state changes.
  */
 import React from 'react';
-import { STATUS_COLOR, STATUS_GLYPH, TIER_RADIUS } from './neuralGraph.config';
+import { CATEGORY_ICON, CORE_AND_STAGE_ICON, STATUS_COLOR, STATUS_GLYPH, TIER_RADIUS } from './neuralGraph.config';
 import type { NeuralNodeData } from './neuralGraph.types';
 
 export interface NeuralNodePosition {
@@ -30,6 +30,16 @@ const NeuralNodeImpl: React.FC<NeuralNodeProps> = ({ node, position, dimmed, hig
   const color = STATUS_COLOR[node.status];
   const isProcessing = node.status === 'processing' || node.status === 'active';
   const fontSize = node.tier === 'core' ? 13 : node.tier === 'major' ? 11 : 9;
+  // Real QA-category glyph — which real pipeline stage/test category this
+  // node stands for, at a glance. Looked up by the node's own real id, not
+  // invented per node — `CATEGORY_ICON` for the 14 real satellite
+  // categories (stripping the `cat-` id prefix), `CORE_AND_STAGE_ICON` for
+  // the hub and the six real pipeline stages.
+  const Icon = node.tier === 'satellite' ? CATEGORY_ICON[node.id.replace(/^cat-/, '')] : CORE_AND_STAGE_ICON[node.id];
+  const iconSize = node.tier === 'core' ? 22 : node.tier === 'major' ? 16 : 10;
+  const iconY = node.tier === 'core' ? -15 : node.tier === 'major' ? -10 : -6;
+  const glyphY = node.tier === 'core' ? 19 : node.tier === 'major' ? 13 : 7;
+  const glyphFontSize = node.tier === 'core' ? 15 : node.tier === 'major' ? 11 : 8;
 
   return (
     <g
@@ -49,11 +59,12 @@ const NeuralNodeImpl: React.FC<NeuralNodeProps> = ({ node, position, dimmed, hig
       <circle r={r} fill={color} fillOpacity={node.tier === 'satellite' ? '0.12' : '0.16'} />
       {isProcessing && <circle r={r} fill="none" stroke={color} strokeWidth="1.5" opacity="0.7" className="animate-ping" style={{ transformOrigin: 'center' }} />}
 
-      <text y={node.tier === 'satellite' ? -2 : -4} textAnchor="middle" fill={color} style={{ font: `${node.tier === 'core' ? 15 : 11}px monospace`, fontWeight: 700 }}>
+      {Icon && <Icon x={-iconSize / 2} y={iconY - iconSize / 2} width={iconSize} height={iconSize} color={color} strokeWidth={2} />}
+      <text y={glyphY} textAnchor="middle" fill={color} style={{ fontSize: glyphFontSize, fontFamily: 'monospace', fontWeight: 700 }}>
         {STATUS_GLYPH[node.status]}
       </text>
       {node.tier !== 'satellite' && (
-        <text y={r + 16} textAnchor="middle" fill="#cbd5e1" style={{ font: `${fontSize}px monospace`, fontWeight: 700 }}>
+        <text y={r + 16} textAnchor="middle" fill="#cbd5e1" style={{ fontSize, fontFamily: 'monospace', fontWeight: 700 }}>
           {node.shortLabel}
         </text>
       )}

@@ -7,6 +7,30 @@
  * 14-category set `GenerationConfigSection.tsx::TEST_CATEGORIES` already
  * defines for test-case generation) — not an invented "14 engines" list.
  */
+import {
+  Activity,
+  AlertTriangle,
+  Briefcase,
+  BrainCircuit,
+  Bug,
+  Camera,
+  CheckSquare,
+  CircleCheck,
+  CircleX,
+  ClipboardList,
+  FlaskConical,
+  Gauge,
+  GitBranch,
+  Layers,
+  Palette,
+  PlayCircle,
+  ScrollText,
+  Shield,
+  SlidersHorizontal,
+  TrendingUp,
+  Webhook,
+  type LucideIcon,
+} from 'lucide-react';
 import type { NeuralNodeStatus, NeuralNodeTier } from './neuralGraph.types';
 
 export const VIEWBOX_SIZE = 900;
@@ -78,4 +102,39 @@ export const TIER_RADIUS: Record<NeuralNodeTier, number> = {
   core: CORE_NODE_R,
   major: MAJOR_NODE_R,
   satellite: SATELLITE_NODE_R,
+};
+
+/** Which real pipeline stage (or the core hub) a node stands for — keyed by
+ *  the exact node `id` `useNeuralGraphData.ts` assigns (`'core'`, then each
+ *  `MAJOR_STAGES[i].id`). Purely a visual label for what the node already
+ *  is; carries no data of its own. */
+export const CORE_AND_STAGE_ICON: Record<string, LucideIcon> = {
+  core: BrainCircuit,
+  requirement: ClipboardList,
+  'test-case': FlaskConical,
+  execution: PlayCircle,
+  evidence: Camera,
+  risk: AlertTriangle,
+  audit: ScrollText,
+};
+
+/** Which real test-generation category a satellite node stands for — keyed
+ *  by the plain `CATEGORY_NODES[i].id` (the `cat-` id prefix is stripped
+ *  before this lookup, since that prefix only exists to keep a category's
+ *  graph-node id from colliding with a same-named stage/status id). */
+export const CATEGORY_ICON: Record<string, LucideIcon> = {
+  Functional: CheckSquare,
+  'Non-Functional': SlidersHorizontal,
+  Positive: CircleCheck,
+  Negative: CircleX,
+  'UI/UX': Palette,
+  Spike: TrendingUp,
+  Load: Gauge,
+  'Edge Case': GitBranch,
+  'Senior Base': Layers,
+  'Business Logic': Briefcase,
+  API: Webhook,
+  Performance: Activity,
+  Security: Shield,
+  Penetration: Bug,
 };
