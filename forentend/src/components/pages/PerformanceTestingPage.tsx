@@ -27,6 +27,7 @@ import { ComposedChart, Line, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, Leg
 import { Gauge, AlertTriangle, Play, Square, Clock, Zap, TrendingUp, ListChecks, History, ShieldAlert } from 'lucide-react';
 import { SectionHeader } from '../common/SectionHeader';
 import { EmptyState } from '../common/EmptyState';
+import { PerformanceFlowRail } from '../performance/PerformanceFlowRail';
 import { useProject } from '../../context/ProjectContext';
 import { ApiError, aiqaApi } from '../../services/aiqaApi';
 import type { PerformanceRunRow, PerformanceRunStatusResponse, PerformanceWorkloadSchedule } from '../../types/contract';
@@ -251,8 +252,8 @@ export const PerformanceTestingPage: React.FC = () => {
           onAction={() => navigate('/dashboard')}
         />
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <div className="space-y-4">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+          <div className="lg:col-span-5 space-y-4">
             <div className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm space-y-3">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-mono text-slate-400">Project Context</span>
@@ -399,7 +400,7 @@ export const PerformanceTestingPage: React.FC = () => {
             <HistoryPanel history={history} />
           </div>
 
-          <div className="space-y-4">
+          <div className="lg:col-span-5 space-y-4">
             {live ? (
               <>
                 <LiveMetricsPanel live={live} />
@@ -431,6 +432,10 @@ export const PerformanceTestingPage: React.FC = () => {
             ) : (
               <div className="p-6 rounded-lg bg-[#0B1120] border border-slate-800 border-dashed text-center text-xs font-mono text-slate-500">Configure a workload and click Start to see real, live progress here.</div>
             )}
+          </div>
+
+          <div className="hidden lg:block lg:col-span-2 min-w-0">
+            <PerformanceFlowRail testType={testType} method={method} live={live} />
           </div>
         </div>
       )}

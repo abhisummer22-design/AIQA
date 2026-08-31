@@ -321,7 +321,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
             NO TEST CASES GENERATED YET
           </h3>
           <p className="text-xs text-slate-400 font-sans leading-relaxed">
-            Upload product documentation (PRD, FRD, SRD, MRD), connect your target application, and select testing strategies to run autonomous AI test case generation.
+            Upload product documentation (PRD, FRD, SRD), connect your target application, and select testing strategies to run autonomous AI test case generation.
           </p>
         </div>
         <button

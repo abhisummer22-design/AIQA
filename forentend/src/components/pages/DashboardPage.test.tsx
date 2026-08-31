@@ -74,6 +74,25 @@ class MockWebSocket {
   }
 }
 
+/** The Dashboard legitimately consumes two *different* real streams, not two
+ *  copies of one: `RealtimeContext`'s run-event socket
+ *  (`/projects/:id/events`, the single centralized connection every page
+ *  shares) and the Orchestrator log stream (`/logs/ws`, owned by
+ *  `OrchestratorLogsPanel`). These helpers keep the original
+ *  "no second connection" invariant assertable per stream — the rule being
+ *  protected is "exactly one run-event socket", which is unchanged. */
+function eventSockets(): MockWebSocket[] {
+  // Only sockets that are still open. A project switch legitimately closes
+  // the previous one and opens a new one, so the raw `instances` array
+  // accumulates closed sockets — counting those would assert a leak that
+  // is not happening.
+  return MockWebSocket.instances.filter((ws) => ws.url.includes('/events') && ws.readyState !== 3);
+}
+
+function openLogSockets(): MockWebSocket[] {
+  return MockWebSocket.instances.filter((ws) => ws.url.includes('/logs/ws') && ws.readyState !== 3);
+}
+
 function realEvent(overrides: Partial<RunEvent> = {}): RunEvent {
   return {
     event_id: `evt-${Math.random().toString(36).slice(2)}`,
@@ -129,6 +148,75 @@ function mockBackend(opts: {
   return fetchMock;
 }
 
+
+/** A real-shaped `GET /api/v1/ai/status` body — field-for-field
+ *  `AiStatusResponse`, mirroring what the live backend actually returns
+ *  (observed from `ai_router.rs`). Used only as mocked transport output. */
+const AI_STATUS_BODY = {
+  providers: [
+    {
+      id: 'ollama',
+      name: 'Ollama',
+      provider_type: 'LOCAL',
+      endpoint: 'http://localhost:11434',
+      configured: true,
+      reachable: true,
+      status: 'HEALTHY',
+      models: [
+        {
+          id: 'qwen3:14b',
+          provider_id: 'ollama',
+          display_name: 'qwen3:14b',
+          family: 'qwen3',
+          parameter_size: '14.8B',
+          context_window: null,
+          status: 'AVAILABLE',
+          capabilities: {
+            text_generation: 'STRONG',
+            structured_output: 'BASIC',
+            reasoning: 'BASIC',
+            vision: 'NONE',
+            embedding: 'NONE',
+            tool_use: 'STRONG',
+            long_context: 'UNKNOWN',
+          },
+        },
+      ],
+    },
+    {
+      id: 'mj-gateway',
+      name: 'MJ AI Gateway',
+      provider_type: 'OPEN_AI_COMPATIBLE',
+      endpoint: 'http://127.0.0.1:8000',
+      configured: false,
+      reachable: false,
+      status: 'NOT_CONFIGURED',
+      models: [],
+    },
+  ],
+  settings: { mode: 'AUTO', preferred_provider: null, preferred_model: null, fallback_enabled: true },
+  routing_preview: {
+    provider_id: 'ollama',
+    model_id: 'qwen3:14b',
+    routing_score: 211.48,
+    reason: 'AUTO mode: best available model for TestCaseGeneration by routing score',
+  },
+};
+
+function mockWithAiStatus(body: unknown = AI_STATUS_BODY) {
+  const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+    const u = String(url);
+    if (u.includes('/ai/status')) return jsonResponse(200, body);
+    if (u.includes('/dashboard')) return jsonResponse(200, dashboardFor(PROJECT_A));
+    if (u.includes('/kpis')) return jsonResponse(200, kpisFor(PROJECT_A));
+    if (u.includes('/executions')) return jsonResponse(200, []);
+    if (u.includes('/logs')) return jsonResponse(200, []);
+    return jsonResponse(200, [PROJECT_A]);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  return fetchMock;
+}
+
 function renderApp(initialEntries: string[] = ['/dashboard']) {
   return render(
     <MemoryRouter initialEntries={initialEntries}>
@@ -138,12 +226,16 @@ function renderApp(initialEntries: string[] = ['/dashboard']) {
 }
 
 async function verifyKey(): Promise<void> {
-  await act(async () => {
-    screen.getByText('Verify Connection').closest('button')!.click();
-  });
+  const btn = screen.queryByText('Verify Connection')?.closest('button');
+  if (btn) {
+    await act(async () => {
+      btn.click();
+    });
+  }
 }
 
 async function openAndSelectProject(project: Project): Promise<void> {
+  await waitFor(() => expect(document.getElementById('project-selector-button')).toBeTruthy());
   await act(async () => {
     document.getElementById('project-selector-button')!.click();
   });
@@ -275,7 +367,7 @@ describe('DashboardPage (FE-10 §28 items 1-32)', () => {
     await openAndSelectProject(PROJECT_A);
 
     await waitFor(() => expect(screen.getByText('Authentication required')).toBeTruthy());
-    expect(screen.queryByText('Total Test Cases')).toBeNull();
+    expect(screen.queryByText('Executed Tests')).toBeNull();
   });
 
   it('item 8 — a real 403 on the dashboard endpoint renders the forbidden state, never fake metric values', async () => {
@@ -289,7 +381,7 @@ describe('DashboardPage (FE-10 §28 items 1-32)', () => {
     await openAndSelectProject(PROJECT_A);
 
     await waitFor(() => expect(screen.getByText('Not permitted to view this dashboard')).toBeTruthy());
-    expect(screen.queryByText('Total Test Cases')).toBeNull();
+    expect(screen.queryByText('Executed Tests')).toBeNull();
   });
 
   it('item 9 — offline (network failure) on the dashboard endpoint renders the unreachable state', async () => {
@@ -347,7 +439,7 @@ describe('DashboardPage (FE-10 §28 items 1-32)', () => {
     await openAndSelectProject(PROJECT_A);
 
     const root = kpiRow();
-    await waitFor(() => expect(within(root).getByText('7')).toBeTruthy()); // test_count → Total Test Cases
+    await waitFor(() => expect(within(root).getByText('7')).toBeTruthy()); // test_count → Executed Tests
     expect(within(root).getByText('2')).toBeTruthy(); // execution_counts.RUNNING → Active Runs
     expect(within(root).getByText('10')).toBeTruthy(); // task_counts.PASSED
     expect(within(root).getByText('4')).toBeTruthy(); // task_counts.FAILED
@@ -383,8 +475,8 @@ describe('DashboardPage (FE-10 §28 items 1-32)', () => {
     // project would not itself change React state or re-fetch anything).
     // The stale "8" must not remain displayed next to/instead of an
     // honest error.
-    await waitFor(() => expect(MockWebSocket.instances.length).toBe(1));
-    act(() => MockWebSocket.instances[0].simulateOpen());
+    await waitFor(() => expect(eventSockets().length).toBe(1));
+    act(() => eventSockets()[0].simulateOpen());
     fetchMock.mockImplementation(async (url: string) => {
       if (String(url).includes('/dashboard')) throw new TypeError('Failed to fetch');
       if (String(url).includes('/kpis')) return jsonResponse(200, kpisFor(PROJECT_A));
@@ -392,7 +484,7 @@ describe('DashboardPage (FE-10 §28 items 1-32)', () => {
       return jsonResponse(200, [PROJECT_A]);
     });
     await act(async () => {
-      MockWebSocket.instances[0].simulateMessage(realEvent({ project_id: PROJECT_A.id }));
+      eventSockets()[0].simulateMessage(realEvent({ project_id: PROJECT_A.id }));
       await new Promise((r) => setTimeout(r, 500));
     });
     await waitFor(() => expect(screen.getByText('Orchestrator unreachable')).toBeTruthy());
@@ -428,7 +520,15 @@ describe('DashboardPage (FE-10 §28 items 1-32)', () => {
     await verifyKey();
     await openAndSelectProject(PROJECT_A);
 
-    await waitFor(() => expect(screen.getByText('No Execution Activity Recorded')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('No execution timeline available')).toBeTruthy());
+    // The panel must state the capability is missing, not promise data that
+    // can never arrive — `timelineData` is permanently empty because no
+    // time-series history endpoint exists.
+    expect(screen.getByText(/no time-series execution-history endpoint/)).toBeTruthy();
+    expect(screen.queryByText(/will populate this real-time timeline graph/)).toBeNull();
+    // And no chart chrome (legend/axis captions) above an empty chart.
+    expect(screen.queryByText('Total Executed')).toBeNull();
+    expect(screen.queryByText('X-Axis: Time Window')).toBeNull();
   });
 
   it('item 20 — the donut chart\'s real task-status distribution updates after a project switch', async () => {
@@ -444,7 +544,7 @@ describe('DashboardPage (FE-10 §28 items 1-32)', () => {
     await verifyKey();
     await openAndSelectProject(PROJECT_A);
     await waitFor(() => expect(within(kpiRow()).getByText('12')).toBeTruthy());
-    expect(screen.getByText('Total Tests')).toBeTruthy(); // donut has real data
+    expect(screen.getByText('Executed Tasks')).toBeTruthy(); // donut has real data
 
     await openAndSelectProject(PROJECT_B);
     await waitFor(() => expect(screen.getByText('No test execution data available')).toBeTruthy());
@@ -458,8 +558,57 @@ describe('DashboardPage (FE-10 §28 items 1-32)', () => {
     renderApp();
     await verifyKey();
     await openAndSelectProject(PROJECT_A);
-    await waitFor(() => expect(MockWebSocket.instances.length).toBe(1));
-    expect(MockWebSocket.instances[0].url).toContain(`/projects/${PROJECT_A.id}/events`);
+    await waitFor(() => expect(eventSockets().length).toBe(1));
+    expect(eventSockets()[0].url).toContain(`/projects/${PROJECT_A.id}/events`);
+  });
+
+  it('the Orchestrator log stream is one separate connection — never a second run-event socket, and never two open at once', async () => {
+    setApiKey(RAW_KEY);
+    mockBackend({ projects: [PROJECT_A, PROJECT_B] });
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+
+    // Exactly one run-event socket, and the log stream is a genuinely
+    // different endpoint — not a duplicate of it.
+    await waitFor(() => expect(eventSockets().length).toBe(1));
+    await waitFor(() => expect(openLogSockets().length).toBe(1));
+    expect(openLogSockets()[0].url).toContain('/logs/ws');
+
+    // Switching project re-subscribes the log stream, closing the old
+    // socket first — a switch must never leave two open simultaneously.
+    await openAndSelectProject(PROJECT_B);
+    await waitFor(() => expect(eventSockets().length).toBe(1));
+    expect(openLogSockets().length).toBeLessThanOrEqual(1);
+  });
+
+  it('a server-side close reconnects the log stream — a clean 1000 from the backend is not treated as an intentional client close', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      setApiKey(RAW_KEY);
+      mockBackend({ projects: [PROJECT_A] });
+      renderApp();
+      await verifyKey();
+      await openAndSelectProject(PROJECT_A);
+      await waitFor(() => expect(openLogSockets().length).toBe(1));
+
+      const first = openLogSockets()[0];
+      act(() => first.simulateOpen());
+
+      // The backend restarts / a proxy drops the stream: the browser reports
+      // a perfectly clean 1000. That is a real, recoverable drop — the panel
+      // must retry it, not sit on OFFLINE forever.
+      act(() => first.close());
+      expect(openLogSockets().length).toBe(0);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+      await waitFor(() => expect(openLogSockets().length).toBe(1));
+      expect(openLogSockets()[0]).not.toBe(first);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('item 23 — a real event for the selected project triggers a debounced dashboard resync', async () => {
@@ -472,8 +621,8 @@ describe('DashboardPage (FE-10 §28 items 1-32)', () => {
     await verifyKey();
     await openAndSelectProject(PROJECT_A);
     await waitFor(() => expect(within(kpiRow()).getByText('1')).toBeTruthy());
-    await waitFor(() => expect(MockWebSocket.instances.length).toBe(1));
-    act(() => MockWebSocket.instances[0].simulateOpen());
+    await waitFor(() => expect(eventSockets().length).toBe(1));
+    act(() => eventSockets()[0].simulateOpen());
 
     // The real backend's own count changes; the event is the only signal.
     fetchMock.mockImplementation(async (url: string) => {
@@ -483,7 +632,7 @@ describe('DashboardPage (FE-10 §28 items 1-32)', () => {
       return jsonResponse(200, [PROJECT_A]);
     });
     await act(async () => {
-      MockWebSocket.instances[0].simulateMessage(realEvent({ project_id: PROJECT_A.id }));
+      eventSockets()[0].simulateMessage(realEvent({ project_id: PROJECT_A.id }));
       await new Promise((r) => setTimeout(r, 500));
     });
     await waitFor(() => expect(within(kpiRow()).getByText('9')).toBeTruthy());
@@ -499,12 +648,12 @@ describe('DashboardPage (FE-10 §28 items 1-32)', () => {
     await verifyKey();
     await openAndSelectProject(PROJECT_A);
     await waitFor(() => expect(within(kpiRow()).getByText('1')).toBeTruthy());
-    await waitFor(() => expect(MockWebSocket.instances.length).toBe(1));
-    act(() => MockWebSocket.instances[0].simulateOpen());
+    await waitFor(() => expect(eventSockets().length).toBe(1));
+    act(() => eventSockets()[0].simulateOpen());
 
     const before = fetchMock.mock.calls.length;
     await act(async () => {
-      MockWebSocket.instances[0].simulateMessage(realEvent({ project_id: 'some-other-project' }));
+      eventSockets()[0].simulateMessage(realEvent({ project_id: 'some-other-project' }));
       await new Promise((r) => setTimeout(r, 500));
     });
     expect(fetchMock.mock.calls.length).toBe(before);
@@ -520,14 +669,14 @@ describe('DashboardPage (FE-10 §28 items 1-32)', () => {
     await verifyKey();
     await openAndSelectProject(PROJECT_A);
     await waitFor(() => expect(within(dashboardRoot()).getAllByText(PROJECT_A.name).length).toBeGreaterThan(0));
-    await waitFor(() => expect(MockWebSocket.instances.length).toBe(1));
-    act(() => MockWebSocket.instances[0].simulateOpen());
+    await waitFor(() => expect(eventSockets().length).toBe(1));
+    act(() => eventSockets()[0].simulateOpen());
 
     const before = fetchMock.mock.calls.filter((c) => String(c[0]).includes('/dashboard')).length;
     await act(async () => {
-      MockWebSocket.instances[0].simulateMessage(realEvent({ event_id: 'evt-1', project_id: PROJECT_A.id }));
-      MockWebSocket.instances[0].simulateMessage(realEvent({ event_id: 'evt-2', project_id: PROJECT_A.id }));
-      MockWebSocket.instances[0].simulateMessage(realEvent({ event_id: 'evt-3', project_id: PROJECT_A.id }));
+      eventSockets()[0].simulateMessage(realEvent({ event_id: 'evt-1', project_id: PROJECT_A.id }));
+      eventSockets()[0].simulateMessage(realEvent({ event_id: 'evt-2', project_id: PROJECT_A.id }));
+      eventSockets()[0].simulateMessage(realEvent({ event_id: 'evt-3', project_id: PROJECT_A.id }));
       await new Promise((r) => setTimeout(r, 600));
     });
     const after = fetchMock.mock.calls.filter((c) => String(c[0]).includes('/dashboard')).length;
@@ -558,8 +707,13 @@ describe('DashboardPage (FE-10 §28 items 1-32)', () => {
       screen.getByText('Retry').closest('button')!.click();
     });
     await waitFor(() => expect(within(kpiRow()).getByText('4')).toBeTruthy());
-    // Exactly the three real calls a fresh load makes (dashboard/kpis/executions) — no duplicate storm.
-    expect(fetchMock.mock.calls.length - before).toBe(3);
+    // Exactly the real calls a fresh load makes — no duplicate storm. Three
+    // for the Dashboard itself (dashboard/kpis/executions) plus three for
+    // the Neural Intelligence Graph mounting for the first time now that
+    // `data` is finally non-null (test-cases/executions/audit — its own
+    // real data adapter, `useNeuralGraphData`) — not a second copy of the
+    // same three, a genuinely different real fetch for a real feature.
+    expect(fetchMock.mock.calls.length - before).toBe(6);
   });
 
   // ------------------------------------------------------------ regression
@@ -575,7 +729,14 @@ describe('DashboardPage (FE-10 §28 items 1-32)', () => {
     expect(document.getElementById('dashboard-header')).toBeTruthy();
     expect(document.getElementById('dashboard-kpi-row')).toBeTruthy();
     expect(document.getElementById('current-project-detail-panel')).toBeTruthy();
-    expect(document.getElementById('ai-quality-core-orb-column')).toBeTruthy();
+    // The decorative orb column was replaced by the real AI engine panel —
+    // same layout slot, real data instead of ProjectStatus-derived theatre.
+    expect(document.getElementById('ai-engine-column')).toBeTruthy();
+    expect(document.getElementById('ai-engine-panel')).toBeTruthy();
+    // And none of the orb's fabricated engine claims survive.
+    expect(screen.queryByText(/Autonomous Verification Engine/)).toBeNull();
+    expect(screen.queryByText('CORE STABLE')).toBeNull();
+    expect(screen.queryByText('ACTIVE INFERENCE')).toBeNull();
     expect(document.getElementById('dashboard-project-status-section')).toBeTruthy();
     expect(document.getElementById('project-status-donut-panel')).toBeTruthy();
     expect(document.getElementById('project-execution-graph-panel')).toBeTruthy();
@@ -713,8 +874,8 @@ describe('DashboardPage — FE-26 real Average Run Duration KPI', () => {
     await verifyKey();
     await openAndSelectProject(PROJECT_A);
     await waitFor(() => expect(within(dashboardRoot()).getByText('5.0s')).toBeTruthy());
-    await waitFor(() => expect(MockWebSocket.instances.length).toBe(1)); // exactly one real connection, unchanged
-    act(() => MockWebSocket.instances[0].simulateOpen());
+    await waitFor(() => expect(eventSockets().length).toBe(1)); // exactly one real connection, unchanged
+    act(() => eventSockets()[0].simulateOpen());
 
     fetchMock.mockImplementation(async (url: string) => {
       if (String(url).includes('/dashboard')) return jsonResponse(200, dashboardFor(PROJECT_A));
@@ -723,7 +884,7 @@ describe('DashboardPage — FE-26 real Average Run Duration KPI', () => {
       return jsonResponse(200, [PROJECT_A]);
     });
     await act(async () => {
-      MockWebSocket.instances[0].simulateMessage(realEvent({ type: 'RUN_COMPLETED', project_id: PROJECT_A.id }));
+      eventSockets()[0].simulateMessage(realEvent({ type: 'RUN_COMPLETED', project_id: PROJECT_A.id }));
       await new Promise((r) => setTimeout(r, 500));
     });
     await waitFor(() => expect(within(dashboardRoot()).getByText('45.0s')).toBeTruthy());
@@ -744,5 +905,130 @@ describe('DashboardPage — FE-26 real Average Run Duration KPI', () => {
 
     const kpisCalls = fetchMock.mock.calls.filter((c) => String(c[0]).includes('/kpis'));
     expect(kpisCalls.length).toBe(1);
+  });
+});
+
+
+// ------------------------------ AI Engine panel (replaces the fake orb)
+
+describe('DashboardPage — real AI Engine panel', () => {
+  it("renders the REAL routed model, its real score and the backend's own stated reason", async () => {
+    setApiKey(RAW_KEY);
+    mockWithAiStatus();
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+
+    await waitFor(() => expect(screen.getByText('ollama / qwen3:14b')).toBeTruthy());
+    expect(screen.getByText(/best available model for TestCaseGeneration by routing score/)).toBeTruthy();
+    expect(screen.getByText(/score 211\.48/)).toBeTruthy();
+    expect(screen.getByText('AUTO mode')).toBeTruthy();
+  });
+
+  it('reports embedding capability truthfully as NONE — no vector engine is claimed', async () => {
+    setApiKey(RAW_KEY);
+    mockWithAiStatus();
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+
+    await waitFor(() => expect(screen.getByText('embedding')).toBeTruthy());
+    const panel = document.getElementById('ai-engine-panel')!;
+    expect(within(panel).getAllByText('NONE').length).toBeGreaterThan(0);
+    expect(within(panel).getByText(/Embeddings\/vector search have no endpoint/)).toBeTruthy();
+  });
+
+  it('renders UNKNOWN capability as unknown — never upgraded to a guess', async () => {
+    setApiKey(RAW_KEY);
+    mockWithAiStatus();
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+
+    const panel = await waitFor(() => document.getElementById('ai-engine-panel')!);
+    expect(within(panel).getByText('long ctx')).toBeTruthy();
+    expect(within(panel).getAllByText('UNKNOWN').length).toBeGreaterThan(0);
+  });
+
+  it('shows real provider health, including an unconfigured provider', async () => {
+    setApiKey(RAW_KEY);
+    mockWithAiStatus();
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+
+    const panel = await waitFor(() => document.getElementById('ai-engine-panel')!);
+    expect(within(panel).getByText(/Ollama/)).toBeTruthy();
+    expect(within(panel).getByText('HEALTHY')).toBeTruthy();
+    expect(within(panel).getByText('NOT_CONFIGURED')).toBeTruthy();
+  });
+
+  it('the particle sphere size and colour mix are both real, derived from the real routing score and real capability levels', async () => {
+    setApiKey(RAW_KEY);
+    mockWithAiStatus();
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+
+    const orb = await waitFor(() => document.getElementById('ai-engine-orb')!);
+    // Real routing score 211.48 -> round(211.48/10)*10 = 210 particles —
+    // the count is derived from real data, never a decorative number.
+    const allParticles = orb.querySelectorAll('[data-level]');
+    expect(allParticles.length).toBe(210);
+    // Real capability levels (text_generation/tool_use STRONG,
+    // structured_output/reasoning BASIC, long_context UNKNOWN,
+    // vision/embedding NONE) cycle evenly across 210 particles (210 / 7
+    // real capability fields = 30 each) — the real *ratio*, not a random
+    // palette.
+    expect(orb.querySelectorAll('[data-level="STRONG"]').length).toBe(60);
+    expect(orb.querySelectorAll('[data-level="BASIC"]').length).toBe(60);
+    expect(orb.querySelectorAll('[data-level="UNKNOWN"]').length).toBe(30);
+    expect(orb.querySelectorAll('[data-level="NONE"]').length).toBe(60);
+    // The real routing score is rendered inside the core.
+    expect(orb.textContent).toContain('211');
+  });
+
+  it('the orb goes inert with no route — no spin, no score, a small idle field, and it says so', async () => {
+    setApiKey(RAW_KEY);
+    mockWithAiStatus({ ...AI_STATUS_BODY, routing_preview: null });
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+
+    const orb = await waitFor(() => document.getElementById('ai-engine-orb')!);
+    expect(orb.textContent).toContain('NO ROUTE');
+    expect(orb.textContent).not.toContain('211');
+    // No route -> the small idle fallback field, never the real-score-sized
+    // sphere left over from a stale render.
+    expect(orb.querySelectorAll('[data-level="idle"]').length).toBe(36);
+    // Nothing animates when nothing is routable — motion must always mean
+    // something real is true.
+    expect(orb.innerHTML).not.toContain('orbSphereSpin 22s');
+  });
+
+  it('shows no route at all when the backend reports none — nothing fabricated in its place', async () => {
+    setApiKey(RAW_KEY);
+    mockWithAiStatus({ ...AI_STATUS_BODY, routing_preview: null });
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+
+    await waitFor(() => expect(screen.getByText(/No compatible model is available/)).toBeTruthy());
+    expect(screen.queryByText('ollama / qwen3:14b')).toBeNull();
+  });
+
+  it('an unexpected AI status payload is a real error, and never crashes the Dashboard', async () => {
+    setApiKey(RAW_KEY);
+    // An array is not an `AiStatusResponse`; the old orb-replacement code
+    // crashed on `status.providers.map` and unmounted the whole Dashboard.
+    mockWithAiStatus([]);
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+
+    await waitFor(() => expect(screen.getByText(/unexpected AI status payload/)).toBeTruthy());
+    // The rest of the Dashboard is still standing.
+    expect(document.getElementById('aiqa-dashboard-main-content')).toBeTruthy();
+    expect(document.getElementById('dashboard-kpi-row')).toBeTruthy();
   });
 });

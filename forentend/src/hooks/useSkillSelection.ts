@@ -1,50 +1,90 @@
 /**
- * AIQA — Skills & MCP, Phase 1 selection state.
+ * AIQA — Skills & MCP selection state.
  *
  * A standalone hook (not inline `useState` calls buried in
- * `TestCaseGeneratorPage.tsx`) so the next Test Case Generator
- * implementation unit — the real generation engine — can import and reuse
- * this exact selection contract without depending on that page's other
- * internals, and so this feature is testable on its own.
+ * `TestCaseGeneratorPage.tsx`) so the Test Case Generator's generation
+ * engine can import and reuse this exact selection contract without
+ * depending on that page's other internals, and so this feature is testable
+ * on its own.
  *
- * Persistence scope (brief §10, evidence-based, not invented): selected
- * skills are session/UI state only, exactly like this page's existing
- * `selectedCategories`/`depth`/`requirementNotes` — kept across a branch
- * switch via the caller's own `initialSelectedIds`/`initialCustomSkills`
- * (typically read from `AIQAContext.activeGenerationSession`, itself only
- * ever in-memory), never sent to or persisted by the backend. No project-
- * or account-level persistence is invented here.
+ * Custom skills are real, backend-persisted resources
+ * (`services/orchestrator/src/api.rs`'s `/api/v1/skills` routes, backed by
+ * the `custom_skills` table — see that migration's own doc comment). This
+ * hook fetches the real list on mount and creates real rows via
+ * `aiqaApi.skills.create`; nothing here fabricates a skill locally.
+ * Selection itself (`selectedSkillIds`) stays UI-local state, exactly like
+ * this page's existing `selectedCategories`/`depth`/`requirementNotes` —
+ * kept across a branch switch via the caller's own `initialSelectedIds`
+ * (typically read from `AIQAContext.activeGenerationSession`), never
+ * persisted itself.
  */
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { aiqaApi } from '../services/aiqaApi';
 import { BUILT_IN_SKILLS } from '../services/skillRegistry';
+import type { FileSkill } from '../types/contract';
 import type { CustomSkillDraft, SkillDefinition } from '../types/skills';
 
-let customSkillCounter = 0;
+function customSkillRowToDefinition(row: { id: string; name: string; description: string }): SkillDefinition {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description,
+    type: 'CUSTOM',
+    availability: 'AVAILABLE',
+    configurable: true,
+  };
+}
 
-/** A local, session-only id for a just-created custom skill — a React key
- *  and selection-tracking id only, never presented as a real backend-
- *  issued identifier and never sent anywhere. Matches this codebase's own
- *  existing convention for local-draft ids (see
- *  `TestCaseGeneratorPage.tsx`'s `activeGenerationSession.id`) — a
- *  monotonic counter rather than `Math.random()`, so it is unambiguous on
- *  inspection that this is deterministic, not fabricated "random-looking"
- *  data. */
-function nextCustomSkillId(): string {
-  customSkillCounter += 1;
-  return `custom-skill-${customSkillCounter}`;
+/** A `FileSkill`'s `instruction` — not its short `description` — becomes
+ *  `SkillDefinition.description`: that field is what every consumer
+ *  (generation, `SkillDetailModal`'s resolve call) already treats as "the
+ *  real text this skill applies", exactly like a `CUSTOM` skill's own
+ *  stored description. The file's own short summary and remaining
+ *  frontmatter survive separately in `fileSource`, not discarded. */
+function fileSkillToDefinition(row: FileSkill): SkillDefinition {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.instruction,
+    type: 'FILE',
+    availability: 'AVAILABLE',
+    configurable: true,
+    fileSource: {
+      fileName: row.file_name,
+      summary: row.description,
+      metadata: row.metadata,
+    },
+  };
 }
 
 export interface UseSkillSelectionResult {
-  /** Built-in skills plus every custom skill created this session. */
+  /** Built-in skills, every real persisted custom skill, and every real
+   *  SKILL.md file currently sitting in the backend's skills folder. */
   skills: SkillDefinition[];
   selectedSkillIds: string[];
   isSelected: (id: string) => boolean;
   toggleSkill: (id: string) => void;
-  /** Adds a session-only custom skill and selects it. Returns the created
-   *  definition so a caller (the Skill Manager) can confirm what was
-   *  actually added without re-deriving it. */
-  addCustomSkill: (draft: CustomSkillDraft) => SkillDefinition;
+  /** Creates a real, backend-persisted custom skill and selects it. Throws
+   *  `ApiError` on failure — the caller (the Skill Manager) is responsible
+   *  for surfacing that, never for treating a failed create as if it
+   *  succeeded. */
+  addCustomSkill: (draft: CustomSkillDraft) => Promise<SkillDefinition>;
   customSkills: SkillDefinition[];
+  /** True while the initial real custom-skill list is loading. */
+  customSkillsLoading: boolean;
+  /** Every real SKILL.md file currently readable from the backend's skills
+   *  folder, mapped to a selectable `FILE` skill. */
+  fileSkills: SkillDefinition[];
+  /** True while the initial real file-skill scan is loading. */
+  fileSkillsLoading: boolean;
+  /** Real per-file parse failures from the backend's last scan (e.g. a
+   *  `.md` file using block-style YAML lists) — surfaced verbatim so a
+   *  broken file is a visible, actionable state rather than one that
+   *  silently vanishes from the list. */
+  fileSkillErrors: Array<{ fileName: string; error: string }>;
+  /** The real backend folder path files should be dropped into, once the
+   *  first scan has returned it. */
+  fileSkillsDirectory: string | null;
 }
 
 export function useSkillSelection(
@@ -52,9 +92,68 @@ export function useSkillSelection(
   initialCustomSkills: SkillDefinition[] = [],
 ): UseSkillSelectionResult {
   const [customSkills, setCustomSkills] = useState<SkillDefinition[]>(initialCustomSkills);
+  const [customSkillsLoading, setCustomSkillsLoading] = useState(true);
+  const [fileSkills, setFileSkills] = useState<SkillDefinition[]>([]);
+  const [fileSkillsLoading, setFileSkillsLoading] = useState(true);
+  const [fileSkillErrors, setFileSkillErrors] = useState<Array<{ fileName: string; error: string }>>([]);
+  const [fileSkillsDirectory, setFileSkillsDirectory] = useState<string | null>(null);
   const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>(initialSelectedIds);
 
-  const skills = useMemo(() => [...BUILT_IN_SKILLS, ...customSkills], [customSkills]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await aiqaApi.skills.list();
+        if (cancelled) return;
+        setCustomSkills((prev) => {
+          const fetched = rows.map(customSkillRowToDefinition);
+          const fetchedIds = new Set(fetched.map((s) => s.id));
+          // Keep any not-yet-reconciled skill from `initialCustomSkills`
+          // (e.g. one just created this render, before the list has
+          // caught up) that the real fetch hasn't returned yet.
+          const localOnly = prev.filter((s) => !fetchedIds.has(s.id));
+          return [...fetched, ...localOnly];
+        });
+      } catch {
+        // Real backend unreachable/unauthenticated — leave whatever local
+        // state already exists rather than throwing out of a page-load
+        // effect; the Skill Manager's own create flow will surface the
+        // same real error the next time it's used.
+      } finally {
+        if (!cancelled) setCustomSkillsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const scan = await aiqaApi.skills.files();
+        if (cancelled) return;
+        setFileSkills(scan.skills.map(fileSkillToDefinition));
+        setFileSkillErrors(scan.errors.map((e) => ({ fileName: e.file_name, error: e.error })));
+        setFileSkillsDirectory(scan.directory);
+      } catch {
+        // Real backend unreachable/unauthenticated — same honest
+        // do-nothing-locally behaviour as the custom-skill fetch above.
+      } finally {
+        if (!cancelled) setFileSkillsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const skills = useMemo(
+    () => [...BUILT_IN_SKILLS, ...customSkills, ...fileSkills],
+    [customSkills, fileSkills],
+  );
 
   const isSelected = useCallback((id: string) => selectedSkillIds.includes(id), [selectedSkillIds]);
 
@@ -62,19 +161,25 @@ export function useSkillSelection(
     setSelectedSkillIds((prev) => (prev.includes(id) ? prev.filter((existing) => existing !== id) : [...prev, id]));
   }, []);
 
-  const addCustomSkill = useCallback((draft: CustomSkillDraft): SkillDefinition => {
-    const skill: SkillDefinition = {
-      id: nextCustomSkillId(),
-      name: draft.name.trim(),
-      description: draft.description.trim(),
-      type: 'CUSTOM',
-      availability: 'AVAILABLE',
-      configurable: true,
-    };
+  const addCustomSkill = useCallback(async (draft: CustomSkillDraft): Promise<SkillDefinition> => {
+    const row = await aiqaApi.skills.create({ name: draft.name.trim(), description: draft.description.trim() });
+    const skill = customSkillRowToDefinition(row);
     setCustomSkills((prev) => [...prev, skill]);
     setSelectedSkillIds((prev) => [...prev, skill.id]);
     return skill;
   }, []);
 
-  return { skills, selectedSkillIds, isSelected, toggleSkill, addCustomSkill, customSkills };
+  return {
+    skills,
+    selectedSkillIds,
+    isSelected,
+    toggleSkill,
+    addCustomSkill,
+    customSkills,
+    customSkillsLoading,
+    fileSkills,
+    fileSkillsLoading,
+    fileSkillErrors,
+    fileSkillsDirectory,
+  };
 }

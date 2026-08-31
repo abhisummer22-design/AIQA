@@ -202,6 +202,7 @@ pub async fn run(
             cases,
             provider,
             model,
+            ..
         } => {
             // Real router health can differ per task/call; report whichever
             // real provider/model actually produced the *cases* (what the

@@ -100,8 +100,12 @@ export const ProjectStatusDonut: React.FC<ProjectStatusDonutProps> = ({ metrics,
               <span className="text-lg font-black font-mono text-slate-100 leading-tight">
                 {total.toLocaleString()}
               </span>
+              {/* This total is the sum of real task statuses from execution
+                  runs (`dashboard.task_counts`), not a count of saved test
+                  cases — see the "Executed Tests" KPI card's own comment in
+                  `DashboardPage.tsx` for why that distinction matters. */}
               <span className="text-[9px] uppercase font-mono font-semibold text-slate-400 tracking-wider">
-                Total Tests
+                Executed Tasks
               </span>
               <span className="text-[8px] font-sans text-indigo-400 font-medium truncate max-w-[90px]">
                 {projectName}

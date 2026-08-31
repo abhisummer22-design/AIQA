@@ -38,7 +38,7 @@ export type FailureClassification =
   | 'INFRASTRUCTURE_FAILURE'
   | 'UNCLASSIFIED';
 
-export type Environment = 'production' | 'staging' | 'uat' | 'ephemeral-pr';
+export type Environment = 'demo' | 'uat' | 'live';
 
 export type ProjectStatus = 'Healthy' | 'Running' | 'Warning' | 'Degraded' | 'Critical' | 'Offline';
 
@@ -84,7 +84,7 @@ export type GeneratorPipelineStep =
   | 'APPROVE'
   | 'READY_FOR_EXECUTION';
 
-export type RequirementDocType = 'PRD' | 'FRD' | 'SRD' | 'MRD' | 'ADDITIONAL';
+export type RequirementDocType = 'PRD' | 'FRD' | 'SRD' | 'ADDITIONAL';
 
 export interface UploadedRequirementDoc {
   slotId: RequirementDocType;

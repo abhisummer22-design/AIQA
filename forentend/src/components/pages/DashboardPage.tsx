@@ -129,12 +129,15 @@ import {
 } from 'lucide-react';
 import { useProject } from '../../context/ProjectContext';
 import { useRealtime } from '../../context/RealtimeContext';
+import { useAiStatus } from '../../hooks/useAiStatus';
 import { ApiError, aiqaApi } from '../../services/aiqaApi';
 import { StateCard, renderResourceErrorState } from '../state/StateViews';
 import { EmptyState } from '../common/EmptyState';
-import { AIQualityCoreOrb } from '../dashboard/AIQualityCoreOrb';
+import { AIEnginePanel } from '../dashboard/AIEnginePanel';
+import { NeuralGraph } from '../neural-graph/NeuralGraph';
 import { ProjectStatusDonut } from '../dashboard/ProjectStatusDonut';
 import { ProjectExecutionGraph } from '../dashboard/ProjectExecutionGraph';
+import { OrchestratorLogsPanel } from '../dashboard/OrchestratorLogsPanel';
 import type { ProjectMetrics, ProjectStatus } from '../../types';
 import type { DashboardResponse, KpisResponse, RunListItem, RunDetail } from '../../types/contract';
 
@@ -201,6 +204,14 @@ export const DashboardPage: React.FC = () => {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  /** Real AI engine state (`GET /api/v1/ai/status`), shared with the Test
+   *  Case Generator's own AI Engine rail (`hooks/useAiStatus.ts`) so both
+   *  pages read the same fetch/poll logic rather than two copies drifting
+   *  apart. Platform-wide, not project-scoped: it must not be cleared or
+   *  reloaded just because the selected project changed, and a failure to
+   *  reach it must not blank out the project dashboard beside it. */
+  const { status: aiStatus, loading: aiLoading, error: aiError, retry: loadAiStatus } = useAiStatus();
 
   const fetchAll = useCallback(async (projectId: string, isRefresh: boolean) => {
     abortRef.current?.abort();
@@ -405,23 +416,31 @@ export const DashboardPage: React.FC = () => {
         {/* 2. KPI Cards Row */}
         <section id="dashboard-kpi-row" aria-label="Key Performance Indicators">
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
-            {/* Total Test Cases */}
+            {/* Executed Tests.
+
+                This card was previously labelled "Total Test Cases", which
+                was wrong: `dashboard.test_count` is
+                `COUNT(quality_nodes WHERE node_type = 'test')` — the number
+                of distinct tests the execution engine has actually *run* in
+                this project (upserted per task name by
+                `store.rs::upsert_quality_node`). It has nothing to do with
+                the `test_cases` table, so a project with zero saved test
+                cases could still show a non-zero number here purely from
+                execution runs — exactly the contradiction the old label
+                produced. The value was always real; only the name was not. */}
             <div className="p-3 rounded-lg bg-[#0B1120] border border-slate-800 hover:border-slate-700 transition-all shadow-sm flex flex-col justify-between">
               <div className="flex items-center justify-between text-slate-400">
                 <span className="text-[10px] uppercase font-mono font-medium tracking-wider">
-                  Total Test Cases
+                  Executed Tests
                 </span>
                 <Layers className="w-3.5 h-3.5 text-slate-400" />
               </div>
               <div className="mt-2">
-                {/* Real `dashboard.test_count`, not the donut's task-sum
-                    total below — two distinct real concepts (see this
-                    file's own module doc comment). */}
                 <div className="text-xl font-bold font-mono text-slate-100">
                   {dashboard.test_count.toLocaleString()}
                 </div>
                 <div className="text-[10px] text-slate-400 font-sans truncate mt-0.5">
-                  {dashboard.project_name}
+                  distinct tests run
                 </div>
               </div>
             </div>
@@ -517,6 +536,14 @@ export const DashboardPage: React.FC = () => {
             </div>
           </div>
         </section>
+
+        {/* 2.5. AIQA Neural Intelligence Graph — real, project-scoped test-
+            case/execution/evidence/risk/audit intelligence. Its own data
+            adapter (`useNeuralGraphData`) fetches what the KPI row above
+            doesn't already have; `dashboard`/`aiStatus` are passed down
+            rather than re-fetched, so this can never show a number that
+            disagrees with the KPI cards above it. */}
+        <NeuralGraph projectId={selectedProjectId} projectName={dashboard.project_name} dashboard={dashboard} aiStatus={aiStatus} />
 
         {/* 3. Middle Section: Current Project Details + Futuristic AI Orb */}
         <section id="dashboard-middle-section" className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
@@ -635,9 +662,17 @@ export const DashboardPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Right: Futuristic AI Orb Centerpiece (5 Cols on desktop) */}
-          <div id="ai-quality-core-orb-column" className="lg:col-span-5 flex flex-col">
-            <AIQualityCoreOrb status={status} hasActiveRun={!!activeRun} projectName={dashboard.project_name} />
+          {/* Right: the real AI engine (5 Cols on desktop).
+
+              Was `AIQualityCoreOrb`, a decorative orb whose "Autonomous
+              Verification Engine" / "ACTIVE INFERENCE" / "CORE STABLE"
+              labels were computed from `ProjectStatus` alone — no model, no
+              inference, no engine behind any of it. This shows the real
+              routing layer (`ai_router.rs`) instead: real provider health,
+              the real model that would be routed to, its real score and
+              reason, and its real capability levels. */}
+          <div id="ai-engine-column" className="lg:col-span-5 flex flex-col">
+            <AIEnginePanel status={aiStatus} loading={aiLoading} error={aiError} onRetry={loadAiStatus} />
           </div>
         </section>
 
@@ -744,7 +779,24 @@ export const DashboardPage: React.FC = () => {
         </div>
       </header>
 
-      {renderBody()}
+      {/* 2. Full-width dashboard content, then the real, live orchestrator
+          log stream as its own section at the bottom — moved out of the
+          former right-side sticky column so the whole page reads top to
+          bottom, log activity last. */}
+      <div className="space-y-4 min-w-0">{renderBody()}</div>
+
+      {/* Real backend activity — history over REST, then a live WebSocket
+          (`OrchestratorLogsPanel`, reused as-is: it already owns the real
+          stream, reconnect backoff, id-based dedup, bounded buffer, and
+          near-bottom-only auto-scroll). Scoped to the selected project
+          when there is one; global orchestrator logs otherwise — the
+          backend includes unscoped entries in a project stream on
+          purpose (`log_bus.rs::recent_logs`). Fixed height (rather than the
+          old sticky-sidebar's full-page height) since it now sits at the
+          bottom of the page instead of running alongside everything else. */}
+      <div id="dashboard-log-stream-section" className="min-w-0">
+        <OrchestratorLogsPanel projectId={selectedProjectId} />
+      </div>
     </div>
   );
 };

@@ -56,16 +56,8 @@ const DOCUMENT_SLOTS: DocSlotConfig[] = [
     badgeColor: 'border-purple-700/60 bg-purple-950/40 text-purple-300',
   },
   {
-    id: 'MRD',
-    label: '4. MRD',
-    fullName: 'Market Requirements Document',
-    description: 'Market positioning, regulatory compliance standards, and competitive criteria.',
-    roleInHierarchy: 'Market & Regulatory Scope',
-    badgeColor: 'border-emerald-700/60 bg-emerald-950/40 text-emerald-300',
-  },
-  {
     id: 'ADDITIONAL',
-    label: '5. Additional Document',
+    label: '4. Additional Document',
     fullName: 'Supporting Specification / Reference',
     description: 'Database schemas, OpenAPI definitions, edge-case logs, or legacy runbooks.',
     roleInHierarchy: 'Supplemental Technical Context',
@@ -85,14 +77,12 @@ export const DocumentUploadSection: React.FC<DocumentUploadSectionProps> = ({
     PRD: 0,
     FRD: 0,
     SRD: 0,
-    MRD: 0,
     ADDITIONAL: 0,
   });
   const [errors, setErrors] = useState<Record<RequirementDocType, string | null>>({
     PRD: null,
     FRD: null,
     SRD: null,
-    MRD: null,
     ADDITIONAL: null,
   });
 
@@ -100,7 +90,6 @@ export const DocumentUploadSection: React.FC<DocumentUploadSectionProps> = ({
     PRD: null,
     FRD: null,
     SRD: null,
-    MRD: null,
     ADDITIONAL: null,
   });
 
@@ -203,7 +192,7 @@ export const DocumentUploadSection: React.FC<DocumentUploadSectionProps> = ({
               Product Documentation
             </h2>
             <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded bg-cyan-950/60 border border-cyan-800/60 text-cyan-300">
-              5 SLOTS
+              4 SLOTS
             </span>
           </div>
           <p className="text-xs text-slate-400 font-sans mt-0.5">
@@ -239,10 +228,6 @@ export const DocumentUploadSection: React.FC<DocumentUploadSectionProps> = ({
             SRD
           </span>
           <ArrowDown className="w-3 h-3 text-slate-500 rotate-[-90deg] shrink-0" />
-          <span className="px-2 py-0.5 rounded bg-emerald-950/80 border border-emerald-800 text-emerald-300 font-bold">
-            MRD
-          </span>
-          <ArrowDown className="w-3 h-3 text-slate-500 rotate-[-90deg] shrink-0" />
           <span className="px-2 py-0.5 rounded bg-amber-950/80 border border-amber-800 text-amber-300 font-bold">
             Additional Context
           </span>
@@ -253,7 +238,7 @@ export const DocumentUploadSection: React.FC<DocumentUploadSectionProps> = ({
         </div>
       </div>
 
-      {/* 5 Slots Grid */}
+      {/* 4 Slots Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
         {DOCUMENT_SLOTS.map((slot) => {
           const uploadedDoc = documents.find((d) => d.slotId === slot.id);

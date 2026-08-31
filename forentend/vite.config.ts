@@ -50,6 +50,17 @@ export default defineConfig(() => {
           target: ORCHESTRATOR_URL,
           changeOrigin: true,
         },
+        // `/admin/api-keys` is a real, flat, un-prefixed route in the same
+        // `main.rs` block as `/metrics` above — the RBAC page reads it for
+        // the real key inventory. Without this entry a dev-mode fetch hits
+        // Vite's own dev server (404) rather than the orchestrator, so the
+        // panel would sit on "Loading real keys…" forever. Same
+        // target/changeOrigin as the other blocks; no new backend
+        // capability involved.
+        '/admin': {
+          target: ORCHESTRATOR_URL,
+          changeOrigin: true,
+        },
         '/api/v1': {
           target: ORCHESTRATOR_URL,
           changeOrigin: true,

@@ -13,6 +13,9 @@ import { setApiKey } from '../services/aiqaApi';
 import type { Project } from '../types/contract';
 
 function jsonResponse(status: number, body: unknown): Response {
+  if (status === 204 || body === null || body === undefined) {
+    return new Response(null, { status, headers: { 'Content-Type': 'application/json' } });
+  }
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 }
 function envelope(code: string, message: string) {
@@ -279,5 +282,106 @@ describe('ProjectContext (FE-5 §20)', () => {
     });
 
     await waitFor(() => expect(fresh.current.project.selectedProjectId).toBe(PROJECT_B.id));
+  });
+
+  describe('deleteProject (real project deletion)', () => {
+    it('deleting a non-active project removes it from list and keeps active project unchanged', async () => {
+      const { result } = renderHook(() => useCombined(), { wrapper });
+      await authenticate(result, [PROJECT_A, PROJECT_B]);
+      await waitFor(() => expect(result.current.project.projects.length).toBe(2));
+
+      act(() => result.current.project.selectProject(PROJECT_A.id));
+      expect(result.current.project.selectedProjectId).toBe(PROJECT_A.id);
+
+      const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (init?.method === 'DELETE') return jsonResponse(204, null);
+        return jsonResponse(200, [PROJECT_A, PROJECT_B]);
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      await act(async () => {
+        await result.current.project.deleteProject(PROJECT_B.id);
+      });
+
+      expect(result.current.project.projects).toEqual([PROJECT_A]);
+      expect(result.current.project.selectedProjectId).toBe(PROJECT_A.id);
+      expect(result.current.project.selectedProject).toEqual(PROJECT_A);
+      expect(localStorage.getItem('aiqa.selectedProjectId')).toBe(PROJECT_A.id);
+    });
+
+    it('deleting the active project switches to fallback project and updates persistence', async () => {
+      const { result } = renderHook(() => useCombined(), { wrapper });
+      await authenticate(result, [PROJECT_A, PROJECT_B]);
+      await waitFor(() => expect(result.current.project.projects.length).toBe(2));
+
+      act(() => result.current.project.selectProject(PROJECT_A.id));
+      expect(result.current.project.selectedProjectId).toBe(PROJECT_A.id);
+
+      const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (init?.method === 'DELETE') return jsonResponse(204, null);
+        return jsonResponse(200, [PROJECT_A, PROJECT_B]);
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      await act(async () => {
+        await result.current.project.deleteProject(PROJECT_A.id);
+      });
+
+      expect(result.current.project.projects).toEqual([PROJECT_B]);
+      expect(result.current.project.selectedProjectId).toBe(PROJECT_B.id);
+      expect(result.current.project.selectedProject).toEqual(PROJECT_B);
+      expect(localStorage.getItem('aiqa.selectedProjectId')).toBe(PROJECT_B.id);
+    });
+
+    it('deleting the only remaining project clears active selection safely', async () => {
+      const { result } = renderHook(() => useCombined(), { wrapper });
+      await authenticate(result, [PROJECT_A]);
+      await waitFor(() => expect(result.current.project.projects.length).toBe(1));
+
+      act(() => result.current.project.selectProject(PROJECT_A.id));
+      expect(result.current.project.selectedProjectId).toBe(PROJECT_A.id);
+
+      const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (init?.method === 'DELETE') return jsonResponse(204, null);
+        return jsonResponse(200, [PROJECT_A]);
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      await act(async () => {
+        await result.current.project.deleteProject(PROJECT_A.id);
+      });
+
+      expect(result.current.project.projects).toEqual([]);
+      expect(result.current.project.selectedProjectId).toBeNull();
+      expect(result.current.project.selectedProject).toBeNull();
+      expect(localStorage.getItem('aiqa.selectedProjectId')).toBeNull();
+    });
+
+    it('a failed delete keeps state intact and throws ApiError', async () => {
+      const { result } = renderHook(() => useCombined(), { wrapper });
+      await authenticate(result, [PROJECT_A, PROJECT_B]);
+      await waitFor(() => expect(result.current.project.projects.length).toBe(2));
+
+      act(() => result.current.project.selectProject(PROJECT_A.id));
+
+      const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (init?.method === 'DELETE') return jsonResponse(500, envelope('INTERNAL', 'database error'));
+        return jsonResponse(200, [PROJECT_A, PROJECT_B]);
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      let threw = false;
+      await act(async () => {
+        try {
+          await result.current.project.deleteProject(PROJECT_A.id);
+        } catch {
+          threw = true;
+        }
+      });
+
+      expect(threw).toBe(true);
+      expect(result.current.project.projects).toEqual([PROJECT_A, PROJECT_B]);
+      expect(result.current.project.selectedProjectId).toBe(PROJECT_A.id);
+    });
   });
 });

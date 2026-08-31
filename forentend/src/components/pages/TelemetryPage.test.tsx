@@ -76,9 +76,12 @@ function renderApp(path: string) {
 }
 
 async function verifyKey(): Promise<void> {
-  await act(async () => {
-    screen.getByText('Verify Connection').closest('button')!.click();
-  });
+  const btn = screen.queryByText('Verify Connection')?.closest('button');
+  if (btn) {
+    await act(async () => {
+      btn.click();
+    });
+  }
 }
 
 beforeEach(() => {
@@ -207,6 +210,63 @@ describe('TelemetryPage', () => {
     });
 
     await waitFor(() => expect(calls).toBeGreaterThan(callsAfterMount));
+  });
+
+  it('names only the task-status series actually rendered — never points at a TIMEOUT row that is not on screen', async () => {
+    // The real, common case: tasks ran, none timed out. The ACC-013 note
+    // used to say "the real TIMEOUT series above" unconditionally, pointing
+    // at a row the page was not rendering.
+    const noTimeouts = [
+      '# HELP aiqa_tasks_total Number of tasks by status (across all runs)',
+      '# TYPE aiqa_tasks_total gauge',
+      'aiqa_tasks_total{status="PASSED"} 8',
+      'aiqa_tasks_total{status="FAILED"} 1',
+      '# HELP aiqa_audit_log_total Number of audit log entries',
+      '# TYPE aiqa_audit_log_total counter',
+      'aiqa_audit_log_total 34',
+      '',
+    ].join('\n');
+    setApiKey(RAW_KEY);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) =>
+        String(url).includes('/metrics')
+          ? new Response(noTimeouts, { status: 200, headers: { 'Content-Type': 'text/plain' } })
+          : jsonResponse(200, []),
+      ),
+    );
+
+    renderApp('/telemetry');
+    await verifyKey();
+    await waitFor(() => expect(screen.getByText('Tasks by Status')).toBeTruthy());
+
+    // FAILED is genuinely on screen; TIMEOUT is not, so it must not be named.
+    const note = screen.getByText(/Closest real signal to ACC-013/);
+    expect(note.textContent).toContain('FAILED');
+    expect(note.textContent).not.toContain('TIMEOUT');
+  });
+
+  it('is presented as a healthy page — the scope note is not styled as an error/warning', async () => {
+    setApiKey(RAW_KEY);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) =>
+        String(url).includes('/metrics')
+          ? new Response(REAL_METRICS_TEXT, { status: 200, headers: { 'Content-Type': 'text/plain' } })
+          : jsonResponse(200, []),
+      ),
+    );
+
+    renderApp('/telemetry');
+    await verifyKey();
+    await waitFor(() => expect(document.getElementById('telemetry-disclosure')).toBeTruthy());
+
+    // Nothing is actually wrong on this page, so its most prominent element
+    // must not carry warning/error styling.
+    const disclosure = document.getElementById('telemetry-disclosure')!;
+    expect(disclosure.className).not.toMatch(/amber|rose|red/);
+    // The honest content itself is unchanged.
+    expect(disclosure.textContent).toContain('What this does not show:');
   });
 
   it('Dashboard remains unregressed with TelemetryPage present in the route table', async () => {

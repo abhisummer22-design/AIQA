@@ -3,6 +3,7 @@ use crate::domain::RunId;
 use crate::engine::{ProjectStream, RunRecord};
 use crate::evidence::LocalEvidenceStore;
 use crate::executor::ExecutorRegistry;
+use crate::log_bus::LogBus;
 use crate::performance_testing::PerformanceRunHandle;
 use crate::policy::PolicyConfig;
 use crate::store::Store;
@@ -43,6 +44,8 @@ pub struct AppState {
     /// once at startup, for how an orphaned `RUNNING` DB row from a prior
     /// process is honestly marked `INTERRUPTED` rather than left stuck).
     pub performance_tests: Arc<RwLock<HashMap<Uuid, Arc<PerformanceRunHandle>>>>,
+    /// Real-time central log bus & ring buffer for live AIQA orchestrator activity.
+    pub log_bus: Arc<LogBus>,
 }
 
 impl AppState {
@@ -62,6 +65,7 @@ impl AppState {
             project_streams: Arc::new(RwLock::new(HashMap::new())),
             ai_infra,
             performance_tests: Arc::new(RwLock::new(HashMap::new())),
+            log_bus: Arc::new(LogBus::new(300)),
         }
     }
 

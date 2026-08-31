@@ -412,8 +412,17 @@ export interface StateGateProps {
  * ```
  */
 export const StateGate: React.FC<StateGateProps> = ({ auth, actions, children }) => {
-  if (auth.status === 'authenticated') return <>{children}</>;
-  return <>{renderAuthState(auth, actions)}</>;
+  // If no key is configured in localStorage, prompt user to configure one
+  if (auth.status === 'no_key') {
+    return <>{renderAuthState(auth, actions)}</>;
+  }
+  // If orchestrator explicitly rejected the key with 401, show actionable auth error
+  if (auth.status === 'unauthenticated') {
+    return <>{renderAuthState(auth, actions)}</>;
+  }
+  // If key exists (key_present, checking, authenticated, offline, error), render
+  // page content directly without blocking. Background verification runs silently.
+  return <>{children}</>;
 };
 
 // ------------------------------------------------------- resource error state

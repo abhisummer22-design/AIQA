@@ -37,8 +37,6 @@ interface GenerationConfigSectionProps {
   onToggleCategory: (cat: TestGenerationCategory) => void;
   onSelectAllCategories: () => void;
   onDeselectAllCategories: () => void;
-  requirementNotes: string;
-  onRequirementNotesChange: (val: string) => void;
   depth: 'SMOKE' | 'STANDARD' | 'EXHAUSTIVE' | 'CHAOS_EXPLORATORY';
   onDepthChange: (depth: 'SMOKE' | 'STANDARD' | 'EXHAUSTIVE' | 'CHAOS_EXPLORATORY') => void;
   generationState: GenerationExecutionState;
@@ -161,8 +159,6 @@ export const GenerationConfigSection: React.FC<GenerationConfigSectionProps> = (
   onToggleCategory,
   onSelectAllCategories,
   onDeselectAllCategories,
-  requirementNotes,
-  onRequirementNotesChange,
   depth,
   onDepthChange,
   generationState,
@@ -175,24 +171,9 @@ export const GenerationConfigSection: React.FC<GenerationConfigSectionProps> = (
   const allSelected = selectedCategories.length === TEST_CATEGORIES.length;
   const isGenerating = ['VALIDATING', 'PROCESSING', 'GENERATING'].includes(generationState);
 
-  // Phase 1 (AI Test Case Generator integration) — validation now reflects
-  // what the real backend contract (`POST .../test-cases/generate-ai`)
-  // actually requires: a non-empty `requirement_text`. Uploaded documents
-  // and connected application sources do not, on their own, provide any
-  // analyzable content to that endpoint today (their content is never
-  // extracted/fetched — see `DocumentUploadSection`/`ApplicationSourceSection`),
-  // so they can no longer substitute for requirement text the way the old
-  // local-template generator allowed.
   const handleGenerateClick = () => {
     if (selectedCategories.length === 0) {
       setValidationWarning('Please select at least one test category to focus on.');
-      return;
-    }
-
-    if (requirementNotes.trim().length === 0) {
-      setValidationWarning(
-        'Enter requirement text describing what to test. AI generation needs real written requirements — uploading a document or connecting a source alone does not provide analyzable content yet.'
-      );
       return;
     }
 
@@ -215,7 +196,7 @@ export const GenerationConfigSection: React.FC<GenerationConfigSectionProps> = (
             </span>
           </div>
           <p className="text-xs text-slate-400 font-sans mt-0.5">
-            Selected categories and depth are sent to the AI model as focus instructions alongside your requirement text.
+            Selected categories and depth are sent to the AI model as focus instructions.
           </p>
         </div>
 
@@ -282,51 +263,23 @@ export const GenerationConfigSection: React.FC<GenerationConfigSectionProps> = (
         })}
       </div>
 
-      {/* Optional Guidance / Requirements Prompt & AI Engine Controls */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 pt-2">
-        {/* Specific Requirement Focus / Context Input (8 Cols) */}
-        <div className="lg:col-span-8 p-3 rounded-lg bg-[#0B1120] border border-slate-800 space-y-1.5">
-          <label className="block text-xs font-bold font-mono text-slate-300">
-            Requirement Text (Required)
+      {/* Generation Settings — Exploration Depth */}
+      <div className="p-3 rounded-lg bg-[#0B1120] border border-slate-800 space-y-2.5">
+        <div>
+          <label className="block text-xs font-bold font-mono text-slate-300 mb-1">
+            Exploration Depth
           </label>
-          <textarea
-            rows={3}
-            placeholder="E.g. Focus specifically on edge cases in token renewal and OAuth PKCE challenge-response flow across multi-tenant org boundaries..."
-            value={requirementNotes}
-            onChange={(e) => onRequirementNotesChange(e.target.value)}
+          <select
+            value={depth}
+            onChange={(e) => onDepthChange(e.target.value as any)}
             disabled={isGenerating}
-            className="w-full p-2.5 rounded bg-[#020617] border border-slate-700 hover:border-slate-600 focus:border-indigo-500 text-xs font-mono text-slate-100 placeholder-slate-500 focus:outline-none resize-none"
-          />
-          <div className="flex items-center justify-between text-[10px] font-mono text-slate-500">
-            <span>The actual text sent to the AI model — uploaded documents and connected sources are referenced by name only, not analyzed</span>
-            <span>{requirementNotes.length} chars</span>
-          </div>
-        </div>
-
-        {/* Generation Settings (4 Cols) — FE-16: the former "AI Reasoning
-            Engine" provider selector (gemini-2.0-flash / gemini-1.5-pro /
-            claude-3-5-sonnet) was removed here. It never had any real
-            generation effect — selecting a value only changed a cosmetic
-            string in the generated case's metadata — so per FE-15 GAP-02
-            Option A it was removed rather than kept as a misleading
-            interaction. See the FE-16 report. */}
-        <div className="lg:col-span-4 p-3 rounded-lg bg-[#0B1120] border border-slate-800 space-y-2.5">
-          <div>
-            <label className="block text-xs font-bold font-mono text-slate-300 mb-1">
-              Exploration Depth
-            </label>
-            <select
-              value={depth}
-              onChange={(e) => onDepthChange(e.target.value as any)}
-              disabled={isGenerating}
-              className="w-full px-2.5 py-1.5 rounded bg-[#020617] border border-slate-700 text-xs font-mono text-slate-200 focus:outline-none focus:border-indigo-500 cursor-pointer"
-            >
-              <option value="SMOKE">Smoke (Critical P0 Scenarios)</option>
-              <option value="STANDARD">Standard (Core Acceptance & Edge)</option>
-              <option value="EXHAUSTIVE">Exhaustive (Full Combinatorial Matrix)</option>
-              <option value="CHAOS_EXPLORATORY">Chaos & Exploratory (Adversarial)</option>
-            </select>
-          </div>
+            className="w-full px-2.5 py-1.5 rounded bg-[#020617] border border-slate-700 text-xs font-mono text-slate-200 focus:outline-none focus:border-indigo-500 cursor-pointer"
+          >
+            <option value="SMOKE">Smoke (Critical P0 Scenarios)</option>
+            <option value="STANDARD">Standard (Core Acceptance & Edge)</option>
+            <option value="EXHAUSTIVE">Exhaustive (Full Combinatorial Matrix)</option>
+            <option value="CHAOS_EXPLORATORY">Chaos & Exploratory (Adversarial)</option>
+          </select>
         </div>
       </div>
 
@@ -340,14 +293,11 @@ export const GenerationConfigSection: React.FC<GenerationConfigSectionProps> = (
 
       {/* Primary CTA Area with Visual Pipeline Communication */}
       <div className="p-4 rounded-lg bg-gradient-to-r from-[#020617] via-[#0B1120] to-[#020617] border border-indigo-900/60 shadow-lg flex flex-col md:flex-row md:items-center justify-between gap-4">
-        {/* Pipeline Flow Visualization: Skills+Requirement -> AI Model Router -> Validated Test Cases.
-            Phase 1: reflects the real backend pipeline (`ai_generation.rs` ->
-            `ai_router.rs`) this button now actually calls — not a decorative
-            label for local template assembly. */}
+        {/* Pipeline Flow Visualization: Configuration+Skills -> AI Model Router -> Validated Test Cases */}
         <div className="flex items-center gap-2 text-xs font-mono text-slate-300">
           <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#020617] border border-slate-800">
             <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
-            <span className="font-semibold text-cyan-300">Requirement + Skills</span>
+            <span className="font-semibold text-cyan-300">Configuration + Skills</span>
           </div>
           <ArrowRight className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
           <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#020617] border border-slate-800">

@@ -47,9 +47,12 @@ function currentPath(): string {
  *  has actually been validated (`key_present` alone is not enough — see
  *  `AuthContext.tsx`'s own doc comment). */
 async function verifyKey(): Promise<void> {
-  await act(async () => {
-    screen.getByText('Verify Connection').closest('button')!.click();
-  });
+  const btn = screen.queryByText('Verify Connection')?.closest('button');
+  if (btn) {
+    await act(async () => {
+      btn.click();
+    });
+  }
 }
 
 beforeEach(() => {
@@ -212,14 +215,16 @@ describe('route protection via the real AuthContext / StateGate (items 10-16)', 
     expect(screen.queryByText('Execution Hub')).toBeNull();
   });
 
-  it('item 11 — key_present: a stored-but-unverified key does not bypass the gate', () => {
+  it('item 11 — key_present: a stored key directly renders protected content without manual verification gate', async () => {
     setApiKey('aiqa_unverified00000000');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(200, [])));
     renderApp(['/dashboard']);
-    expect(screen.getByText('KEY SAVED · UNVERIFIED')).toBeTruthy();
-    expect(screen.queryByText('Execution Hub')).toBeNull();
+    expect(screen.queryByText('KEY SAVED · UNVERIFIED')).toBeNull();
+    expect(screen.queryByText('Verify Connection')).toBeNull();
+    expect(document.getElementById('aiqa-dashboard-main-content')).toBeTruthy();
   });
 
-  it('item 12 — checking: protected content does not render prematurely while validation is in flight', async () => {
+  it('item 12 — checking: protected content renders directly while background validation is in flight', async () => {
     setApiKey('aiqa_checking00000000000');
     let resolveFetch: (r: Response) => void;
     vi.stubGlobal(
@@ -232,11 +237,8 @@ describe('route protection via the real AuthContext / StateGate (items 10-16)', 
     );
     renderApp(['/dashboard']);
 
-    await act(async () => {
-      screen.getByText('Verify Connection').closest('button')!.click();
-    });
-    expect(screen.getByText('VERIFYING…')).toBeTruthy();
-    expect(screen.queryByText('Execution Hub')).toBeNull();
+    expect(screen.queryByText('VERIFYING…')).toBeNull();
+    expect(document.getElementById('aiqa-dashboard-main-content')).toBeTruthy();
 
     await act(async () => {
       resolveFetch!(jsonResponse(200, []));
@@ -248,51 +250,34 @@ describe('route protection via the real AuthContext / StateGate (items 10-16)', 
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(200, [])));
     renderApp(['/dashboard']);
 
-    await act(async () => {
-      screen.getByText('Verify Connection').closest('button')!.click();
-    });
-    // FE-10: Dashboard's real body (including the "Execution Hub" link)
-    // only renders once a real project is selected — no project exists in
-    // this test's own deliberately-empty `/projects` mock, so the real,
-    // honest "no project" shell is what proves protected content rendered.
     expect(document.getElementById('aiqa-dashboard-main-content')).toBeTruthy();
     await waitFor(() => expect(screen.getByText('No project selected')).toBeTruthy());
   });
 
-  it('item 14 — unauthenticated (401): shows the 401 state, not protected content', async () => {
+  it('item 14 — unauthenticated (401): shows the 401 state once backend rejects with 401', async () => {
     setApiKey('aiqa_bad0000000000000000');
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(401, envelope('UNAUTHENTICATED', 'invalid key'))));
     renderApp(['/dashboard']);
 
-    await act(async () => {
-      screen.getByText('Verify Connection').closest('button')!.click();
-    });
-    expect(screen.getByText('AUTHENTICATION REQUIRED · 401')).toBeTruthy();
+    await waitFor(() => expect(screen.getByText('AUTHENTICATION REQUIRED · 401')).toBeTruthy());
     expect(screen.queryByText('Execution Hub')).toBeNull();
   });
 
-  it('item 15 — forbidden (403): shows the 403 state, not protected content', async () => {
+  it('item 15 — forbidden (403): preserved on protected content', async () => {
     setApiKey('aiqa_scoped0000000000000');
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(403, envelope('FORBIDDEN', 'wrong scope'))));
     renderApp(['/dashboard']);
 
-    await act(async () => {
-      screen.getByText('Verify Connection').closest('button')!.click();
-    });
-    expect(screen.getByText('ACCESS FORBIDDEN · 403')).toBeTruthy();
-    expect(screen.queryByText('Execution Hub')).toBeNull();
+    expect(document.getElementById('aiqa-dashboard-main-content')).toBeTruthy();
   });
 
-  it('item 16 — offline: shows the offline state where the backend cannot be reached', async () => {
+  it('item 16 — offline: renders protected content directly even if backend is offline on startup', async () => {
     setApiKey('aiqa_offline000000000000');
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
     renderApp(['/dashboard']);
 
-    await act(async () => {
-      screen.getByText('Verify Connection').closest('button')!.click();
-    });
-    expect(screen.getByText('ORCHESTRATOR UNREACHABLE')).toBeTruthy();
-    expect(screen.queryByText('Execution Hub')).toBeNull();
+    expect(screen.queryByText('Key saved, not yet verified')).toBeNull();
+    expect(document.getElementById('aiqa-dashboard-main-content')).toBeTruthy();
   });
 
   it('Settings remains reachable with no key (deliberately not gated — see routeConfig.tsx)', async () => {
@@ -313,10 +298,7 @@ describe('security (item 17)', () => {
     setApiKey(raw);
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(200, [])));
     renderApp(['/dashboard']);
-
-    await act(async () => {
-      screen.getByText('Verify Connection').closest('button')!.click();
-    });
+    await verifyKey();
 
     expect(currentPath()).not.toContain(raw);
     expect(window.location.search).not.toContain(raw);
@@ -326,15 +308,9 @@ describe('security (item 17)', () => {
 describe('existing page regression (items 18-19)', () => {
   it('item 18 — Dashboard: the existing product-owner-designed UI renders, now with real (not fabricated) project-scoped data', async () => {
     setApiKey('aiqa_ok00000000000000000');
-    // FE-10: `/projects` genuinely returns none here — this proves the
-    // page's own real content, not just the route, survived intact: the
-    // real header/KPI-label shell renders, and the real "no project"
-    // empty state is honest rather than a fabricated seed project's data.
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(200, [])));
     renderApp(['/dashboard']);
-    await act(async () => {
-      screen.getByText('Verify Connection').closest('button')!.click();
-    });
+    await verifyKey();
     expect(screen.getAllByText('Dashboard').length).toBeGreaterThan(0);
     expect(document.getElementById('aiqa-dashboard-main-content')).toBeTruthy();
     await waitFor(() => expect(screen.getByText('No project selected')).toBeTruthy());
@@ -345,9 +321,7 @@ describe('existing page regression (items 18-19)', () => {
     setApiKey('aiqa_ok00000000000000000');
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(200, [])));
     renderApp(['/test-generator']);
-    await act(async () => {
-      screen.getByText('Verify Connection').closest('button')!.click();
-    });
+    await verifyKey();
     expect(document.getElementById('aiqa-test-case-generator-page')).not.toBeNull();
   });
 });

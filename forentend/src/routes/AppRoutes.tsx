@@ -17,6 +17,15 @@ import { DEFAULT_ROUTE_PATH, routeDefs } from './routeConfig';
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const auth = useAuth();
   const navigate = useNavigate();
+  const { validate } = auth;
+
+  // Background verification on mount when key exists locally
+  React.useEffect(() => {
+    if (auth.status === 'key_present') {
+      void validate();
+    }
+  }, [auth.status, validate]);
+
   // Gives the auth-state card shown on any protected route a real,
   // working path back to the one place a key can actually be configured
   // — without this, a `no_key`/`unauthenticated` card reached by direct

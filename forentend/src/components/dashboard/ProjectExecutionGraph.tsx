@@ -36,7 +36,10 @@ export const ProjectExecutionGraph: React.FC<ProjectExecutionGraphProps> = ({
           </h3>
         </div>
 
-        {/* Legend Indicators */}
+        {/* Legend only when a real series is actually plotted. Rendering a
+            four-series legend above a permanently empty chart advertised
+            data this panel has no way to obtain. */}
+        {hasData && (
         <div className="flex items-center gap-3 text-[10px] font-mono">
           <div className="flex items-center gap-1 text-cyan-400">
             <span className="w-2 h-0.5 bg-cyan-400" />
@@ -55,6 +58,7 @@ export const ProjectExecutionGraph: React.FC<ProjectExecutionGraphProps> = ({
             <span>Blocked</span>
           </div>
         </div>
+        )}
       </div>
 
       {/* Main Chart Area */}
@@ -163,20 +167,30 @@ export const ProjectExecutionGraph: React.FC<ProjectExecutionGraphProps> = ({
               <Clock className="w-6 h-6 text-slate-600" />
             </div>
             <div className="text-xs font-bold text-slate-400 font-mono">
-              No Execution Activity Recorded
+              No execution timeline available
             </div>
-            <p className="text-[10px] text-slate-500 max-w-[240px]">
-              Execution runs on {projectName} will populate this real-time timeline graph.
+            {/* Previously: "Execution runs on X will populate this real-time
+                timeline graph." That was false — this backend exposes no
+                time-bucketed execution-history endpoint, so `timelineData`
+                is always empty and no run, ever, would have populated it.
+                Promising data that cannot arrive is worse than saying the
+                capability is missing. */}
+            <p className="text-[10px] text-slate-500 max-w-[260px]">
+              The orchestrator has no time-series execution-history endpoint, so there is no real timeline to
+              plot. Per-run history is real and available in the Execution Hub.
             </p>
           </div>
         )}
       </div>
 
-      {/* Footer Info */}
-      <div className="flex items-center justify-between pt-2 border-t border-slate-800/80 text-[10px] font-mono text-slate-500">
-        <span>X-Axis: Time Window</span>
-        <span>Y-Axis: Test Throughput</span>
-      </div>
+      {/* Axis captions describe a chart that only exists when there is a
+          real series to draw. */}
+      {hasData && (
+        <div className="flex items-center justify-between pt-2 border-t border-slate-800/80 text-[10px] font-mono text-slate-500">
+          <span>X-Axis: Time Window</span>
+          <span>Y-Axis: Test Throughput</span>
+        </div>
+      )}
     </div>
   );
 };

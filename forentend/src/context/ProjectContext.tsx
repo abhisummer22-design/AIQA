@@ -87,6 +87,11 @@ export interface ProjectContextValue {
    *  Admin-only server-side, `api.rs::create_project`); callers must not
    *  treat a rejection as anything other than "nothing was created". */
   createProject: (body: CreateProjectRequest) => Promise<Project>;
+  /** Real `DELETE /api/v1/projects/:id` via `aiqaApi.projects.delete`.
+   *  Removes the project from the real list and, if the deleted project was
+   *  the currently active project, safely switches to a fallback project or
+   *  enters empty state without stale project state remaining. */
+  deleteProject: (projectId: string) => Promise<void>;
 }
 
 const ProjectContext = createContext<ProjectContextValue | undefined>(undefined);
@@ -216,14 +221,40 @@ export const ProjectProvider: React.FC<{ children: React.ReactNode }> = ({ child
     return project;
   }, []);
 
+  const deleteProject = useCallback(async (projectId: string): Promise<void> => {
+    await aiqaApi.projects.delete(projectId);
+    setProjects((current) => {
+      const nextList = current.filter((p) => p.id !== projectId);
+      setSelectedProjectIdState((currentSelected) => {
+        if (currentSelected === projectId) {
+          const fallback = nextList.length > 0 ? nextList[0].id : null;
+          persistSelection(fallback);
+          return fallback;
+        }
+        return currentSelected;
+      });
+      return nextList;
+    });
+  }, []);
+
   const selectedProject = useMemo(
     () => projects.find((p) => p.id === selectedProjectId) ?? null,
     [projects, selectedProjectId],
   );
 
   const value = useMemo<ProjectContextValue>(
-    () => ({ projects, selectedProjectId, selectedProject, loading, error, selectProject, refreshProjects, createProject }),
-    [projects, selectedProjectId, selectedProject, loading, error, selectProject, refreshProjects, createProject],
+    () => ({
+      projects,
+      selectedProjectId,
+      selectedProject,
+      loading,
+      error,
+      selectProject,
+      refreshProjects,
+      createProject,
+      deleteProject,
+    }),
+    [projects, selectedProjectId, selectedProject, loading, error, selectProject, refreshProjects, createProject, deleteProject],
   );
 
   return <ProjectContext.Provider value={value}>{children}</ProjectContext.Provider>;

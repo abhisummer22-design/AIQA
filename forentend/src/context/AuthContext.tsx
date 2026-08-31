@@ -19,7 +19,7 @@
  * own HTTP response said.
  */
 
-import React, { createContext, useCallback, useContext, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { ApiError, aiqaApi, clearApiKey, getApiKey, hasApiKey, maskApiKey, setApiKey } from '../services/aiqaApi';
 
 export type AuthStatus =

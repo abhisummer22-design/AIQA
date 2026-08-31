@@ -26,6 +26,7 @@ import { useNavigate } from 'react-router-dom';
 import { Network, AlertTriangle, CheckCircle2, XCircle, Play, Plus, Trash2, Save, Clock, ShieldAlert, FileJson, ListChecks } from 'lucide-react';
 import { SectionHeader } from '../common/SectionHeader';
 import { EmptyState } from '../common/EmptyState';
+import { ApiTestingFlowRail } from '../api-testing/ApiTestingFlowRail';
 import { useProject } from '../../context/ProjectContext';
 import { ApiError, aiqaApi } from '../../services/aiqaApi';
 import type { ApiTestExecutionResponse, PlanAction } from '../../types/contract';
@@ -33,7 +34,7 @@ import type { ApiTestExecutionResponse, PlanAction } from '../../types/contract'
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const;
 type Method = (typeof METHODS)[number];
 
-type ExecStatus =
+export type ExecStatus =
   | 'IDLE'
   | 'VALIDATION_FAILED'
   | 'NO_ACTIVE_PROJECT'
@@ -219,8 +220,8 @@ export const APITestingPage: React.FC = () => {
           onAction={() => navigate('/dashboard')}
         />
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <div className="space-y-4">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+          <div className="lg:col-span-5 space-y-4">
             <div className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm space-y-3">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-mono text-slate-400">Project Context</span>
@@ -309,7 +310,7 @@ export const APITestingPage: React.FC = () => {
             </p>
           </div>
 
-          <div className="space-y-4">
+          <div className="lg:col-span-5 space-y-4">
             {errorMessage && (status === 'VALIDATION_FAILED' || status === 'NO_ACTIVE_PROJECT' || status === 'INFRA_ERROR' || status === 'PROJECT_ACCESS_DENIED' || status === 'REQUEST_FAILED') && (
               <div id="api-testing-error" className="p-3 rounded-md bg-rose-950/60 border border-rose-700 text-xs font-mono text-rose-300">
                 {errorMessage}
@@ -399,6 +400,10 @@ export const APITestingPage: React.FC = () => {
                 Build a request and click Execute to see the real response here.
               </div>
             )}
+          </div>
+
+          <div className="hidden lg:block lg:col-span-2 min-w-0">
+            <ApiTestingFlowRail method={method} status={status} result={result} />
           </div>
         </div>
       )}

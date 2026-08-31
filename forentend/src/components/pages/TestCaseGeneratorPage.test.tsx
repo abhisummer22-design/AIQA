@@ -91,6 +91,7 @@ function aiGenerateResponse(overrides: Partial<GenerateAiTestCasesResponse> = {}
 }
 
 async function openAndSelectProject(project: Project): Promise<void> {
+  await waitFor(() => expect(document.getElementById('project-selector-button')).toBeTruthy());
   await act(async () => {
     document.getElementById('project-selector-button')!.click();
   });
@@ -110,9 +111,12 @@ function renderApp() {
 }
 
 async function verifyKey(): Promise<void> {
-  await act(async () => {
-    screen.getByText('Verify Connection').closest('button')!.click();
-  });
+  const btn = screen.queryByText('Verify Connection')?.closest('button');
+  if (btn) {
+    await act(async () => {
+      btn.click();
+    });
+  }
 }
 
 function page(): HTMLElement {
@@ -148,10 +152,7 @@ async function goToGeneratedCasesBranch(): Promise<void> {
  *  fast-forward with fake timers; the caller must already have a `fetch`
  *  mock covering `POST .../test-cases/generate-ai` (and a real project
  *  selected — the endpoint is project-scoped). */
-async function generate(notes = 'Focus on the login flow.'): Promise<void> {
-  const notesField = screen.getByPlaceholderText(/Focus specifically on edge cases/);
-  fireEvent.change(notesField, { target: { value: notes } });
-
+async function generate(): Promise<void> {
   await act(async () => {
     document.getElementById('btn-generate-test-cases-primary')!.click();
   });
@@ -205,7 +206,7 @@ describe('TestCaseGeneratorPage — Phase 1 real AI generation', () => {
     expect(screen.getByText('Exploration Depth')).toBeTruthy();
   });
 
-  it('clicking Generate makes a real, authenticated POST to the real generate-ai endpoint with the real requirement text and selected skills', async () => {
+  it('clicking Generate makes a real, authenticated POST to the real generate-ai endpoint with selected categories, depth, and selected skills', async () => {
     let capturedBody: any = null;
     const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
       if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') {
@@ -223,15 +224,14 @@ describe('TestCaseGeneratorPage — Phase 1 real AI generation', () => {
     await waitFor(() => expect(page()).toBeTruthy());
     await openAndSelectProject(PROJECT_A);
     await goToSourcesBranch();
-    await generate('Users must be able to reset a forgotten password via emailed link.');
+    await generate();
 
     expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/test-cases/generate-ai') && (c[1] as RequestInit)?.method === 'POST')).toBe(true);
     expect(capturedBody).toBeTruthy();
-    // The real requirement text the user typed is really in the request.
-    expect(capturedBody.requirement_text).toContain('Users must be able to reset a forgotten password');
     // Default-selected categories (Functional, ...) are folded in as real
     // instruction text, not silently dropped.
     expect(capturedBody.requirement_text).toContain('Functional');
+    expect(capturedBody.requirement_text).toContain('Requested generation depth: STANDARD');
     // Default-selected skills (Functional Testing, Edge Case Analysis) are
     // genuinely transmitted as structured skill objects, not just a label.
     expect(Array.isArray(capturedBody.skills)).toBe(true);
@@ -239,7 +239,13 @@ describe('TestCaseGeneratorPage — Phase 1 real AI generation', () => {
     expect(capturedBody.skills.some((s: any) => s.id === 'skill-edge-case-analysis')).toBe(true);
   }, 15000);
 
-  it('toggling on Security Testing genuinely changes the skills array actually sent to the backend', async () => {
+  it('toggling on RBAC Testing genuinely changes the skills array actually sent to the backend', async () => {
+    // RBAC Testing deliberately has no matching test category (there is no
+    // "RBAC" category), so it is never auto-included the way "Security
+    // Testing"/"Functional Testing"/etc. now are once their own
+    // like-named category is checked (`categoryMatchedSkillIds`) — this
+    // keeps the test proving what its name claims: that the manual toggle
+    // itself, not a default category match, is what puts it in the request.
     let capturedBody: any = null;
     const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
       if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') {
@@ -258,11 +264,51 @@ describe('TestCaseGeneratorPage — Phase 1 real AI generation', () => {
     await goToSourcesBranch();
 
     await act(async () => {
-      document.getElementById('skill-toggle-skill-security-testing')!.click();
+      document.getElementById('skill-toggle-skill-rbac-testing')!.click();
     });
     await generate();
 
-    expect(capturedBody.skills.some((s: any) => s.id === 'skill-security-testing' && s.name === 'Security Testing')).toBe(true);
+    expect(capturedBody.skills.some((s: any) => s.id === 'skill-rbac-testing' && s.name === 'RBAC Testing')).toBe(true);
+  }, 15000);
+
+  it('a category with a matching built-in skill auto-includes that skill even when its own checkbox was never clicked', async () => {
+    // "Performance" category <-> "Performance Testing" skill: the exact
+    // pairing from the standing request this feature implements. Default
+    // categories do not include "Performance", and DEFAULT_SELECTED_SKILL_IDS
+    // does not include "Performance Testing" either, so this only passes if
+    // checking the category is genuinely what includes the skill.
+    let capturedBody: any = null;
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') {
+        capturedBody = JSON.parse(String(init.body));
+        return jsonResponse(200, aiGenerateResponse());
+      }
+      if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+      return jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+
+    await act(async () => {
+      document.getElementById('cat-card-performance')!.click();
+    });
+
+    // Its own checkbox was never clicked — it must show as selected anyway,
+    // never left looking unused while actually being sent. Checked before
+    // generating: a successful generation switches to the Generated Cases
+    // branch, which unmounts this checkbox entirely.
+    expect(document.getElementById('skill-toggle-skill-performance-testing')!.getAttribute('aria-checked')).toBe('true');
+
+    await generate();
+
+    expect(capturedBody.skills.some((s: any) => s.id === 'skill-performance-testing' && s.name === 'Performance Testing')).toBe(
+      true,
+    );
   }, 15000);
 
   it('a successful AI response renders the real returned test case and truthful generation metadata (method/provider/model/skills), never the old local-template claim', async () => {
@@ -387,8 +433,6 @@ describe('TestCaseGeneratorPage — Phase 1 real AI generation', () => {
     await openAndSelectProject(PROJECT_A);
     await goToSourcesBranch();
 
-    const notesField = screen.getByPlaceholderText(/Focus specifically on edge cases/);
-    fireEvent.change(notesField, { target: { value: 'Focus on the login flow.' } });
     await act(async () => {
       document.getElementById('btn-generate-test-cases-primary')!.click();
     });
@@ -428,7 +472,28 @@ describe('TestCaseGeneratorPage — Phase 1 real AI generation', () => {
     expect(screen.getByText(/Generated by ollama\/llama3/)).toBeTruthy();
   }, 15000);
 
-  it('requirement text is required — Generate is blocked client-side with a real validation message when notes are empty, and no request is sent', async () => {
+  it('Requirement Text (Required) section, textarea, helper text, and character counter are completely absent from the UI', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+        return jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+
+    expect(screen.queryByText('Requirement Text (Required)')).toBeNull();
+    expect(screen.queryByPlaceholderText(/Focus specifically on edge cases/)).toBeNull();
+    expect(screen.queryByText(/chars/)).toBeNull();
+    expect(screen.queryByText(/The actual text sent to the AI model/)).toBeNull();
+  });
+
+  it('category selection is validated — deselecting all categories blocks Generate with a real validation message', async () => {
     const fetchMock = vi.fn().mockImplementation(async (url: string) => {
       if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
       return jsonResponse(200, []);
@@ -442,10 +507,18 @@ describe('TestCaseGeneratorPage — Phase 1 real AI generation', () => {
     await goToSourcesBranch();
 
     await act(async () => {
+      screen.getByText('Select All (14)').click();
+    });
+
+    await act(async () => {
+      screen.getByText('Deselect All').click();
+    });
+
+    await act(async () => {
       document.getElementById('btn-generate-test-cases-primary')!.click();
     });
 
-    expect(screen.getByText(/Enter requirement text describing what to test/)).toBeTruthy();
+    expect(screen.getByText(/Please select at least one test category to focus on/)).toBeTruthy();
     expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/test-cases/generate-ai'))).toBe(false);
   });
 });
@@ -1154,12 +1227,14 @@ describe('TestCaseGeneratorPage — AUD-005 real persistence, validation, execut
     renderApp();
     await verifyKey();
     await waitFor(() => expect(page()).toBeTruthy());
-    await act(async () => {
-      document.getElementById('project-selector-button')!.click();
-    });
-    await act(async () => {
-      within(screen.getByRole('listbox', { name: 'Projects' })).getByRole('option', { name: PROJECT_A.name }).click();
-    });
+    // Wait for the real project-selector button to actually render before
+    // clicking it — a fixed CI flake: on a slower runner the header's
+    // project list fetch hadn't resolved yet, so `getElementById` returned
+    // null and `.click()` threw "Cannot read properties of null". Every
+    // other project-selecting test in this file already goes through
+    // `openAndSelectProject`, which waits first; this one had inlined the
+    // same steps without the wait.
+    await openAndSelectProject(PROJECT_A);
 
     // Phase A cleanup: with no pre-seeded session the page opens on the
     // "Source & Generation" branch — switch to the "Generated Test Cases"
@@ -1208,19 +1283,24 @@ describe('TestCaseGeneratorPage — Skills & MCP Phase 1', () => {
     await goToSourcesBranch();
 
     const functional = document.getElementById('skill-toggle-skill-functional-testing')!;
-    const security = document.getElementById('skill-toggle-skill-security-testing')!;
+    // RBAC Testing has no matching test category, so `categoryMatchedSkillIds`
+    // never auto-includes it — a clean skill for proving a plain manual
+    // toggle, unaffected by that separate feature ("Security Testing" is a
+    // bad choice here since "Security" is a default-checked category and
+    // would already show checked before any click).
+    const rbac = document.getElementById('skill-toggle-skill-rbac-testing')!;
     expect(functional.getAttribute('aria-checked')).toBe('true');
-    expect(security.getAttribute('aria-checked')).toBe('false');
+    expect(rbac.getAttribute('aria-checked')).toBe('false');
 
     await act(async () => {
-      security.click();
+      rbac.click();
     });
-    expect(document.getElementById('skill-toggle-skill-security-testing')!.getAttribute('aria-checked')).toBe('true');
+    expect(document.getElementById('skill-toggle-skill-rbac-testing')!.getAttribute('aria-checked')).toBe('true');
 
     await act(async () => {
-      functional.click();
+      document.getElementById('skill-toggle-skill-rbac-testing')!.click();
     });
-    expect(document.getElementById('skill-toggle-skill-functional-testing')!.getAttribute('aria-checked')).toBe('false');
+    expect(document.getElementById('skill-toggle-skill-rbac-testing')!.getAttribute('aria-checked')).toBe('false');
   });
 
   it('a custom skill created this session is genuinely resolved server-side by its own description when selected for real generation', async () => {
@@ -1233,6 +1313,17 @@ describe('TestCaseGeneratorPage — Skills & MCP Phase 1', () => {
           return jsonResponse(200, aiGenerateResponse());
         }
         if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+        if (url.endsWith('/skills') && init?.method === 'POST') {
+          const body = JSON.parse(String(init.body));
+          return jsonResponse(201, {
+            id: 'custom-skill-test-1',
+            name: body.name,
+            description: body.description,
+            source_file: null,
+            created_by: 'test-key',
+            created_at: '2026-01-01T00:00:00Z',
+          });
+        }
         return jsonResponse(200, []);
       }),
     );
@@ -1264,7 +1355,25 @@ describe('TestCaseGeneratorPage — Skills & MCP Phase 1', () => {
     expect(capturedBody.skills.some((s: any) => s.name === 'Localization Testing')).toBe(true);
   }, 15000);
 
-  it('Add Skill opens the Skill Manager; creating a custom skill is real, session-only state — never claims persistence', async () => {
+  it('Add Skill opens the Skill Manager; creating a custom skill is real, backend-persisted state', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.endsWith('/skills') && init?.method === 'POST') {
+          const body = JSON.parse(String(init.body));
+          return jsonResponse(201, {
+            id: 'custom-skill-test-1',
+            name: body.name,
+            description: body.description,
+            source_file: null,
+            created_by: 'test-key',
+            created_at: '2026-01-01T00:00:00Z',
+          });
+        }
+        return jsonResponse(200, []);
+      }),
+    );
+
     renderApp();
     await verifyKey();
     await waitFor(() => expect(page()).toBeTruthy());
@@ -1283,9 +1392,9 @@ describe('TestCaseGeneratorPage — Skills & MCP Phase 1', () => {
       document.getElementById('btn-confirm-add-custom-skill')!.click();
     });
 
-    // Truthful, not a fake "saved successfully" claim.
-    expect(screen.getByText(/added for this session only — not saved anywhere/)).toBeTruthy();
-    expect(screen.queryByText(/saved successfully/i)).toBeNull();
+    // Truthful claim of real backend persistence, not a fake "session only" disclaimer.
+    await waitFor(() => expect(screen.getByText(/saved — available to every project/)).toBeTruthy());
+    expect(screen.queryByText(/added for this session only/i)).toBeNull();
 
     await act(async () => {
       document.getElementById('skill-manager-modal')!.querySelector('button[aria-label="Close Skill Manager"]')!.dispatchEvent(
@@ -1295,6 +1404,114 @@ describe('TestCaseGeneratorPage — Skills & MCP Phase 1', () => {
 
     // The new custom skill is now real, selected state reflected on the panel itself.
     await waitFor(() => expect(screen.getByText('Localization Testing')).toBeTruthy());
+  });
+
+  it('opening a skill shows the REAL instruction resolved by the backend, not the local label', async () => {
+    setApiKey(RAW_KEY);
+    let resolveBody: any = null;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        const u = String(url);
+        if (u.includes('/skills/resolve') && init?.method === 'POST') {
+          resolveBody = JSON.parse(String(init.body));
+          return jsonResponse(200, [
+            {
+              id: 'skill-security-testing',
+              name: 'Security Testing',
+              instruction:
+                'Identify applicable authentication, authorization, privilege-escalation, input-validation, injection, session-handling, sensitive-data-exposure, and API-abuse scenarios.',
+            },
+          ]);
+        }
+        return jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await goToSourcesBranch();
+
+    await act(async () => {
+      document.getElementById('skill-view-skill-security-testing')!.click();
+    });
+
+    await waitFor(() => expect(document.getElementById('skill-detail-modal')).toBeTruthy());
+    // The real backend-resolved instruction is rendered — not the short
+    // local `description` the registry carries for the row label.
+    await waitFor(() =>
+      expect(screen.getByText(/privilege-escalation, input-validation, injection/)).toBeTruthy(),
+    );
+    // It asked the real resolver, passing the real skill identity.
+    expect(resolveBody.skills[0].id).toBe('skill-security-testing');
+    expect(resolveBody.skills[0].name).toBe('Security Testing');
+  });
+
+  it('viewing a skill never changes whether it is selected', async () => {
+    setApiKey(RAW_KEY);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        if (String(url).includes('/skills/resolve')) {
+          return jsonResponse(200, [
+            { id: 'skill-security-testing', name: 'Security Testing', instruction: 'Real instruction text.' },
+          ]);
+        }
+        return jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await goToSourcesBranch();
+
+    const before = document
+      .getElementById('skill-toggle-skill-security-testing')!
+      .getAttribute('aria-checked');
+
+    await act(async () => {
+      document.getElementById('skill-view-skill-security-testing')!.click();
+    });
+    await waitFor(() => expect(document.getElementById('skill-detail-modal')).toBeTruthy());
+
+    // Reading what a skill says must not mutate real applied configuration.
+    expect(
+      document.getElementById('skill-toggle-skill-security-testing')!.getAttribute('aria-checked'),
+    ).toBe(before);
+  });
+
+  it('a failed instruction read is reported honestly — never silently shown as the local description', async () => {
+    setApiKey(RAW_KEY);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        if (String(url).includes('/skills/resolve')) {
+          return jsonResponse(500, {
+            error: { code: 'INTERNAL', message: 'resolver exploded', details: {}, request_id: 'r1' },
+          });
+        }
+        return jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await goToSourcesBranch();
+
+    await act(async () => {
+      document.getElementById('skill-view-skill-security-testing')!.click();
+    });
+
+    await waitFor(() => expect(document.getElementById('btn-skill-detail-retry')).toBeTruthy());
+    // No instruction body is rendered at all when the real read failed.
+    expect(document.getElementById('skill-detail-instruction')).toBeNull();
+    // And the registry's own one-line label is not passed off as the skill.
+    expect(
+      screen.queryByText('Authentication, authorization, and input-handling risk coverage.'),
+    ).toBeNull();
   });
 
   it('Connect MCP shows a truthful "Not Configured" status and never claims a live connection', async () => {
@@ -1312,5 +1529,27 @@ describe('TestCaseGeneratorPage — Skills & MCP Phase 1', () => {
     expect(document.getElementById('mcp-status-badge')!.textContent).not.toContain('Connected');
     expect(screen.getByText(/External MCP connection management is not yet configured/)).toBeTruthy();
     expect(screen.queryByText(/^Connected$/)).toBeNull();
+  });
+
+  it('opens directly without showing Key saved, not yet verified or requiring Verify Connection click', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+        return jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+
+    // No blocking verification gate appears
+    expect(screen.queryByText('Key saved, not yet verified')).toBeNull();
+    expect(screen.queryByText('Verify Connection')).toBeNull();
+    expect(screen.queryByText('KEY SAVED · UNVERIFIED')).toBeNull();
+    expect(screen.queryByText('A key exists locally but has not been verified against the orchestrator this session')).toBeNull();
+
+    // The actual Test Case Generator page UI is immediately visible and rendered
+    await waitFor(() => expect(page()).toBeTruthy());
+    expect(document.getElementById('aiqa-test-case-generator-page')).toBeTruthy();
   });
 });

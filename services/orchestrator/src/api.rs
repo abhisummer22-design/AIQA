@@ -2,6 +2,7 @@ use crate::auth::{self, AuthContext, Role};
 use crate::domain::*;
 use crate::engine::{self, RunRecord};
 use crate::errors::{ApiError, ApiJson, ApiPath, ApiQuery};
+use crate::log_bus::OrchestratorLogEntry;
 use crate::policy::{self, PolicyDecision};
 use crate::scheduler::validate_plan;
 use crate::state::AppState;
@@ -33,6 +34,36 @@ use uuid::Uuid;
 /// instead (see `project_events_ws_handler`).
 pub fn router(state: AppState) -> Router {
     let protected = Router::new()
+        // The caller's own real identity/role/scope.
+        .route("/api/v1/auth/whoami", get(whoami))
+        // The real coordination surface behind the Orchestrator view:
+        // executor capability routing, policy gates, and the live DAG.
+        .route("/api/v1/orchestrator/state", get(get_orchestrator_state))
+        // Real mobile fleet: real adb devices, real AVDs, real Maestro CLI.
+        .route("/api/v1/mobile/fleet", get(get_mobile_fleet))
+        .route("/api/v1/mobile/emulators/boot", post(boot_mobile_emulator))
+        .route("/api/v1/mobile/simulators/boot", post(boot_ios_simulator_handler))
+        // Real stage-by-stage pipeline state, including honestly-reported
+        // unavailable stages (vector store / RAG / re-planning).
+        .route(
+            "/api/v1/projects/:project_id/pipeline",
+            get(get_neural_pipeline),
+        )
+        // Real, persisted custom skills for AI test-case generation (see
+        // `store::insert_custom_skill`'s doc comment).
+        .route(
+            "/api/v1/skills",
+            post(create_custom_skill).get(list_custom_skills_handler),
+        )
+        .route("/api/v1/skills/:id", delete(delete_custom_skill_handler))
+        // The real instruction each skill resolves to — same function the
+        // generator uses, so the UI cannot show a drifted copy.
+        .route("/api/v1/skills/resolve", post(resolve_skills))
+        // Real SKILL.md files a user has dropped into
+        // `skill_files::skills_dir()` on this machine — re-read from disk on
+        // every call (see that module's doc comment), never cached, so a
+        // file added after the server started shows up without a restart.
+        .route("/api/v1/skills/files", get(list_file_skills_handler))
         // BE-8 — API Contract §5.1-5.4.
         .route(
             "/api/v1/projects",
@@ -40,7 +71,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/v1/projects/:id",
-            get(get_project_handler).patch(update_project_handler),
+            get(get_project_handler)
+                .patch(update_project_handler)
+                .delete(delete_project_handler),
         )
         // BE-12 — API Contract §23.1-23.2 Dashboard/KPI JSON endpoints,
         // project-scoped the same way as the executions/evidence routes
@@ -258,8 +291,14 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/admin/api-keys/:id", delete(revoke_api_key_handler))
         .route("/admin/audit-log", get(get_audit_log))
+        // Central Real-time Orchestrator Logs endpoints
+        .route("/api/v1/logs", get(list_logs_handler))
+        .route(
+            "/api/v1/projects/:project_id/logs",
+            get(list_project_logs_handler),
+        )
         .layer(axum::middleware::from_fn_with_state(
-            state.store.clone(),
+            state.clone(),
             auth::require_auth,
         ));
 
@@ -273,6 +312,11 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/projects/:project_id/events",
             get(project_events_ws_handler),
+        )
+        .route("/api/v1/logs/ws", get(logs_ws_handler))
+        .route(
+            "/api/v1/projects/:project_id/logs/ws",
+            get(project_logs_ws_handler),
         )
         .merge(protected)
         .with_state(state)
@@ -417,6 +461,507 @@ fn require_resource_in_project(
     } else {
         Err(ApiError::not_found("resource not found in this project"))
     }
+}
+
+// ------------------------------------------------------------------ mobile
+
+/// GET /api/v1/mobile/fleet — the real mobile device fleet visible to this
+/// host right now: every device `adb` can see with its real connection
+/// state, every AVD that genuinely exists, and whether the real mobile.dev
+/// Maestro CLI is actually installed.
+///
+/// Host-level, not project-scoped: `adb` sees one set of devices per
+/// machine. Any authenticated key may read it — knowing that a phone is
+/// plugged in grants nothing on its own, and gating it would hide the fleet
+/// from exactly the Viewer who needs to see why a run cannot start.
+async fn get_mobile_fleet() -> Json<crate::mobile::MobileFleet> {
+    Json(crate::mobile::discover_fleet().await)
+}
+
+#[derive(Deserialize)]
+struct BootSimulatorBody {
+    udid: String,
+}
+
+/// POST /api/v1/mobile/simulators/boot — really boots an iOS Simulator via
+/// `xcrun simctl`. Operator+, same bar as booting an Android emulator.
+///
+/// On a non-macOS host this fails with the real platform reason rather than
+/// pretending: Apple ships no Simulator runtime off macOS, so there is
+/// nothing here that installing a tool would fix.
+async fn boot_ios_simulator_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiJson(body): ApiJson<BootSimulatorBody>,
+) -> Result<Json<BootAvdResponse>, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    let message = crate::mobile::boot_ios_simulator(&body.udid)
+        .await
+        .map_err(ApiError::validation)?;
+    state
+        .log_bus
+        .emit("INFO", "mobile", &message, None, None, None)
+        .await;
+    audit(&state, &ctx, "mobile.simulator.boot", Some(&body.udid), None, "ok").await;
+    Ok(Json(BootAvdResponse { message }))
+}
+
+#[derive(Deserialize)]
+struct BootAvdBody {
+    avd: String,
+}
+
+#[derive(Serialize)]
+struct BootAvdResponse {
+    message: String,
+}
+
+/// POST /api/v1/mobile/emulators/boot — really launches an AVD.
+///
+/// Operator+, matching every other action that starts real work on this
+/// host. This deliberately does not claim the emulator is up: booting takes
+/// tens of seconds, and only `adb` can prove readiness, so the caller
+/// re-reads `/mobile/fleet` and watches the device appear for real.
+async fn boot_mobile_emulator(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiJson(body): ApiJson<BootAvdBody>,
+) -> Result<Json<BootAvdResponse>, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    let message = crate::mobile::boot_avd(&body.avd)
+        .await
+        .map_err(ApiError::validation)?;
+    state
+        .log_bus
+        .emit("INFO", "mobile", &message, None, None, None)
+        .await;
+    audit(&state, &ctx, "mobile.emulator.boot", Some(&body.avd), None, "ok").await;
+    Ok(Json(BootAvdResponse { message }))
+}
+
+// --------------------------------------------------------- neural pipeline
+
+/// One stage of the real AIQA execution pipeline. `available` is the honest
+/// fact of whether the stage exists in this backend at all — a stage that is
+/// not implemented is reported as such rather than omitted (which would hide
+/// the gap) or drawn as working (which would fabricate it).
+#[derive(Serialize)]
+struct PipelineStage {
+    id: &'static str,
+    label: &'static str,
+    /// The real module/route that implements it, or why it does not exist.
+    backing: String,
+    available: bool,
+    /// Real live counter for this stage, when the stage has one.
+    metric: Option<i64>,
+    metric_label: Option<&'static str>,
+}
+
+#[derive(Serialize)]
+struct NeuralPipelineResponse {
+    stages: Vec<PipelineStage>,
+    /// Real quality-graph size for this project (`quality_nodes` /
+    /// `quality_relations`) — the only persistent "memory" this system has.
+    graph_nodes: i64,
+    graph_relations: i64,
+    /// Real count of runs this process is currently driving.
+    active_runs: usize,
+    /// Real terminal-state counts for this project, straight from the store.
+    completed_runs: i64,
+}
+
+/// GET /api/v1/projects/:project_id/pipeline — the real stage-by-stage state
+/// of this project's execution pipeline.
+///
+/// Deliberately reports unavailable stages instead of omitting them: this
+/// system has a real planner, real tool routing, real execution, real
+/// observation and a real quality graph, but it has **no vector store, no
+/// embedding endpoint and no RAG** (`ai_router.rs` calls embeddings "a future
+/// endpoint" and every discovered model reports `embedding: NONE`). A view
+/// that quietly dropped those would imply the pipeline is complete; one that
+/// drew them as active would invent capability outright.
+async fn get_neural_pipeline(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+) -> Result<Json<NeuralPipelineResponse>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let pid = project_id.to_string();
+
+    let (graph_nodes, graph_relations) =
+        state.store.quality_graph_size(&pid).await.map_err(to_500)?;
+
+    let run_counts = state.store.dashboard_run_counts(&pid).await.map_err(to_500)?;
+    let completed_runs: i64 = run_counts
+        .iter()
+        .filter(|(k, _)| k == "COMPLETED")
+        .map(|(_, v)| *v)
+        .sum();
+
+    let records: Vec<Arc<RunRecord>> = state.runs.read().await.values().cloned().collect();
+    let mut active_runs = 0usize;
+    let mut running_tasks = 0i64;
+    for record in records {
+        if record.project_id.as_deref() != Some(pid.as_str()) {
+            continue;
+        }
+        active_runs += 1;
+        for t in record.engine.read().await.tasks.values() {
+            if matches!(t.status, TaskStatus::Running) {
+                running_tasks += 1;
+            }
+        }
+    }
+
+    let executor_count = state.registry.registered_kinds().len() as i64;
+    let ai_settings = state.ai_infra.settings().await;
+
+    let stages = vec![
+        PipelineStage {
+            id: "brain",
+            label: "Model Router",
+            backing: format!(
+                "ai_router.rs — capability/health scoring, {} mode",
+                if ai_settings.mode == crate::ai_router::RoutingMode::Manual { "MANUAL" } else { "AUTO" }
+            ),
+            available: true,
+            metric: None,
+            metric_label: None,
+        },
+        PipelineStage {
+            id: "planning",
+            label: "Planning",
+            backing: "scheduler.rs::validate_plan — DAG build, cycle + unknown-prerequisite rejection".to_string(),
+            available: true,
+            metric: None,
+            metric_label: None,
+        },
+        PipelineStage {
+            id: "tools",
+            label: "Tool Routing",
+            backing: "executor.rs::ExecutorRegistry — capability routing to real runners".to_string(),
+            available: true,
+            metric: Some(executor_count),
+            metric_label: Some("executors"),
+        },
+        PipelineStage {
+            id: "execution",
+            label: "Execution",
+            backing: "engine.rs — concurrency-bounded task execution".to_string(),
+            available: true,
+            metric: Some(running_tasks),
+            metric_label: Some("tasks running"),
+        },
+        PipelineStage {
+            id: "observation",
+            label: "Observation",
+            backing: "engine.rs events + log_bus.rs — real per-task events streamed live".to_string(),
+            available: true,
+            metric: None,
+            metric_label: None,
+        },
+        PipelineStage {
+            id: "memory",
+            label: "Quality Graph",
+            backing: "quality_nodes + quality_relations — execution history, flakiness, failure rate".to_string(),
+            available: true,
+            metric: Some(graph_nodes),
+            metric_label: Some("nodes"),
+        },
+        PipelineStage {
+            id: "goal",
+            label: "Goal State",
+            backing: "engine.rs — run reaches a real terminal state".to_string(),
+            available: true,
+            metric: Some(completed_runs),
+            metric_label: Some("completed runs"),
+        },
+        PipelineStage {
+            id: "replanning",
+            label: "Re-planning",
+            backing: "Not implemented. A gated plan waits for a human (PENDING_APPROVAL) and an interrupted run is recovered at startup, but nothing re-plans a failed run.".to_string(),
+            available: false,
+            metric: None,
+            metric_label: None,
+        },
+        PipelineStage {
+            id: "vector",
+            label: "Vector Store",
+            backing: "Not implemented. No embedding endpoint and no vector database exist; every discovered model reports embedding: NONE.".to_string(),
+            available: false,
+            metric: None,
+            metric_label: None,
+        },
+        PipelineStage {
+            id: "rag",
+            label: "RAG Retrieval",
+            backing: "Not implemented. Generation prompts are built from the caller's own requirement text and selected skills only — nothing is retrieved.".to_string(),
+            available: false,
+            metric: None,
+            metric_label: None,
+        },
+    ];
+
+    Ok(Json(NeuralPipelineResponse {
+        stages,
+        graph_nodes,
+        graph_relations,
+        active_runs,
+        completed_runs,
+    }))
+}
+
+// ------------------------------------------------------------------ whoami
+
+/// The caller's own real identity, as resolved by `auth::require_auth` from
+/// the presented key. Every field is the real stored value for that key —
+/// there is no session, profile, or display-name concept in this backend to
+/// embellish it with.
+#[derive(Serialize)]
+struct WhoAmIResponse {
+    /// `api_keys.name` — the key's label, not a user account.
+    name: String,
+    role: &'static str,
+    /// `None` = global scope (this key sees every project); `Some(id)` = it
+    /// is restricted to that one project (`auth::require_project_access`).
+    project_id: Option<String>,
+    /// The real role ordering `Role::at_least` enforces, least to most
+    /// privileged. Served from here so the frontend never has to hardcode a
+    /// second copy of this taxonomy that could silently drift from
+    /// `auth.rs`.
+    role_hierarchy: [&'static str; 3],
+}
+
+/// GET /api/v1/auth/whoami — any authenticated key may ask who it is.
+/// Deliberately no role gate: a caller learning its *own* already-known
+/// identity grants it nothing, and gating it would make the common case
+/// (rendering "you are a viewer") impossible for the least-privileged role.
+async fn whoami(Extension(ctx): Extension<AuthContext>) -> Json<WhoAmIResponse> {
+    Json(WhoAmIResponse {
+        name: ctx.name.clone(),
+        role: ctx.role.as_str(),
+        project_id: ctx.project_id.clone(),
+        role_hierarchy: [Role::Viewer.as_str(), Role::Operator.as_str(), Role::Admin.as_str()],
+    })
+}
+
+// -------------------------------------------------------- orchestrator state
+
+/// One real executor kind the scheduler can route a task to, plus the real
+/// policy gate that applies to it (`policy.rs::evaluate`). "Capability
+/// routing" in this system is exactly this table — a task's `executor`
+/// field is matched against `ExecutorRegistry`'s registered kinds.
+#[derive(Serialize)]
+struct ExecutorRoute {
+    kind: String,
+    /// `"AUTO"` — schedules immediately; `"REQUIRES_APPROVAL"` — a plan
+    /// using it lands in `PENDING_APPROVAL` until a human approves;
+    /// `"BLOCKED"` — a plan using it is denied outright. Derived from the
+    /// same `PolicyConfig` the real gate evaluates against, not a
+    /// separate, drifting copy.
+    gate: String,
+}
+
+/// A run this process is actively driving, with its real task states —
+/// the live DAG. Only in-process runs appear here (same honest limitation
+/// `AppState::runs` documents): a run finished by a previous process is
+/// history, served by the project-scoped execution endpoints instead.
+#[derive(Serialize)]
+struct ActiveRunView {
+    run_id: String,
+    name: String,
+    project_id: Option<String>,
+    state: String,
+    concurrency: usize,
+    tasks: Vec<TaskState>,
+}
+
+#[derive(Serialize)]
+struct OrchestratorStateResponse {
+    executors: Vec<ExecutorRoute>,
+    /// The real, env-tunable governance limits actually enforced before a
+    /// run is scheduled (`policy.rs::PolicyConfig::from_env`).
+    max_concurrency: usize,
+    active_runs: Vec<ActiveRunView>,
+}
+
+/// GET /api/v1/orchestrator/state — the real coordination surface behind
+/// the Orchestrator view: which executors tasks can be routed to, what
+/// policy gate each carries, and the live DAG of every run this process is
+/// currently driving. Platform-wide (not project-scoped), matching
+/// `/ai/status` — the executor registry and policy config are process-wide
+/// singletons, not per-project. A project-scoped key still only sees its
+/// own runs, filtered the same way every other list endpoint filters.
+async fn get_orchestrator_state(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+) -> Result<Json<OrchestratorStateResponse>, ApiError> {
+    let executors = state
+        .registry
+        .registered_kinds()
+        .into_iter()
+        .map(|kind| {
+            let gate = if state.policy.blocked_executors.contains(&kind) {
+                "BLOCKED"
+            } else if state.policy.require_approval_for.contains(&kind) {
+                "REQUIRES_APPROVAL"
+            } else {
+                "AUTO"
+            };
+            ExecutorRoute { kind, gate: gate.to_string() }
+        })
+        .collect();
+
+    let records: Vec<Arc<RunRecord>> = state.runs.read().await.values().cloned().collect();
+    let mut active_runs = Vec::new();
+    for record in records {
+        // Same isolation rule as every other list endpoint: a global key
+        // (`project_id: None`) sees every run; a project-scoped key sees
+        // only its own.
+        if let Some(scope) = ctx.project_id.as_deref() {
+            if record.project_id.as_deref() != Some(scope) {
+                continue;
+            }
+        }
+        let mut tasks: Vec<TaskState> = record.engine.read().await.tasks.values().cloned().collect();
+        tasks.sort_by(|a, b| a.id.cmp(&b.id));
+        active_runs.push(ActiveRunView {
+            run_id: record.run_id.to_string(),
+            name: record.name.clone(),
+            project_id: record.project_id.clone(),
+            state: format!("{:?}", *record.state.read().await).to_uppercase(),
+            concurrency: record.plan.concurrency,
+            tasks,
+        });
+    }
+    active_runs.sort_by(|a, b| a.name.cmp(&b.name));
+
+    Ok(Json(OrchestratorStateResponse {
+        executors,
+        max_concurrency: state.policy.max_concurrency,
+        active_runs,
+    }))
+}
+
+// -------------------------------------------------------- custom skills
+
+/// A "skill" here (matching the frontend's own `SkillDefinition` model,
+/// `forentend/src/types/skills.ts`) is a generation-scope configuration
+/// value, not a project-owned resource — same platform-wide scope as
+/// `ai_settings`, hence no `project_id` anywhere on this route.
+#[derive(Deserialize)]
+struct CreateCustomSkillBody {
+    name: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    source_file: Option<String>,
+    /// Real YAML frontmatter of an imported SKILL.md, passed through as the
+    /// file wrote it. Absent for a hand-made skill.
+    #[serde(default)]
+    metadata: Option<serde_json::Value>,
+}
+
+fn validate_skill_name(name: &str) -> Result<&str, ApiError> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(ApiError::validation("skill name must not be empty"));
+    }
+    Ok(trimmed)
+}
+
+/// POST /api/v1/skills — persists a real custom skill (see
+/// `store::insert_custom_skill`'s doc comment for why its `description` is
+/// the entire durable state a skill needs). Operator+, matching the bar for
+/// every other real create-a-configuration-value action in this file
+/// (`create_ai_bug_hypothesis`-adjacent settings writes), not Admin-only
+/// like `create_project` — a skill is a generation input, not a new
+/// isolation boundary.
+async fn create_custom_skill(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiJson(body): ApiJson<CreateCustomSkillBody>,
+) -> Result<(StatusCode, Json<crate::store::CustomSkillRow>), ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    let name = validate_skill_name(&body.name)?;
+    let id = format!("custom-skill-{}", Uuid::new_v4());
+
+    state
+        .store
+        .insert_custom_skill(
+            &id,
+            name,
+            body.description.trim(),
+            body.source_file.as_deref(),
+            body.metadata.as_ref(),
+            &ctx.name,
+        )
+        .await
+        .map_err(to_500)?;
+
+    audit(&state, &ctx, "skill.create", Some(&id), Some(name), "ok").await;
+
+    let skills = state.store.list_custom_skills().await.map_err(to_500)?;
+    let created = skills
+        .into_iter()
+        .find(|s| s.id == id)
+        .ok_or_else(|| to_500("skill vanished immediately after insert"))?;
+    Ok((StatusCode::CREATED, Json(created)))
+}
+
+#[derive(Deserialize)]
+struct ResolveSkillsBody {
+    skills: Vec<crate::ai_generation::SkillInput>,
+}
+
+/// POST /api/v1/skills/resolve — returns the real instruction each supplied
+/// skill resolves to.
+///
+/// This deliberately calls `ai_generation::resolve_skill_instructions` — the
+/// exact function the generator itself uses — rather than re-deriving the
+/// text. That is the whole point: what a user reads here is provably the
+/// same string that gets embedded in the real prompt, so this view cannot
+/// drift from generation behaviour the way a second, display-only copy of
+/// the instructions would.
+///
+/// Viewer+, matching `GET /skills`: reading what a skill instructs is not a
+/// privileged action.
+async fn resolve_skills(
+    ApiJson(body): ApiJson<ResolveSkillsBody>,
+) -> Json<Vec<crate::ai_generation::ResolvedSkillInstruction>> {
+    Json(crate::ai_generation::resolve_skill_instructions(&body.skills))
+}
+
+/// GET /api/v1/skills — any authenticated key (Viewer+) may list; selecting
+/// a skill for generation is not a privileged action.
+async fn list_custom_skills_handler(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<crate::store::CustomSkillRow>>, ApiError> {
+    let rows = state.store.list_custom_skills().await.map_err(to_500)?;
+    Ok(Json(rows))
+}
+
+/// GET /api/v1/skills/files — Viewer+, matching `GET /skills`: reading the
+/// real SKILL.md files currently sitting in `skill_files::skills_dir()` is
+/// not a privileged action. No `AppState` needed — this is a direct
+/// filesystem read, not a database query.
+async fn list_file_skills_handler() -> Json<crate::skill_files::FileSkillScan> {
+    Json(crate::skill_files::scan_skills_dir())
+}
+
+/// DELETE /api/v1/skills/:id — Operator+, matching `create_custom_skill`.
+async fn delete_custom_skill_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(id): ApiPath<String>,
+) -> Result<StatusCode, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    let deleted = state.store.delete_custom_skill(&id).await.map_err(to_500)?;
+    if !deleted {
+        return Err(ApiError::not_found("skill not found"));
+    }
+    audit(&state, &ctx, "skill.delete", Some(&id), None, "ok").await;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ------------------------------------------------------------- projects
@@ -577,6 +1122,46 @@ async fn update_project_handler(
         .map_err(to_500)?
         .ok_or_else(|| ApiError::not_found("project not found"))?;
     Ok(Json(project))
+}
+
+/// DELETE /api/v1/projects/:id — API Contract §5.5 (Delete Project).
+/// Destructive operation: Admin-only. Checks project existence, verifies
+/// caller's project scope (if the admin key is project-scoped), deletes the project
+/// and its associated scoped data atomically, and records an audit log entry.
+async fn delete_project_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(id): ApiPath<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    auth::require_role(&ctx, Role::Admin)?;
+    let existing = state
+        .store
+        .get_project(id)
+        .await
+        .map_err(to_500)?
+        .ok_or_else(|| ApiError::not_found("project not found"))?;
+    auth::require_project_access(&ctx, Some(existing.id.to_string().as_str()))?;
+
+    let deleted = state
+        .store
+        .delete_project(id)
+        .await
+        .map_err(to_500)?;
+    if !deleted {
+        return Err(ApiError::not_found("project not found"));
+    }
+
+    audit(
+        &state,
+        &ctx,
+        "project.delete",
+        Some(&id.to_string()),
+        Some(&existing.name),
+        "ok",
+    )
+    .await;
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ------------------------------------------------------------- test cases
@@ -840,6 +1425,21 @@ async fn validate_test_case_scoped(
     }
 
     if !problems.is_empty() {
+        // Real lifecycle activity belongs on the live log stream alongside
+        // generation and execution — a rejected case is exactly the kind of
+        // event an operator watching the Validator page needs to see as it
+        // happens, not only after re-reading the row.
+        state
+            .log_bus
+            .emit(
+                "WARN",
+                "validation",
+                &format!("Validation failed for '{}': {}", row.title, problems.join("; ")),
+                None,
+                Some(&project_id.to_string()),
+                None,
+            )
+            .await;
         return Err(ApiError::conflict(format!(
             "structural validation failed: {}",
             problems.join("; ")
@@ -859,6 +1459,17 @@ async fn validate_test_case_scoped(
             row.status.as_db_str()
         )));
     }
+    state
+        .log_bus
+        .emit(
+            "SUCCESS",
+            "validation",
+            &format!("Structural validation passed for '{}'", row.title),
+            None,
+            Some(&project_id.to_string()),
+            None,
+        )
+        .await;
     audit(
         &state,
         &ctx,
@@ -890,6 +1501,17 @@ async fn approve_test_case_scoped(
             row.status.as_db_str()
         )));
     }
+    state
+        .log_bus
+        .emit(
+            "SUCCESS",
+            "validation",
+            &format!("Test case approved: '{}'", row.title),
+            None,
+            Some(&project_id.to_string()),
+            None,
+        )
+        .await;
     audit(
         &state,
         &ctx,
@@ -921,6 +1543,17 @@ async fn reject_test_case_scoped(
             row.status.as_db_str()
         )));
     }
+    state
+        .log_bus
+        .emit(
+            "WARN",
+            "validation",
+            &format!("Test case rejected: '{}'", row.title),
+            None,
+            Some(&project_id.to_string()),
+            None,
+        )
+        .await;
     audit(
         &state,
         &ctx,
@@ -1146,6 +1779,18 @@ async fn generate_ai_test_cases_scoped(
         })
         .collect();
 
+    state
+        .log_bus
+        .emit(
+            "INFO",
+            "generation",
+            "Generating functional test cases with AI model",
+            None,
+            Some(&project_id.to_string()),
+            None,
+        )
+        .await;
+
     let outcome =
         crate::ai_generation::generate_test_cases(&state.ai_infra, &body.requirement_text, &skills)
             .await;
@@ -1155,7 +1800,41 @@ async fn generate_ai_test_cases_scoped(
             cases,
             provider,
             model,
+            routing_score,
+            fallback_used,
+            routing_mode,
         } => {
+            // The real routing decision, emitted on its own `ai_router`
+            // source so the Orchestrator view can show *why* this route
+            // won (score, mode, whether it was the primary choice) rather
+            // than only the generation outcome. `fallback_used` is
+            // reported truthfully — a fallback is never presented as the
+            // original choice (`ai_router.rs`'s own rule).
+            state
+                .log_bus
+                .emit(
+                    if fallback_used { "WARN" } else { "INFO" },
+                    "ai_router",
+                    &format!(
+                        "Routed TestCaseGeneration to {provider}/{model} (score {routing_score:.2}, {routing_mode} mode{})",
+                        if fallback_used { ", fallback after primary choice failed" } else { "" }
+                    ),
+                    None,
+                    Some(&project_id.to_string()),
+                    None,
+                )
+                .await;
+            state
+                .log_bus
+                .emit(
+                    "SUCCESS",
+                    "generation",
+                    &format!("Generated {} test case(s) via {provider} ({model})", cases.len()),
+                    None,
+                    Some(&project_id.to_string()),
+                    None,
+                )
+                .await;
             audit(
                 &state,
                 &ctx,
@@ -1174,6 +1853,17 @@ async fn generate_ai_test_cases_scoped(
             }
         }
         crate::ai_generation::GenerationOutcome::Failed { reason } => {
+            state
+                .log_bus
+                .emit(
+                    "WARN",
+                    "generation",
+                    &format!("AI generation fallback: {reason}"),
+                    None,
+                    Some(&project_id.to_string()),
+                    None,
+                )
+                .await;
             audit(
                 &state,
                 &ctx,
@@ -1440,6 +2130,23 @@ async fn execute_api_test_scoped(
         .as_deref()
         .and_then(crate::api_testing::parse_response_body_preview);
 
+    let level = match task_state.status {
+        TaskStatus::Passed => "SUCCESS",
+        TaskStatus::Failed => "ERROR",
+        _ => "INFO",
+    };
+    state
+        .log_bus
+        .emit(
+            level,
+            "api_testing",
+            &format!("Ad-hoc API test {} {} -> {:?}", body.method.trim().to_uppercase(), body.url, task_state.status),
+            Some(&created.run_id.to_string()),
+            Some(&project_id.to_string()),
+            Some(&task_id),
+        )
+        .await;
+
     audit(
         &state,
         &ctx,
@@ -1492,6 +2199,18 @@ async fn verify_application_source_scoped(
     require_scoped_project(&state, &ctx, project_id).await?;
 
     let result = crate::app_source::verify(&body.url).await;
+    let level = if result.reachable { "SUCCESS" } else { "WARN" };
+    state
+        .log_bus
+        .emit(
+            level,
+            "app_source",
+            &format!("Target URL check for '{}': {}", body.url, result.status),
+            None,
+            Some(&project_id.to_string()),
+            None,
+        )
+        .await;
     audit(
         &state,
         &ctx,
@@ -1615,6 +2334,18 @@ async fn start_performance_test_scoped(
         .write()
         .await
         .insert(run_id, handle.clone());
+
+    state
+        .log_bus
+        .emit(
+            "INFO",
+            "performance",
+            &format!("Performance test started: {name}"),
+            Some(&run_id.to_string()),
+            Some(&project_id.to_string()),
+            None,
+        )
+        .await;
 
     // One real `reqwest::Client` built here and reused for every request
     // this whole workload makes — real HTTP keep-alive connection pooling,
@@ -1830,7 +2561,7 @@ pub(crate) async fn finalize_performance_run_as_error(
     // version left this `None`, and a durable-fallback read of an ERROR run
     // showed no reason at all even though `error_reason` was separately
     // persisted.
-    let reasons_json = serde_json::to_string(&[failure.safe_message.clone()]).ok();
+    let reasons_json = serde_json::to_string(std::slice::from_ref(&failure.safe_message)).ok();
     tracing::error!(
         "performance test run {run_id} failed with a genuine internal execution error: {}",
         failure.safe_message
@@ -2231,7 +2962,7 @@ async fn create_run_core(
         Some(pid) => Some(state.project_stream(pid).await),
         None => None,
     };
-    let record = RunRecord::new(
+    let record = RunRecord::new_with_log_bus(
         run_id,
         &plan,
         project_id.clone(),
@@ -2239,6 +2970,7 @@ async fn create_run_core(
         initial_state,
         policy_notes.clone(),
         project_stream,
+        Some(state.log_bus.clone()),
     );
     state.runs.write().await.insert(run_id, record.clone());
 
@@ -2331,7 +3063,7 @@ async fn rehydrate_run_record(
         Some(pid) => Some(state.project_stream(pid).await),
         None => None,
     };
-    let record = RunRecord::new(
+    let record = RunRecord::new_with_log_bus(
         run_id,
         &plan,
         project_id,
@@ -2339,6 +3071,7 @@ async fn rehydrate_run_record(
         run_state,
         policy_notes,
         project_stream,
+        Some(state.log_bus.clone()),
     );
     state.runs.write().await.insert(run_id, record.clone());
     Ok(Some(record))
@@ -3556,6 +4289,176 @@ async fn drive_socket(mut socket: WebSocket, mut rx: broadcast::Receiver<RunEven
                             })))
                             .await;
                         break;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            incoming = socket.recv() => {
+                match incoming {
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Err(_)) => break,
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------------- orchestrator logs
+//
+// Real-time, centralized structured log history and WebSocket streaming for
+// dashboard live activity. Supports global and project-scoped logs with bounded
+// memory and client auto-reconnection.
+
+#[derive(Debug, Deserialize)]
+pub struct ListLogsQuery {
+    pub limit: Option<usize>,
+    pub project_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LogsWsQuery {
+    pub key: Option<String>,
+    pub project_id: Option<String>,
+}
+
+/// GET /api/v1/logs — List recent orchestrator log events (authenticated, role >= Viewer).
+async fn list_logs_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiQuery(q): ApiQuery<ListLogsQuery>,
+) -> Result<Json<Vec<OrchestratorLogEntry>>, ApiError> {
+    auth::require_role(&ctx, Role::Viewer)?;
+
+    let effective_project = match (&ctx.project_id, &q.project_id) {
+        (Some(scoped), Some(requested)) => {
+            if scoped != requested {
+                return Err(ApiError::forbidden("resource belongs to a different project"));
+            }
+            Some(scoped.as_str())
+        }
+        (Some(scoped), None) => Some(scoped.as_str()),
+        (None, Some(requested)) => Some(requested.as_str()),
+        (None, None) => None,
+    };
+
+    let limit = q.limit.unwrap_or(100).min(300);
+    let logs = state.log_bus.recent_logs(effective_project, limit).await;
+    Ok(Json(logs))
+}
+
+/// GET /api/v1/projects/:project_id/logs — List recent orchestrator log events for a project.
+async fn list_project_logs_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiQuery(q): ApiQuery<ListLogsQuery>,
+) -> Result<Json<Vec<OrchestratorLogEntry>>, ApiError> {
+    auth::require_role(&ctx, Role::Viewer)?;
+    auth::require_project_access(&ctx, Some(project_id.to_string().as_str()))?;
+
+    let limit = q.limit.unwrap_or(100).min(300);
+    let logs = state
+        .log_bus
+        .recent_logs(Some(&project_id.to_string()), limit)
+        .await;
+    Ok(Json(logs))
+}
+
+/// GET /api/v1/logs/ws?key=...[&project_id=...] — Real-time WebSocket log stream.
+async fn logs_ws_handler(
+    State(state): State<AppState>,
+    Query(q): Query<LogsWsQuery>,
+    ws: WebSocketUpgrade,
+) -> Response {
+    let ctx = match q.key.as_deref() {
+        Some(key) => match state.store.find_api_key_by_hash(&auth::hash_key(key)).await {
+            Ok(Some(row)) => AuthContext {
+                key_id: row.id,
+                name: row.name,
+                role: Role::parse(&row.role),
+                project_id: row.project_id,
+            },
+            _ => return (StatusCode::UNAUTHORIZED, "invalid or revoked API key").into_response(),
+        },
+        None => return (StatusCode::UNAUTHORIZED, "missing ?key= query parameter").into_response(),
+    };
+
+    let effective_project = match (&ctx.project_id, &q.project_id) {
+        (Some(scoped), Some(requested)) => {
+            if scoped != requested {
+                return (StatusCode::FORBIDDEN, "resource belongs to a different project").into_response();
+            }
+            Some(scoped.clone())
+        }
+        (Some(scoped), None) => Some(scoped.clone()),
+        (None, Some(requested)) => Some(requested.clone()),
+        (None, None) => None,
+    };
+
+    let rx = state.log_bus.subscribe();
+    ws.on_upgrade(move |socket| drive_log_socket(socket, rx, effective_project))
+}
+
+/// GET /api/v1/projects/:project_id/logs/ws?key=... — Real-time project-scoped WebSocket log stream.
+async fn project_logs_ws_handler(
+    State(state): State<AppState>,
+    Path(project_id): Path<Uuid>,
+    Query(q): Query<WsAuthQuery>,
+    ws: WebSocketUpgrade,
+) -> Response {
+    let ctx = match q.key.as_deref() {
+        Some(key) => match state.store.find_api_key_by_hash(&auth::hash_key(key)).await {
+            Ok(Some(row)) => AuthContext {
+                key_id: row.id,
+                name: row.name,
+                role: Role::parse(&row.role),
+                project_id: row.project_id,
+            },
+            _ => return (StatusCode::UNAUTHORIZED, "invalid or revoked API key").into_response(),
+        },
+        None => return (StatusCode::UNAUTHORIZED, "missing ?key= query parameter").into_response(),
+    };
+
+    if auth::require_project_access(&ctx, Some(project_id.to_string().as_str())).is_err() {
+        return (
+            StatusCode::FORBIDDEN,
+            "resource belongs to a different project",
+        )
+            .into_response();
+    }
+
+    let rx = state.log_bus.subscribe();
+    let pid_str = project_id.to_string();
+    ws.on_upgrade(move |socket| drive_log_socket(socket, rx, Some(pid_str)))
+}
+
+/// Consumption loop for the real-time orchestrator log WebSocket stream.
+async fn drive_log_socket(
+    mut socket: WebSocket,
+    mut rx: broadcast::Receiver<OrchestratorLogEntry>,
+    filter_project_id: Option<String>,
+) {
+    loop {
+        tokio::select! {
+            entry = rx.recv() => {
+                match entry {
+                    Ok(log) => {
+                        let should_send = match (&filter_project_id, &log.project_id) {
+                            (Some(target_pid), Some(log_pid)) => target_pid == log_pid,
+                            (Some(_), None) => true, // Global logs are visible
+                            (None, _) => true,
+                        };
+                        if should_send {
+                            if let Ok(json) = serde_json::to_string(&log) {
+                                if socket.send(Message::Text(json)).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        continue;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }

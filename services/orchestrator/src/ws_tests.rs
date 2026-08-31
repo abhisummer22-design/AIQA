@@ -133,6 +133,7 @@ async fn create_run(
 /// the upgrade actually succeeded (101 Switching Protocols); `Err` carries
 /// the real pre-upgrade HTTP status tungstenite captured, for asserting the
 /// rejection cases.
+#[allow(clippy::result_large_err)]
 async fn try_connect_project_stream(
     base: &str,
     project: Uuid,
@@ -470,6 +471,53 @@ async fn be14_lagging_subscriber_is_closed_with_distinct_code_not_silently_skipp
             )
         }
         other => panic!("expected a Close(4001) frame after lagging, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn orchestrator_logs_ws_receives_live_emitted_logs() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "Log WS Test").await;
+    let key = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let app = crate::api::router(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let url = format!("ws://{addr}/api/v1/projects/{project}/logs/ws?key={key}");
+    let (mut ws, _res) = tokio_tungstenite::connect_async(&url).await.expect("connect");
+
+    // Emit a log to log_bus
+    state
+        .log_bus
+        .emit(
+            "INFO",
+            "ai_router",
+            "Provider discovery started: testing qwen3:14b",
+            None,
+            Some(&project.to_string()),
+            None,
+        )
+        .await;
+
+    let msg = tokio::time::timeout(Duration::from_secs(5), ws.next())
+        .await
+        .expect("timeout")
+        .expect("stream item")
+        .expect("ws message");
+
+    match msg {
+        WsMessage::Text(text) => {
+            let log: serde_json::Value = serde_json::from_str(&text).expect("json parse");
+            assert_eq!(log["level"], "INFO");
+            assert_eq!(log["source"], "ai_router");
+            assert_eq!(log["message"], "Provider discovery started: testing qwen3:14b");
+            assert_eq!(log["project_id"], project.to_string());
+        }
+        other => panic!("expected WsMessage::Text, got {other:?}"),
     }
 }
 

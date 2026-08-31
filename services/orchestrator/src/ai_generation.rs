@@ -248,6 +248,17 @@ pub enum GenerationOutcome {
         cases: Vec<GeneratedTestCaseDraft>,
         provider: String,
         model: String,
+        /// The real routing heuristic score that selected this provider/
+        /// model (`ai_router.rs::score_model`) — carried through rather
+        /// than discarded so the orchestrator view can show *why* this
+        /// route won, not just which one did.
+        routing_score: f64,
+        /// True when the primary routing choice actually failed and a
+        /// real fallback candidate produced this output instead. Never
+        /// relabeled as the original choice (`ai_router.rs`'s own rule).
+        fallback_used: bool,
+        /// `"AUTO"` or `"MANUAL"` — the real routing mode in force.
+        routing_mode: String,
     },
     Failed {
         reason: String,
@@ -480,6 +491,12 @@ fn validate_structured_output(
         cases: deduped,
         provider: result.provider.clone(),
         model: result.model.clone(),
+        routing_score: result.routing_score,
+        fallback_used: result.fallback_used,
+        routing_mode: match result.routing_mode {
+            crate::ai_router::RoutingMode::Manual => "MANUAL".to_string(),
+            crate::ai_router::RoutingMode::Auto => "AUTO".to_string(),
+        },
     })
 }
 
@@ -755,6 +772,7 @@ mod tests {
                 cases,
                 provider,
                 model,
+                ..
             } => {
                 assert_eq!(cases.len(), 1);
                 assert_eq!(provider, "mock");
@@ -850,6 +868,104 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn integration_returns_failed_outcome_on_empty_object_payload() {
+        let infra = infra_with_executor_response("{}");
+        let outcome =
+            generate_test_cases(&infra, "Users log in with email and password.", &[]).await;
+        match outcome {
+            GenerationOutcome::Failed { reason } => {
+                assert!(
+                    reason.contains("missing field `test_cases`")
+                        || reason.contains("test_cases")
+                        || reason.contains("invalid structured output"),
+                    "empty object {{}} must produce a truthful failed outcome: {reason}"
+                );
+            }
+            GenerationOutcome::Ai { .. } => {
+                panic!("empty object {{}} must NEVER produce a successful Ai outcome");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn integration_valid_structured_qwen_response_produces_generation_outcome_ai() {
+        let qwen_response = r#"{
+            "test_cases": [
+                {
+                    "title": "User logs in successfully with valid email and password",
+                    "category": "Functional Testing",
+                    "skill_id": "skill-functional-testing",
+                    "preconditions": [
+                        "User has an account with a registered email and password"
+                    ],
+                    "steps": [
+                        {
+                            "action": "Enter a valid email and password in the login form and submit",
+                            "expected_result": "User is redirected to the dashboard"
+                        }
+                    ],
+                    "expected_result": "User is redirected to the dashboard",
+                    "priority": "CRITICAL",
+                    "severity": "MAJOR",
+                    "evidence": "evidenced",
+                    "source_reference": "On success they reach the dashboard."
+                },
+                {
+                    "title": "User attempts to log in with invalid email and password",
+                    "category": "Functional Testing",
+                    "skill_id": "skill-functional-testing",
+                    "preconditions": [
+                        "User has an account with a registered email and password"
+                    ],
+                    "steps": [
+                        {
+                            "action": "Enter an invalid email and password in the login form and submit",
+                            "expected_result": "User receives an error message indicating invalid credentials"
+                        }
+                    ],
+                    "expected_result": "User receives an error message indicating invalid credentials",
+                    "priority": "HIGH",
+                    "severity": "MINOR",
+                    "evidence": "inferred",
+                    "source_reference": null
+                }
+            ]
+        }"#;
+        let infra = infra_with_executor_response(qwen_response);
+        let outcome = generate_test_cases(
+            &infra,
+            "Users log in with email and password. On success they reach the dashboard.",
+            &[skill("f", "Functional Testing", "")],
+        )
+        .await;
+
+        match outcome {
+            GenerationOutcome::Ai {
+                cases,
+                provider,
+                model,
+                ..
+            } => {
+                assert_eq!(cases.len(), 2);
+                assert_eq!(provider, "mock");
+                assert_eq!(model, "mock-model");
+                assert_eq!(cases[0].evidence, EvidenceKind::Evidenced);
+                assert_eq!(
+                    cases[0].source_reference.as_deref(),
+                    Some("On success they reach the dashboard.")
+                );
+                assert_eq!(cases[1].evidence, EvidenceKind::Inferred);
+                assert_eq!(cases[1].source_reference, None);
+            }
+            GenerationOutcome::Failed { reason } => {
+                panic!(
+                    "expected Ai outcome for valid structured Qwen response, got Failed: {reason}"
+                )
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn integration_combines_multiple_skills_into_combined_non_duplicated_coverage() {
         let response = r#"{"test_cases":[
             {"title":"Valid login succeeds","category":"Functional","skill_id":"skill-functional-testing",
@@ -914,6 +1030,7 @@ mod tests {
                 cases,
                 provider,
                 model,
+                ..
             } => {
                 println!("FUNCTIONAL-ONLY via {provider}/{model}: {cases:#?}");
                 cases
@@ -927,6 +1044,7 @@ mod tests {
                 cases,
                 provider,
                 model,
+                ..
             } => {
                 println!("SECURITY-ONLY via {provider}/{model}: {cases:#?}");
                 cases

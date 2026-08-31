@@ -724,6 +724,7 @@ fn spawn_worker_task(
     ));
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_load(
     client: reqwest::Client,
     plan: Arc<ExecutionPlan>,
@@ -785,6 +786,7 @@ async fn run_volume(
     let _ = stop_new_rx.changed().await;
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_stress(
     client: reqwest::Client,
     plan: Arc<ExecutionPlan>,
@@ -843,6 +845,7 @@ async fn run_stress(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_spike(
     client: reqwest::Client,
     plan: Arc<ExecutionPlan>,

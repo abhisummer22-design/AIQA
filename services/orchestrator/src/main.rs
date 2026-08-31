@@ -55,6 +55,14 @@ async fn main() {
         tracing::warn!("minted bootstrap admin API key (printed to stderr once)");
     }
 
+    match aiqa_orchestrator::skill_files::ensure_skills_dir() {
+        Ok(dir) => tracing::info!(
+            "real filesystem skills folder ready at {} — drop SKILL.md files there to use them in generation",
+            dir.display()
+        ),
+        Err(e) => tracing::error!("could not create the filesystem skills folder: {e}"),
+    }
+
     match recover_incomplete_runs(&store).await {
         Ok(0) => {}
         Ok(n) => {

@@ -18,6 +18,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      # Both sides of this merge fixed the same Gitleaks range problem:
+      # `fetch-depth: 0` (master) gives full history, and this extra fetch
+      # (Demo) makes the base branch's refs available too, which a
+      # pull_request event needs to resolve the range against its base.
+      # Keeping both — they are complementary, not alternatives.
+      - name: Fetch all branches
+        run: git fetch --all --prune || true
       - uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

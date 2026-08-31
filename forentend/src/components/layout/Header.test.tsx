@@ -90,12 +90,16 @@ function renderApp(initialEntries: string[] = ['/execution']) {
 }
 
 async function verifyKey(): Promise<void> {
-  await act(async () => {
-    screen.getByText('Verify Connection').closest('button')!.click();
-  });
+  const btn = screen.queryByText('Verify Connection')?.closest('button');
+  if (btn) {
+    await act(async () => {
+      btn.click();
+    });
+  }
 }
 
 async function openAndSelectProject(project: Project): Promise<void> {
+  await waitFor(() => expect(document.getElementById('project-selector-button')).toBeTruthy());
   await act(async () => {
     document.getElementById('project-selector-button')!.click();
   });
@@ -282,5 +286,72 @@ describe('Header — FE-24 real recent-activity notification bell', () => {
     await openBell();
     const panel = document.getElementById('recent-activity-panel')!;
     expect(within(panel).getAllByText('duplicate-guarded event').length).toBe(1);
+  });
+});
+
+describe('Header — Target Environments selector (DEMO, UAT, LIVE only)', () => {
+  it('renders DEMO, UAT, LIVE options and excludes STAGING and EPHEMERAL', async () => {
+    localStorage.setItem('aiqa.orchestrator.apiKey', RAW_KEY);
+    mockBackend({ projects: [PROJECT_A] });
+    renderApp();
+    await verifyKey();
+
+    const envButton = document.getElementById('env-selector-button')!;
+    expect(envButton).toBeTruthy();
+    // Default selected environment is DEMO
+    expect(envButton.textContent).toContain('DEMO');
+
+    // Open dropdown
+    await act(async () => {
+      envButton.click();
+    });
+
+    const menu = envButton.parentElement!;
+    // Exactly DEMO, UAT, LIVE are present
+    expect(within(menu).getByText('Target Environments')).toBeTruthy();
+    expect(within(menu).getAllByText('DEMO').length).toBeGreaterThan(0);
+    expect(within(menu).getByText('UAT')).toBeTruthy();
+    expect(within(menu).getByText('LIVE')).toBeTruthy();
+
+    // STAGING and EPHEMERAL are not present
+    expect(within(menu).queryByText('Staging Cluster')).toBeNull();
+    expect(within(menu).queryByText('Production Tier')).toBeNull();
+    expect(within(menu).queryByText('UAT Acceptance')).toBeNull();
+    expect(within(menu).queryByText('Ephemeral PR-1482')).toBeNull();
+    expect(within(menu).queryByText('STAGING')).toBeNull();
+    expect(within(menu).queryByText('EPHEMERAL')).toBeNull();
+  });
+
+  it('switching environment updates the selector label and badge', async () => {
+    localStorage.setItem('aiqa.orchestrator.apiKey', RAW_KEY);
+    mockBackend({ projects: [PROJECT_A] });
+    renderApp();
+    await verifyKey();
+
+    const envButton = document.getElementById('env-selector-button')!;
+    expect(envButton.textContent).toContain('DEMO');
+
+    // Open dropdown and select UAT
+    await act(async () => {
+      envButton.click();
+    });
+    const menu = envButton.parentElement!;
+    await act(async () => {
+      within(menu).getByText('UAT').click();
+    });
+
+    expect(envButton.textContent).toContain('UAT');
+    expect(envButton.textContent).toContain('v4.18');
+
+    // Open dropdown and select LIVE
+    await act(async () => {
+      envButton.click();
+    });
+    await act(async () => {
+      within(menu).getByText('LIVE').click();
+    });
+
+    expect(envButton.textContent).toContain('LIVE');
+    expect(envButton.textContent).toContain('US-East');
   });
 });

@@ -208,12 +208,16 @@ function renderApp(initialEntries: string[] = ['/reports']) {
 }
 
 async function verifyKey(): Promise<void> {
-  await act(async () => {
-    screen.getByText('Verify Connection').closest('button')!.click();
-  });
+  const btn = screen.queryByText('Verify Connection')?.closest('button');
+  if (btn) {
+    await act(async () => {
+      btn.click();
+    });
+  }
 }
 
 async function openAndSelectProject(project: Project): Promise<void> {
+  await waitFor(() => expect(document.getElementById('project-selector-button')).toBeTruthy());
   await act(async () => {
     document.getElementById('project-selector-button')!.click();
   });
@@ -447,7 +451,7 @@ describe('ReportsPage (FE-11 real Findings)', () => {
     await openAndSelectProject(PROJECT_A);
 
     await waitFor(() => expect(screen.getAllByText(PROJECT_A.name).length).toBeGreaterThan(0));
-    expect(screen.getByText('Total Test Cases')).toBeTruthy();
+    expect(screen.getByText('Executed Tests')).toBeTruthy();
   });
 
   it('Test Generator remains unregressed with ReportsPage present in the route table', async () => {
@@ -1035,7 +1039,7 @@ describe('ReportsPage — ACC-016 report-builder pure functions (unit)', () => {
       generated_at: '2026-08-20T00:00:00Z',
     };
     const rows = buildTestReportRows(dashboard, kpis);
-    expect(rows).toContainEqual(['Total Tests', 23]);
+    expect(rows).toContainEqual(['Executed Tests', 23]);
     expect(rows).toContainEqual(['Passed', 20]);
     expect(rows).toContainEqual(['Failed', 3]);
     expect(rows).toContainEqual(['Execution Reliability', '87.0%']);
@@ -1246,7 +1250,7 @@ describe('ReportsPage — ACC-016 real PDF/Excel report export', () => {
     // placeholder — asserting the real zero values, not a fabricated
     // non-zero number, is what actually proves this case is handled
     // honestly.
-    expect(raw).toContain('Total Tests 0');
+    expect(raw).toContain('Executed Tests 0');
     expect(raw).toContain('Passed 0');
     expect(raw).toContain('Failed 0');
     // Real zero reconciliation, not a fabricated non-zero placeholder.
@@ -1261,7 +1265,7 @@ describe('ReportsPage — ACC-016 real PDF/Excel report export', () => {
     const wb = xlsxWriteFileCalls[0][0] as XLSX.WorkBook;
     expect(XLSX.utils.sheet_to_csv(wb.Sheets['Bug Report'])).toContain('No findings recorded for this project.');
     const testCsv = XLSX.utils.sheet_to_csv(wb.Sheets['Test Report']);
-    expect(testCsv).toContain('Total Tests,0');
+    expect(testCsv).toContain('Executed Tests,0');
     expect(testCsv).toContain('Passed,0');
   });
 
