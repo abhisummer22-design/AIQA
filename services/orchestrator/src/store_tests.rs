@@ -8,7 +8,10 @@
 //! Kept in its own file rather than inline in `store.rs` purely for size:
 //! `store.rs` is already the largest module in the crate.
 
-use crate::domain::{RunPlan, RunState, SimOutcome, SimSpec, TaskDef, TaskStatus};
+use crate::domain::{
+    CreateTestCaseRequest, CreateTestPlanRequest, CreateTestSuiteRequest, RunPlan, RunState,
+    SimOutcome, SimSpec, TaskDef, TaskStatus, TestStep,
+};
 use crate::store::Store;
 use uuid::Uuid;
 
@@ -545,10 +548,384 @@ async fn delete_project_removes_project_and_all_scoped_records_atomically() {
     assert!(store.get_project(id).await.expect("get").is_some());
 
     let deleted = store.delete_project(id).await.expect("delete_project");
-    assert!(deleted, "delete_project must return true for existing project");
+    assert!(
+        deleted,
+        "delete_project must return true for existing project"
+    );
 
     assert!(store.get_project(id).await.expect("get").is_none());
 
-    let deleted_again = store.delete_project(id).await.expect("delete_project again");
-    assert!(!deleted_again, "delete_project must return false when project is absent");
+    let deleted_again = store
+        .delete_project(id)
+        .await
+        .expect("delete_project again");
+    assert!(
+        !deleted_again,
+        "delete_project must return false when project is absent"
+    );
+}
+
+// ======================================================================
+// Phase 5 (Output maturity) — plan -> suite -> case hierarchy.
+// ======================================================================
+
+fn minimal_case(title: &str, suite_id: Option<Uuid>) -> CreateTestCaseRequest {
+    CreateTestCaseRequest {
+        title: title.to_string(),
+        description: "description".to_string(),
+        category: "Functional".to_string(),
+        priority: "MEDIUM".to_string(),
+        severity: "MINOR".to_string(),
+        preconditions: vec![],
+        steps: vec![TestStep {
+            step_number: 1,
+            action: "Do X".to_string(),
+            expected_result: "Y happens".to_string(),
+        }],
+        expected_result: Some("Y happens".to_string()),
+        assertions: vec![],
+        test_data: None,
+        source_document: None,
+        requirement_reference: None,
+        source_requirement: None,
+        traceability: None,
+        risk_factor: None,
+        tags: vec![],
+        suite_id,
+    }
+}
+
+fn minimal_plan(name: &str) -> CreateTestPlanRequest {
+    CreateTestPlanRequest {
+        name: name.to_string(),
+        description: None,
+        entry_criteria: None,
+        exit_criteria: None,
+    }
+}
+
+fn minimal_suite(name: &str, plan_id: Option<Uuid>) -> CreateTestSuiteRequest {
+    CreateTestSuiteRequest {
+        name: name.to_string(),
+        description: None,
+        plan_id,
+    }
+}
+
+/// The real, full hierarchy in one round trip: a plan with two suites (one
+/// assigned at creation, one reassigned afterward via
+/// `set_test_suite_plan`), and three cases split across them (two assigned
+/// at creation, one reassigned afterward via `set_test_case_suite`) — real,
+/// query-time-computed `suite_count`/`case_count` must reflect exactly
+/// this shape, and both `list_test_suites`/`list_test_cases`' own filters
+/// must return exactly the right subset.
+#[tokio::test]
+async fn test_plan_suite_case_hierarchy_round_trip_with_real_counts() {
+    let (store, _dir) = temp_store().await;
+    let plan_id = store
+        .insert_test_plan("proj-1", &minimal_plan("Release 1.0"), None)
+        .await
+        .expect("insert plan");
+
+    let suite_a = store
+        .insert_test_suite("proj-1", &minimal_suite("Auth", Some(plan_id)), None)
+        .await
+        .expect("insert suite_a");
+    let suite_b = store
+        .insert_test_suite("proj-1", &minimal_suite("Billing", None), None)
+        .await
+        .expect("insert suite_b");
+    let reassigned = store
+        .set_test_suite_plan(suite_b, Some(plan_id))
+        .await
+        .expect("set_test_suite_plan");
+    assert!(reassigned);
+
+    let case_1 = store
+        .insert_test_case(
+            "proj-1",
+            &minimal_case("Login succeeds", Some(suite_a)),
+            None,
+        )
+        .await
+        .expect("insert case_1");
+    let case_2 = store
+        .insert_test_case(
+            "proj-1",
+            &minimal_case("Login rejects bad password", Some(suite_a)),
+            None,
+        )
+        .await
+        .expect("insert case_2");
+    let case_3 = store
+        .insert_test_case("proj-1", &minimal_case("Refund processed", None), None)
+        .await
+        .expect("insert case_3");
+    let case_3_assigned = store
+        .set_test_case_suite(case_3, Some(suite_b))
+        .await
+        .expect("set_test_case_suite");
+    assert!(case_3_assigned);
+
+    let plan = store
+        .get_test_plan(plan_id)
+        .await
+        .expect("get_test_plan")
+        .expect("plan exists");
+    assert_eq!(plan.suite_count, 2, "plan={plan:?}");
+    assert_eq!(plan.status, crate::domain::TestPlanStatus::Draft);
+
+    let suite_a_row = store
+        .get_test_suite(suite_a)
+        .await
+        .expect("get_test_suite")
+        .expect("suite_a exists");
+    assert_eq!(suite_a_row.case_count, 2, "suite_a={suite_a_row:?}");
+    let suite_b_row = store
+        .get_test_suite(suite_b)
+        .await
+        .expect("get_test_suite")
+        .expect("suite_b exists");
+    assert_eq!(suite_b_row.case_count, 1, "suite_b={suite_b_row:?}");
+    assert_eq!(suite_b_row.plan_id, Some(plan_id));
+
+    let suites_in_plan = store
+        .list_test_suites("proj-1", Some(plan_id))
+        .await
+        .expect("list_test_suites");
+    assert_eq!(suites_in_plan.len(), 2);
+
+    let cases_in_suite_a = store
+        .list_test_cases("proj-1", None, Some(suite_a))
+        .await
+        .expect("list_test_cases");
+    let ids: Vec<Uuid> = cases_in_suite_a.iter().map(|c| c.id).collect();
+    assert_eq!(ids.len(), 2);
+    assert!(ids.contains(&case_1));
+    assert!(ids.contains(&case_2));
+    assert!(!ids.contains(&case_3));
+}
+
+#[tokio::test]
+async fn deleting_a_plan_detaches_its_suites_rather_than_deleting_them() {
+    let (store, _dir) = temp_store().await;
+    let plan_id = store
+        .insert_test_plan("proj-1", &minimal_plan("Doomed Plan"), None)
+        .await
+        .expect("insert plan");
+    let suite_id = store
+        .insert_test_suite("proj-1", &minimal_suite("Survives", Some(plan_id)), None)
+        .await
+        .expect("insert suite");
+
+    let deleted = store
+        .delete_test_plan(plan_id)
+        .await
+        .expect("delete_test_plan");
+    assert!(deleted);
+
+    assert!(
+        store.get_test_plan(plan_id).await.expect("get").is_none(),
+        "the plan itself must be gone"
+    );
+    let suite = store
+        .get_test_suite(suite_id)
+        .await
+        .expect("get_test_suite")
+        .expect(
+            "the suite must still exist — a plan deletion detaches, it does not cascade-delete",
+        );
+    assert_eq!(
+        suite.plan_id, None,
+        "the surviving suite must be detached, not left pointing at a deleted plan"
+    );
+}
+
+#[tokio::test]
+async fn deleting_a_suite_detaches_its_cases_rather_than_deleting_them() {
+    let (store, _dir) = temp_store().await;
+    let suite_id = store
+        .insert_test_suite("proj-1", &minimal_suite("Doomed Suite", None), None)
+        .await
+        .expect("insert suite");
+    let case_id = store
+        .insert_test_case("proj-1", &minimal_case("Survives", Some(suite_id)), None)
+        .await
+        .expect("insert case");
+
+    let deleted = store
+        .delete_test_suite(suite_id)
+        .await
+        .expect("delete_test_suite");
+    assert!(deleted);
+
+    assert!(
+        store.get_test_suite(suite_id).await.expect("get").is_none(),
+        "the suite itself must be gone"
+    );
+    let case = store
+        .get_test_case(case_id)
+        .await
+        .expect("get_test_case")
+        .expect(
+            "the case must still exist — a suite deletion detaches, it does not cascade-delete",
+        );
+    assert_eq!(
+        case.suite_id, None,
+        "the surviving case must be detached, not left pointing at a deleted suite"
+    );
+}
+
+#[tokio::test]
+async fn set_test_case_suite_reassigns_and_clears() {
+    let (store, _dir) = temp_store().await;
+    let suite_1 = store
+        .insert_test_suite("proj-1", &minimal_suite("Suite 1", None), None)
+        .await
+        .expect("insert suite_1");
+    let suite_2 = store
+        .insert_test_suite("proj-1", &minimal_suite("Suite 2", None), None)
+        .await
+        .expect("insert suite_2");
+    let case_id = store
+        .insert_test_case("proj-1", &minimal_case("Movable case", Some(suite_1)), None)
+        .await
+        .expect("insert case");
+
+    assert_eq!(
+        store
+            .get_test_case(case_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .suite_id,
+        Some(suite_1)
+    );
+
+    store
+        .set_test_case_suite(case_id, Some(suite_2))
+        .await
+        .expect("reassign");
+    assert_eq!(
+        store
+            .get_test_case(case_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .suite_id,
+        Some(suite_2),
+        "reassignment must genuinely move the case, not just add a second link"
+    );
+    assert_eq!(
+        store
+            .get_test_suite(suite_1)
+            .await
+            .unwrap()
+            .unwrap()
+            .case_count,
+        0,
+        "suite_1 must no longer count a case it no longer has"
+    );
+
+    store
+        .set_test_case_suite(case_id, None)
+        .await
+        .expect("clear");
+    assert_eq!(
+        store
+            .get_test_case(case_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .suite_id,
+        None,
+        "explicit None must genuinely clear the assignment"
+    );
+}
+
+#[tokio::test]
+async fn test_plan_update_is_a_genuine_partial_update_including_status() {
+    let (store, _dir) = temp_store().await;
+    let plan_id = store
+        .insert_test_plan("proj-1", &minimal_plan("Original Name"), None)
+        .await
+        .expect("insert plan");
+
+    store
+        .update_test_plan(plan_id, None, None, Some("ACTIVE"), None, None)
+        .await
+        .expect("update status only");
+    let after_status = store.get_test_plan(plan_id).await.unwrap().unwrap();
+    assert_eq!(after_status.status, crate::domain::TestPlanStatus::Active);
+    assert_eq!(
+        after_status.name, "Original Name",
+        "an omitted field must not be clobbered"
+    );
+
+    store
+        .update_test_plan(plan_id, Some("Renamed"), None, None, None, None)
+        .await
+        .expect("update name only");
+    let after_name = store.get_test_plan(plan_id).await.unwrap().unwrap();
+    assert_eq!(after_name.name, "Renamed");
+    assert_eq!(
+        after_name.status,
+        crate::domain::TestPlanStatus::Active,
+        "a prior partial update must not be reverted by a later one"
+    );
+}
+
+#[tokio::test]
+async fn test_plans_and_suites_are_isolated_across_projects() {
+    let (store, _dir) = temp_store().await;
+    store
+        .insert_test_plan("proj-1", &minimal_plan("Proj 1 Plan"), None)
+        .await
+        .expect("insert");
+    store
+        .insert_test_plan("proj-2", &minimal_plan("Proj 2 Plan"), None)
+        .await
+        .expect("insert");
+    store
+        .insert_test_suite("proj-1", &minimal_suite("Proj 1 Suite", None), None)
+        .await
+        .expect("insert");
+
+    let proj_1_plans = store.list_test_plans("proj-1").await.expect("list");
+    assert_eq!(proj_1_plans.len(), 1);
+    assert_eq!(proj_1_plans[0].name, "Proj 1 Plan");
+
+    let proj_2_suites = store.list_test_suites("proj-2", None).await.expect("list");
+    assert!(proj_2_suites.is_empty());
+}
+
+#[tokio::test]
+async fn deleting_a_project_removes_its_test_plans_and_suites_too() {
+    let (store, _dir) = temp_store().await;
+    let project_id = Uuid::new_v4();
+    store
+        .insert_project(project_id, "Doomed Project", None)
+        .await
+        .expect("insert project");
+    let pid = project_id.to_string();
+    store
+        .insert_test_plan(&pid, &minimal_plan("Plan"), None)
+        .await
+        .expect("insert plan");
+    store
+        .insert_test_suite(&pid, &minimal_suite("Suite", None), None)
+        .await
+        .expect("insert suite");
+
+    store
+        .delete_project(project_id)
+        .await
+        .expect("delete_project");
+
+    assert!(store.list_test_plans(&pid).await.expect("list").is_empty());
+    assert!(store
+        .list_test_suites(&pid, None)
+        .await
+        .expect("list")
+        .is_empty());
 }

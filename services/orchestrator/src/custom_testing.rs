@@ -179,11 +179,16 @@ async fn analyze_requirement(
 /// The real, single entry point. Reuses `ai_generation::generate_test_cases`
 /// unmodified for the case-generation half — see this module's own doc
 /// comment for why that is a deliberate design choice, not an oversight.
+/// `feedback` (the same real `FeedbackContext` `generate_ai_test_cases_scoped`
+/// loads via `intelligence::Intelligence::load_feedback_context`) is passed
+/// straight through, unmodified, to that shared function — no second
+/// feedback-loading path invented for this module.
 pub async fn run(
     infra: &AiInfrastructure,
     requirement_text: &str,
     scope: Option<&str>,
     skills: &[SkillInput],
+    feedback: &ai_generation::FeedbackContext,
 ) -> CustomTestingOutcome {
     let (analysis, analysis_provider, analysis_model) =
         match analyze_requirement(infra, requirement_text, scope, skills).await {
@@ -197,7 +202,7 @@ pub async fn run(
         };
 
     let augmented = augmented_requirement_text(requirement_text, scope);
-    match ai_generation::generate_test_cases(infra, &augmented, skills).await {
+    match ai_generation::generate_test_cases(infra, &augmented, skills, feedback).await {
         GenerationOutcome::Ai {
             cases,
             provider,
@@ -313,6 +318,7 @@ mod tests {
             "Test login lockout after repeated invalid password attempts.",
             Some("Authentication"),
             &[skill("s", "Security Testing", "")],
+            &ai_generation::FeedbackContext::default(),
         )
         .await;
         match outcome {
@@ -350,7 +356,14 @@ mod tests {
         // The cases-only provider is scripted with a malformed response —
         // analysis succeeds for real, case generation then genuinely fails.
         let infra = two_call_infra(VALID_ANALYSIS, "not json at all");
-        let outcome = run(&infra, "Test login lockout.", None, &[]).await;
+        let outcome = run(
+            &infra,
+            "Test login lockout.",
+            None,
+            &[],
+            &ai_generation::FeedbackContext::default(),
+        )
+        .await;
         match outcome {
             CustomTestingOutcome::Failed { reason, analysis } => {
                 assert!(analysis.is_some(), "a successfully-produced analysis must not be discarded just because case generation failed afterward");
@@ -377,6 +390,7 @@ mod tests {
             "Test login lockout after repeated invalid password attempts.",
             Some("Authentication"),
             &[],
+            &ai_generation::FeedbackContext::default(),
         )
         .await;
         match outcome {
@@ -404,7 +418,14 @@ mod tests {
             )))],
             executors,
         );
-        let outcome = run(&infra, "Anything.", None, &[]).await;
+        let outcome = run(
+            &infra,
+            "Anything.",
+            None,
+            &[],
+            &ai_generation::FeedbackContext::default(),
+        )
+        .await;
         match outcome {
             CustomTestingOutcome::Failed { reason, analysis } => {
                 assert!(analysis.is_none());
@@ -427,7 +448,14 @@ mod tests {
             )))],
             executors,
         );
-        let outcome = run(&infra, "Anything.", None, &[]).await;
+        let outcome = run(
+            &infra,
+            "Anything.",
+            None,
+            &[],
+            &ai_generation::FeedbackContext::default(),
+        )
+        .await;
         match outcome {
             CustomTestingOutcome::Failed { reason, analysis } => {
                 assert!(analysis.is_none());

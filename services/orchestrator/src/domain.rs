@@ -386,6 +386,129 @@ pub struct CreateTestCaseRequest {
     pub risk_factor: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Phase 5 (Output maturity) — a case may be created directly inside a
+    /// real, already-existing suite; `None`/omitted matches every case that
+    /// predates this field, and matches a case deliberately left ungrouped.
+    /// Reassign or clear it later via `PUT .../test-cases/:id/suite` — this
+    /// field only ever sets the *initial* value at creation.
+    #[serde(default)]
+    pub suite_id: Option<Uuid>,
+}
+
+/// `PUT .../test-cases/:id/suite` request body — the one, focused place a
+/// case's suite membership is set OR cleared (`suite_id: null` detaches
+/// it). Deliberately its own tiny endpoint rather than folded into the
+/// general test-case `PATCH`: that handler's `Option<T>` fields already
+/// mean "omitted = leave unchanged" (`store.rs::update_test_case`'s
+/// `COALESCE` pattern), which cannot also express "explicitly clear this
+/// field" — the same reason `test_suites`' own plan assignment
+/// (`PUT .../test-suites/:id/plan`) is a separate endpoint too. The field
+/// is required (no `#[serde(default)]`): a caller must say what it wants,
+/// `null` included, not silently omit it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SetTestCaseSuiteRequest {
+    pub suite_id: Option<Uuid>,
+}
+
+// ------------------------------------------------------- test plans / suites
+//
+// Phase 5 (Output maturity) — a real plan -> suite -> case hierarchy above
+// the flat `test_cases` table above. Both new entities are OPTIONAL
+// containers (see 0011_test_plan_suite_hierarchy.sql's own comment): a case
+// with no suite, or a suite with no plan, is exactly as valid as one that
+// has both — this is additive structure, not a requirement retrofitted onto
+// existing data.
+
+/// A plan's lifecycle — deliberately minimal (no automatic transitions, no
+/// entry/exit-criteria *enforcement*): `entry_criteria`/`exit_criteria`
+/// below are real, human-authored text a team defines for itself, not
+/// something this backend evaluates or gates on. Building real automatic
+/// gating would need real signal this codebase does not have yet (see
+/// `intelligence.rs`'s own doc comment on `business_criticality`/
+/// `change_frequency` having "no signal source wired up") — status here is
+/// real, human-set bookkeeping, not a fabricated workflow engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum TestPlanStatus {
+    Draft,
+    Active,
+    Archived,
+}
+
+impl TestPlanStatus {
+    pub fn as_db_str(&self) -> &'static str {
+        match self {
+            TestPlanStatus::Draft => "DRAFT",
+            TestPlanStatus::Active => "ACTIVE",
+            TestPlanStatus::Archived => "ARCHIVED",
+        }
+    }
+
+    pub fn from_db_str(s: &str) -> Self {
+        match s {
+            "ACTIVE" => TestPlanStatus::Active,
+            "ARCHIVED" => TestPlanStatus::Archived,
+            _ => TestPlanStatus::Draft,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateTestPlanRequest {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub entry_criteria: Option<String>,
+    #[serde(default)]
+    pub exit_criteria: Option<String>,
+}
+
+/// Same `Option<T>` = "leave unchanged unless given" convention
+/// `store.rs::update_test_case` already established — `status` is a plain
+/// string here (validated against `TestPlanStatus::from_db_str`'s real
+/// vocabulary at the handler, same as every other status field in this
+/// codebase), not a second competing enum wire-shape.
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateTestPlanRequest {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub entry_criteria: Option<String>,
+    #[serde(default)]
+    pub exit_criteria: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateTestSuiteRequest {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// A suite may be created directly inside a real, already-existing
+    /// plan; `None`/omitted is exactly as valid — a suite with no plan yet.
+    #[serde(default)]
+    pub plan_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateTestSuiteRequest {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+/// `PUT .../test-suites/:id/plan` — see `SetTestCaseSuiteRequest`'s own doc
+/// comment for why this is a dedicated endpoint rather than a `PATCH`
+/// field: `plan_id: null` must be able to explicitly detach a suite from
+/// its plan, which a `COALESCE`-style optional `PATCH` field cannot express.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SetTestSuitePlanRequest {
+    pub plan_id: Option<Uuid>,
 }
 
 /// `POST .../test-cases/:id/handoff` request body. Deliberately requires the

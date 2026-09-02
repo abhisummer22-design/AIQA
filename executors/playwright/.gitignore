@@ -1,3 +1,7 @@
 node_modules
 test-results
 playwright-report
+# Runtime output of execution_plan::materialize_playwright_spec /
+# healing.ts's own event log — regenerated on every handoff, never
+# hand-edited (see the generated spec's own header comment).
+tests/generated

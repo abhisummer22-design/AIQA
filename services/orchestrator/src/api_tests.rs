@@ -3548,6 +3548,653 @@ async fn aud005_create_get_list_test_case_real_persistence() {
     );
 }
 
+// ================================================== Phase 4 — requirement graph
+
+fn test_case_body_with_reference(title: &str, reference: &str) -> Value {
+    serde_json::json!({
+        "title": title,
+        "description": "description",
+        "category": "Functional",
+        "priority": "HIGH",
+        "severity": "MAJOR",
+        "steps": [
+            {"step_number": 1, "action": "Do X", "expected_result": "Y happens"}
+        ],
+        "expected_result": "Y happens",
+        "requirement_reference": reference
+    })
+}
+
+/// Real end-to-end round trip through the HTTP API: two real test cases
+/// created citing the same real `requirement_reference` both come back
+/// from `GET .../requirement-impact?key=...`; a third citing a different
+/// reference does not; a never-cited key returns a real, honest empty
+/// list rather than a 404 or an error. The identity/edge-writing logic
+/// itself is already fully covered by `intelligence.rs`'s own tests — this
+/// proves the real HTTP wiring (`create_test_case_scoped` ->
+/// `get_requirement_impact_scoped`) end to end.
+#[tokio::test]
+async fn phase4_requirement_impact_reflects_real_test_cases_created_against_it() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "Phase4 Requirement Graph").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    for (title, reference) in [
+        ("Login succeeds", "REQ-IMPACT-TEST"),
+        ("Login rejects bad password", "REQ-IMPACT-TEST"),
+        ("Unrelated case", "REQ-OTHER"),
+    ] {
+        let (status, body) = send(
+            &state,
+            req(
+                "POST",
+                &format!("/api/v1/projects/{project}/test-cases"),
+                Some(&owner),
+                Some(test_case_body_with_reference(title, reference)),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "body={body}");
+    }
+
+    let (status, impact) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/requirement-impact?key=REQ-IMPACT-TEST"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={impact}");
+    let rows = impact.as_array().expect("array");
+    assert_eq!(rows.len(), 2, "rows={rows:?}");
+    let titles: Vec<&str> = rows.iter().map(|r| r["title"].as_str().unwrap()).collect();
+    assert!(titles.contains(&"Login succeeds"), "titles={titles:?}");
+    assert!(
+        titles.contains(&"Login rejects bad password"),
+        "titles={titles:?}"
+    );
+    assert!(
+        !titles.contains(&"Unrelated case"),
+        "a case citing a different requirement must not appear: titles={titles:?}"
+    );
+
+    let (status, empty) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/requirement-impact?key=REQ-NEVER-CITED"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={empty}");
+    assert_eq!(
+        empty.as_array().expect("array").len(),
+        0,
+        "a never-cited key must be a real, honest empty list, not an error: empty={empty}"
+    );
+}
+
+/// A test case created with neither `requirement_reference` nor
+/// `source_requirement` must still succeed normally (the graph-linking
+/// step is genuinely optional, supplementary bookkeeping — see
+/// `api.rs::create_test_case_scoped`'s own comment on why a linking
+/// failure must never surface as a 500 for what is otherwise a fully
+/// successful create).
+#[tokio::test]
+async fn phase4_creating_a_test_case_with_no_requirement_data_still_succeeds() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "Phase4 No Requirement Data").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(&owner),
+            Some(serde_json::json!({
+                "title": "No requirement data at all",
+                "description": "description",
+                "category": "Functional",
+                "priority": "HIGH",
+                "severity": "MAJOR",
+                "steps": [{"step_number": 1, "action": "Do X", "expected_result": "Y happens"}],
+                "expected_result": "Y happens"
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+}
+
+// ================================================ Phase 5 — plan/suite hierarchy
+
+fn minimal_test_case_body(title: &str) -> Value {
+    serde_json::json!({
+        "title": title,
+        "description": "description",
+        "category": "Functional",
+        "priority": "HIGH",
+        "severity": "MAJOR",
+        "steps": [{"step_number": 1, "action": "Do X", "expected_result": "Y happens"}],
+        "expected_result": "Y happens"
+    })
+}
+
+/// Full real round trip: create a plan, get it back independently, list it,
+/// patch its name AND status in one call, and confirm both landed (proving
+/// `update_test_plan`'s real `COALESCE` semantics reach the wire), then
+/// delete it and confirm it is genuinely gone.
+#[tokio::test]
+async fn phase5_test_plan_full_crud_round_trip() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "Phase5 Test Plan CRUD").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, created) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-plans"),
+            Some(&owner),
+            Some(serde_json::json!({"name": "Release 1.0", "entry_criteria": "All P0 cases automated"})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={created}");
+    let id = created["id"].as_str().expect("id").to_string();
+    assert_eq!(created["status"], "DRAFT", "created={created}");
+    assert_eq!(created["suite_count"], 0);
+
+    let (status, fetched) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/test-plans/{id}"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={fetched}");
+    assert_eq!(fetched["name"], "Release 1.0");
+
+    let (status, listed) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/test-plans"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={listed}");
+    assert!(listed.as_array().unwrap().iter().any(|r| r["id"] == id));
+
+    let (status, updated) = send(
+        &state,
+        req(
+            "PATCH",
+            &format!("/api/v1/projects/{project}/test-plans/{id}"),
+            Some(&owner),
+            Some(serde_json::json!({"name": "Release 1.0 GA", "status": "ACTIVE"})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={updated}");
+    assert_eq!(updated["name"], "Release 1.0 GA");
+    assert_eq!(updated["status"], "ACTIVE");
+    assert_eq!(
+        updated["entry_criteria"], "All P0 cases automated",
+        "an untouched field must survive the partial update"
+    );
+
+    let (status, _) = send(
+        &state,
+        req(
+            "DELETE",
+            &format!("/api/v1/projects/{project}/test-plans/{id}"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/test-plans/{id}"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// A suite created inside a real plan, reassigned to a different real plan
+/// via the dedicated `PUT .../test-suites/:id/plan`, then explicitly
+/// detached (`plan_id: null`) — all through real HTTP, and `?plan_id=`
+/// filtering on the list endpoint reflects each state correctly.
+#[tokio::test]
+async fn phase5_test_suite_plan_assignment_reassignment_and_clearing() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "Phase5 Test Suite Plan").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (_, plan_a) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-plans"),
+            Some(&owner),
+            Some(serde_json::json!({"name": "Plan A"})),
+        ),
+    )
+    .await;
+    let plan_a_id = plan_a["id"].as_str().unwrap().to_string();
+    let (_, plan_b) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-plans"),
+            Some(&owner),
+            Some(serde_json::json!({"name": "Plan B"})),
+        ),
+    )
+    .await;
+    let plan_b_id = plan_b["id"].as_str().unwrap().to_string();
+
+    let (status, suite) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-suites"),
+            Some(&owner),
+            Some(serde_json::json!({"name": "Auth Suite", "plan_id": plan_a_id})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={suite}");
+    let suite_id = suite["id"].as_str().unwrap().to_string();
+    assert_eq!(suite["plan_id"], plan_a_id);
+
+    let (status, reassigned) = send(
+        &state,
+        req(
+            "PUT",
+            &format!("/api/v1/projects/{project}/test-suites/{suite_id}/plan"),
+            Some(&owner),
+            Some(serde_json::json!({"plan_id": plan_b_id})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={reassigned}");
+    assert_eq!(reassigned["plan_id"], plan_b_id);
+
+    let (status, in_plan_b) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/test-suites?plan_id={plan_b_id}"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={in_plan_b}");
+    assert_eq!(in_plan_b.as_array().unwrap().len(), 1);
+
+    let (status, cleared) = send(
+        &state,
+        req(
+            "PUT",
+            &format!("/api/v1/projects/{project}/test-suites/{suite_id}/plan"),
+            Some(&owner),
+            Some(serde_json::json!({"plan_id": null})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={cleared}");
+    assert!(cleared["plan_id"].is_null(), "cleared={cleared}");
+}
+
+/// A case's suite membership set via the dedicated
+/// `PUT .../test-cases/:id/suite`, reflected in `?suite_id=` filtering on
+/// the test-cases list, and a cross-project `suite_id` genuinely rejected
+/// rather than silently creating a dangling reference.
+#[tokio::test]
+async fn phase5_test_case_suite_assignment_and_cross_project_rejection() {
+    let (state, _dir) = test_state().await;
+    let project_a = make_project(&state, "Phase5 Case Suite A").await;
+    let project_b = make_project(&state, "Phase5 Case Suite B").await;
+    let owner_a = mint_key(&state, "operator", Some(&project_a.to_string())).await;
+    let admin = mint_key(&state, "admin", None).await;
+
+    let (_, suite_a) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_a}/test-suites"),
+            Some(&owner_a),
+            Some(serde_json::json!({"name": "Suite A"})),
+        ),
+    )
+    .await;
+    let suite_a_id = suite_a["id"].as_str().unwrap().to_string();
+    let (_, suite_b) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_b}/test-suites"),
+            Some(&admin),
+            Some(serde_json::json!({"name": "Suite B"})),
+        ),
+    )
+    .await;
+    let suite_b_id = suite_b["id"].as_str().unwrap().to_string();
+
+    let (_, case) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_a}/test-cases"),
+            Some(&owner_a),
+            Some(minimal_test_case_body("Movable case")),
+        ),
+    )
+    .await;
+    let case_id = case["id"].as_str().unwrap().to_string();
+
+    let (status, assigned) = send(
+        &state,
+        req(
+            "PUT",
+            &format!("/api/v1/projects/{project_a}/test-cases/{case_id}/suite"),
+            Some(&owner_a),
+            Some(serde_json::json!({"suite_id": suite_a_id})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={assigned}");
+    assert_eq!(assigned["suite_id"], suite_a_id);
+
+    let (status, in_suite_a) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_a}/test-cases?suite_id={suite_a_id}"),
+            Some(&owner_a),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={in_suite_a}");
+    assert_eq!(in_suite_a.as_array().unwrap().len(), 1);
+
+    let (status, rejected) = send(
+        &state,
+        req(
+            "PUT",
+            &format!("/api/v1/projects/{project_a}/test-cases/{case_id}/suite"),
+            Some(&owner_a),
+            Some(serde_json::json!({"suite_id": suite_b_id})),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a suite from a different project must be rejected, not silently linked: body={rejected}"
+    );
+}
+
+#[tokio::test]
+async fn phase5_test_plan_rbac_viewer_forbidden_operator_allowed() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "Phase5 Plan RBAC").await;
+    let viewer = mint_key(&state, "viewer", Some(&project.to_string())).await;
+    let operator = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-plans"),
+            Some(&viewer),
+            Some(serde_json::json!({"name": "Viewer Attempt"})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-plans"),
+            Some(&operator),
+            Some(serde_json::json!({"name": "Operator Attempt"})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+}
+
+// ===================================================== Phase 6 — crawler
+//
+// "playwright" is not a registered executor in `test_state()` (matching
+// every other real-tool-executor test in this file — see
+// `test_state_with_compiled_api()`'s own doc comment for the one exception
+// this codebase makes, for the API executor specifically), so a run
+// created here genuinely cannot produce a real crawl result; these tests
+// verify validation/auth/wiring/ownership, the same split
+// `executors/playwright/tests/crawler.spec.ts` and this file's own
+// convention already draw elsewhere — the real, end-to-end browser
+// mechanism is proven there, against a real fixture app, not here.
+
+fn valid_crawl_body() -> Value {
+    serde_json::json!({
+        "base_url": "http://127.0.0.1:8080/app",
+        "roles": [
+            {"name": "admin", "login_actions": [
+                {"type": "NAVIGATE", "url": "http://127.0.0.1:8080/login"},
+                {"type": "FILL", "selector": "#username", "value": "admin"},
+                {"type": "CLICK", "selector": "#submit-login"}
+            ]},
+            {"name": "anonymous", "login_actions": []}
+        ]
+    })
+}
+
+#[tokio::test]
+async fn phase6_crawler_start_rejects_an_ssrf_target_via_the_existing_real_guard() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "Phase6 Crawler SSRF").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/crawl"),
+            Some(&owner),
+            Some(serde_json::json!({
+                "base_url": "http://169.254.169.254/",
+                "roles": [{"name": "anonymous", "login_actions": []}]
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+}
+
+#[tokio::test]
+async fn phase6_crawler_start_rejects_an_empty_role_list() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "Phase6 Crawler Empty Roles").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/crawl"),
+            Some(&owner),
+            Some(serde_json::json!({"base_url": "http://127.0.0.1:8080/app", "roles": []})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+}
+
+/// A well-formed crawl request must genuinely create a real run through the
+/// exact same pipeline every other execution uses — proven by fetching
+/// that run back independently via the existing, unrelated
+/// `GET .../executions/:run_id`, not just trusting the crawl endpoint's
+/// own response.
+#[tokio::test]
+async fn phase6_crawler_start_creates_a_real_run_through_the_existing_pipeline() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "Phase6 Crawler Real Run").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, started) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/crawl"),
+            Some(&owner),
+            Some(valid_crawl_body()),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={started}");
+    let run_id = started["run_id"].as_str().expect("run_id").to_string();
+
+    let (status, run) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/executions/{run_id}"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={run}");
+    assert_eq!(run["tasks"].as_array().unwrap().len(), 1, "run={run}");
+}
+
+/// "playwright" has no registered executor in this test harness, so the
+/// crawl's one task can never actually run and no result file is ever
+/// written — the result endpoint must report a real, honest 404, never a
+/// fabricated empty result standing in for one that was never produced.
+#[tokio::test]
+async fn phase6_crawler_result_is_a_real_404_when_no_result_was_ever_written() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "Phase6 Crawler No Result").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (_, started) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/crawl"),
+            Some(&owner),
+            Some(valid_crawl_body()),
+        ),
+    )
+    .await;
+    let run_id = started["run_id"].as_str().expect("run_id").to_string();
+
+    let (status, body) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/crawl/{run_id}/result"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
+}
+
+#[tokio::test]
+async fn phase6_crawler_result_cross_project_access_is_rejected() {
+    let (state, _dir) = test_state().await;
+    let project_a = make_project(&state, "Phase6 Crawler Cross Project A").await;
+    let project_b = make_project(&state, "Phase6 Crawler Cross Project B").await;
+    let owner_a = mint_key(&state, "operator", Some(&project_a.to_string())).await;
+    let owner_b = mint_key(&state, "operator", Some(&project_b.to_string())).await;
+
+    let (_, started) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_a}/crawl"),
+            Some(&owner_a),
+            Some(valid_crawl_body()),
+        ),
+    )
+    .await;
+    let run_id = started["run_id"].as_str().expect("run_id").to_string();
+
+    // project_b's own key must not be able to reach project_a's crawl run
+    // via project_b's own URL, even to learn "not found" vs "forbidden".
+    let (status, body) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_b}/crawl/{run_id}/result"),
+            Some(&owner_b),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
+}
+
+#[tokio::test]
+async fn phase6_crawler_rbac_viewer_forbidden_operator_allowed() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "Phase6 Crawler RBAC").await;
+    let viewer = mint_key(&state, "viewer", Some(&project.to_string())).await;
+    let operator = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/crawl"),
+            Some(&viewer),
+            Some(valid_crawl_body()),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/crawl"),
+            Some(&operator),
+            Some(valid_crawl_body()),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+}
+
 #[tokio::test]
 async fn aud005_update_test_case_persists_and_ignores_status() {
     let (state, _dir) = test_state().await;
@@ -4675,6 +5322,66 @@ async fn phase2_generate_ai_returns_real_structured_cases_on_success() {
         cases[0]["source_reference"],
         "must be at least 8 characters"
     );
+}
+
+/// Phase 1 self-learning wiring — the endpoint now loads real feedback
+/// context (`intelligence::Intelligence::load_feedback_context`) before
+/// generating. This proves the real end-to-end wiring: seeded real risk
+/// data + a real CONFIRMED bug draft for this exact project, via the same
+/// `Store` methods `intelligence.rs`'s own tests use, then a genuine HTTP
+/// call through the real router — must still return the same honest,
+/// structurally-unchanged 200 response (feedback context only ever shifts
+/// prompt content, never the response contract or the traceability/dedup
+/// gates downstream of it).
+#[tokio::test]
+async fn phase2_generate_ai_succeeds_with_real_seeded_risk_and_confirmed_defect_data() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    let project = make_project(&state, "Phase2 AI With Feedback Context").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let risky_node = state
+        .store
+        .upsert_quality_node(&project.to_string(), "test", "Checkout Flow", "Checkout Flow")
+        .await
+        .expect("upsert risky node");
+    state
+        .store
+        .upsert_risk_assessment(risky_node, 0.8, 0.0, 0.0, 0.9, 2, 0.0, 500.0, "{}")
+        .await
+        .expect("upsert risk assessment");
+    let (cluster_id, _) = state
+        .store
+        .upsert_failure_cluster(&project.to_string(), "sig-confirmed", "hypothesis", 0.5)
+        .await
+        .expect("upsert failure cluster");
+    let draft_id = state
+        .store
+        .insert_bug_draft(cluster_id, "Recurring checkout crash", "desc", "High", 0.5)
+        .await
+        .expect("insert bug draft");
+    state
+        .store
+        .review_bug_draft(draft_id, "CONFIRMED", "tester")
+        .await
+        .expect("review bug draft");
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/generate-ai"),
+            Some(&owner),
+            Some(serde_json::json!({
+                "requirement_text": "Password must be at least 8 characters.",
+                "skills": [{"id": "skill-security-testing", "name": "Security Testing", "description": ""}]
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["generation_method"], "ai", "body={body}");
+    let cases = body["test_cases"].as_array().unwrap();
+    assert_eq!(cases.len(), 1, "body={body}");
 }
 
 /// The core truthfulness requirement: a provider failure must be reported

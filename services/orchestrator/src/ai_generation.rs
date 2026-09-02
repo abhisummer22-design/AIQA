@@ -8,13 +8,27 @@
 //! task-specific to test-case generation (skill resolution, prompt
 //! building, the structured schema, validation/traceability/dedup).
 //!
-//! Architecture (brief §THIRD):
+//! Architecture (brief §THIRD), per wave (see "Wave-based generation" below
+//! for what selects which skills run in which wave, and why):
 //! ```text
 //! Generation Request
 //!         v
 //! Skill Resolver          (resolve_skill_instructions)
 //!         v
-//! Prompt Builder          (build_prompt)
+//! Wave Partitioning        (partition_skills_into_waves — Base / Dependent /
+//!                            NonFunctional, see "Wave-based generation")
+//!         v
+//! Feedback Context         (intelligence::Intelligence::load_feedback_context
+//!                            — real risk/flakiness scores + human-CONFIRMED
+//!                            defect patterns from this project's own past
+//!                            execution history; empty/default for a project
+//!                            with no history yet, never fabricated. See
+//!                            "Self-learning loop" below.)
+//!         v
+//! Prompt Builder          (build_prompt — folds the requirement text, this
+//!                            wave's skill instructions, the feedback context
+//!                            above, AND any earlier wave's own real output
+//!                            into one prompt — see build_prior_wave_block)
 //!         v
 //! Central AI Infrastructure (ai_router::AiInfrastructure::generate,
 //!                             task = TEST_CASE_GENERATION — discovery,
@@ -32,13 +46,45 @@
 //!                            that is not actually a substring of the real
 //!                            requirement text is stripped, not trusted)
 //!         v
-//! Deduplication             (deduplicate)
+//! Deduplication             (deduplicate — once per wave, then once more
+//!                            across every wave's combined output)
 //!         v
 //! GenerationOutcome::Ai { .. } | GenerationOutcome::Failed { reason }
 //! ```
 //! `GenerationOutcome::Failed` is a real, first-class, non-panicking result
 //! — the caller (`api.rs::generate_ai_test_cases_scoped`) reports it
 //! honestly as `generation_method: "fallback"`, never as a silent success.
+//!
+//! **Wave-based generation (closes another gap this module's own
+//! architecture left open — "single prompt, one AI call, every selected
+//! skill combined with no inter-wave dependency"):** the caller-facing
+//! `generate_test_cases` signature is unchanged, but it is no longer one
+//! call. `partition_skills_into_waves` splits the caller's selection into
+//! up to three real, separate generation calls — Base (skills that stand on
+//! the requirement text alone), Dependent (skills that genuinely benefit
+//! from seeing Base's real output first — RBAC and Business Case Testing:
+//! building a role/permission or business-rule *variant* of a flow Base
+//! already covers is more grounded than inventing one blind), and
+//! NonFunctional (Security/Performance, which sees both Base's flows and
+//! Dependent's role output). A wave with nothing selected for it is never
+//! attempted — this degrades exactly to today's single-call behavior for
+//! any selection that lands entirely in one wave (including the empty
+//! selection), so no existing single-wave caller's behavior changes. See
+//! `wave_for_skill_name`'s own doc comment for why each skill is assigned
+//! where it is, and `WaveSummary` for how a partial-wave failure is
+//! reported honestly rather than silently reducing coverage with no signal.
+//!
+//! **Self-learning loop (closes a gap this module's own architecture left
+//! open):** `intelligence.rs::ingest_run` has, since an earlier phase,
+//! computed real risk/flakiness scores and clustered/confirmed real defect
+//! patterns after every run — but nothing read any of it back into
+//! generation. `FeedbackContext`/`build_feedback_context` below is that read
+//! path: the caller (`api.rs`) loads it once per generation call via
+//! `intelligence::Intelligence::load_feedback_context` and threads it
+//! through `generate_test_cases` into the prompt. It is deliberately
+//! additive, not a new evidence path — see `build_feedback_block`'s own doc
+//! comment for why a test case it inspires still answers to the EVIDENCE
+//! RULES above, exactly like every other test case.
 
 use serde::{Deserialize, Serialize};
 
@@ -150,14 +196,271 @@ pub fn resolve_skill_instructions(skills: &[SkillInput]) -> Vec<ResolvedSkillIns
         .collect()
 }
 
+// ------------------------------------------------------------ feedback context
+
+/// One real, named test area whose *risk* or *flakiness* score (both
+/// `intelligence.rs::update_test_intelligence`'s own real, already-computed
+/// output — see that module's doc comment on why they are rule-based, not
+/// LLM-derived) has crossed [`RISK_HIGHLIGHT_THRESHOLD`]. Never a fabricated
+/// or estimated value — every field here is copied straight from a real
+/// `store::TestIntelRow`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RiskHighlight {
+    pub name: String,
+    pub risk_score: f64,
+    pub flakiness_score: f64,
+}
+
+/// The "self-learning" input the module doc comment above now has a real
+/// step for (`intelligence::Intelligence::load_feedback_context`): a small,
+/// bounded, real summary of this project's own past execution history,
+/// built once per generation call and folded into [`build_prompt`] as
+/// *context*, never as a substitute requirement — see
+/// `build_feedback_block`'s own doc comment for why it cannot weaken the
+/// evidence rules above it.
+///
+/// `Default` (both fields empty) is the correct, honest value for a project
+/// with no execution history yet — never fabricated placeholder content —
+/// and is exactly what every pre-existing caller/test that predates this
+/// type passes.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FeedbackContext {
+    /// Real, named test areas with a materially elevated risk or flakiness
+    /// score, highest risk first, capped at [`MAX_RISK_HIGHLIGHTS`] so the
+    /// prompt stays bounded regardless of project size.
+    pub risky_areas: Vec<RiskHighlight>,
+    /// Real, human-**CONFIRMED** recurring-defect titles only (never a
+    /// `NEEDS_REVIEW` or `DISMISSED` draft — see `build_feedback_context`
+    /// below) — `intelligence.rs`'s own module doc comment calls defect
+    /// linkage "the most valuable" feedback signal; this is that signal,
+    /// reused exactly as a human already judged it, not reinterpreted here.
+    pub confirmed_defect_patterns: Vec<String>,
+}
+
+/// A risk/flakiness score below this (both are already `[0,1]` composites —
+/// see `intelligence.rs::update_test_intelligence`) is ordinary, not a
+/// "known risky area" worth spending prompt budget on. Not tuned against any
+/// labeled dataset (none exists yet — the same honest limitation
+/// `intelligence.rs`'s own risk-scoring doc comment already discloses).
+const RISK_HIGHLIGHT_THRESHOLD: f64 = 0.5;
+/// Caps how many risky areas / confirmed defect patterns reach the prompt —
+/// a large project's full history must never make this prompt unbounded.
+const MAX_RISK_HIGHLIGHTS: usize = 5;
+const MAX_DEFECT_PATTERNS: usize = 5;
+
+/// Pure, DB-free reshaping of two already-real, already-tested `Store` reads
+/// (`list_test_intelligence`, `list_bug_drafts` — see
+/// `intelligence.rs::load_feedback_context`, the only real caller) into the
+/// bounded, prompt-ready shape above. Kept separate from the `Store` call
+/// itself so every filtering/threshold/ordering/cap decision below is
+/// unit-testable without a database — the same "real logic lives in a pure
+/// function" pattern `resolve_skill_instructions`/`enforce_traceability`/
+/// `deduplicate` already established in this file.
+pub fn build_feedback_context(
+    intel: &[crate::store::TestIntelRow],
+    bug_drafts: &[crate::store::BugDraftRow],
+) -> FeedbackContext {
+    let mut risky_areas: Vec<RiskHighlight> = intel
+        .iter()
+        .filter_map(|row| {
+            let risk_score = row.risk_score.unwrap_or(0.0);
+            let flakiness_score = row.flakiness_score.unwrap_or(0.0);
+            if risk_score >= RISK_HIGHLIGHT_THRESHOLD || flakiness_score >= RISK_HIGHLIGHT_THRESHOLD
+            {
+                Some(RiskHighlight {
+                    name: row.name.clone(),
+                    risk_score,
+                    flakiness_score,
+                })
+            } else {
+                None
+            }
+        })
+        .collect();
+    // Highest risk first — `partial_cmp` is safe here because every score
+    // is a real, already-clamped `[0,1]` value (`intelligence.rs`'s own
+    // `.clamp(0.0, 1.0)`), never NaN.
+    risky_areas.sort_by(|a, b| {
+        b.risk_score
+            .partial_cmp(&a.risk_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    risky_areas.truncate(MAX_RISK_HIGHLIGHTS);
+
+    // CONFIRMED only — a NEEDS_REVIEW draft is still unverified noise (could
+    // be environment flakiness, not a real defect pattern) and a DISMISSED
+    // one was already judged, by a human, NOT to be real; feeding either
+    // back into generation as a "known problem" would contradict the very
+    // human-in-the-loop judgment this codebase already recorded. See
+    // `intelligence.rs::record_failure`'s own doc comment on why promotion
+    // out of NEEDS_REVIEW is deliberately never automatic.
+    let mut confirmed_defect_patterns: Vec<String> = bug_drafts
+        .iter()
+        .filter(|d| d.review_state == "CONFIRMED")
+        .map(|d| d.title.clone())
+        .collect();
+    confirmed_defect_patterns.truncate(MAX_DEFECT_PATTERNS);
+
+    FeedbackContext {
+        risky_areas,
+        confirmed_defect_patterns,
+    }
+}
+
+// ------------------------------------------------------------ wave partitioning
+
+/// Which of the three real generation calls a skill's selection triggers.
+/// Ordered `Base < Dependent < NonFunctional` — the order waves actually
+/// run in (`generate_test_cases`), each later wave seeing every earlier
+/// wave's real output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Wave {
+    /// Stands on the requirement text alone — nothing to gain from seeing
+    /// another wave's output first.
+    Base,
+    /// Genuinely benefits from seeing Base's real output first: building a
+    /// role/permission-boundary or business-rule *variant* of a flow Base
+    /// already covered is more grounded than inventing one blind, and
+    /// avoids the two skills independently describing the same flow twice.
+    Dependent,
+    /// Sees both Base's flows and Dependent's role output — e.g. a
+    /// privilege-escalation security scenario is more concrete once real
+    /// roles/permissions exist to escalate between.
+    NonFunctional,
+}
+
+impl Wave {
+    fn label(self) -> &'static str {
+        match self {
+            Wave::Base => "base",
+            Wave::Dependent => "dependent",
+            Wave::NonFunctional => "non_functional",
+        }
+    }
+}
+
+/// The real wave assignment for each of the 8 built-in skills (matching
+/// `forentend/src/services/skillRegistry.ts`'s own names exactly, same rule
+/// `builtin_instruction` above already follows — no second taxonomy
+/// invented). Only the two skills the architecture brief itself names as
+/// dependent (RBAC, Business Case) are placed in `Dependent`, and only the
+/// two it names as non-functional (Security, Performance) are placed in
+/// `NonFunctional` — every other built-in skill, AND any unrecognized/
+/// custom skill this function has no real basis to call "dependent" on,
+/// defaults to `Base`. That default is deliberate: "grounding over
+/// generation" (this module's own design principle) means never inventing
+/// a dependency claim a skill's name gives no basis for — the safe default
+/// is exactly today's single-call behavior, not a guess.
+fn wave_for_skill_name(name: &str) -> Wave {
+    match name.trim().to_lowercase().as_str() {
+        "rbac testing" | "business case testing" => Wave::Dependent,
+        "security testing" | "performance testing" => Wave::NonFunctional,
+        _ => Wave::Base,
+    }
+}
+
+/// Splits the caller's real skill selection into its three real waves, each
+/// still in the caller's original relative order — deterministic, so two
+/// identical selections always produce identically-grouped waves (matters
+/// for `prompt_differs_by_skill`-style tests and for reproducible prompts).
+pub fn partition_skills_into_waves(
+    skills: &[SkillInput],
+) -> (Vec<SkillInput>, Vec<SkillInput>, Vec<SkillInput>) {
+    let mut base = Vec::new();
+    let mut dependent = Vec::new();
+    let mut non_functional = Vec::new();
+    for s in skills {
+        match wave_for_skill_name(&s.name) {
+            Wave::Base => base.push(s.clone()),
+            Wave::Dependent => dependent.push(s.clone()),
+            Wave::NonFunctional => non_functional.push(s.clone()),
+        }
+    }
+    (base, dependent, non_functional)
+}
+
 // --------------------------------------------------------------- prompt builder
+
+/// Renders [`FeedbackContext`] into its own labeled prompt section, or an
+/// empty string when there is genuinely nothing to say (a new project with
+/// no execution history yet) — never a "no signal" placeholder sentence
+/// that would just waste prompt budget saying nothing. Explicitly scoped to
+/// the model as *context only*: it can shift which parts of the requirement
+/// get extra scrutiny, but a test case it inspires still answers to the
+/// EVIDENCE RULES in `build_prompt` below — this section deliberately never
+/// introduces a second, looser evidence path.
+fn build_feedback_block(feedback: &FeedbackContext) -> String {
+    if feedback.risky_areas.is_empty() && feedback.confirmed_defect_patterns.is_empty() {
+        return String::new();
+    }
+    let mut block = String::from(
+        "KNOWN HISTORICAL SIGNALS (context only, from this project's own real past execution \
+         data — NOT part of the requirement text itself; use only where genuinely relevant to \
+         the requirement below; a test case this inspires still follows the EVIDENCE RULES above \
+         — mark it \"exploratory\" unless the requirement text itself also supports it):\n",
+    );
+    if !feedback.risky_areas.is_empty() {
+        let items: Vec<String> = feedback
+            .risky_areas
+            .iter()
+            .map(|r| {
+                format!(
+                    "\"{}\" (risk {:.2}, flakiness {:.2})",
+                    r.name, r.risk_score, r.flakiness_score
+                )
+            })
+            .collect();
+        block.push_str("- Historically risky/flaky areas from real past runs: ");
+        block.push_str(&items.join(", "));
+        block.push('\n');
+    }
+    if !feedback.confirmed_defect_patterns.is_empty() {
+        block.push_str("- Human-confirmed recurring defect patterns from real past runs: ");
+        block.push_str(&feedback.confirmed_defect_patterns.join("; "));
+        block.push('\n');
+    }
+    block.push('\n');
+    block
+}
+
+/// Renders an earlier wave's real, already-generated cases into their own
+/// labeled prompt section, or an empty string for a Base-wave call (nothing
+/// precedes it) or when the caller selected no earlier-wave skills at all.
+/// Titles + categories only, deliberately not the full step-by-step JSON —
+/// enough for the model to recognize "this flow is already covered" without
+/// re-spending prompt budget on detail the next wave does not need. Same
+/// "context only, evidence rules still apply" framing as
+/// `build_feedback_block` — a Dependent/NonFunctional-wave case inspired by
+/// this section is still a variant grounded in the requirement text, not a
+/// license to invent one because an earlier wave merely mentioned a flow.
+fn build_prior_wave_block(prior_wave_cases: &[GeneratedTestCaseDraft]) -> String {
+    if prior_wave_cases.is_empty() {
+        return String::new();
+    }
+    let items: Vec<String> = prior_wave_cases
+        .iter()
+        .map(|c| format!("- \"{}\" ({})", c.title, c.category))
+        .collect();
+    format!(
+        "ALREADY-GENERATED COVERAGE FROM AN EARLIER WAVE (context only — do NOT repeat these as new \
+         cases; where the skills below call for it, build a role/permission/business-rule/non-functional \
+         VARIANT of one of these specific flows rather than inventing an unrelated one, and still generate \
+         real new coverage for anything these do not already touch):\n{}\n\n",
+        items.join("\n")
+    )
+}
 
 /// Builds the real prompt sent to the model (brief §FIFTH/§SIXTH/§ELEVENTH).
 /// Every selected skill's instruction appears in its own labeled block —
 /// this is the concrete mechanism by which a different skill selection
 /// produces a different prompt, provably (see `prompt_differs_by_skill`
 /// test below), not merely a different `skill_id` tag on unchanged output.
-pub fn build_prompt(requirement_text: &str, skills: &[ResolvedSkillInstruction]) -> String {
+pub fn build_prompt(
+    requirement_text: &str,
+    skills: &[ResolvedSkillInstruction],
+    feedback: &FeedbackContext,
+    prior_wave_cases: &[GeneratedTestCaseDraft],
+) -> String {
     let mut skill_blocks = String::new();
     for s in skills {
         skill_blocks.push_str(&format!(
@@ -169,6 +472,8 @@ pub fn build_prompt(requirement_text: &str, skills: &[ResolvedSkillInstruction])
         skill_blocks
             .push_str("- (no skill selected — generate general functional coverage only)\n");
     }
+    let feedback_block = build_feedback_block(feedback);
+    let prior_wave_block = build_prior_wave_block(prior_wave_cases);
 
     format!(
         "You are a QA test case generator. Generate structured test cases strictly from the requirement \
@@ -188,6 +493,8 @@ pub fn build_prompt(requirement_text: &str, skills: &[ResolvedSkillInstruction])
          - Never invent a specific numeric requirement (character counts, time limits, thresholds) that is \
            not literally present in the requirement text. If you need a number and the text has none, omit \
            the number and mark the case \"inferred\" or \"exploratory\".\n\n\
+         {feedback_block}\
+         {prior_wave_block}\
          Return ONLY a JSON object with this exact shape, no markdown, no commentary:\n\
          {{\"test_cases\": [{{\"title\": string, \"category\": string, \"skill_id\": string, \
          \"preconditions\": [string], \"steps\": [{{\"action\": string, \"expected_result\": string}}], \
@@ -259,6 +566,16 @@ pub enum GenerationOutcome {
         fallback_used: bool,
         /// `"AUTO"` or `"MANUAL"` — the real routing mode in force.
         routing_mode: String,
+        /// The real, per-wave breakdown (`generate_test_cases`'s own doc
+        /// comment) — empty for a single-wave `generate_one_wave` result
+        /// (it has no sub-waves of its own to report), populated by
+        /// `generate_test_cases` once it has merged every wave it actually
+        /// ran. `provider`/`model`/`routing_score`/`fallback_used`/
+        /// `routing_mode` above describe the LAST wave that produced real
+        /// output — this is where a caller that wants the full, honest,
+        /// per-wave picture (a partial-wave failure included) looks
+        /// instead.
+        waves: Vec<WaveSummary>,
     },
     Failed {
         reason: String,
@@ -402,23 +719,29 @@ fn extract_json_payload(text: &str) -> Option<String> {
     }
 }
 
-/// The Test-Case-Generation consumer of the central `AiInfrastructure`
-/// (the later "Central AI Model Auto-Discovery, Smart Routing & AI
-/// Settings" unit's own §17: "Test Case Generator does not need to know
-/// whether the model is Ollama/Gemini/OpenAI/another provider" — this
-/// function is the one place that boundary is crossed, and it crosses it
-/// through the shared router, not a private provider of its own). The full
-/// pipeline (brief §THIRD): resolve skills, build the prompt, route+execute
-/// through `infra`, then validate/traceability-check/deduplicate whatever
-/// came back — or return a real, honest failure. Never returns a
-/// fabricated success.
-pub async fn generate_test_cases(
+/// One real generation call for one wave's selected skills — the exact
+/// pipeline (brief §THIRD) `generate_test_cases` used to run once, total,
+/// for every selected skill combined. Now it is the building block
+/// `generate_test_cases` below calls up to three times, once per non-empty
+/// wave: resolve this wave's skills, build the prompt (folding in the
+/// feedback context and, for a Dependent/NonFunctional wave, every earlier
+/// wave's real output via `prior_wave_cases`), route+execute through
+/// `infra`, then validate/traceability-check/deduplicate whatever came back
+/// — or return a real, honest failure. Never returns a fabricated success.
+/// This is the boundary crossing the later "Central AI Model Auto-Discovery,
+/// Smart Routing & AI Settings" unit's own §17 describes ("Test Case
+/// Generator does not need to know whether the model is Ollama/Gemini/
+/// OpenAI/another provider") — crossed through the shared router, not a
+/// private provider of its own, once per wave.
+async fn generate_one_wave(
     infra: &AiInfrastructure,
     requirement_text: &str,
     skills: &[SkillInput],
+    feedback: &FeedbackContext,
+    prior_wave_cases: &[GeneratedTestCaseDraft],
 ) -> GenerationOutcome {
     let resolved = resolve_skill_instructions(skills);
-    let prompt = build_prompt(requirement_text, &resolved);
+    let prompt = build_prompt(requirement_text, &resolved, feedback, prior_wave_cases);
 
     let request = AiRequest {
         task: AiTask::TestCaseGeneration,
@@ -447,6 +770,238 @@ pub async fn generate_test_cases(
     }
     GenerationOutcome::Failed {
         reason: last_failure.unwrap_or_else(|| "unknown generation failure".to_string()),
+    }
+}
+
+/// One wave's real, honest outcome — the concrete mechanism by which a
+/// partial-wave failure (e.g. the Dependent wave times out while Base
+/// succeeded) stays visible rather than silently reducing coverage with no
+/// signal, the same "never a silent success/never a silently dropped
+/// failure" standard this module already holds `GenerationOutcome` itself
+/// to. `skipped: true` (rather than a variant/`Option`) makes "this wave had
+/// nothing selected, so it was never attempted at all" and "this wave was
+/// attempted and failed" (`skipped: false`, `failure_reason: Some(..)`) two
+/// genuinely distinct, both-honest states — collapsing them would make a
+/// deliberate no-op look like a failure.
+#[derive(Debug, Clone, Serialize)]
+pub struct WaveSummary {
+    pub wave: &'static str,
+    pub skill_names: Vec<String>,
+    pub case_count: usize,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub routing_score: Option<f64>,
+    pub fallback_used: Option<bool>,
+    pub routing_mode: Option<String>,
+    pub failure_reason: Option<String>,
+    pub skipped: bool,
+}
+
+impl WaveSummary {
+    fn skipped(wave: Wave) -> Self {
+        Self {
+            wave: wave.label(),
+            skill_names: Vec::new(),
+            case_count: 0,
+            provider: None,
+            model: None,
+            routing_score: None,
+            fallback_used: None,
+            routing_mode: None,
+            failure_reason: None,
+            skipped: true,
+        }
+    }
+
+    fn succeeded(&self) -> bool {
+        !self.skipped && self.failure_reason.is_none()
+    }
+}
+
+/// Runs exactly one wave via `generate_one_wave` and turns its real outcome
+/// into a `WaveSummary` plus whatever cases it actually produced (empty on
+/// failure) — the one place the `GenerationOutcome::Ai { .. }` match needed
+/// to tolerate `generate_one_wave`'s own (always-empty) `waves` field, kept
+/// here so `generate_test_cases` below does not repeat this three times.
+async fn run_wave(
+    infra: &AiInfrastructure,
+    requirement_text: &str,
+    wave: Wave,
+    skills: &[SkillInput],
+    feedback: &FeedbackContext,
+    prior_wave_cases: &[GeneratedTestCaseDraft],
+) -> (WaveSummary, Vec<GeneratedTestCaseDraft>) {
+    let skill_names = skills.iter().map(|s| s.name.clone()).collect();
+    match generate_one_wave(infra, requirement_text, skills, feedback, prior_wave_cases).await {
+        GenerationOutcome::Ai {
+            cases,
+            provider,
+            model,
+            routing_score,
+            fallback_used,
+            routing_mode,
+            ..
+        } => {
+            let summary = WaveSummary {
+                wave: wave.label(),
+                skill_names,
+                case_count: cases.len(),
+                provider: Some(provider),
+                model: Some(model),
+                routing_score: Some(routing_score),
+                fallback_used: Some(fallback_used),
+                routing_mode: Some(routing_mode),
+                failure_reason: None,
+                skipped: false,
+            };
+            (summary, cases)
+        }
+        GenerationOutcome::Failed { reason } => {
+            let summary = WaveSummary {
+                wave: wave.label(),
+                skill_names,
+                case_count: 0,
+                provider: None,
+                model: None,
+                routing_score: None,
+                fallback_used: None,
+                routing_mode: None,
+                failure_reason: Some(reason),
+                skipped: false,
+            };
+            (summary, Vec::new())
+        }
+    }
+}
+
+/// The real, single entry point (brief §THIRD) — signature unchanged from
+/// before wave-based generation existed, so every existing caller
+/// (`api.rs`, `custom_testing.rs`) and every single-wave-selection test
+/// keeps working unmodified. Internally: `partition_skills_into_waves`
+/// splits the selection, then up to three real, separate `generate_one_wave`
+/// calls (via `run_wave`) run in wave order, each later one seeing every
+/// earlier one's real output. A wave with nothing selected for it is never
+/// attempted — for a selection that lands entirely in one wave (including
+/// the empty selection), this reduces to exactly the one call today's
+/// callers already expect. Cases from every wave that produced real output
+/// are combined and deduplicated once more across the full set (a later
+/// wave can still coincidentally repeat an earlier one's exact scenario
+/// despite being told not to). The final outcome is `Ai` if *any* wave
+/// produced real cases — a working Base wave must not be discarded just
+/// because an optional Dependent/NonFunctional wave the caller also
+/// selected failed — and `Failed` only when every attempted wave failed.
+/// `waves` carries the real, per-wave breakdown either way; see
+/// `WaveSummary`. Top-level `provider`/`model`/`routing_score`/
+/// `fallback_used`/`routing_mode` describe the LAST wave that succeeded
+/// (existing callers that only read those top-level fields see real,
+/// meaningful values either way — for a single-wave selection, the only
+/// wave that ran).
+pub async fn generate_test_cases(
+    infra: &AiInfrastructure,
+    requirement_text: &str,
+    skills: &[SkillInput],
+    feedback: &FeedbackContext,
+) -> GenerationOutcome {
+    let (base, dependent, non_functional) = partition_skills_into_waves(skills);
+
+    let mut all_cases: Vec<GeneratedTestCaseDraft> = Vec::new();
+    let mut waves: Vec<WaveSummary> = Vec::new();
+
+    // Base always runs unless the caller selected nothing at all for it —
+    // EXCEPT an entirely empty selection (today's "no skill selected"
+    // call), which must still make exactly the one call it always has.
+    if !base.is_empty() || (dependent.is_empty() && non_functional.is_empty()) {
+        let (summary, cases) =
+            run_wave(infra, requirement_text, Wave::Base, &base, feedback, &[]).await;
+        waves.push(summary);
+        all_cases.extend(cases);
+    } else {
+        waves.push(WaveSummary::skipped(Wave::Base));
+    }
+
+    // Dependent sees Base's real output so far (empty if Base was skipped
+    // or failed — graceful degradation, never blocked on an earlier wave).
+    if !dependent.is_empty() {
+        let (summary, cases) = run_wave(
+            infra,
+            requirement_text,
+            Wave::Dependent,
+            &dependent,
+            feedback,
+            &all_cases,
+        )
+        .await;
+        waves.push(summary);
+        all_cases.extend(cases);
+    } else {
+        waves.push(WaveSummary::skipped(Wave::Dependent));
+    }
+
+    // NonFunctional sees Base's AND Dependent's combined real output so far.
+    if !non_functional.is_empty() {
+        let (summary, cases) = run_wave(
+            infra,
+            requirement_text,
+            Wave::NonFunctional,
+            &non_functional,
+            feedback,
+            &all_cases,
+        )
+        .await;
+        waves.push(summary);
+        all_cases.extend(cases);
+    } else {
+        waves.push(WaveSummary::skipped(Wave::NonFunctional));
+    }
+
+    let Some(last_success) = waves.iter().rev().find(|w| w.succeeded()) else {
+        let reason = waves
+            .iter()
+            .filter_map(|w| w.failure_reason.as_deref())
+            .collect::<Vec<_>>()
+            .join("; ");
+        return GenerationOutcome::Failed {
+            reason: if reason.is_empty() {
+                "no wave produced any output".to_string()
+            } else {
+                reason
+            },
+        };
+    };
+    let provider = last_success
+        .provider
+        .clone()
+        .expect("a succeeded wave always has a provider");
+    let model = last_success
+        .model
+        .clone()
+        .expect("a succeeded wave always has a model");
+    let routing_score = last_success
+        .routing_score
+        .expect("a succeeded wave always has a routing_score");
+    let fallback_used = last_success
+        .fallback_used
+        .expect("a succeeded wave always has fallback_used");
+    let routing_mode = last_success
+        .routing_mode
+        .clone()
+        .expect("a succeeded wave always has a routing_mode");
+
+    // Cross-wave dedup: a later wave can still coincidentally repeat an
+    // earlier wave's exact scenario despite `build_prior_wave_block` asking
+    // it not to — this is the same real, rule-based `deduplicate` every
+    // single wave's own `validate_structured_output` already applies,
+    // applied once more across the full merged set.
+    let deduped = deduplicate(all_cases);
+
+    GenerationOutcome::Ai {
+        cases: deduped,
+        provider,
+        model,
+        routing_score,
+        fallback_used,
+        routing_mode,
+        waves,
     }
 }
 
@@ -497,6 +1052,9 @@ fn validate_structured_output(
             crate::ai_router::RoutingMode::Manual => "MANUAL".to_string(),
             crate::ai_router::RoutingMode::Auto => "AUTO".to_string(),
         },
+        // A single wave call has no sub-waves of its own to report —
+        // `generate_test_cases` is the only place that ever populates this.
+        waves: Vec::new(),
     })
 }
 
@@ -557,10 +1115,14 @@ mod tests {
         let functional_only = build_prompt(
             "Users can log in.",
             &resolve_skill_instructions(&[skill("f", "Functional Testing", "")]),
+            &FeedbackContext::default(),
+            &[],
         );
         let security_only = build_prompt(
             "Users can log in.",
             &resolve_skill_instructions(&[skill("s", "Security Testing", "")]),
+            &FeedbackContext::default(),
+            &[],
         );
         assert_ne!(functional_only, security_only);
         assert!(security_only.to_lowercase().contains("injection"));
@@ -576,6 +1138,8 @@ mod tests {
                 skill("e", "Edge Case Analysis", ""),
                 skill("s", "Security Testing", ""),
             ]),
+            &FeedbackContext::default(),
+            &[],
         );
         assert!(combined.contains("Functional Testing"));
         assert!(combined.contains("Edge Case Analysis"));
@@ -584,11 +1148,307 @@ mod tests {
 
     #[test]
     fn prompt_carries_the_real_requirement_text_and_evidence_rules() {
-        let prompt = build_prompt("Password must be at least 8 characters.", &[]);
+        let prompt = build_prompt(
+            "Password must be at least 8 characters.",
+            &[],
+            &FeedbackContext::default(),
+            &[],
+        );
         assert!(prompt.contains("Password must be at least 8 characters."));
         assert!(prompt
             .to_lowercase()
             .contains("never invent a specific numeric requirement"));
+    }
+
+    // -------------------------------------------------------- feedback context
+
+    fn intel_row(
+        name: &str,
+        risk_score: Option<f64>,
+        flakiness_score: Option<f64>,
+    ) -> crate::store::TestIntelRow {
+        crate::store::TestIntelRow {
+            id: uuid::Uuid::new_v4(),
+            name: name.to_string(),
+            risk_score,
+            failure_rate: None,
+            dependency_count: None,
+            execution_cost_ms: None,
+            value_score: None,
+            flakiness_score,
+            window_runs: None,
+            window_failures: None,
+        }
+    }
+
+    fn bug_draft_row(title: &str, review_state: &str) -> crate::store::BugDraftRow {
+        crate::store::BugDraftRow {
+            id: uuid::Uuid::new_v4(),
+            failure_cluster_id: uuid::Uuid::new_v4(),
+            title: title.to_string(),
+            description: "description".to_string(),
+            severity: Some("High".to_string()),
+            confidence: Some(0.5),
+            review_state: review_state.to_string(),
+            created_at: chrono::Utc::now(),
+            promoted_at: None,
+            promoted_by: None,
+        }
+    }
+
+    #[test]
+    fn feedback_context_includes_only_areas_at_or_above_the_risk_threshold() {
+        let intel = vec![
+            intel_row("Checkout Flow", Some(0.8), Some(0.1)),
+            intel_row("About Page", Some(0.1), Some(0.0)),
+            intel_row("Flaky Upload", Some(0.2), Some(0.6)),
+        ];
+        let ctx = build_feedback_context(&intel, &[]);
+        let names: Vec<&str> = ctx.risky_areas.iter().map(|r| r.name.as_str()).collect();
+        assert!(
+            names.contains(&"Checkout Flow"),
+            "high risk_score must qualify: {names:?}"
+        );
+        assert!(
+            names.contains(&"Flaky Upload"),
+            "high flakiness_score alone must also qualify: {names:?}"
+        );
+        assert!(
+            !names.contains(&"About Page"),
+            "ordinary scores must not appear: {names:?}"
+        );
+    }
+
+    #[test]
+    fn feedback_context_treats_missing_scores_as_zero_not_a_crash() {
+        let intel = vec![intel_row("Untouched Area", None, None)];
+        let ctx = build_feedback_context(&intel, &[]);
+        assert!(ctx.risky_areas.is_empty());
+    }
+
+    #[test]
+    fn feedback_context_sorts_by_risk_descending_and_caps_at_max() {
+        // Six qualifying rows (all >= RISK_HIGHLIGHT_THRESHOLD); "Lowest" at
+        // 0.55 is deliberately the smallest of the six, so it must be the
+        // one the MAX_RISK_HIGHLIGHTS=5 cap drops.
+        let intel = vec![
+            intel_row("Lowest", Some(0.55), Some(0.0)),
+            intel_row("High", Some(0.95), Some(0.0)),
+            intel_row("Mid", Some(0.75), Some(0.0)),
+            intel_row("R4", Some(0.9), Some(0.0)),
+            intel_row("R5", Some(0.85), Some(0.0)),
+            intel_row("R6", Some(0.6), Some(0.0)),
+        ];
+        let ctx = build_feedback_context(&intel, &[]);
+        assert_eq!(ctx.risky_areas.len(), 5, "must cap at MAX_RISK_HIGHLIGHTS");
+        assert_eq!(
+            ctx.risky_areas[0].name, "High",
+            "highest risk_score must sort first"
+        );
+        assert!(
+            ctx.risky_areas.iter().all(|r| r.name != "Lowest"),
+            "the lowest-risk of the six qualifying rows must be dropped by the cap, not an arbitrary one: {:?}",
+            ctx.risky_areas
+        );
+    }
+
+    #[test]
+    fn feedback_context_includes_only_confirmed_bug_drafts_never_needs_review_or_dismissed() {
+        let drafts = vec![
+            bug_draft_row("Recurring checkout crash", "CONFIRMED"),
+            bug_draft_row("Unreviewed recurring timeout", "NEEDS_REVIEW"),
+            bug_draft_row("Dismissed as environment noise", "DISMISSED"),
+        ];
+        let ctx = build_feedback_context(&[], &drafts);
+        assert_eq!(
+            ctx.confirmed_defect_patterns,
+            vec!["Recurring checkout crash".to_string()],
+            "only a human-CONFIRMED draft may reach the prompt, never NEEDS_REVIEW or DISMISSED"
+        );
+    }
+
+    #[test]
+    fn feedback_context_is_empty_default_when_there_is_no_signal_data_at_all() {
+        let ctx = build_feedback_context(&[], &[]);
+        assert_eq!(ctx, FeedbackContext::default());
+    }
+
+    #[test]
+    fn feedback_block_is_empty_string_when_context_is_empty() {
+        assert_eq!(build_feedback_block(&FeedbackContext::default()), "");
+    }
+
+    #[test]
+    fn feedback_block_carries_real_risk_and_defect_values_and_preserves_evidence_rules() {
+        let ctx = FeedbackContext {
+            risky_areas: vec![RiskHighlight {
+                name: "Checkout Flow".to_string(),
+                risk_score: 0.8,
+                flakiness_score: 0.1,
+            }],
+            confirmed_defect_patterns: vec!["Recurring checkout crash".to_string()],
+        };
+        let block = build_feedback_block(&ctx);
+        assert!(block.contains("Checkout Flow"));
+        assert!(block.contains("0.80"));
+        assert!(block.contains("Recurring checkout crash"));
+        assert!(
+            block.to_lowercase().contains("evidence rules"),
+            "the block must point back at the evidence rules, never introduce a looser path: {block}"
+        );
+        assert!(block.to_lowercase().contains("context only"));
+    }
+
+    #[test]
+    fn prompt_omits_the_feedback_section_entirely_when_context_is_empty() {
+        let prompt = build_prompt("Users can log in.", &[], &FeedbackContext::default(), &[]);
+        assert!(!prompt.contains("KNOWN HISTORICAL SIGNALS"));
+    }
+
+    #[test]
+    fn prompt_includes_the_feedback_section_with_real_values_when_context_is_present() {
+        let ctx = FeedbackContext {
+            risky_areas: vec![RiskHighlight {
+                name: "Checkout Flow".to_string(),
+                risk_score: 0.8,
+                flakiness_score: 0.1,
+            }],
+            confirmed_defect_patterns: vec!["Recurring checkout crash".to_string()],
+        };
+        let with_feedback = build_prompt("Users can log in.", &[], &ctx, &[]);
+        let without_feedback =
+            build_prompt("Users can log in.", &[], &FeedbackContext::default(), &[]);
+        assert!(with_feedback.contains("KNOWN HISTORICAL SIGNALS"));
+        assert!(with_feedback.contains("Checkout Flow"));
+        assert!(with_feedback.contains("Recurring checkout crash"));
+        assert_ne!(with_feedback, without_feedback);
+    }
+
+    // ---------------------------------------------------------- wave partitioning
+
+    #[test]
+    fn wave_for_skill_name_matches_the_architecture_briefs_own_wave_assignment() {
+        assert_eq!(wave_for_skill_name("RBAC Testing"), Wave::Dependent);
+        assert_eq!(
+            wave_for_skill_name("Business Case Testing"),
+            Wave::Dependent
+        );
+        assert_eq!(wave_for_skill_name("Security Testing"), Wave::NonFunctional);
+        assert_eq!(
+            wave_for_skill_name("Performance Testing"),
+            Wave::NonFunctional
+        );
+        // Case-insensitive, same rule `builtin_instruction` above already follows.
+        assert_eq!(wave_for_skill_name("rbac testing"), Wave::Dependent);
+    }
+
+    #[test]
+    fn wave_for_skill_name_defaults_everything_else_to_base() {
+        assert_eq!(wave_for_skill_name("Functional Testing"), Wave::Base);
+        assert_eq!(wave_for_skill_name("Edge Case Analysis"), Wave::Base);
+        assert_eq!(wave_for_skill_name("API Testing"), Wave::Base);
+        assert_eq!(wave_for_skill_name("Database Testing"), Wave::Base);
+        assert_eq!(
+            wave_for_skill_name("Boundary Testing for Indian PIN Codes"),
+            Wave::Base,
+            "an unrecognized/custom skill has no real basis to be called dependent — must default to Base"
+        );
+    }
+
+    #[test]
+    fn partition_skills_into_waves_buckets_correctly_and_preserves_relative_order() {
+        let skills = vec![
+            skill("1", "Functional Testing", ""),
+            skill("2", "RBAC Testing", ""),
+            skill("3", "Edge Case Analysis", ""),
+            skill("4", "Security Testing", ""),
+            skill("5", "Business Case Testing", ""),
+            skill("6", "Performance Testing", ""),
+        ];
+        let (base, dependent, non_functional) = partition_skills_into_waves(&skills);
+        assert_eq!(
+            base.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            vec!["1", "3"]
+        );
+        assert_eq!(
+            dependent.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            vec!["2", "5"]
+        );
+        assert_eq!(
+            non_functional
+                .iter()
+                .map(|s| s.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["4", "6"]
+        );
+    }
+
+    #[test]
+    fn partition_skills_into_waves_of_an_empty_selection_is_three_empty_buckets() {
+        let (base, dependent, non_functional) = partition_skills_into_waves(&[]);
+        assert!(base.is_empty() && dependent.is_empty() && non_functional.is_empty());
+    }
+
+    fn draft_case(title: &str, category: &str) -> GeneratedTestCaseDraft {
+        GeneratedTestCaseDraft {
+            title: title.to_string(),
+            category: category.to_string(),
+            skill_id: "skill-functional-testing".to_string(),
+            preconditions: vec![],
+            steps: vec![DraftStep {
+                action: "Do X".to_string(),
+                expected_result: "Y happens".to_string(),
+            }],
+            expected_result: "Y happens".to_string(),
+            priority: "HIGH".to_string(),
+            severity: "MAJOR".to_string(),
+            evidence: EvidenceKind::Evidenced,
+            source_reference: None,
+        }
+    }
+
+    #[test]
+    fn prior_wave_block_is_empty_string_when_there_are_no_prior_cases() {
+        assert_eq!(build_prior_wave_block(&[]), "");
+    }
+
+    #[test]
+    fn prior_wave_block_carries_real_titles_and_categories_and_says_context_only() {
+        let block = build_prior_wave_block(&[
+            draft_case("Valid login succeeds", "Functional"),
+            draft_case("Admin can access settings", "RBAC"),
+        ]);
+        assert!(block.contains("Valid login succeeds"));
+        assert!(block.contains("Functional"));
+        assert!(block.contains("Admin can access settings"));
+        assert!(block.contains("RBAC"));
+        assert!(block.to_lowercase().contains("context only"));
+        assert!(
+            block.to_lowercase().contains("do not repeat"),
+            "must explicitly tell the model not to just repeat these as new cases: {block}"
+        );
+    }
+
+    #[test]
+    fn prompt_omits_the_prior_wave_section_when_nothing_precedes_it() {
+        let prompt = build_prompt("Users can log in.", &[], &FeedbackContext::default(), &[]);
+        assert!(!prompt.contains("ALREADY-GENERATED COVERAGE"));
+    }
+
+    #[test]
+    fn prompt_includes_the_prior_wave_section_with_real_titles_when_present() {
+        let prior = vec![draft_case("Valid login succeeds", "Functional")];
+        let with_prior = build_prompt(
+            "Users can log in.",
+            &[],
+            &FeedbackContext::default(),
+            &prior,
+        );
+        let without_prior =
+            build_prompt("Users can log in.", &[], &FeedbackContext::default(), &[]);
+        assert!(with_prior.contains("ALREADY-GENERATED COVERAGE"));
+        assert!(with_prior.contains("Valid login succeeds"));
+        assert_ne!(with_prior, without_prior);
     }
 
     // ----------------------------------------------------------- validation
@@ -722,7 +1582,7 @@ mod tests {
     // ------------------------------------------------- central-router integration
 
     use crate::ai_router::test_support::{
-        healthy_model, healthy_provider, FakeDiscovery, FakeExecutor,
+        healthy_model, healthy_provider, FakeDiscovery, FakeExecutor, RecordingExecutor,
     };
     use crate::ai_router::{AiInfrastructure, CapabilityLevel, ExecutionError};
     use std::collections::HashMap;
@@ -765,6 +1625,7 @@ mod tests {
             &infra,
             "Password must be at least 8 characters.",
             &[skill("s", "Security Testing", "")],
+            &FeedbackContext::default(),
         )
         .await;
         match outcome {
@@ -780,6 +1641,229 @@ mod tests {
             }
             GenerationOutcome::Failed { reason } => {
                 panic!("expected Ai outcome, got Failed: {reason}")
+            }
+        }
+    }
+
+    // --------------------------------------------------------- wave orchestration
+    // `RecordingExecutor` (unlike `FakeExecutor`) scripts a real *sequence* of
+    // responses and records every real prompt sent — the only way to prove
+    // wave-based generation makes genuinely separate real calls with
+    // genuinely different content, not one combined call relabeled.
+
+    fn infra_with_recording_executor(
+        responses: Vec<&str>,
+    ) -> (AiInfrastructure, Arc<RecordingExecutor>) {
+        let recorder = Arc::new(RecordingExecutor::ok_sequence(responses));
+        let mut executors: HashMap<&'static str, Arc<dyn crate::ai_router::AiExecutor>> =
+            HashMap::new();
+        executors.insert("mock", recorder.clone());
+        let infra = AiInfrastructure::new(
+            vec![Arc::new(FakeDiscovery(healthy_provider(
+                "mock",
+                vec![healthy_model("mock-model", "mock", CapabilityLevel::Strong)],
+            )))],
+            executors,
+        );
+        (infra, recorder)
+    }
+
+    #[tokio::test]
+    async fn wave_orchestration_makes_one_real_separate_call_per_non_empty_wave_seeing_prior_output(
+    ) {
+        let requirement = "Users can log in. Admins can manage settings.";
+        let base_response = r#"{"test_cases":[{"title":"Valid login succeeds","category":"Functional","skill_id":"skill-functional-testing","preconditions":[],"steps":[{"action":"Log in with valid credentials","expected_result":"User reaches dashboard"}],"expected_result":"User reaches dashboard","priority":"HIGH","severity":"MAJOR","evidence":"evidenced","source_reference":"log in"}]}"#;
+        let dependent_response = r#"{"test_cases":[{"title":"Non-admin cannot access settings","category":"RBAC","skill_id":"skill-rbac-testing","preconditions":[],"steps":[{"action":"Log in as non-admin and try to access settings","expected_result":"Access denied"}],"expected_result":"Access denied","priority":"HIGH","severity":"MAJOR","evidence":"evidenced","source_reference":"Admins can manage settings"}]}"#;
+        let non_functional_response = r#"{"test_cases":[{"title":"Privilege escalation attempt is blocked","category":"Security","skill_id":"skill-security-testing","preconditions":[],"steps":[{"action":"Attempt to escalate a non-admin session to admin via direct API manipulation","expected_result":"Request rejected"}],"expected_result":"Request rejected","priority":"CRITICAL","severity":"CRITICAL","evidence":"inferred","source_reference":null}]}"#;
+
+        let (infra, recorder) = infra_with_recording_executor(vec![
+            base_response,
+            dependent_response,
+            non_functional_response,
+        ]);
+
+        let outcome = generate_test_cases(
+            &infra,
+            requirement,
+            &[
+                skill("f", "Functional Testing", ""),
+                skill("r", "RBAC Testing", ""),
+                skill("s", "Security Testing", ""),
+            ],
+            &FeedbackContext::default(),
+        )
+        .await;
+
+        let cases = match outcome {
+            GenerationOutcome::Ai { cases, waves, .. } => {
+                assert_eq!(waves.len(), 3, "waves={waves:?}");
+                assert!(waves.iter().all(|w| !w.skipped), "waves={waves:?}");
+                assert_eq!(waves[0].wave, "base");
+                assert_eq!(waves[1].wave, "dependent");
+                assert_eq!(waves[2].wave, "non_functional");
+                cases
+            }
+            GenerationOutcome::Failed { reason } => {
+                panic!("expected Ai outcome, got Failed: {reason}")
+            }
+        };
+        assert_eq!(
+            cases.len(),
+            3,
+            "one real case from each of the three real waves"
+        );
+
+        let prompts = recorder.prompts.lock().unwrap();
+        assert_eq!(
+            prompts.len(),
+            3,
+            "must be three genuinely separate real calls, not one combined call"
+        );
+        assert!(
+            !prompts[0].contains("ALREADY-GENERATED COVERAGE"),
+            "Base is first — nothing precedes it: {}",
+            prompts[0]
+        );
+        assert!(
+            prompts[1].contains("Valid login succeeds"),
+            "Dependent must see Base's real output: {}",
+            prompts[1]
+        );
+        assert!(
+            prompts[2].contains("Valid login succeeds")
+                && prompts[2].contains("Non-admin cannot access settings"),
+            "NonFunctional must see both Base's and Dependent's real output: {}",
+            prompts[2]
+        );
+    }
+
+    #[tokio::test]
+    async fn wave_orchestration_makes_exactly_one_real_call_for_a_selection_in_a_single_wave() {
+        let response = r#"{"test_cases":[
+            {"title":"Valid login succeeds","category":"Functional","skill_id":"skill-functional-testing",
+             "preconditions":[],"steps":[{"action":"Log in with valid credentials","expected_result":"User reaches dashboard"}],
+             "expected_result":"User reaches dashboard","priority":"HIGH","severity":"MAJOR","evidence":"evidenced","source_reference":"log in"},
+            {"title":"Empty password rejected","category":"Edge Case","skill_id":"skill-edge-case-analysis",
+             "preconditions":[],"steps":[{"action":"Submit an empty password","expected_result":"Validation error shown"}],
+             "expected_result":"Validation error shown","priority":"MEDIUM","severity":"MINOR","evidence":"inferred","source_reference":null}
+        ]}"#;
+        // Only ONE scripted response — `RecordingExecutor` panics on a second
+        // real call, so this is itself a real assertion that Functional +
+        // Edge Case (both Base) still make exactly one combined call, same
+        // as before wave-based generation existed.
+        let (infra, recorder) = infra_with_recording_executor(vec![response]);
+        let outcome = generate_test_cases(
+            &infra,
+            "Users can log in.",
+            &[
+                skill("f", "Functional Testing", ""),
+                skill("e", "Edge Case Analysis", ""),
+            ],
+            &FeedbackContext::default(),
+        )
+        .await;
+        match outcome {
+            GenerationOutcome::Ai { cases, waves, .. } => {
+                assert_eq!(cases.len(), 2);
+                assert_eq!(
+                    waves.iter().filter(|w| !w.skipped).count(),
+                    1,
+                    "waves={waves:?}"
+                );
+            }
+            GenerationOutcome::Failed { reason } => {
+                panic!("expected Ai outcome, got Failed: {reason}")
+            }
+        }
+        assert_eq!(recorder.prompts.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn wave_orchestration_reports_ai_when_base_succeeds_even_if_the_optional_dependent_wave_fails(
+    ) {
+        // Base's one real call succeeds; Dependent's one real call fails
+        // outright (no retry — a raw execution error returns immediately,
+        // unlike a validation failure). Exactly two scripted responses.
+        let recorder = Arc::new(RecordingExecutor::sequence(vec![
+            Ok(r#"{"test_cases":[{"title":"Valid login succeeds","category":"Functional","skill_id":"skill-functional-testing","preconditions":[],"steps":[{"action":"Log in with valid credentials","expected_result":"User reaches dashboard"}],"expected_result":"User reaches dashboard","priority":"HIGH","severity":"MAJOR","evidence":"evidenced","source_reference":"log in"}]}"#.to_string()),
+            Err(ExecutionError::Timeout),
+        ]));
+        let mut executors: HashMap<&'static str, Arc<dyn crate::ai_router::AiExecutor>> =
+            HashMap::new();
+        executors.insert("mock", recorder.clone());
+        let infra = AiInfrastructure::new(
+            vec![Arc::new(FakeDiscovery(healthy_provider(
+                "mock",
+                vec![healthy_model("mock-model", "mock", CapabilityLevel::Strong)],
+            )))],
+            executors,
+        );
+
+        let outcome = generate_test_cases(
+            &infra,
+            "Users can log in.",
+            &[
+                skill("f", "Functional Testing", ""),
+                skill("r", "RBAC Testing", ""),
+            ],
+            &FeedbackContext::default(),
+        )
+        .await;
+        match outcome {
+            GenerationOutcome::Ai { cases, waves, .. } => {
+                assert_eq!(
+                    cases.len(),
+                    1,
+                    "Base's real success must not be discarded just because the optional Dependent wave failed"
+                );
+                let dependent = waves
+                    .iter()
+                    .find(|w| w.wave == "dependent")
+                    .expect("dependent wave summary must be present");
+                assert!(!dependent.skipped);
+                assert!(
+                    dependent.failure_reason.is_some(),
+                    "the Dependent wave's real failure must stay visible: waves={waves:?}"
+                );
+            }
+            GenerationOutcome::Failed { reason } => panic!(
+                "expected a partial Ai outcome (Base succeeded) not a total Failed: {reason}"
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn wave_orchestration_fails_only_when_every_attempted_wave_fails() {
+        let recorder = Arc::new(RecordingExecutor::sequence(vec![
+            Err(ExecutionError::Timeout),
+            Err(ExecutionError::Timeout),
+        ]));
+        let mut executors: HashMap<&'static str, Arc<dyn crate::ai_router::AiExecutor>> =
+            HashMap::new();
+        executors.insert("mock", recorder.clone());
+        let infra = AiInfrastructure::new(
+            vec![Arc::new(FakeDiscovery(healthy_provider(
+                "mock",
+                vec![healthy_model("mock-model", "mock", CapabilityLevel::Strong)],
+            )))],
+            executors,
+        );
+        let outcome = generate_test_cases(
+            &infra,
+            "Users can log in.",
+            &[
+                skill("f", "Functional Testing", ""),
+                skill("r", "RBAC Testing", ""),
+            ],
+            &FeedbackContext::default(),
+        )
+        .await;
+        match outcome {
+            GenerationOutcome::Failed { reason } => {
+                assert!(reason.contains("TIMEOUT"), "reason={reason}")
+            }
+            GenerationOutcome::Ai { .. } => {
+                panic!("every attempted wave failed — must never fabricate a success")
             }
         }
     }
@@ -838,6 +1922,7 @@ mod tests {
             &infra,
             "Password must be at least 8 characters.",
             &[skill("s", "Security Testing", "")],
+            &FeedbackContext::default(),
         )
         .await;
         match outcome {
@@ -851,7 +1936,8 @@ mod tests {
     #[tokio::test]
     async fn integration_returns_failed_outcome_on_provider_timeout_never_a_fabricated_success() {
         let infra = infra_with_executor_error(ExecutionError::Timeout);
-        let outcome = generate_test_cases(&infra, "Anything.", &[]).await;
+        let outcome =
+            generate_test_cases(&infra, "Anything.", &[], &FeedbackContext::default()).await;
         match outcome {
             GenerationOutcome::Failed { reason } => assert!(reason.contains("TIMEOUT")),
             GenerationOutcome::Ai { .. } => {
@@ -863,15 +1949,21 @@ mod tests {
     #[tokio::test]
     async fn integration_returns_failed_outcome_on_invalid_structured_output() {
         let infra = infra_with_executor_response("not json at all");
-        let outcome = generate_test_cases(&infra, "Anything.", &[]).await;
+        let outcome =
+            generate_test_cases(&infra, "Anything.", &[], &FeedbackContext::default()).await;
         assert!(matches!(outcome, GenerationOutcome::Failed { .. }));
     }
 
     #[tokio::test]
     async fn integration_returns_failed_outcome_on_empty_object_payload() {
         let infra = infra_with_executor_response("{}");
-        let outcome =
-            generate_test_cases(&infra, "Users log in with email and password.", &[]).await;
+        let outcome = generate_test_cases(
+            &infra,
+            "Users log in with email and password.",
+            &[],
+            &FeedbackContext::default(),
+        )
+        .await;
         match outcome {
             GenerationOutcome::Failed { reason } => {
                 assert!(
@@ -936,6 +2028,7 @@ mod tests {
             &infra,
             "Users log in with email and password. On success they reach the dashboard.",
             &[skill("f", "Functional Testing", "")],
+            &FeedbackContext::default(),
         )
         .await;
 
@@ -983,6 +2076,7 @@ mod tests {
                 skill("f", "Functional Testing", ""),
                 skill("e", "Edge Case Analysis", ""),
             ],
+            &FeedbackContext::default(),
         )
         .await;
         match outcome {
@@ -1020,10 +2114,20 @@ mod tests {
         let infra = AiInfrastructure::from_env();
         infra.discover_all().await;
 
-        let functional_only =
-            generate_test_cases(&infra, requirement, &[skill("f", "Functional Testing", "")]).await;
-        let security_only =
-            generate_test_cases(&infra, requirement, &[skill("s", "Security Testing", "")]).await;
+        let functional_only = generate_test_cases(
+            &infra,
+            requirement,
+            &[skill("f", "Functional Testing", "")],
+            &FeedbackContext::default(),
+        )
+        .await;
+        let security_only = generate_test_cases(
+            &infra,
+            requirement,
+            &[skill("s", "Security Testing", "")],
+            &FeedbackContext::default(),
+        )
+        .await;
 
         let functional_cases = match functional_only {
             GenerationOutcome::Ai {
