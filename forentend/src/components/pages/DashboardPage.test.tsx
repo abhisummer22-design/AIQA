@@ -963,7 +963,7 @@ describe('DashboardPage — real AI Engine panel', () => {
     expect(within(panel).getByText('NOT_CONFIGURED')).toBeTruthy();
   });
 
-  it('the particle sphere size and colour mix are both real, derived from the real routing score and real capability levels', async () => {
+  it('the network diagram has one real input node per capability field, coloured by its real evidenced level', async () => {
     setApiKey(RAW_KEY);
     mockWithAiStatus();
     renderApp();
@@ -971,24 +971,54 @@ describe('DashboardPage — real AI Engine panel', () => {
     await openAndSelectProject(PROJECT_A);
 
     const orb = await waitFor(() => document.getElementById('ai-engine-orb')!);
-    // Real routing score 211.48 -> round(211.48/10)*10 = 210 particles —
-    // the count is derived from real data, never a decorative number.
-    const allParticles = orb.querySelectorAll('[data-level]');
-    expect(allParticles.length).toBe(210);
-    // Real capability levels (text_generation/tool_use STRONG,
-    // structured_output/reasoning BASIC, long_context UNKNOWN,
-    // vision/embedding NONE) cycle evenly across 210 particles (210 / 7
-    // real capability fields = 30 each) — the real *ratio*, not a random
-    // palette.
-    expect(orb.querySelectorAll('[data-level="STRONG"]').length).toBe(60);
-    expect(orb.querySelectorAll('[data-level="BASIC"]').length).toBe(60);
-    expect(orb.querySelectorAll('[data-level="UNKNOWN"]').length).toBe(30);
-    expect(orb.querySelectorAll('[data-level="NONE"]').length).toBe(60);
-    // The real routing score is rendered inside the core.
+    expect(orb.getAttribute('data-live')).toBe('true');
+    // Exactly one input node per real field on `AiModelCapabilities` —
+    // never a count derived from anything else.
+    expect(orb.querySelectorAll('[data-node="input"]').length).toBe(7);
+    // Each node's colour is that exact real field's evidenced level
+    // (text_generation/tool_use STRONG, structured_output/reasoning BASIC,
+    // long_context UNKNOWN, vision/embedding NONE) — the real per-field
+    // mix, not a random palette.
+    expect(orb.querySelector('[data-capability="text_generation"]')?.getAttribute('data-level')).toBe('STRONG');
+    expect(orb.querySelector('[data-capability="tool_use"]')?.getAttribute('data-level')).toBe('STRONG');
+    expect(orb.querySelector('[data-capability="structured_output"]')?.getAttribute('data-level')).toBe('BASIC');
+    expect(orb.querySelector('[data-capability="reasoning"]')?.getAttribute('data-level')).toBe('BASIC');
+    expect(orb.querySelector('[data-capability="long_context"]')?.getAttribute('data-level')).toBe('UNKNOWN');
+    expect(orb.querySelector('[data-capability="vision"]')?.getAttribute('data-level')).toBe('NONE');
+    expect(orb.querySelector('[data-capability="embedding"]')?.getAttribute('data-level')).toBe('NONE');
+    // The real routing score is rendered inside the output node.
     expect(orb.textContent).toContain('211');
+    // Every one of the 8 real connections touching the real winning
+    // provider (7 inputs + provider->output) carries a genuinely moving
+    // pulse while a route exists.
+    expect(orb.querySelectorAll('animate').length).toBe(8);
   });
 
-  it('the orb goes inert with no route — no spin, no score, a small idle field, and it says so', async () => {
+  it('the hidden layer is the real discovered providers, not a decorative node count — the real winner is highlighted, the rest are not', async () => {
+    setApiKey(RAW_KEY);
+    mockWithAiStatus();
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+
+    const orb = await waitFor(() => document.getElementById('ai-engine-orb')!);
+    // One hidden node per real provider from GET /api/v1/ai/status —
+    // exactly 2 here (ollama, mj-gateway), never a fixed decorative count.
+    const hiddenNodes = orb.querySelectorAll('[data-node="hidden"]');
+    expect(hiddenNodes.length).toBe(2);
+    // ollama is the real routing_preview.provider_id -> its node is the
+    // real winner, coloured by its real HEALTHY status.
+    const ollama = orb.querySelector('[data-provider="ollama"]')!;
+    expect(ollama.getAttribute('data-status')).toBe('HEALTHY');
+    expect(ollama.getAttribute('data-active')).toBe('true');
+    // mj-gateway is real, discovered, and shown — but it did not win, so
+    // its node is not highlighted, even though it is genuinely present.
+    const mjGateway = orb.querySelector('[data-provider="mj-gateway"]')!;
+    expect(mjGateway.getAttribute('data-status')).toBe('NOT_CONFIGURED');
+    expect(mjGateway.getAttribute('data-active')).toBe('false');
+  });
+
+  it('the diagram goes inert with no route — no flow, no score, an honest idle field, and it says so', async () => {
     setApiKey(RAW_KEY);
     mockWithAiStatus({ ...AI_STATUS_BODY, routing_preview: null });
     renderApp();
@@ -996,14 +1026,20 @@ describe('DashboardPage — real AI Engine panel', () => {
     await openAndSelectProject(PROJECT_A);
 
     const orb = await waitFor(() => document.getElementById('ai-engine-orb')!);
+    expect(orb.getAttribute('data-live')).toBe('false');
     expect(orb.textContent).toContain('NO ROUTE');
     expect(orb.textContent).not.toContain('211');
-    // No route -> the small idle fallback field, never the real-score-sized
-    // sphere left over from a stale render.
-    expect(orb.querySelectorAll('[data-level="idle"]').length).toBe(36);
+    // No route -> all seven input nodes fall back to the same honest idle
+    // grey, never a stale real level left over from a previous render.
+    expect(orb.querySelectorAll('[data-node="input"][data-level="idle"]').length).toBe(7);
+    // The real providers are still genuinely discovered and still shown —
+    // "no route" is a fact about the routing decision, not about whether
+    // providers exist — but neither is highlighted as a winner.
+    expect(orb.querySelectorAll('[data-node="hidden"]').length).toBe(2);
+    expect(orb.querySelectorAll('[data-node="hidden"][data-active="true"]').length).toBe(0);
     // Nothing animates when nothing is routable — motion must always mean
     // something real is true.
-    expect(orb.innerHTML).not.toContain('orbSphereSpin 22s');
+    expect(orb.querySelectorAll('animate').length).toBe(0);
   });
 
   it('shows no route at all when the backend reports none — nothing fabricated in its place', async () => {
