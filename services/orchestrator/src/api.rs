@@ -287,6 +287,10 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/projects/:project_id/verify-application-source",
             post(verify_application_source_scoped),
         )
+        .route(
+            "/api/v1/projects/:project_id/documents/extract-text",
+            post(extract_document_text_scoped),
+        )
         // Phase 6 — Performance Testing: real Load/Stress/Spike/Volume
         // workload generation (`performance_testing.rs`). Reuses the exact
         // Phase 4 per-request execution core (`executor::execute_plan_once`,
@@ -2502,6 +2506,65 @@ async fn verify_application_source_scoped(
     )
     .await;
     Ok(Json(result))
+}
+
+#[derive(Deserialize)]
+struct ExtractDocumentTextBody {
+    file_name: String,
+    /// Standard base64 (RFC 4648) of the real, unmodified file bytes —
+    /// sent as JSON rather than multipart/form-data so this endpoint uses
+    /// the exact same `ApiJson` request path every other endpoint in this
+    /// API already does, instead of a second, one-off upload mechanism.
+    content_base64: String,
+}
+
+/// Base64 text length before decoding, not the decoded byte count — a
+/// generous ceiling for the real requirement documents (PRD/FRD/SRD/etc.)
+/// this endpoint exists for, while still bounding memory use against an
+/// oversized/malicious payload before a single byte is decoded.
+const MAX_DOCUMENT_BASE64_LEN: usize = 20_000_000;
+
+/// POST /api/v1/projects/:project_id/documents/extract-text — real content
+/// extraction for one uploaded Product Documentation file
+/// (`doc_extract.rs`). Before this endpoint existed, an uploaded PRD/FRD
+/// contributed nothing but its own filename to AI generation; this is what
+/// makes that content genuinely available. `Role::Operator`, matching
+/// every other endpoint that does real, non-trivial server-side work on
+/// caller-supplied content in this project.
+async fn extract_document_text_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiJson(body): ApiJson<ExtractDocumentTextBody>,
+) -> Result<Json<crate::doc_extract::ExtractedDocument>, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    require_scoped_project(&state, &ctx, project_id).await?;
+
+    if body.content_base64.len() > MAX_DOCUMENT_BASE64_LEN {
+        return Err(ApiError::validation(
+            "this file is too large for content extraction (20MB encoded limit).",
+        ));
+    }
+
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(body.content_base64.as_bytes())
+        .map_err(|e| ApiError::validation(format!("content_base64 is not valid base64: {e}")))?;
+
+    let result = crate::doc_extract::extract_text(&body.file_name, &bytes);
+    audit(
+        &state,
+        &ctx,
+        "document.extract_text",
+        None,
+        Some(&body.file_name),
+        if result.is_ok() { "ok" } else { "extraction_failed" },
+    )
+    .await;
+
+    result
+        .map(Json)
+        .map_err(ApiError::validation)
 }
 
 // ---------------------------------------------------- Phase 6 — Performance Testing

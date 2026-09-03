@@ -503,23 +503,27 @@ export const TestCaseGeneratorPage: React.FC = () => {
   // the real endpoint, so they are folded into `requirement_text` itself
   // as plain, clearly-labeled instruction/context lines — a real way to
   // give them influence over the actual prompt without inventing a backend
-  // field that does not exist. Document/app-source *content* is never
-  // claimed to reach the model, because it genuinely never does today
-  // (neither `DocumentUploadSection` nor `ApplicationSourceSection`
-  // extracts or fetches real content) — see the Phase 1 implementation
-  // report §18 for this limitation stated in full.
+  // field that does not exist.
+  //
+  // Document *content* genuinely does reach the model now
+  // (`doc_extract.rs`, wired through `DocumentUploadSection`'s real
+  // extraction call): each document below carries its own real, extracted
+  // text when extraction succeeded, or an honest, specific reason when it
+  // didn't (e.g. a legacy .doc/.pdf this app cannot yet parse) — never a
+  // silent "content not analyzed" claim papering over either case.
   const buildRequirementText = (): string => {
     const parts: string[] = [];
     if (selectedCategories.length > 0) {
       parts.push(`Focus particularly on these test categories where applicable: ${selectedCategories.join(', ')}.`);
     }
     parts.push(`Requested generation depth: ${depth}.`);
-    if (documents.length > 0) {
-      parts.push(
-        `Attached documents (names only — content is not analyzed by this request): ${documents
-          .map((d) => d.slotId)
-          .join(', ')}.`
-      );
+    for (const doc of documents) {
+      if (doc.extractedText) {
+        const truncatedNote = doc.extractedTruncated ? ' (truncated to the first 20,000 characters)' : '';
+        parts.push(`=== ${doc.label} — ${doc.fileName}${truncatedNote} ===\n${doc.extractedText}`);
+      } else if (doc.extractionError) {
+        parts.push(`${doc.label} (${doc.fileName}) is attached, but its real content could not be analyzed: ${doc.extractionError}`);
+      }
     }
     const connectedSources = (Object.values(appSources) as AppSourceConnection[]).filter((a) => a.status === 'CONNECTED');
     if (connectedSources.length > 0) {
@@ -957,6 +961,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
               <DocumentUploadSection
                 documents={documents}
                 onDocumentsChange={setDocuments}
+                projectId={realProjectId}
                 disabled={isGeneratingNow}
               />
             </div>

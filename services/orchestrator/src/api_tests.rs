@@ -6500,6 +6500,182 @@ async fn app_source_verify_project_isolation_enforced() {
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
 }
 
+// ================================== Truthfulness Cleanup — real Product
+// Documentation content extraction (Test Case Generator)
+
+/// Builds a real, valid minimal .docx (a genuine zip archive with a real
+/// `word/document.xml` body) — mirrors `doc_extract.rs`'s own unit-test
+/// helper, exercised here through the real HTTP endpoint end-to-end.
+fn build_test_docx_bytes(paragraphs: &[&str]) -> Vec<u8> {
+    use std::io::Write;
+    let body: String = paragraphs
+        .iter()
+        .map(|p| format!("<w:p><w:r><w:t>{p}</w:t></w:r></w:p>"))
+        .collect();
+    let document_xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>{body}</w:body>
+</w:document>"#
+    );
+    let mut buf = Vec::new();
+    {
+        let cursor = std::io::Cursor::new(&mut buf);
+        let mut zip = zip::ZipWriter::new(cursor);
+        let options: zip::write::FileOptions<'_, ()> =
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        zip.start_file("word/document.xml", options).unwrap();
+        zip.write_all(document_xml.as_bytes()).unwrap();
+        zip.finish().unwrap();
+    }
+    buf
+}
+
+fn b64(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+#[tokio::test]
+async fn extract_document_text_reads_the_real_content_of_a_real_docx() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Doc Extract - Real Docx").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let docx = build_test_docx_bytes(&["Agents must self-register.", "Admin approval is required before login."]);
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/documents/extract-text"),
+            Some(&owner),
+            Some(serde_json::json!({"file_name": "BRD.docx", "content_base64": b64(&docx)})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(
+        body["text"],
+        "Agents must self-register.\nAdmin approval is required before login.",
+        "body={body}"
+    );
+    assert_eq!(body["truncated"], false, "body={body}");
+    assert!(body["char_count"].as_u64().unwrap() > 0, "body={body}");
+}
+
+#[tokio::test]
+async fn extract_document_text_reads_plain_text_formats_verbatim() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Doc Extract - Plain Text").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/documents/extract-text"),
+            Some(&owner),
+            Some(serde_json::json!({"file_name": "notes.md", "content_base64": b64(b"# Real Spec\n\nDo the real thing.")})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["text"], "# Real Spec\n\nDo the real thing.", "body={body}");
+}
+
+#[tokio::test]
+async fn extract_document_text_reports_a_real_specific_error_for_legacy_doc_not_a_fake_success() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Doc Extract - Legacy Doc").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/documents/extract-text"),
+            Some(&owner),
+            Some(serde_json::json!({"file_name": "RTM.doc", "content_base64": b64(b"anything")})),
+        ),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK, "a legacy .doc must never report a fake success; body={body}");
+    let message = body["error"]["message"].as_str().unwrap_or_default();
+    assert!(message.contains(".doc"), "expected the real error to name the .doc limitation; body={body}");
+}
+
+#[tokio::test]
+async fn extract_document_text_rejects_invalid_base64_with_a_real_validation_error() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Doc Extract - Invalid Base64").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/documents/extract-text"),
+            Some(&owner),
+            Some(serde_json::json!({"file_name": "notes.txt", "content_base64": "not-valid-base64!!!"})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+}
+
+#[tokio::test]
+async fn extract_document_text_rbac_viewer_forbidden_operator_allowed() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Doc Extract - RBAC").await;
+    let viewer = mint_key(&state, "viewer", Some(&project.to_string())).await;
+    let operator = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let payload = serde_json::json!({"file_name": "notes.txt", "content_base64": b64(b"hello")});
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/documents/extract-text"),
+            Some(&viewer),
+            Some(payload.clone()),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/documents/extract-text"),
+            Some(&operator),
+            Some(payload),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+}
+
+#[tokio::test]
+async fn extract_document_text_project_isolation_enforced() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project_a = make_project(&state, "Doc Extract - Isolation A").await;
+    let project_b = make_project(&state, "Doc Extract - Isolation B").await;
+    let owner_b = mint_key(&state, "operator", Some(&project_b.to_string())).await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_a}/documents/extract-text"),
+            Some(&owner_b),
+            Some(serde_json::json!({"file_name": "notes.txt", "content_base64": b64(b"hello")})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+}
+
 // ================================== Phase 6 ERROR-fix — run-level supervision
 //
 // These deliberately do NOT go through the real `POST .../performance-testing/

@@ -157,6 +157,31 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
   const activeTestCase =
     testCases.find((tc) => tc.id === selectedTestCaseId) || testCases[0] || null;
 
+  // Human-readable "TC-01" style label shown to the user in place of the
+  // real backend UUID (`tc.id`) — the UUID itself is untouched and still
+  // used for every functional purpose (React key, selection, API calls).
+  // Prefers a label already baked into `traceability.testCaseId` (the
+  // AI-generation path already sets one, e.g. "AI-001", at draft time) so
+  // AI-generated cases keep their existing label; any case without one
+  // (e.g. a manually-authored case) gets a stable ordinal assigned by
+  // real creation order (`generatedAt` ascending — the oldest case is
+  // always TC-01, regardless of the current sort/filter), so the label
+  // never shifts around when the list is filtered or reordered.
+  const displayIdById = useMemo(() => {
+    const byAge = [...testCases].sort((a, b) => {
+      const ta = a.generatedAt ? Date.parse(a.generatedAt) : 0;
+      const tb = b.generatedAt ? Date.parse(b.generatedAt) : 0;
+      return ta - tb;
+    });
+    const map = new Map<string, string>();
+    byAge.forEach((tc, idx) => {
+      const existing = tc.traceability?.testCaseId?.trim();
+      map.set(tc.id, existing || `TC-${String(idx + 1).padStart(2, '0')}`);
+    });
+    return map;
+  }, [testCases]);
+  const getDisplayId = (tc: GeneratedTestCase): string => displayIdById.get(tc.id) ?? tc.id;
+
   // Filtered cases
   const filteredCases = testCases.filter((tc) => {
     if (selectedCategory !== 'ALL' && resolveCategoryId(tc.category) !== selectedCategory) return false;
@@ -166,6 +191,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
       const q = searchQuery.toLowerCase();
       return (
         tc.id.toLowerCase().includes(q) ||
+        getDisplayId(tc).toLowerCase().includes(q) ||
         tc.title.toLowerCase().includes(q) ||
         tc.description?.toLowerCase().includes(q) ||
         tc.objective?.toLowerCase().includes(q) ||
@@ -591,7 +617,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                     <div className="flex items-center justify-between gap-1.5 mb-1.5">
                       <div className="flex items-center gap-2">
                         <span className="text-xs font-mono font-bold text-cyan-400 tracking-wide">
-                          {tc.id}
+                          {getDisplayId(tc)}
                         </span>
                         <span className="text-[10px] font-mono text-indigo-300 bg-indigo-950/60 px-1.5 py-0.2 rounded border border-indigo-800/60 truncate max-w-[110px]">
                           {tc.category}
@@ -643,7 +669,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                         Test Case ID
                       </span>
                       <span className="text-sm font-mono font-bold text-cyan-300 tracking-wide">
-                        {activeTestCase.id}
+                        {getDisplayId(activeTestCase)}
                       </span>
                     </div>
 
@@ -950,7 +976,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
               <div className="xl:col-span-12 pt-2">
                 <TraceabilityGraph
                   traceability={activeTestCase.traceability}
-                  testCaseId={activeTestCase.id}
+                  testCaseId={getDisplayId(activeTestCase)}
                   category={activeTestCase.category}
                   sourceDoc={activeTestCase.sourceDocument}
                   requirementRef={activeTestCase.requirementReference}
