@@ -16,7 +16,7 @@ use axum::{
     extract::{Extension, Path, Query, State},
     http::{HeaderValue, StatusCode},
     response::{IntoResponse, Json, Response},
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
     Router,
 };
 use serde::{Deserialize, Serialize};
@@ -172,6 +172,21 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/projects/:project_id/intelligence/tests",
             get(list_test_intelligence_scoped),
         )
+        // Phase 4 (requirement graph) — see `get_requirement_impact_scoped`'s
+        // doc comment.
+        .route(
+            "/api/v1/projects/:project_id/requirement-impact",
+            get(get_requirement_impact_scoped),
+        )
+        // Phase 6 (crawler) — see `start_crawl_scoped`'s doc comment.
+        .route(
+            "/api/v1/projects/:project_id/crawl",
+            post(start_crawl_scoped),
+        )
+        .route(
+            "/api/v1/projects/:project_id/crawl/:run_id/result",
+            get(get_crawl_result_scoped),
+        )
         // AUD-005 — real, persisted Test Case CRUD + lifecycle + execution
         // handoff. See the "test cases" section below for every handler.
         .route(
@@ -204,6 +219,36 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/projects/:project_id/test-cases/:id/compile",
             post(compile_test_case_scoped),
+        )
+        // Phase 5 (Output maturity) — plan -> suite -> case hierarchy. See
+        // the "test plans / test suites" section for every handler.
+        .route(
+            "/api/v1/projects/:project_id/test-cases/:id/suite",
+            put(set_test_case_suite_scoped),
+        )
+        .route(
+            "/api/v1/projects/:project_id/test-plans",
+            post(create_test_plan_scoped).get(list_test_plans_scoped),
+        )
+        .route(
+            "/api/v1/projects/:project_id/test-plans/:id",
+            get(get_test_plan_scoped)
+                .patch(update_test_plan_scoped)
+                .delete(delete_test_plan_scoped),
+        )
+        .route(
+            "/api/v1/projects/:project_id/test-suites",
+            post(create_test_suite_scoped).get(list_test_suites_scoped),
+        )
+        .route(
+            "/api/v1/projects/:project_id/test-suites/:id",
+            get(get_test_suite_scoped)
+                .patch(update_test_suite_scoped)
+                .delete(delete_test_suite_scoped),
+        )
+        .route(
+            "/api/v1/projects/:project_id/test-suites/:id/plan",
+            put(set_test_suite_plan_scoped),
         )
         // Phase 2 — real, skill-aware AI test case generation. Produces
         // drafts only (never persists) — the caller then uses the existing
@@ -1223,6 +1268,36 @@ async fn create_test_case_scoped(
         .await
         .map_err(to_500)?;
 
+    // Real requirement-graph edge (Phase 4 — see `intelligence.rs`'s own
+    // doc comment). A write failure here must never undo an already-real,
+    // already-persisted test case — logged honestly, never propagated as a
+    // 500 for what is genuinely supplementary graph bookkeeping, not the
+    // core feature this endpoint exists for.
+    if let Err(e) = crate::intelligence::Intelligence::new(&state.store)
+        .link_test_case_to_requirement(
+            &project_id.to_string(),
+            id,
+            &body.title,
+            body.requirement_reference.as_deref(),
+            body.source_requirement.as_deref(),
+        )
+        .await
+    {
+        state
+            .log_bus
+            .emit(
+                "WARN",
+                "quality_graph",
+                &format!(
+                    "Could not link test case {id} to its requirement in the quality graph: {e}"
+                ),
+                None,
+                Some(&project_id.to_string()),
+                None,
+            )
+            .await;
+    }
+
     audit(
         &state,
         &ctx,
@@ -1246,10 +1321,15 @@ async fn create_test_case_scoped(
 struct ListTestCasesQuery {
     #[serde(default)]
     status: Option<String>,
+    /// Phase 5 (Output maturity) — `?suite_id=<uuid>` narrows to one suite,
+    /// same optional-filter shape `status` already uses.
+    #[serde(default)]
+    suite_id: Option<Uuid>,
 }
 
 /// GET /api/v1/projects/:project_id/test-cases — project-scoped, optionally
-/// filtered to one lifecycle status (`?status=APPROVED`, etc).
+/// filtered to one lifecycle status (`?status=APPROVED`) and/or one suite
+/// (`?suite_id=<uuid>`).
 async fn list_test_cases_scoped(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -1259,7 +1339,7 @@ async fn list_test_cases_scoped(
     require_scoped_project(&state, &ctx, project_id).await?;
     let rows = state
         .store
-        .list_test_cases(&project_id.to_string(), q.status.as_deref())
+        .list_test_cases(&project_id.to_string(), q.status.as_deref(), q.suite_id)
         .await
         .map_err(to_500)?;
     Ok(Json(rows))
@@ -1387,6 +1467,62 @@ async fn delete_test_case_scoped(
     )
     .await;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// PUT .../test-cases/:id/suite — Phase 5 (Output maturity). See
+/// `domain.rs::SetTestCaseSuiteRequest`'s own doc comment for why this is
+/// its own endpoint rather than a `PATCH` field: `suite_id: null` must be
+/// able to explicitly detach a case from its suite. When a real `suite_id`
+/// is given, it must genuinely belong to this same project — cross-project
+/// assignment is rejected the same way `require_scoped_project` already
+/// rejects cross-project access everywhere else in this file, not left as
+/// a silent dangling reference.
+async fn set_test_case_suite_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
+    ApiJson(body): ApiJson<SetTestCaseSuiteRequest>,
+) -> Result<Json<crate::store::TestCaseRow>, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    require_scoped_project(&state, &ctx, project_id).await?;
+    scoped_test_case(&state, &ctx, project_id, id).await?;
+    if let Some(suite_id) = body.suite_id {
+        let suite = state
+            .store
+            .get_test_suite(suite_id)
+            .await
+            .map_err(to_500)?
+            .ok_or_else(|| ApiError::validation("suite_id does not refer to a real suite"))?;
+        if suite.project_id != project_id.to_string() {
+            return Err(ApiError::validation(
+                "suite_id refers to a suite in a different project",
+            ));
+        }
+    }
+    let updated = state
+        .store
+        .set_test_case_suite(id, body.suite_id)
+        .await
+        .map_err(to_500)?;
+    if !updated {
+        return Err(ApiError::not_found("test case not found"));
+    }
+    audit(
+        &state,
+        &ctx,
+        "test_case.set_suite",
+        Some(&id.to_string()),
+        body.suite_id.map(|s| s.to_string()).as_deref(),
+        "ok",
+    )
+    .await;
+    let row = state
+        .store
+        .get_test_case(id)
+        .await
+        .map_err(to_500)?
+        .ok_or_else(|| to_500("test case vanished immediately after update"))?;
+    Ok(Json(row))
 }
 
 /// POST .../test-cases/:id/validate — FRD-VAL-02 ("generated cases meet
@@ -1733,6 +1869,13 @@ struct GenerateAiTestCasesBody {
     requirement_text: String,
     #[serde(default)]
     skills: Vec<SkillInputBody>,
+    /// Real, optional grounding: a previously completed crawl run
+    /// (`POST .../crawl` -> `GET .../crawl/:run_id/result`) whose real
+    /// discovered pages/elements/visibility-matrix should feed the prompt
+    /// (`ai_generation::build_crawl_context_block`). Omitted/`null` behaves
+    /// exactly as generation always has — this is purely additive.
+    #[serde(default)]
+    crawl_run_id: Option<Uuid>,
 }
 
 /// `generation_method` is always exactly `"ai"` or `"fallback"` — never
@@ -1748,6 +1891,53 @@ struct GenerateAiTestCasesResponse {
     provider: Option<String>,
     model: Option<String>,
     fallback_reason: Option<String>,
+    /// The real, per-wave breakdown (`ai_generation::WaveSummary`, reused
+    /// verbatim — no second DTO). Additive: a selection that lands entirely
+    /// in one wave still returns exactly the response shape this endpoint
+    /// always has, plus this field showing the one real wave that ran.
+    waves: Vec<crate::ai_generation::WaveSummary>,
+    /// How many real, distinct pages from `crawl_run_id`'s crawl actually
+    /// reached the prompt (0 when no `crawl_run_id` was supplied) — an
+    /// honest confirmation of real grounding, not a claim the caller has to
+    /// take on faith.
+    crawl_pages_used: usize,
+}
+
+/// Loads this project's real feedback signal (risk/flakiness scores +
+/// human-CONFIRMED recurring defect patterns — `intelligence::Intelligence::
+/// load_feedback_context`) for the two AI-generation endpoints below. A read
+/// failure here (a DB hiccup on what is genuinely supplementary context, not
+/// the core feature) must never block a user's ability to generate test
+/// cases at all — it degrades to the same honest, empty
+/// `ai_generation::FeedbackContext::default()` every project with no
+/// history yet already gets, logged as a real `WARN` rather than swallowed
+/// silently.
+async fn load_feedback_context_for_generation(
+    state: &AppState,
+    project_id: Uuid,
+) -> crate::ai_generation::FeedbackContext {
+    match crate::intelligence::Intelligence::new(&state.store)
+        .load_feedback_context(&project_id.to_string())
+        .await
+    {
+        Ok(feedback) => feedback,
+        Err(e) => {
+            state
+                .log_bus
+                .emit(
+                    "WARN",
+                    "generation",
+                    &format!(
+                        "Could not load feedback context, generating without historical signal: {e}"
+                    ),
+                    None,
+                    Some(&project_id.to_string()),
+                    None,
+                )
+                .await;
+            crate::ai_generation::FeedbackContext::default()
+        }
+    }
 }
 
 /// POST .../test-cases/generate-ai — Phase 2. Real, skill-aware AI
@@ -1795,9 +1985,38 @@ async fn generate_ai_test_cases_scoped(
         )
         .await;
 
-    let outcome =
-        crate::ai_generation::generate_test_cases(&state.ai_infra, &body.requirement_text, &skills)
-            .await;
+    let feedback = load_feedback_context_for_generation(&state, project_id).await;
+
+    // Real, optional crawl grounding — resolved with the exact same
+    // ownership check + task lookup `get_crawl_result_scoped` already uses,
+    // so a `crawl_run_id` from another project (or one that never produced
+    // a result) is a real, honest error here too, never silently ignored.
+    let crawl_output: Option<crate::crawler::CrawlOutput> = match body.crawl_run_id {
+        Some(run_id) => {
+            scoped_run_summary(&state, run_id, project_id).await?;
+            let tasks = scoped_run_tasks(&state, run_id).await?;
+            let task = tasks
+                .first()
+                .ok_or_else(|| ApiError::not_found("crawl run has no tasks"))?;
+            let output = crate::crawler::read_crawl_result(&task.id).map_err(|_| {
+                ApiError::not_found(
+                    "crawl result not found — the crawl may still be running or may not have completed",
+                )
+            })?;
+            Some(output)
+        }
+        None => None,
+    };
+    let crawl_pages_used = crate::ai_generation::crawl_pages_used_count(crawl_output.as_ref());
+
+    let outcome = crate::ai_generation::generate_test_cases(
+        &state.ai_infra,
+        &body.requirement_text,
+        &skills,
+        &feedback,
+        crawl_output.as_ref(),
+    )
+    .await;
 
     let response = match outcome {
         crate::ai_generation::GenerationOutcome::Ai {
@@ -1807,6 +2026,7 @@ async fn generate_ai_test_cases_scoped(
             routing_score,
             fallback_used,
             routing_mode,
+            waves,
         } => {
             // The real routing decision, emitted on its own `ai_router`
             // source so the Orchestrator view can show *why* this route
@@ -1828,6 +2048,56 @@ async fn generate_ai_test_cases_scoped(
                     None,
                 )
                 .await;
+            // One real line per wave that actually ran (never per skipped
+            // wave — a wave nothing was selected for is not news). A
+            // partial-wave failure (Base succeeded, Dependent timed out)
+            // stays visible here instead of silently reducing coverage with
+            // no signal, the same standard `GenerationOutcome::Failed`
+            // itself is already held to.
+            for wave in &waves {
+                if wave.skipped {
+                    continue;
+                }
+                match &wave.failure_reason {
+                    Some(reason) => {
+                        state
+                            .log_bus
+                            .emit(
+                                "WARN",
+                                "generation",
+                                &format!(
+                                    "Wave '{}' ({}) failed, other waves' coverage is unaffected: {reason}",
+                                    wave.wave,
+                                    wave.skill_names.join(", ")
+                                ),
+                                None,
+                                Some(&project_id.to_string()),
+                                None,
+                            )
+                            .await;
+                    }
+                    None => {
+                        state
+                            .log_bus
+                            .emit(
+                                "INFO",
+                                "generation",
+                                &format!(
+                                    "Wave '{}' ({}) generated {} case(s) via {}/{}",
+                                    wave.wave,
+                                    wave.skill_names.join(", "),
+                                    wave.case_count,
+                                    wave.provider.as_deref().unwrap_or("?"),
+                                    wave.model.as_deref().unwrap_or("?"),
+                                ),
+                                None,
+                                Some(&project_id.to_string()),
+                                None,
+                            )
+                            .await;
+                    }
+                }
+            }
             state
                 .log_bus
                 .emit(
@@ -1854,6 +2124,8 @@ async fn generate_ai_test_cases_scoped(
                 provider: Some(provider),
                 model: Some(model),
                 fallback_reason: None,
+                waves,
+                crawl_pages_used,
             }
         }
         crate::ai_generation::GenerationOutcome::Failed { reason } => {
@@ -1883,6 +2155,8 @@ async fn generate_ai_test_cases_scoped(
                 provider: None,
                 model: None,
                 fallback_reason: Some(reason),
+                waves: Vec::new(),
+                crawl_pages_used,
             }
         }
     };
@@ -1953,11 +2227,14 @@ async fn generate_custom_testing_scoped(
         })
         .collect();
 
+    let feedback = load_feedback_context_for_generation(&state, project_id).await;
+
     let outcome = crate::custom_testing::run(
         &state.ai_infra,
         &body.requirement_text,
         body.scope.as_deref(),
         &skills,
+        &feedback,
     )
     .await;
 
@@ -4096,6 +4373,483 @@ async fn get_audit_log_scoped(
     Ok(Json(rows))
 }
 
+// ------------------------------------------- test plans / test suites (Phase 5)
+//
+// Output maturity — a real plan -> suite -> case hierarchy above the flat
+// `test_cases` table. Every handler below follows the exact same
+// require_scoped_project -> require_role -> fetch+ownership-check ->
+// mutate -> audit shape the test-case handlers above already established;
+// no new authorization pattern was invented for this section.
+
+async fn scoped_test_plan(
+    state: &AppState,
+    ctx: &AuthContext,
+    project_id: Uuid,
+    id: Uuid,
+) -> Result<crate::store::TestPlanRow, ApiError> {
+    let row = state
+        .store
+        .get_test_plan(id)
+        .await
+        .map_err(to_500)?
+        .ok_or_else(|| ApiError::not_found("test plan not found"))?;
+    if row.project_id != project_id.to_string() {
+        return Err(ApiError::not_found("test plan not found"));
+    }
+    auth::require_project_access(ctx, Some(row.project_id.as_str()))?;
+    Ok(row)
+}
+
+async fn scoped_test_suite(
+    state: &AppState,
+    ctx: &AuthContext,
+    project_id: Uuid,
+    id: Uuid,
+) -> Result<crate::store::TestSuiteRow, ApiError> {
+    let row = state
+        .store
+        .get_test_suite(id)
+        .await
+        .map_err(to_500)?
+        .ok_or_else(|| ApiError::not_found("test suite not found"))?;
+    if row.project_id != project_id.to_string() {
+        return Err(ApiError::not_found("test suite not found"));
+    }
+    auth::require_project_access(ctx, Some(row.project_id.as_str()))?;
+    Ok(row)
+}
+
+fn validate_test_plan_status(status: &Option<String>) -> Result<(), ApiError> {
+    if let Some(s) = status {
+        if !matches!(s.as_str(), "DRAFT" | "ACTIVE" | "ARCHIVED") {
+            return Err(ApiError::validation(
+                "status must be one of DRAFT, ACTIVE, ARCHIVED",
+            ));
+        }
+    }
+    Ok(())
+}
+
+async fn create_test_plan_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiJson(body): ApiJson<CreateTestPlanRequest>,
+) -> Result<(StatusCode, Json<crate::store::TestPlanRow>), ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    require_scoped_project(&state, &ctx, project_id).await?;
+    if body.name.trim().is_empty() {
+        return Err(ApiError::validation("name must not be empty"));
+    }
+
+    let id = state
+        .store
+        .insert_test_plan(&project_id.to_string(), &body, Some(&ctx.name))
+        .await
+        .map_err(to_500)?;
+    audit(
+        &state,
+        &ctx,
+        "test_plan.create",
+        Some(&id.to_string()),
+        Some(&body.name),
+        "ok",
+    )
+    .await;
+    let row = state
+        .store
+        .get_test_plan(id)
+        .await
+        .map_err(to_500)?
+        .ok_or_else(|| to_500("test plan vanished immediately after insert"))?;
+    Ok((StatusCode::CREATED, Json(row)))
+}
+
+async fn list_test_plans_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+) -> Result<Json<Vec<crate::store::TestPlanRow>>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let rows = state
+        .store
+        .list_test_plans(&project_id.to_string())
+        .await
+        .map_err(to_500)?;
+    Ok(Json(rows))
+}
+
+async fn get_test_plan_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
+) -> Result<Json<crate::store::TestPlanRow>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let row = scoped_test_plan(&state, &ctx, project_id, id).await?;
+    Ok(Json(row))
+}
+
+async fn update_test_plan_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
+    ApiJson(body): ApiJson<UpdateTestPlanRequest>,
+) -> Result<Json<crate::store::TestPlanRow>, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    require_scoped_project(&state, &ctx, project_id).await?;
+    scoped_test_plan(&state, &ctx, project_id, id).await?;
+    if let Some(name) = &body.name {
+        if name.trim().is_empty() {
+            return Err(ApiError::validation("name must not be empty"));
+        }
+    }
+    validate_test_plan_status(&body.status)?;
+
+    let updated = state
+        .store
+        .update_test_plan(
+            id,
+            body.name.as_deref(),
+            body.description.as_deref(),
+            body.status.as_deref(),
+            body.entry_criteria.as_deref(),
+            body.exit_criteria.as_deref(),
+        )
+        .await
+        .map_err(to_500)?;
+    if !updated {
+        return Err(ApiError::not_found("test plan not found"));
+    }
+    audit(
+        &state,
+        &ctx,
+        "test_plan.update",
+        Some(&id.to_string()),
+        None,
+        "ok",
+    )
+    .await;
+    let row = state
+        .store
+        .get_test_plan(id)
+        .await
+        .map_err(to_500)?
+        .ok_or_else(|| to_500("test plan vanished immediately after update"))?;
+    Ok(Json(row))
+}
+
+async fn delete_test_plan_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
+) -> Result<StatusCode, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    require_scoped_project(&state, &ctx, project_id).await?;
+    scoped_test_plan(&state, &ctx, project_id, id).await?;
+    let deleted = state.store.delete_test_plan(id).await.map_err(to_500)?;
+    if !deleted {
+        return Err(ApiError::not_found("test plan not found"));
+    }
+    audit(
+        &state,
+        &ctx,
+        "test_plan.delete",
+        Some(&id.to_string()),
+        None,
+        "ok",
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn create_test_suite_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiJson(body): ApiJson<CreateTestSuiteRequest>,
+) -> Result<(StatusCode, Json<crate::store::TestSuiteRow>), ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    require_scoped_project(&state, &ctx, project_id).await?;
+    if body.name.trim().is_empty() {
+        return Err(ApiError::validation("name must not be empty"));
+    }
+    if let Some(plan_id) = body.plan_id {
+        scoped_test_plan(&state, &ctx, project_id, plan_id).await?;
+    }
+
+    let id = state
+        .store
+        .insert_test_suite(&project_id.to_string(), &body, Some(&ctx.name))
+        .await
+        .map_err(to_500)?;
+    audit(
+        &state,
+        &ctx,
+        "test_suite.create",
+        Some(&id.to_string()),
+        Some(&body.name),
+        "ok",
+    )
+    .await;
+    let row = state
+        .store
+        .get_test_suite(id)
+        .await
+        .map_err(to_500)?
+        .ok_or_else(|| to_500("test suite vanished immediately after insert"))?;
+    Ok((StatusCode::CREATED, Json(row)))
+}
+
+#[derive(Deserialize)]
+struct ListTestSuitesQuery {
+    #[serde(default)]
+    plan_id: Option<Uuid>,
+}
+
+/// GET /api/v1/projects/:project_id/test-suites — optionally filtered to
+/// one plan (`?plan_id=<uuid>`).
+async fn list_test_suites_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiQuery(q): ApiQuery<ListTestSuitesQuery>,
+) -> Result<Json<Vec<crate::store::TestSuiteRow>>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let rows = state
+        .store
+        .list_test_suites(&project_id.to_string(), q.plan_id)
+        .await
+        .map_err(to_500)?;
+    Ok(Json(rows))
+}
+
+async fn get_test_suite_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
+) -> Result<Json<crate::store::TestSuiteRow>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let row = scoped_test_suite(&state, &ctx, project_id, id).await?;
+    Ok(Json(row))
+}
+
+async fn update_test_suite_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
+    ApiJson(body): ApiJson<UpdateTestSuiteRequest>,
+) -> Result<Json<crate::store::TestSuiteRow>, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    require_scoped_project(&state, &ctx, project_id).await?;
+    scoped_test_suite(&state, &ctx, project_id, id).await?;
+    if let Some(name) = &body.name {
+        if name.trim().is_empty() {
+            return Err(ApiError::validation("name must not be empty"));
+        }
+    }
+
+    let updated = state
+        .store
+        .update_test_suite(id, body.name.as_deref(), body.description.as_deref())
+        .await
+        .map_err(to_500)?;
+    if !updated {
+        return Err(ApiError::not_found("test suite not found"));
+    }
+    audit(
+        &state,
+        &ctx,
+        "test_suite.update",
+        Some(&id.to_string()),
+        None,
+        "ok",
+    )
+    .await;
+    let row = state
+        .store
+        .get_test_suite(id)
+        .await
+        .map_err(to_500)?
+        .ok_or_else(|| to_500("test suite vanished immediately after update"))?;
+    Ok(Json(row))
+}
+
+/// PUT .../test-suites/:id/plan — see `SetTestCaseSuiteRequest`'s own doc
+/// comment (`domain.rs`) for why this is a dedicated endpoint; `plan_id`
+/// belonging to a different project is rejected the same way
+/// `set_test_case_suite_scoped` rejects a cross-project suite.
+async fn set_test_suite_plan_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
+    ApiJson(body): ApiJson<SetTestSuitePlanRequest>,
+) -> Result<Json<crate::store::TestSuiteRow>, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    require_scoped_project(&state, &ctx, project_id).await?;
+    scoped_test_suite(&state, &ctx, project_id, id).await?;
+    if let Some(plan_id) = body.plan_id {
+        scoped_test_plan(&state, &ctx, project_id, plan_id).await?;
+    }
+    let updated = state
+        .store
+        .set_test_suite_plan(id, body.plan_id)
+        .await
+        .map_err(to_500)?;
+    if !updated {
+        return Err(ApiError::not_found("test suite not found"));
+    }
+    audit(
+        &state,
+        &ctx,
+        "test_suite.set_plan",
+        Some(&id.to_string()),
+        body.plan_id.map(|p| p.to_string()).as_deref(),
+        "ok",
+    )
+    .await;
+    let row = state
+        .store
+        .get_test_suite(id)
+        .await
+        .map_err(to_500)?
+        .ok_or_else(|| to_500("test suite vanished immediately after update"))?;
+    Ok(Json(row))
+}
+
+async fn delete_test_suite_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
+) -> Result<StatusCode, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    require_scoped_project(&state, &ctx, project_id).await?;
+    scoped_test_suite(&state, &ctx, project_id, id).await?;
+    let deleted = state.store.delete_test_suite(id).await.map_err(to_500)?;
+    if !deleted {
+        return Err(ApiError::not_found("test suite not found"));
+    }
+    audit(
+        &state,
+        &ctx,
+        "test_suite.delete",
+        Some(&id.to_string()),
+        None,
+        "ok",
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// --------------------------------------------------------------- crawler (Phase 6)
+//
+// Real crawler + per-role visibility matrix. See `crawler.rs`'s own module
+// doc comment for exactly what this covers and what it deliberately does
+// not (targeted deep crawl, doc-vs-reality gap check).
+
+#[derive(Debug, Deserialize)]
+struct CrawlRequestBody {
+    base_url: String,
+    roles: Vec<crate::crawler::CrawlRole>,
+}
+
+#[derive(Debug, Serialize)]
+struct CrawlStartedResponse {
+    run_id: Uuid,
+}
+
+/// POST /api/v1/projects/:project_id/crawl — a real crawl, materialized
+/// into a Playwright spec and dispatched through the exact same run/task
+/// pipeline every other browser task already uses (`create_run_core` ->
+/// `engine::spawn_run` -> the existing `PlaywrightExecutor`) — no new
+/// subprocess machinery. The caller polls the returned `run_id` through
+/// the existing `GET .../executions/:run_id` the same way any other run is
+/// polled, then fetches the real result via
+/// `GET .../crawl/:run_id/result` below once it completes.
+async fn start_crawl_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiJson(body): ApiJson<CrawlRequestBody>,
+) -> Result<(StatusCode, Json<CrawlStartedResponse>), ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    require_scoped_project(&state, &ctx, project_id).await?;
+
+    let plan = crate::crawler::CrawlPlan {
+        base_url: body.base_url,
+        roles: body.roles,
+    };
+    crate::crawler::validate_crawl_plan(&plan)
+        .await
+        .map_err(|reasons| ApiError::validation(reasons.join("; ")))?;
+
+    // The task's own id doubles as the real key `crawler::read_crawl_result`
+    // looks the eventual result up by — no separate id needed.
+    let task_id = Uuid::new_v4().to_string();
+    let spec_path =
+        crate::crawler::materialize_crawl_spec(&task_id, &plan).map_err(ApiError::validation)?;
+
+    let task = TaskDef {
+        id: task_id,
+        name: format!("Crawl: {}", plan.base_url),
+        prerequisites: Vec::new(),
+        simulate: None,
+        executor: Some("playwright".to_string()),
+        params: serde_json::json!({ "spec": spec_path }),
+    };
+    let run_plan = RunPlan {
+        name: format!("Crawl: {}", plan.base_url),
+        tasks: vec![task],
+        concurrency: 1,
+    };
+    let (status_code, Json(created)) =
+        create_run_core(&state, &ctx, Some(project_id.to_string()), run_plan).await?;
+
+    audit(
+        &state,
+        &ctx,
+        "crawl.start",
+        Some(&created.run_id.to_string()),
+        Some(&plan.base_url),
+        "ok",
+    )
+    .await;
+
+    Ok((
+        status_code,
+        Json(CrawlStartedResponse {
+            run_id: created.run_id,
+        }),
+    ))
+}
+
+/// GET /api/v1/projects/:project_id/crawl/:run_id/result — the real,
+/// structured output (`crawler::CrawlOutput`) a completed crawl run wrote
+/// to disk, keyed by that run's own (single) task id. Reuses the exact
+/// same real ownership check (`scoped_run_summary`) and task-fetching
+/// (`scoped_run_tasks`) every other run-scoped endpoint already uses —
+/// this result is never reachable just by knowing a run id, the same real
+/// cross-project guarantee every other resource in this file already
+/// holds. A crawl that has not finished yet (or never produced a result)
+/// is a real, honest 404 — never a fabricated empty result.
+async fn get_crawl_result_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, run_id)): ApiPath<(Uuid, Uuid)>,
+) -> Result<Json<crate::crawler::CrawlOutput>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    scoped_run_summary(&state, run_id, project_id).await?;
+    let tasks = scoped_run_tasks(&state, run_id).await?;
+    let task = tasks
+        .first()
+        .ok_or_else(|| ApiError::not_found("crawl run has no tasks"))?;
+    let output = crate::crawler::read_crawl_result(&task.id).map_err(|_| {
+        ApiError::not_found(
+            "crawl result not found — the crawl may still be running or may not have completed",
+        )
+    })?;
+    Ok(Json(output))
+}
+
 // ----------------------------------------------------------- intelligence
 
 /// GET /api/v1/projects/:project_id/intelligence/tests — Phase 4 BE-10
@@ -4127,6 +4881,41 @@ async fn list_test_intelligence_scoped(
     let rows = state
         .store
         .list_test_intelligence(Some(project_id.to_string().as_str()))
+        .await
+        .map_err(to_500)?;
+    Ok(Json(rows))
+}
+
+#[derive(Deserialize)]
+struct RequirementImpactQuery {
+    key: String,
+}
+
+/// GET /api/v1/projects/:project_id/requirement-impact?key=<requirement_key>
+/// — Phase 4 (requirement graph). Real impact analysis over the real
+/// `quality_relations` edges `intelligence::Intelligence::
+/// link_test_case_to_requirement` writes at test-case creation time (see
+/// that function's own doc comment): every real, persisted test case that
+/// was actually created citing this exact requirement — by its real
+/// `requirement_reference` string if that's what `key` is, or by
+/// `"text:<sha256>"` of a real `source_requirement` excerpt otherwise (see
+/// `intelligence::requirement_identity` for how a caller derives the right
+/// `key` to ask for). An unknown/never-linked key returns a real, honest
+/// empty list — never an error, and never a fabricated guess at what might
+/// be affected.
+async fn get_requirement_impact_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiQuery(q): ApiQuery<RequirementImpactQuery>,
+) -> Result<Json<Vec<crate::store::TestCaseRow>>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    if q.key.trim().is_empty() {
+        return Err(ApiError::validation("key must not be empty"));
+    }
+    let rows = state
+        .store
+        .list_test_cases_for_requirement(&project_id.to_string(), q.key.trim())
         .await
         .map_err(to_500)?;
     Ok(Json(rows))

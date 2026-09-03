@@ -579,6 +579,7 @@ pub mod test_support {
             created_by: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
+            suite_id: None,
         }
     }
 }

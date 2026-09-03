@@ -64,6 +64,9 @@ import type {
   FindingAnalysis,
   GenerateAiTestCasesRequest,
   GenerateAiTestCasesResponse,
+  StartCrawlRequest,
+  CrawlStartedResponse,
+  CrawlOutput,
   KpisResponse,
   VerifyApplicationSourceRequest,
   VerifyApplicationSourceResponse,
@@ -466,6 +469,18 @@ export const aiqaApi = {
       requestJson<RunEvent[]>(`/projects/${projectId}/executions/${runId}/events`, { query: { since }, signal }),
     evidence: (projectId: string, runId: string, signal?: AbortSignal) =>
       requestJson<EvidenceRow[]>(`/projects/${projectId}/executions/${runId}/evidence`, { signal }),
+  },
+
+  /** Phase 6/8 — real crawler + per-role visibility matrix. A crawl runs
+   *  through the exact same run/task pipeline every other browser task
+   *  does (`executions.get(projectId, run_id)` polls it like any other
+   *  run); `result()` is only ever non-empty once that run reaches a
+   *  terminal state and genuinely wrote one. */
+  crawl: {
+    start: (projectId: string, body: StartCrawlRequest, signal?: AbortSignal) =>
+      requestJson<CrawlStartedResponse>(`/projects/${projectId}/crawl`, { method: 'POST', body, signal }),
+    result: (projectId: string, runId: string, signal?: AbortSignal) =>
+      requestJson<CrawlOutput>(`/projects/${projectId}/crawl/${runId}/result`, { signal }),
   },
 
   evidence: {

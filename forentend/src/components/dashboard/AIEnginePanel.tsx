@@ -132,7 +132,12 @@ export const AIEnginePanel: React.FC<AIEnginePanelProps> = ({ status, loading, e
               exists at all). It adds no claim of its own: it spins only
               while a model is genuinely routable, and a `NONE` capability
               stays visible as a hollow particle rather than disappearing. */}
-          <AIEngineOrb model={activeModel} routingScore={routing?.routing_score ?? null} />
+          <AIEngineOrb
+            model={activeModel}
+            routingScore={routing?.routing_score ?? null}
+            providers={status.providers}
+            activeProviderId={routing?.provider_id ?? null}
+          />
 
           {/* Active route — the real decision, or an honest absence. */}
           {routing ? (
