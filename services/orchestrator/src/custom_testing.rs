@@ -202,7 +202,10 @@ pub async fn run(
         };
 
     let augmented = augmented_requirement_text(requirement_text, scope);
-    match ai_generation::generate_test_cases(infra, &augmented, skills, feedback).await {
+    // Custom testing has no crawl-run concept of its own (no project-scoped
+    // request to resolve a `crawl_run_id` from) — always `None`, honestly
+    // reducing to the exact behaviour this call already had.
+    match ai_generation::generate_test_cases(infra, &augmented, skills, feedback, None).await {
         GenerationOutcome::Ai {
             cases,
             provider,

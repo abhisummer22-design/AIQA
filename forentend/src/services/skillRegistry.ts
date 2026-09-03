@@ -93,8 +93,17 @@ export const DEFAULT_SELECTED_SKILL_IDS: string[] = ['skill-functional-testing',
  *  be compared to a test-category id — "Performance Testing" ->
  *  "performance", matching category id "Performance". Only a fixed,
  *  short suffix list is stripped; nothing else about the name is guessed
- *  at or fuzzy-matched. */
-function skillStem(name: string): string {
+ *  at or fuzzy-matched.
+ *
+ *  Exported (not just used by `categoryMatchedSkillIds` below) because
+ *  `GeneratedTestCasesView` reuses the exact same stemming rule to resolve
+ *  a generated test case's real `category` text (freeform — the AI model
+ *  is not constrained to the 14 canonical category ids, and demonstrably
+ *  sometimes writes the skill's own display name, e.g. "Functional
+ *  Testing", into it) back to its real canonical category id. Same rule,
+ *  same regex, one source of truth for "strip the generic testing-verb
+ *  suffix" either direction. */
+export function skillStem(name: string): string {
   return name.replace(/\s+(Testing|Analysis)$/i, '').trim().toLowerCase();
 }
 

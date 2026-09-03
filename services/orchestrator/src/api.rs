@@ -1865,6 +1865,13 @@ struct GenerateAiTestCasesBody {
     requirement_text: String,
     #[serde(default)]
     skills: Vec<SkillInputBody>,
+    /// Real, optional grounding: a previously completed crawl run
+    /// (`POST .../crawl` -> `GET .../crawl/:run_id/result`) whose real
+    /// discovered pages/elements/visibility-matrix should feed the prompt
+    /// (`ai_generation::build_crawl_context_block`). Omitted/`null` behaves
+    /// exactly as generation always has — this is purely additive.
+    #[serde(default)]
+    crawl_run_id: Option<Uuid>,
 }
 
 /// `generation_method` is always exactly `"ai"` or `"fallback"` — never
@@ -1885,6 +1892,11 @@ struct GenerateAiTestCasesResponse {
     /// in one wave still returns exactly the response shape this endpoint
     /// always has, plus this field showing the one real wave that ran.
     waves: Vec<crate::ai_generation::WaveSummary>,
+    /// How many real, distinct pages from `crawl_run_id`'s crawl actually
+    /// reached the prompt (0 when no `crawl_run_id` was supplied) — an
+    /// honest confirmation of real grounding, not a claim the caller has to
+    /// take on faith.
+    crawl_pages_used: usize,
 }
 
 /// Loads this project's real feedback signal (risk/flakiness scores +
@@ -1971,11 +1983,34 @@ async fn generate_ai_test_cases_scoped(
 
     let feedback = load_feedback_context_for_generation(&state, project_id).await;
 
+    // Real, optional crawl grounding — resolved with the exact same
+    // ownership check + task lookup `get_crawl_result_scoped` already uses,
+    // so a `crawl_run_id` from another project (or one that never produced
+    // a result) is a real, honest error here too, never silently ignored.
+    let crawl_output: Option<crate::crawler::CrawlOutput> = match body.crawl_run_id {
+        Some(run_id) => {
+            scoped_run_summary(&state, run_id, project_id).await?;
+            let tasks = scoped_run_tasks(&state, run_id).await?;
+            let task = tasks
+                .first()
+                .ok_or_else(|| ApiError::not_found("crawl run has no tasks"))?;
+            let output = crate::crawler::read_crawl_result(&task.id).map_err(|_| {
+                ApiError::not_found(
+                    "crawl result not found — the crawl may still be running or may not have completed",
+                )
+            })?;
+            Some(output)
+        }
+        None => None,
+    };
+    let crawl_pages_used = crate::ai_generation::crawl_pages_used_count(crawl_output.as_ref());
+
     let outcome = crate::ai_generation::generate_test_cases(
         &state.ai_infra,
         &body.requirement_text,
         &skills,
         &feedback,
+        crawl_output.as_ref(),
     )
     .await;
 
@@ -2086,6 +2121,7 @@ async fn generate_ai_test_cases_scoped(
                 model: Some(model),
                 fallback_reason: None,
                 waves,
+                crawl_pages_used,
             }
         }
         crate::ai_generation::GenerationOutcome::Failed { reason } => {
@@ -2116,6 +2152,7 @@ async fn generate_ai_test_cases_scoped(
                 model: None,
                 fallback_reason: Some(reason),
                 waves: Vec::new(),
+                crawl_pages_used,
             }
         }
     };

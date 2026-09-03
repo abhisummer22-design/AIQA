@@ -785,14 +785,19 @@ export interface GenerateAiSkillInput {
 }
 
 /** `api.rs::GenerateAiTestCasesBody` — `POST .../test-cases/generate-ai`
- *  request. No other field exists on this real endpoint; category/depth/
- *  document/app-source context is not a separate wire field (the backend
- *  has none) — a caller that wants those to matter folds them into
- *  `requirement_text` as plain instruction text, same as any other
- *  requirement detail. */
+ *  request. category/depth/document/app-source context is not a separate
+ *  wire field (the backend has none) — a caller that wants those to matter
+ *  folds them into `requirement_text` as plain instruction text, same as
+ *  any other requirement detail. `crawl_run_id` is the one real, optional
+ *  exception: a previously completed crawl run
+ *  (`crawl.start` -> `crawl.result` below) whose real discovered pages/
+ *  elements/visibility-matrix should ground the prompt
+ *  (`ai_generation::build_crawl_context_block`). Omitted/`null` behaves
+ *  exactly as generation always has. */
 export interface GenerateAiTestCasesRequest {
   requirement_text: string;
   skills: GenerateAiSkillInput[];
+  crawl_run_id?: string | null;
 }
 
 /** `ai_generation.rs::DraftStep`. */
@@ -834,6 +839,80 @@ export interface GenerateAiTestCasesResponse {
   provider: string | null;
   model: string | null;
   fallback_reason: string | null;
+  /** How many real, distinct pages from `crawl_run_id`'s crawl actually
+   *  reached the prompt (0 when no `crawl_run_id` was supplied) — an honest
+   *  confirmation of real grounding, not a claim to take on faith. */
+  crawl_pages_used: number;
+}
+
+// ---------------------------------------------------------------- crawler
+
+/** `crawler.rs::CrawlRole`. Empty `login_actions` crawls anonymously.
+ *  `login_actions` reuses `PlanAction` (`execution_plan::Action`'s own real
+ *  wire shape) — the backend restricts it to NAVIGATE/FILL/CLICK only
+ *  (`crawler::validate_crawl_plan`), the same closed vocabulary a compiled
+ *  test case's browser actions already use. */
+export interface CrawlRole {
+  name: string;
+  login_actions: PlanAction[];
+}
+
+/** `api.rs::CrawlRequestBody` — `POST .../crawl` request. */
+export interface StartCrawlRequest {
+  base_url: string;
+  roles: CrawlRole[];
+}
+
+/** `api.rs::CrawlStartedResponse`. The crawl runs through the exact same
+ *  run/task pipeline every other browser task does — poll it via
+ *  `executions.get(projectId, run_id)` like any other run, then fetch the
+ *  real result via `crawl.result()` below once it reaches a terminal
+ *  state. */
+export interface CrawlStartedResponse {
+  run_id: string;
+}
+
+/** `crawler.rs::CrawledElement` — one real element a real browser actually
+ *  saw on a real crawled page. */
+export interface CrawledElement {
+  kind: string;
+  text: string;
+  selector_hint: string;
+  href?: string | null;
+}
+
+/** `crawler.rs::CrawledPage`. */
+export interface CrawledPage {
+  url: string;
+  title: string;
+  elements: CrawledElement[];
+}
+
+/** `crawler.rs::RoleCrawlResult` — one role's real crawl outcome.
+ *  `login_succeeded: false` means every page after that role's login step
+ *  is honestly absent, not fabricated. */
+export interface RoleCrawlResult {
+  role: string;
+  login_succeeded: boolean;
+  login_error?: string | null;
+  pages: CrawledPage[];
+}
+
+/** `crawler.rs::VisibilityDiffEntry` — a real, observed per-URL
+ *  access-control boundary: which real elements on this real page were
+ *  only ever seen by some of the crawled roles. */
+export interface VisibilityDiffEntry {
+  url: string;
+  roles_with_access: string[];
+  elements_only_visible_to: Record<string, string[]>;
+}
+
+/** `crawler.rs::CrawlOutput` — `GET .../crawl/:run_id/result`'s real,
+ *  structured response, only ever present once the crawl run reaches a
+ *  terminal state and genuinely wrote it. */
+export interface CrawlOutput {
+  roles: RoleCrawlResult[];
+  visibility_matrix: VisibilityDiffEntry[];
 }
 
 // ---------------------------------------------------------- Phase 3: Custom Testing

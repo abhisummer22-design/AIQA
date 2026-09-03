@@ -5322,6 +5322,9 @@ async fn phase2_generate_ai_returns_real_structured_cases_on_success() {
         cases[0]["source_reference"],
         "must be at least 8 characters"
     );
+    // No `crawl_run_id` was supplied — the real, honest "zero real pages
+    // used" value, not omitted from the response.
+    assert_eq!(body["crawl_pages_used"], 0, "body={body}");
 }
 
 /// Phase 1 self-learning wiring — the endpoint now loads real feedback
@@ -5382,6 +5385,96 @@ async fn phase2_generate_ai_succeeds_with_real_seeded_risk_and_confirmed_defect_
     assert_eq!(body["generation_method"], "ai", "body={body}");
     let cases = body["test_cases"].as_array().unwrap();
     assert_eq!(cases.len(), 1, "body={body}");
+}
+
+// ---------------------------------------------------- crawl-grounded generation
+// Real-crawl-content-reaches-the-prompt is proven at the `ai_generation`
+// unit level (`integration_threads_real_crawl_context_all_the_way_into_the_
+// actual_prompt_sent_to_the_model`); these two prove what is only real at
+// this HTTP layer — the same ownership/completeness checks
+// `GET .../crawl/:run_id/result` itself already holds, now also enforced at
+// the point generation consumes a `crawl_run_id`.
+
+/// A `crawl_run_id` from another project must not be usable to pull that
+/// project's real crawl data into this project's generation — the exact
+/// same real cross-project check `phase6_crawler_result_cross_project_
+/// access_is_rejected` already proves for the crawl-result endpoint itself.
+#[tokio::test]
+async fn phase8_generate_ai_rejects_a_crawl_run_id_belonging_to_another_project() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    let project_a = make_project(&state, "Phase8 Crawl Owner").await;
+    let project_b = make_project(&state, "Phase8 Crawl Other").await;
+    let owner_a = mint_key(&state, "operator", Some(&project_a.to_string())).await;
+    let owner_b = mint_key(&state, "operator", Some(&project_b.to_string())).await;
+
+    let (_, started) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_a}/crawl"),
+            Some(&owner_a),
+            Some(valid_crawl_body()),
+        ),
+    )
+    .await;
+    let run_id = started["run_id"].as_str().expect("run_id").to_string();
+
+    // project_b tries to ground its own generation in project_a's crawl run.
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_b}/test-cases/generate-ai"),
+            Some(&owner_b),
+            Some(serde_json::json!({
+                "requirement_text": "Users can log in.",
+                "skills": [],
+                "crawl_run_id": run_id
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
+}
+
+/// A `crawl_run_id` for a crawl that never actually produced a result (the
+/// same real state `phase6_crawler_result_is_a_real_404_when_no_result_was_
+/// ever_written` already covers for the result endpoint itself) must be a
+/// real, honest error here too — never silently generating without it as if
+/// the caller had never asked for crawl grounding at all.
+#[tokio::test]
+async fn phase8_generate_ai_reports_a_real_error_when_the_crawl_has_no_result_yet() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    let project = make_project(&state, "Phase8 Crawl Incomplete").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (_, started) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/crawl"),
+            Some(&owner),
+            Some(valid_crawl_body()),
+        ),
+    )
+    .await;
+    let run_id = started["run_id"].as_str().expect("run_id").to_string();
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/generate-ai"),
+            Some(&owner),
+            Some(serde_json::json!({
+                "requirement_text": "Users can log in.",
+                "skills": [],
+                "crawl_run_id": run_id
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
 }
 
 /// The core truthfulness requirement: a provider failure must be reported

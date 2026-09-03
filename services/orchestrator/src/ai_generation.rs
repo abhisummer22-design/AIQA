@@ -58,8 +58,10 @@
 //! **Wave-based generation (closes another gap this module's own
 //! architecture left open — "single prompt, one AI call, every selected
 //! skill combined with no inter-wave dependency"):** the caller-facing
-//! `generate_test_cases` signature is unchanged, but it is no longer one
-//! call. `partition_skills_into_waves` splits the caller's selection into
+//! `generate_test_cases` signature carried unchanged through this phase
+//! (a later phase — "real crawler context" below — has since added one
+//! more parameter to it), but it is no longer one call.
+//! `partition_skills_into_waves` splits the caller's selection into
 //! up to three real, separate generation calls — Base (skills that stand on
 //! the requirement text alone), Dependent (skills that genuinely benefit
 //! from seeing Base's real output first — RBAC and Business Case Testing:
@@ -85,6 +87,25 @@
 //! additive, not a new evidence path — see `build_feedback_block`'s own doc
 //! comment for why a test case it inspires still answers to the EVIDENCE
 //! RULES above, exactly like every other test case.
+//!
+//! **Real crawler context (closes the gap `crawler.rs`'s own module doc
+//! comment left explicit — Phase 6 built a real crawler + per-role
+//! visibility matrix with no consumer wired up):** `generate_test_cases`
+//! now takes one more parameter, `crawl: Option<&crawler::CrawlOutput>` —
+//! the real, structured result of a completed crawl run
+//! (`GET .../crawl/:run_id/result`'s own data), threaded through every wave
+//! into `build_prompt` via `build_crawl_context_block`. `None` (no crawl
+//! selected, or the caller never ran one) renders nothing and changes
+//! nothing — every existing single-document-only caller behaves exactly as
+//! before. When present, two real signals ground generation in the actual
+//! running application rather than only a written requirement: the real
+//! pages/elements a browser actually reached, and the crawl's own real
+//! per-URL role-visibility differences (a genuine, observed access-control
+//! boundary a Security/RBAC-Testing case can be grounded in, not an
+//! invented one). Still governed by the same EVIDENCE RULES as everything
+//! else in the prompt — a case this inspires is not automatically
+//! "evidenced" just because a real element existed; the requirement text is
+//! still what decides evidenced vs. inferred vs. exploratory.
 
 use serde::{Deserialize, Serialize};
 
@@ -450,6 +471,131 @@ fn build_prior_wave_block(prior_wave_cases: &[GeneratedTestCaseDraft]) -> String
     )
 }
 
+/// Caps how many real crawled pages / elements-per-page / visibility-matrix
+/// entries reach the prompt — a large real site's full crawl must never make
+/// this prompt unbounded, same reasoning as `MAX_RISK_HIGHLIGHTS` above.
+const MAX_CRAWL_PAGES: usize = 8;
+const MAX_ELEMENTS_PER_PAGE: usize = 12;
+const MAX_VISIBILITY_ENTRIES: usize = 6;
+
+/// Real, grounded application-surface context from a completed live crawl
+/// (`crawler::CrawlOutput` — real pages a real browser actually reached,
+/// real elements it actually saw there; see `crawler.rs`'s own module doc
+/// comment for how that data was produced). Purely additive and entirely
+/// optional, same "context only, still answers to EVIDENCE RULES" framing
+/// `build_feedback_block` already established — `None`, or a crawl with no
+/// pages, renders an empty string, never a placeholder sentence.
+///
+/// Two real signals, each capped so a large real site never makes the
+/// prompt unbounded:
+/// - Pages + elements, unioned by URL across every role the crawl
+///   authenticated as (the same URL reached as two different roles is one
+///   real page, not two) — general grounding so a case's UI details
+///   reference real labels/fields that genuinely exist, not an invented
+///   button.
+/// - The crawl's own real per-URL visibility differences
+///   (`visibility_matrix`) — a genuinely observed access-control boundary
+///   ("only 'admin' can see 'Delete Project' here"), not a fabricated RBAC
+///   scenario. The same real data `GET .../crawl/:run_id/result` already
+///   returns to a direct caller; this is the one place it also feeds
+///   forward into generation.
+fn build_crawl_context_block(crawl: Option<&crate::crawler::CrawlOutput>) -> String {
+    let Some(crawl) = crawl else {
+        return String::new();
+    };
+    if crawl.roles.iter().all(|r| r.pages.is_empty()) {
+        return String::new();
+    }
+
+    let mut pages_by_url: std::collections::BTreeMap<&str, (&str, Vec<&str>)> =
+        std::collections::BTreeMap::new();
+    for role in &crawl.roles {
+        for page in &role.pages {
+            let entry = pages_by_url
+                .entry(page.url.as_str())
+                .or_insert_with(|| (page.title.as_str(), Vec::new()));
+            for el in &page.elements {
+                let label = el.text.trim();
+                if !label.is_empty() && !entry.1.contains(&label) {
+                    entry.1.push(label);
+                }
+            }
+        }
+    }
+
+    let mut block = String::from(
+        "REAL APPLICATION SURFACE (from a live crawl of the running application — NOT part of \
+         the requirement text itself; a test case this inspires still follows the EVIDENCE \
+         RULES above; ground UI details in these real, currently-existing pages/elements rather \
+         than inventing a field or button that does not exist):\n",
+    );
+    for (url, (title, elements)) in pages_by_url.iter().take(MAX_CRAWL_PAGES) {
+        let shown: Vec<&str> = elements
+            .iter()
+            .take(MAX_ELEMENTS_PER_PAGE)
+            .copied()
+            .collect();
+        let elements_text = if shown.is_empty() {
+            "(no labeled elements found)".to_string()
+        } else {
+            shown.join(", ")
+        };
+        block.push_str(&format!("- Page \"{title}\" ({url}): {elements_text}\n"));
+    }
+
+    let visibility_lines: Vec<String> = crawl
+        .visibility_matrix
+        .iter()
+        .flat_map(|entry| {
+            entry
+                .elements_only_visible_to
+                .iter()
+                .filter(|(_, elements)| !elements.is_empty())
+                .map(|(role, elements)| {
+                    format!(
+                        "- On {}: only \"{}\" can see: {}\n",
+                        entry.url,
+                        role,
+                        elements.join(", ")
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .take(MAX_VISIBILITY_ENTRIES)
+        .collect();
+    if !visibility_lines.is_empty() {
+        block.push_str(
+            "REAL ROLE-BASED VISIBILITY DIFFERENCES (from the same live crawl — a genuinely \
+             observed access-control boundary, not an invented one):\n",
+        );
+        for line in visibility_lines {
+            block.push_str(&line);
+        }
+    }
+
+    block.push('\n');
+    block
+}
+
+/// How many real, distinct pages from a crawl actually reach the prompt —
+/// the same union-by-URL + [`MAX_CRAWL_PAGES`] cap [`build_crawl_context_block`]
+/// itself applies, exposed separately so a caller (`api.rs`'s
+/// `crawl_pages_used` response field) can report the real, honest count
+/// actually used rather than the crawl's raw total page count, which may
+/// exceed what was actually folded into the prompt.
+pub fn crawl_pages_used_count(crawl: Option<&crate::crawler::CrawlOutput>) -> usize {
+    let Some(crawl) = crawl else {
+        return 0;
+    };
+    let mut urls: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for role in &crawl.roles {
+        for page in &role.pages {
+            urls.insert(page.url.as_str());
+        }
+    }
+    urls.len().min(MAX_CRAWL_PAGES)
+}
+
 /// Builds the real prompt sent to the model (brief §FIFTH/§SIXTH/§ELEVENTH).
 /// Every selected skill's instruction appears in its own labeled block —
 /// this is the concrete mechanism by which a different skill selection
@@ -460,6 +606,7 @@ pub fn build_prompt(
     skills: &[ResolvedSkillInstruction],
     feedback: &FeedbackContext,
     prior_wave_cases: &[GeneratedTestCaseDraft],
+    crawl: Option<&crate::crawler::CrawlOutput>,
 ) -> String {
     let mut skill_blocks = String::new();
     for s in skills {
@@ -474,11 +621,13 @@ pub fn build_prompt(
     }
     let feedback_block = build_feedback_block(feedback);
     let prior_wave_block = build_prior_wave_block(prior_wave_cases);
+    let crawl_block = build_crawl_context_block(crawl);
 
     format!(
         "You are a QA test case generator. Generate structured test cases strictly from the requirement \
          text below.\n\n\
          REQUIREMENT TEXT:\n\"\"\"\n{requirement_text}\n\"\"\"\n\n\
+         {crawl_block}\
          SELECTED SKILLS (each test case must map to exactly one of these; combined coverage across all \
          selected skills is required — do not repeat the same scenario for multiple skills):\n\
          {skill_blocks}\n\
@@ -739,9 +888,16 @@ async fn generate_one_wave(
     skills: &[SkillInput],
     feedback: &FeedbackContext,
     prior_wave_cases: &[GeneratedTestCaseDraft],
+    crawl: Option<&crate::crawler::CrawlOutput>,
 ) -> GenerationOutcome {
     let resolved = resolve_skill_instructions(skills);
-    let prompt = build_prompt(requirement_text, &resolved, feedback, prior_wave_cases);
+    let prompt = build_prompt(
+        requirement_text,
+        &resolved,
+        feedback,
+        prior_wave_cases,
+        crawl,
+    );
 
     let request = AiRequest {
         task: AiTask::TestCaseGeneration,
@@ -830,9 +986,19 @@ async fn run_wave(
     skills: &[SkillInput],
     feedback: &FeedbackContext,
     prior_wave_cases: &[GeneratedTestCaseDraft],
+    crawl: Option<&crate::crawler::CrawlOutput>,
 ) -> (WaveSummary, Vec<GeneratedTestCaseDraft>) {
     let skill_names = skills.iter().map(|s| s.name.clone()).collect();
-    match generate_one_wave(infra, requirement_text, skills, feedback, prior_wave_cases).await {
+    match generate_one_wave(
+        infra,
+        requirement_text,
+        skills,
+        feedback,
+        prior_wave_cases,
+        crawl,
+    )
+    .await
+    {
         GenerationOutcome::Ai {
             cases,
             provider,
@@ -874,10 +1040,12 @@ async fn run_wave(
     }
 }
 
-/// The real, single entry point (brief §THIRD) — signature unchanged from
-/// before wave-based generation existed, so every existing caller
-/// (`api.rs`, `custom_testing.rs`) and every single-wave-selection test
-/// keeps working unmodified. Internally: `partition_skills_into_waves`
+/// The real, single entry point (brief §THIRD). `crawl` is the one
+/// parameter added since wave-based generation shipped — `None` for every
+/// caller that has no completed crawl to ground against (`custom_testing.rs`
+/// always passes `None`; every existing single-wave-selection test does
+/// too) reduces to the exact behaviour every existing caller already had.
+/// Internally: `partition_skills_into_waves`
 /// splits the selection, then up to three real, separate `generate_one_wave`
 /// calls (via `run_wave`) run in wave order, each later one seeing every
 /// earlier one's real output. A wave with nothing selected for it is never
@@ -901,6 +1069,7 @@ pub async fn generate_test_cases(
     requirement_text: &str,
     skills: &[SkillInput],
     feedback: &FeedbackContext,
+    crawl: Option<&crate::crawler::CrawlOutput>,
 ) -> GenerationOutcome {
     let (base, dependent, non_functional) = partition_skills_into_waves(skills);
 
@@ -911,8 +1080,16 @@ pub async fn generate_test_cases(
     // EXCEPT an entirely empty selection (today's "no skill selected"
     // call), which must still make exactly the one call it always has.
     if !base.is_empty() || (dependent.is_empty() && non_functional.is_empty()) {
-        let (summary, cases) =
-            run_wave(infra, requirement_text, Wave::Base, &base, feedback, &[]).await;
+        let (summary, cases) = run_wave(
+            infra,
+            requirement_text,
+            Wave::Base,
+            &base,
+            feedback,
+            &[],
+            crawl,
+        )
+        .await;
         waves.push(summary);
         all_cases.extend(cases);
     } else {
@@ -929,6 +1106,7 @@ pub async fn generate_test_cases(
             &dependent,
             feedback,
             &all_cases,
+            crawl,
         )
         .await;
         waves.push(summary);
@@ -946,6 +1124,7 @@ pub async fn generate_test_cases(
             &non_functional,
             feedback,
             &all_cases,
+            crawl,
         )
         .await;
         waves.push(summary);
@@ -1117,12 +1296,14 @@ mod tests {
             &resolve_skill_instructions(&[skill("f", "Functional Testing", "")]),
             &FeedbackContext::default(),
             &[],
+            None,
         );
         let security_only = build_prompt(
             "Users can log in.",
             &resolve_skill_instructions(&[skill("s", "Security Testing", "")]),
             &FeedbackContext::default(),
             &[],
+            None,
         );
         assert_ne!(functional_only, security_only);
         assert!(security_only.to_lowercase().contains("injection"));
@@ -1140,6 +1321,7 @@ mod tests {
             ]),
             &FeedbackContext::default(),
             &[],
+            None,
         );
         assert!(combined.contains("Functional Testing"));
         assert!(combined.contains("Edge Case Analysis"));
@@ -1153,6 +1335,7 @@ mod tests {
             &[],
             &FeedbackContext::default(),
             &[],
+            None,
         );
         assert!(prompt.contains("Password must be at least 8 characters."));
         assert!(prompt
@@ -1301,7 +1484,13 @@ mod tests {
 
     #[test]
     fn prompt_omits_the_feedback_section_entirely_when_context_is_empty() {
-        let prompt = build_prompt("Users can log in.", &[], &FeedbackContext::default(), &[]);
+        let prompt = build_prompt(
+            "Users can log in.",
+            &[],
+            &FeedbackContext::default(),
+            &[],
+            None,
+        );
         assert!(!prompt.contains("KNOWN HISTORICAL SIGNALS"));
     }
 
@@ -1315,9 +1504,14 @@ mod tests {
             }],
             confirmed_defect_patterns: vec!["Recurring checkout crash".to_string()],
         };
-        let with_feedback = build_prompt("Users can log in.", &[], &ctx, &[]);
-        let without_feedback =
-            build_prompt("Users can log in.", &[], &FeedbackContext::default(), &[]);
+        let with_feedback = build_prompt("Users can log in.", &[], &ctx, &[], None);
+        let without_feedback = build_prompt(
+            "Users can log in.",
+            &[],
+            &FeedbackContext::default(),
+            &[],
+            None,
+        );
         assert!(with_feedback.contains("KNOWN HISTORICAL SIGNALS"));
         assert!(with_feedback.contains("Checkout Flow"));
         assert!(with_feedback.contains("Recurring checkout crash"));
@@ -1407,6 +1601,176 @@ mod tests {
         }
     }
 
+    // ------------------------------------------------------------ crawl context
+
+    fn crawl_output(roles: Vec<crate::crawler::RoleCrawlResult>) -> crate::crawler::CrawlOutput {
+        crate::crawler::CrawlOutput {
+            roles,
+            visibility_matrix: Vec::new(),
+        }
+    }
+
+    fn crawled_page(
+        url: &str,
+        title: &str,
+        elements: Vec<(&str, &str)>,
+    ) -> crate::crawler::CrawledPage {
+        crate::crawler::CrawledPage {
+            url: url.to_string(),
+            title: title.to_string(),
+            elements: elements
+                .into_iter()
+                .map(|(kind, text)| crate::crawler::CrawledElement {
+                    kind: kind.to_string(),
+                    text: text.to_string(),
+                    selector_hint: String::new(),
+                    href: None,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn crawl_block_is_empty_when_there_is_no_crawl_or_it_reached_no_pages() {
+        assert_eq!(build_crawl_context_block(None), "");
+        let empty = crawl_output(vec![crate::crawler::RoleCrawlResult {
+            role: "anonymous".to_string(),
+            login_succeeded: true,
+            login_error: None,
+            pages: vec![],
+        }]);
+        assert_eq!(build_crawl_context_block(Some(&empty)), "");
+    }
+
+    #[test]
+    fn crawl_block_carries_real_page_titles_urls_and_element_labels() {
+        let output = crawl_output(vec![crate::crawler::RoleCrawlResult {
+            role: "anonymous".to_string(),
+            login_succeeded: true,
+            login_error: None,
+            pages: vec![crawled_page(
+                "http://x/login",
+                "Login",
+                vec![("button", "Login to Dashboard"), ("input", "Email")],
+            )],
+        }]);
+        let block = build_crawl_context_block(Some(&output));
+        assert!(block.contains("REAL APPLICATION SURFACE"));
+        assert!(block.contains("\"Login\" (http://x/login)"));
+        assert!(block.contains("Login to Dashboard"));
+        assert!(block.contains("Email"));
+        // Context only, still answers to the same evidence discipline.
+        assert!(block.contains("EVIDENCE"));
+    }
+
+    #[test]
+    fn crawl_block_unions_the_same_url_across_two_different_roles_instead_of_listing_it_twice() {
+        let output = crawl_output(vec![
+            crate::crawler::RoleCrawlResult {
+                role: "admin".to_string(),
+                login_succeeded: true,
+                login_error: None,
+                pages: vec![crawled_page(
+                    "http://x/dashboard",
+                    "Dashboard",
+                    vec![("button", "Delete Project")],
+                )],
+            },
+            crate::crawler::RoleCrawlResult {
+                role: "viewer".to_string(),
+                login_succeeded: true,
+                login_error: None,
+                pages: vec![crawled_page(
+                    "http://x/dashboard",
+                    "Dashboard",
+                    vec![("link", "View Reports")],
+                )],
+            },
+        ]);
+        let block = build_crawl_context_block(Some(&output));
+        // Exactly one "(http://x/dashboard)" page entry, with the union of
+        // both roles' real elements, not two separate entries.
+        assert_eq!(block.matches("http://x/dashboard").count(), 1);
+        assert!(block.contains("Delete Project"));
+        assert!(block.contains("View Reports"));
+    }
+
+    #[test]
+    fn crawl_block_includes_the_real_visibility_matrix_as_a_genuine_access_control_boundary() {
+        let mut output = crawl_output(vec![crate::crawler::RoleCrawlResult {
+            role: "admin".to_string(),
+            login_succeeded: true,
+            login_error: None,
+            pages: vec![crawled_page(
+                "http://x/dashboard",
+                "Dashboard",
+                vec![("button", "Delete Project")],
+            )],
+        }]);
+        let mut only_visible_to = std::collections::BTreeMap::new();
+        only_visible_to.insert("admin".to_string(), vec!["Delete Project".to_string()]);
+        output
+            .visibility_matrix
+            .push(crate::crawler::VisibilityDiffEntry {
+                url: "http://x/dashboard".to_string(),
+                roles_with_access: vec!["admin".to_string()],
+                elements_only_visible_to: only_visible_to,
+            });
+        let block = build_crawl_context_block(Some(&output));
+        assert!(block.contains("REAL ROLE-BASED VISIBILITY DIFFERENCES"));
+        assert!(block.contains("only \"admin\" can see: Delete Project"));
+    }
+
+    #[test]
+    fn crawl_pages_used_count_is_zero_with_no_crawl_and_real_otherwise() {
+        assert_eq!(crawl_pages_used_count(None), 0);
+        let output = crawl_output(vec![crate::crawler::RoleCrawlResult {
+            role: "anonymous".to_string(),
+            login_succeeded: true,
+            login_error: None,
+            pages: vec![
+                crawled_page("http://x/a", "A", vec![]),
+                crawled_page("http://x/b", "B", vec![]),
+            ],
+        }]);
+        assert_eq!(crawl_pages_used_count(Some(&output)), 2);
+    }
+
+    #[test]
+    fn prompt_includes_the_crawl_section_with_real_page_data_when_present() {
+        let output = crawl_output(vec![crate::crawler::RoleCrawlResult {
+            role: "anonymous".to_string(),
+            login_succeeded: true,
+            login_error: None,
+            pages: vec![crawled_page(
+                "http://x/login",
+                "Login",
+                vec![("button", "Sign In")],
+            )],
+        }]);
+        let prompt = build_prompt(
+            "Users can log in.",
+            &[],
+            &FeedbackContext::default(),
+            &[],
+            Some(&output),
+        );
+        assert!(prompt.contains("Sign In"));
+        assert!(prompt.contains("REAL APPLICATION SURFACE"));
+    }
+
+    #[test]
+    fn prompt_omits_the_crawl_section_when_no_crawl_is_supplied() {
+        let prompt = build_prompt(
+            "Users can log in.",
+            &[],
+            &FeedbackContext::default(),
+            &[],
+            None,
+        );
+        assert!(!prompt.contains("REAL APPLICATION SURFACE"));
+    }
+
     #[test]
     fn prior_wave_block_is_empty_string_when_there_are_no_prior_cases() {
         assert_eq!(build_prior_wave_block(&[]), "");
@@ -1431,7 +1795,13 @@ mod tests {
 
     #[test]
     fn prompt_omits_the_prior_wave_section_when_nothing_precedes_it() {
-        let prompt = build_prompt("Users can log in.", &[], &FeedbackContext::default(), &[]);
+        let prompt = build_prompt(
+            "Users can log in.",
+            &[],
+            &FeedbackContext::default(),
+            &[],
+            None,
+        );
         assert!(!prompt.contains("ALREADY-GENERATED COVERAGE"));
     }
 
@@ -1443,9 +1813,15 @@ mod tests {
             &[],
             &FeedbackContext::default(),
             &prior,
+            None,
         );
-        let without_prior =
-            build_prompt("Users can log in.", &[], &FeedbackContext::default(), &[]);
+        let without_prior = build_prompt(
+            "Users can log in.",
+            &[],
+            &FeedbackContext::default(),
+            &[],
+            None,
+        );
         assert!(with_prior.contains("ALREADY-GENERATED COVERAGE"));
         assert!(with_prior.contains("Valid login succeeds"));
         assert_ne!(with_prior, without_prior);
@@ -1626,6 +2002,7 @@ mod tests {
             "Password must be at least 8 characters.",
             &[skill("s", "Security Testing", "")],
             &FeedbackContext::default(),
+            None,
         )
         .await;
         match outcome {
@@ -1669,6 +2046,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn integration_threads_real_crawl_context_all_the_way_into_the_actual_prompt_sent_to_the_model(
+    ) {
+        let response = r#"{"test_cases":[{"title":"Valid login succeeds","category":"Functional","skill_id":"skill-functional-testing","preconditions":[],"steps":[{"action":"Log in","expected_result":"Dashboard shown"}],"expected_result":"Dashboard shown","priority":"HIGH","severity":"MAJOR","evidence":"evidenced","source_reference":null}]}"#;
+        let (infra, recorder) = infra_with_recording_executor(vec![response]);
+        let crawl = crawl_output(vec![crate::crawler::RoleCrawlResult {
+            role: "anonymous".to_string(),
+            login_succeeded: true,
+            login_error: None,
+            pages: vec![crawled_page(
+                "http://x/login",
+                "Login",
+                vec![("button", "Login to Dashboard")],
+            )],
+        }]);
+
+        let _ = generate_test_cases(
+            &infra,
+            "Users can log in.",
+            &[skill("f", "Functional Testing", "")],
+            &FeedbackContext::default(),
+            Some(&crawl),
+        )
+        .await;
+
+        let prompts = recorder.prompts.lock().unwrap();
+        assert_eq!(prompts.len(), 1);
+        assert!(prompts[0].contains("Login to Dashboard"));
+        assert!(prompts[0].contains("REAL APPLICATION SURFACE"));
+    }
+
+    #[tokio::test]
     async fn wave_orchestration_makes_one_real_separate_call_per_non_empty_wave_seeing_prior_output(
     ) {
         let requirement = "Users can log in. Admins can manage settings.";
@@ -1691,6 +2099,7 @@ mod tests {
                 skill("s", "Security Testing", ""),
             ],
             &FeedbackContext::default(),
+            None,
         )
         .await;
 
@@ -1760,6 +2169,7 @@ mod tests {
                 skill("e", "Edge Case Analysis", ""),
             ],
             &FeedbackContext::default(),
+            None,
         )
         .await;
         match outcome {
@@ -1807,6 +2217,7 @@ mod tests {
                 skill("r", "RBAC Testing", ""),
             ],
             &FeedbackContext::default(),
+            None,
         )
         .await;
         match outcome {
@@ -1856,6 +2267,7 @@ mod tests {
                 skill("r", "RBAC Testing", ""),
             ],
             &FeedbackContext::default(),
+            None,
         )
         .await;
         match outcome {
@@ -1923,6 +2335,7 @@ mod tests {
             "Password must be at least 8 characters.",
             &[skill("s", "Security Testing", "")],
             &FeedbackContext::default(),
+            None,
         )
         .await;
         match outcome {
@@ -1937,7 +2350,7 @@ mod tests {
     async fn integration_returns_failed_outcome_on_provider_timeout_never_a_fabricated_success() {
         let infra = infra_with_executor_error(ExecutionError::Timeout);
         let outcome =
-            generate_test_cases(&infra, "Anything.", &[], &FeedbackContext::default()).await;
+            generate_test_cases(&infra, "Anything.", &[], &FeedbackContext::default(), None).await;
         match outcome {
             GenerationOutcome::Failed { reason } => assert!(reason.contains("TIMEOUT")),
             GenerationOutcome::Ai { .. } => {
@@ -1950,7 +2363,7 @@ mod tests {
     async fn integration_returns_failed_outcome_on_invalid_structured_output() {
         let infra = infra_with_executor_response("not json at all");
         let outcome =
-            generate_test_cases(&infra, "Anything.", &[], &FeedbackContext::default()).await;
+            generate_test_cases(&infra, "Anything.", &[], &FeedbackContext::default(), None).await;
         assert!(matches!(outcome, GenerationOutcome::Failed { .. }));
     }
 
@@ -1962,6 +2375,7 @@ mod tests {
             "Users log in with email and password.",
             &[],
             &FeedbackContext::default(),
+            None,
         )
         .await;
         match outcome {
@@ -2029,6 +2443,7 @@ mod tests {
             "Users log in with email and password. On success they reach the dashboard.",
             &[skill("f", "Functional Testing", "")],
             &FeedbackContext::default(),
+            None,
         )
         .await;
 
@@ -2077,6 +2492,7 @@ mod tests {
                 skill("e", "Edge Case Analysis", ""),
             ],
             &FeedbackContext::default(),
+            None,
         )
         .await;
         match outcome {
@@ -2119,6 +2535,7 @@ mod tests {
             requirement,
             &[skill("f", "Functional Testing", "")],
             &FeedbackContext::default(),
+            None,
         )
         .await;
         let security_only = generate_test_cases(
@@ -2126,6 +2543,7 @@ mod tests {
             requirement,
             &[skill("s", "Security Testing", "")],
             &FeedbackContext::default(),
+            None,
         )
         .await;
 
