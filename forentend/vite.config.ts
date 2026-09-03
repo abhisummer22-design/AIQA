@@ -24,7 +24,7 @@ import {defineConfig} from 'vite';
  */
 const ORCHESTRATOR_URL = process.env.VITE_ORCHESTRATOR_URL ?? 'http://127.0.0.1:8080';
 
-export default defineConfig(() => {
+export default defineConfig(({ mode }) => {
   return {
     plugins: [react(), tailwindcss()],
     resolve: {
@@ -108,6 +108,18 @@ export default defineConfig(() => {
         },
       },
     },
+    // Forces `VITE_AIQA_ORCH_KEY` empty in test mode, regardless of a
+    // developer's own local-dev-convenience `.env`
+    // (`aiqaApi.ts::ENV_DEFAULT_API_KEY`) — the whole "no key configured"
+    // auth-state test suite asserts real no-key behavior, which must stay
+    // deterministic and not depend on what happens to be in one machine's
+    // untracked `.env` file. A direct `define` override (not Vitest's own
+    // `test.env`) because `VITE_`-prefixed `import.meta.env` access is a
+    // static replacement Vite already resolves from `.env` while building
+    // the test bundle — `test.env` sets `process.env` at runtime, too late
+    // to change what that replacement already baked in.
+    define:
+      mode === 'test' ? { 'import.meta.env.VITE_AIQA_ORCH_KEY': JSON.stringify('') } : undefined,
     // FE-2: no test framework existed in this project before this sprint
     // (Integration Plan T-3 / this brief §18: "the lightest appropriate
     // test mechanism"). Vitest is Vite's own test runner — zero extra
