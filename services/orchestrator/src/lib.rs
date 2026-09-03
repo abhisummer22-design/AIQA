@@ -3,6 +3,7 @@ pub mod ai_router;
 pub mod api;
 pub mod api_testing;
 pub mod app_source;
+pub mod doc_extract;
 pub mod auth;
 pub mod custom_testing;
 pub mod domain;

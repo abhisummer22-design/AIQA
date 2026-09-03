@@ -21,6 +21,11 @@ hex = "0.4.3"
 anyhow = "1.0.104"
 regex = "1.13.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# Real Product Documentation content extraction (Test Case Generator) — a
+# .docx is itself a zip archive; this reads it directly rather than
+# shelling out to an external converter. See `doc_extract.rs`.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+base64 = "0.22"
 
 # Critical-finding remediation (Architecture Audit "PRIORITY 1" — executor
 # isolation). No container runtime is available in this dev environment

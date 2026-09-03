@@ -6,6 +6,7 @@ import {
   Trash2,
   RefreshCw,
   AlertCircle,
+  AlertTriangle,
   FileCode,
   FileSpreadsheet,
   Info,
@@ -14,11 +15,37 @@ import {
   FileCheck,
 } from 'lucide-react';
 import { RequirementDocType, UploadedRequirementDoc } from '../../types';
+import { ApiError, aiqaApi } from '../../services/aiqaApi';
 
 interface DocumentUploadSectionProps {
   documents: UploadedRequirementDoc[];
   onDocumentsChange: (docs: UploadedRequirementDoc[]) => void;
+  /** The real, currently-selected project id — required to call the real
+   *  content-extraction endpoint (project-scoped, same as every other
+   *  real-outbound-action call in this app). `null` means a file can still
+   *  be attached, but its content cannot be analyzed yet. */
+  projectId: string | null;
   disabled?: boolean;
+}
+
+/** Reads the file's real bytes as base64, via `FileReader.readAsDataURL`
+ *  (which already produces base64) minus its `data:<mime>;base64,` prefix.
+ *  `FileReader` rather than the newer `Blob.arrayBuffer()` deliberately:
+ *  it is universally available (including in jsdom, where `arrayBuffer` is
+ *  not), and it avoids hand-rolling a chunked byte->binary-string loop
+ *  that would otherwise be needed to dodge `String.fromCharCode`'s
+ *  argument-count limit on a large file. */
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error('could not read this file'));
+    reader.onload = () => {
+      const result = String(reader.result ?? '');
+      const comma = result.indexOf(',');
+      resolve(comma >= 0 ? result.slice(comma + 1) : '');
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 interface DocSlotConfig {
@@ -70,6 +97,7 @@ const ACCEPTED_EXTENSIONS = ['.pdf', '.docx', '.doc', '.md', '.txt', '.json', '.
 export const DocumentUploadSection: React.FC<DocumentUploadSectionProps> = ({
   documents,
   onDocumentsChange,
+  projectId,
   disabled = false,
 }) => {
   const [dragOverSlot, setDragOverSlot] = useState<RequirementDocType | null>(null);
@@ -111,7 +139,7 @@ export const DocumentUploadSection: React.FC<DocumentUploadSectionProps> = ({
     return null;
   };
 
-  const handleFileUpload = (slotId: RequirementDocType, file: File) => {
+  const handleFileUpload = async (slotId: RequirementDocType, file: File) => {
     const error = validateFile(file);
     if (error) {
       setErrors((prev) => ({ ...prev, [slotId]: error }));
@@ -119,35 +147,58 @@ export const DocumentUploadSection: React.FC<DocumentUploadSectionProps> = ({
     }
 
     setErrors((prev) => ({ ...prev, [slotId]: null }));
-    setUploadProgress((prev) => ({ ...prev, [slotId]: 10 }));
+    // A real in-flight indicator tied to the real request below — not a
+    // fixed-duration fake progress ramp with no actual work behind it.
+    setUploadProgress((prev) => ({ ...prev, [slotId]: 1 }));
 
     const slotConfig = DOCUMENT_SLOTS.find((s) => s.id === slotId)!;
+    const baseDoc: UploadedRequirementDoc = {
+      slotId,
+      label: slotConfig.label,
+      fullName: slotConfig.fullName,
+      fileName: file.name,
+      fileSize: file.size,
+      fileType: file.name.split('.').pop()?.toUpperCase() || 'DOCUMENT',
+      uploadedAt: new Date().toISOString(),
+      status: 'READY',
+    };
 
-    // Simulate real asynchronous file ingestion
-    let currentPct = 15;
-    const interval = setInterval(() => {
-      currentPct += 25;
-      if (currentPct >= 100) {
-        clearInterval(interval);
-        setUploadProgress((prev) => ({ ...prev, [slotId]: 0 }));
+    const commit = (doc: UploadedRequirementDoc) => {
+      setUploadProgress((prev) => ({ ...prev, [slotId]: 0 }));
+      const existingFiltered = documents.filter((d) => d.slotId !== slotId);
+      onDocumentsChange([...existingFiltered, doc]);
+    };
 
-        const newDoc: UploadedRequirementDoc = {
-          slotId,
-          label: slotConfig.label,
-          fullName: slotConfig.fullName,
-          fileName: file.name,
-          fileSize: file.size,
-          fileType: file.name.split('.').pop()?.toUpperCase() || 'DOCUMENT',
-          uploadedAt: new Date().toISOString(),
-          status: 'READY',
-        };
+    if (!projectId) {
+      // The file is genuinely attached (real name/size/type below), it
+      // just cannot be sent for real content extraction yet — a project
+      // is required since the endpoint is project-scoped, same rule as
+      // Application Source verification.
+      commit({ ...baseDoc, extractionError: 'Select a project before its real content can be analyzed.' });
+      return;
+    }
 
-        const existingFiltered = documents.filter((d) => d.slotId !== slotId);
-        onDocumentsChange([...existingFiltered, newDoc]);
-      } else {
-        setUploadProgress((prev) => ({ ...prev, [slotId]: currentPct }));
-      }
-    }, 120);
+    try {
+      const contentBase64 = await fileToBase64(file);
+      const result = await aiqaApi.documents.extractText(projectId, {
+        file_name: file.name,
+        content_base64: contentBase64,
+      });
+      commit({
+        ...baseDoc,
+        extractedText: result.text,
+        extractedCharCount: result.char_count,
+        extractedTruncated: result.truncated,
+      });
+    } catch (err) {
+      // A real extraction failure (e.g. a legacy .doc/.pdf this app
+      // cannot parse, or a genuine network/backend error) is disclosed
+      // honestly, never silently treated as if the content was read.
+      commit({
+        ...baseDoc,
+        extractionError: err instanceof ApiError ? err.message : 'Could not analyze this document\'s real content.',
+      });
+    }
   };
 
   const handleRemoveDoc = (slotId: RequirementDocType) => {
@@ -203,7 +254,7 @@ export const DocumentUploadSection: React.FC<DocumentUploadSectionProps> = ({
         {/* Accepted Formats Tag */}
         <div className="flex items-center gap-1.5 text-[10px] font-mono text-slate-400 bg-[#020617] px-2.5 py-1 rounded border border-slate-800">
           <FileCode className="w-3 h-3 text-indigo-400" />
-          <span>Accepted: PDF, DOCX, MD, TXT, JSON, YAML</span>
+          <span>Content analyzed: DOCX, MD, TXT, JSON, YAML. PDF/legacy .doc are attached but not yet content-analyzed.</span>
         </div>
       </div>
 
@@ -320,6 +371,24 @@ export const DocumentUploadSection: React.FC<DocumentUploadSectionProps> = ({
                       </div>
                     </div>
 
+                    {/* Real content-analysis status — never claims content
+                        was read when it wasn't, and never hides a real
+                        extraction failure. */}
+                    {uploadedDoc.extractedText != null ? (
+                      <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-emerald-950/30 border border-emerald-900/60 text-[10px] font-mono text-emerald-300">
+                        <CheckCircle2 className="w-3 h-3 shrink-0" />
+                        <span>
+                          {uploadedDoc.extractedCharCount?.toLocaleString()} chars of real content analyzed
+                          {uploadedDoc.extractedTruncated ? ' (truncated)' : ''}
+                        </span>
+                      </div>
+                    ) : uploadedDoc.extractionError ? (
+                      <div className="flex items-start gap-1.5 px-2 py-1 rounded bg-amber-950/30 border border-amber-900/60 text-[10px] font-mono text-amber-300">
+                        <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5" />
+                        <span>Content not analyzed: {uploadedDoc.extractionError}</span>
+                      </div>
+                    ) : null}
+
                     {/* Actions: Replace / Remove */}
                     <div className="flex items-center justify-between pt-1">
                       <button
@@ -344,20 +413,14 @@ export const DocumentUploadSection: React.FC<DocumentUploadSectionProps> = ({
                     </div>
                   </div>
                 ) : isUploading ? (
-                  /* Uploading Progress State */
-                  <div className="p-3 rounded bg-[#020617] border border-indigo-900/60 space-y-2">
-                    <div className="flex items-center justify-between text-xs font-mono text-indigo-300">
-                      <span className="flex items-center gap-1.5">
-                        <RefreshCw className="w-3 h-3 animate-spin text-indigo-400" />
-                        <span>Reading & Ingesting File...</span>
-                      </span>
-                      <span>{uploadProgress[slot.id]}%</span>
-                    </div>
-                    <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-indigo-500 rounded-full transition-all duration-200"
-                        style={{ width: `${uploadProgress[slot.id]}%` }}
-                      />
+                  /* Real extraction in flight — an indeterminate indicator,
+                     since a single real request has no meaningful
+                     percentage-complete signal to report (unlike the
+                     fixed-duration fake ramp this replaced). */
+                  <div className="p-3 rounded bg-[#020617] border border-indigo-900/60">
+                    <div className="flex items-center gap-1.5 text-xs font-mono text-indigo-300">
+                      <RefreshCw className="w-3 h-3 animate-spin text-indigo-400" />
+                      <span>Analyzing real document content...</span>
                     </div>
                   </div>
                 ) : (

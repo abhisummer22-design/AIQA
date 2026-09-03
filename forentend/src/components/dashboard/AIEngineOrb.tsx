@@ -25,10 +25,22 @@
  *     as before, just executed as a genuine CSS 3D rotation
  *     (`translate3d` positions on a `preserve-3d` layer, animated with
  *     `rotateY`) instead of a flat 2D spin, so the particles now visibly
- *     orbit in depth rather than sliding around a circle.
- *   - **The core score is real** — the same routing score the particle
- *     count is derived from, shown verbatim, never rounded differently
- *     in two places.
+ *     orbit in depth rather than sliding around a circle. A second,
+ *     slower wobble layer (`orbWobble`) adds a real depth-tumbling feel —
+ *     gated by the exact same `live` boolean as the spin itself, so it
+ *     is still "motion only when something real is true," not a second,
+ *     independent decorative animation.
+ *   - **The core itself shows no score** — it is a plain glow when a real
+ *     route exists, and an honest "NO ROUTE" label when it does not. The
+ *     real routing score is not repeated here since `AIEnginePanel`
+ *     already shows it as real text just below the orb; the core still
+ *     depends on the same `routingScore`/`live` values (it only glows and
+ *     breathes when a route is real), it just no longer renders the
+ *     number a second time.
+ *   - **Glow intensity is derived from each particle's own real depth**
+ *     (`p.z`, already the source of its size) — nearer, larger particles
+ *     get a proportionally larger glow radius, not a fixed decorative
+ *     blur applied uniformly.
  *
  * Particle positions are a deterministic Fibonacci-sphere distribution
  * (real math, no `Math.random()`), computed once per real (count, model)
@@ -132,61 +144,87 @@ export const AIEngineOrb: React.FC<AIEngineOrbProps> = ({ model, routingScore })
       <style>{`
         @keyframes orbSphereSpin { from { transform: rotateY(0deg) rotateX(8deg); } to { transform: rotateY(360deg) rotateX(8deg); } }
         @keyframes orbCoreBreathe { 0%, 100% { opacity: 0.9; } 50% { opacity: 0.55; } }
+        @keyframes orbWobble { 0%, 100% { transform: rotateX(8deg) rotateZ(-3deg); } 50% { transform: rotateX(15deg) rotateZ(3deg); } }
       `}</style>
 
       <div className="relative w-[168px] h-[168px]" style={{ perspective: '480px' }}>
-        {/* Halo — only meaningful when a real route exists. */}
+        {/* Halo — two layered gradients, both only meaningful when a real
+            route exists: a tight inner glow and a softer, wider outer
+            haze for depth, same `live` gate as everything else here. */}
         <div
           className="absolute inset-0 rounded-full"
           style={{
-            background: `radial-gradient(circle, ${live ? 'rgba(34,211,238,0.28)' : 'rgba(51,65,85,0.2)'} 0%, transparent 68%)`,
+            background: `radial-gradient(circle, ${live ? 'rgba(34,211,238,0.32)' : 'rgba(51,65,85,0.2)'} 0%, transparent 62%)`,
+          }}
+        />
+        <div
+          className="absolute inset-0 rounded-full"
+          style={{
+            background: `radial-gradient(circle, ${live ? 'rgba(94,234,212,0.16)' : 'rgba(51,65,85,0.1)'} 0%, transparent 80%)`,
+            filter: 'blur(3px)',
           }}
         />
 
-        {/* The particle sphere — a real CSS 3D layer, not a flat 2D spin. */}
+        {/* Outer wobble layer — a second, slower real-3D rotation gated by
+            the exact same `live` boolean as the spin layer inside it, for
+            a genuine depth-tumbling feel rather than a flat single-axis
+            spin. Never animates on its own when `live` is false. */}
         <div
           className="absolute inset-0"
           style={{
             transformStyle: 'preserve-3d',
-            animation: live ? 'orbSphereSpin 22s linear infinite' : undefined,
+            animation: live ? 'orbWobble 9s ease-in-out infinite' : undefined,
             transform: live ? undefined : 'rotateX(8deg)',
           }}
         >
-          {particles.map((p, i) => (
-            <div
-              key={i}
-              data-level={p.level}
-              className="absolute rounded-full"
-              style={{
-                left: '50%',
-                top: '50%',
-                width: `${p.size}px`,
-                height: `${p.size}px`,
-                background: p.color,
-                opacity: live ? 0.55 + ((p.z + SPHERE_R) / (2 * SPHERE_R)) * 0.45 : 0.35,
-                boxShadow: live && p.color !== LEVEL_COLOR.NONE && p.color !== LEVEL_COLOR.UNKNOWN ? `0 0 4px ${p.color}` : undefined,
-                transform: `translate3d(${p.x}px, ${p.y}px, ${p.z}px) translate(-50%, -50%)`,
-              }}
-            />
-          ))}
+          {/* The particle sphere — a real CSS 3D layer, not a flat 2D spin. */}
+          <div
+            className="absolute inset-0"
+            style={{
+              transformStyle: 'preserve-3d',
+              animation: live ? 'orbSphereSpin 22s linear infinite' : undefined,
+            }}
+          >
+            {particles.map((p, i) => (
+              <div
+                key={i}
+                data-level={p.level}
+                className="absolute rounded-full"
+                style={{
+                  left: '50%',
+                  top: '50%',
+                  width: `${p.size}px`,
+                  height: `${p.size}px`,
+                  background: p.color,
+                  opacity: live ? 0.55 + ((p.z + SPHERE_R) / (2 * SPHERE_R)) * 0.45 : 0.35,
+                  boxShadow:
+                    live && p.color !== LEVEL_COLOR.NONE && p.color !== LEVEL_COLOR.UNKNOWN
+                      ? `0 0 ${(2 + p.size).toFixed(1)}px ${p.color}`
+                      : undefined,
+                  transform: `translate3d(${p.x}px, ${p.y}px, ${p.z}px) translate(-50%, -50%)`,
+                }}
+              />
+            ))}
+          </div>
         </div>
 
-        {/* Core — never part of the rotating layer, so the score stays
-            upright and legible while the sphere spins around it. */}
+        {/* Core — never part of the rotating layers, so it stays upright
+            while the sphere spins/wobbles around it. The routing score
+            itself is not repeated here (it's already shown as real text
+            just below the orb, e.g. "score 211.48") — this circle is a
+            plain glow when live, and still says so honestly when there is
+            no route to be inert about. */}
         <div className="absolute inset-0 flex items-center justify-center">
           <div
             className="w-11 h-11 rounded-full flex items-center justify-center border"
             style={{
               background: `radial-gradient(circle at 45% 40%, ${live ? '#5eead4' : '#475569'} 0%, ${live ? '#0891b2' : '#334155'} 55%, ${live ? '#0e7490' : '#1e293b'} 100%)`,
               borderColor: live ? '#67e8f9' : '#475569',
+              boxShadow: live ? '0 0 18px rgba(34,211,238,0.55), 0 0 36px rgba(34,211,238,0.22)' : undefined,
               animation: live ? 'orbCoreBreathe 3.2s ease-in-out infinite' : undefined,
             }}
           >
-            {live && routingScore !== null ? (
-              <span className="font-mono font-bold text-[11px] text-cyan-50">{routingScore.toFixed(0)}</span>
-            ) : (
-              <span className="font-mono text-[6.5px] text-slate-300 leading-tight text-center">NO ROUTE</span>
-            )}
+            {!live && <span className="font-mono text-[6.5px] text-slate-300 leading-tight text-center">NO ROUTE</span>}
           </div>
         </div>
       </div>
