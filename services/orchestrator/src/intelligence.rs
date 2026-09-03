@@ -41,18 +41,82 @@
 //!
 //! Runs after every run completes (`engine.rs` calls `ingest_run`). Reads
 //! and writes through `Store` only — no direct SQL here.
+//!
+//! **Requirement-graph edges (closes a third gap this module's own doc
+//! comment lineage left open): `quality_relations` has been real schema
+//! since Phase 1 but had zero write paths anywhere in this codebase — this
+//! module's own `upsert_quality_node` only ever created `"test"` nodes.
+//! `link_test_case_to_requirement` is the first real writer: called once,
+//! by `api.rs::create_test_case_scoped`, whenever a persisted test case
+//! carries a real `requirement_reference` and/or `source_requirement` (both
+//! already real, existing fields on `CreateTestCaseRequest` — no schema
+//! change). A case with neither writes nothing at all — the same
+//! "grounding over generation" rule `ai_generation.rs`'s traceability gate
+//! already enforces, applied here to the graph itself: no real requirement
+//! text or reference, no requirement node.**
+//!
+//! This is deliberately the narrow, honest slice of the architecture
+//! brief's "Requirement Graph" layer that is actually buildable today —
+//! real edges between requirement text and the test cases actually
+//! generated from it, real impact analysis over them
+//! (`Store::list_test_cases_for_requirement`). The brief's larger vision
+//! (parsed sub-requirement/field/rule/role nodes, a doc-vs-reality gap
+//! check) needs real document ingestion and a real crawler, neither of
+//! which exist in this codebase yet — building that structure now, over
+//! data this thin, would be exactly the "planning over fake data" this
+//! project's own roadmap discussion already rejected. What's here is real
+//! and load-bearing; nothing further is implied.
 
 use crate::domain::{RunPlan, TaskState, TaskStatus};
 use crate::store::Store;
 use anyhow::Result;
 use regex::Regex;
+use sha2::{Digest, Sha256};
 use std::sync::OnceLock;
+use uuid::Uuid;
 
 /// See `store.rs::upsert_quality_node` doc comment: SQLite's unique index
 /// treats every `NULL` as distinct, so untenanted data uses this sentinel
 /// instead of `NULL` to make upserts actually upsert.
 pub fn tenant_key(project_id: Option<&str>) -> &str {
     project_id.unwrap_or("default")
+}
+
+/// The real, stable identity a `"requirement"` quality-node is keyed on —
+/// pure and DB-free so every rule below is unit-testable without a
+/// database, the same "real logic lives in a pure function" pattern
+/// `ai_generation.rs::build_feedback_context` already established. Returns
+/// `(external_ref, display_name)`, or `None` when there is genuinely
+/// nothing real to key a node on (grounding over generation: no
+/// requirement text or reference, no requirement node — never a
+/// fabricated placeholder identity).
+///
+/// A real, human-assigned `requirement_reference` (e.g. "REQ-042") is
+/// preferred when present — it is the more stable identity: two test cases
+/// citing the same reference should link to the same node even if their
+/// `source_requirement` excerpts differ slightly. Only when no reference
+/// was given does this fall back to a stable SHA-256 of the real
+/// `source_requirement` text itself (prefixed `text:` so it can never
+/// collide with a real human-assigned reference string) — the same real
+/// text `ai_generation.rs`'s traceability gate already trusts as the
+/// source of truth for this test case, not a second, independent guess.
+pub fn requirement_identity(
+    requirement_reference: Option<&str>,
+    source_requirement: Option<&str>,
+) -> Option<(String, String)> {
+    if let Some(reference) = requirement_reference
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return Some((reference.to_string(), reference.to_string()));
+    }
+    if let Some(text) = source_requirement.map(str::trim).filter(|s| !s.is_empty()) {
+        let mut hasher = Sha256::new();
+        hasher.update(text.as_bytes());
+        let external_ref = format!("text:{}", hex::encode(hasher.finalize()));
+        return Some((external_ref, text.to_string()));
+    }
+    None
 }
 
 fn digits_re() -> &'static Regex {
@@ -349,6 +413,75 @@ impl<'a> Intelligence<'a> {
         }
         Ok(())
     }
+
+    /// The "pattern learner" half of the feedback loop this module's own doc
+    /// comment describes but, until now, nothing actually read back:
+    /// `ingest_run` above (and `record_failure`'s human-reviewed bug drafts)
+    /// have always computed real risk/flakiness scores and clustered/
+    /// confirmed real defect patterns — this is the read path that lets
+    /// `ai_generation::generate_test_cases` see them. Two existing,
+    /// already-tested `Store` reads only (`list_test_intelligence`,
+    /// `list_bug_drafts`) reshaped by the pure, already-unit-tested
+    /// `ai_generation::build_feedback_context` — no new SQL, no new table.
+    /// Called once per generation request (`api.rs`), never automatically,
+    /// so a slow/failing read can never block a run the way `ingest_run`'s
+    /// synchronous run-completion path must not be blocked either (see this
+    /// module's own doc comment on why that path stays fast).
+    pub async fn load_feedback_context(
+        &self,
+        project_id: &str,
+    ) -> Result<crate::ai_generation::FeedbackContext> {
+        let intel = self.store.list_test_intelligence(Some(project_id)).await?;
+        let bug_drafts = self.store.list_bug_drafts(Some(project_id)).await?;
+        Ok(crate::ai_generation::build_feedback_context(
+            &intel,
+            &bug_drafts,
+        ))
+    }
+
+    /// The first real write to `quality_relations` (see this module's own
+    /// doc comment above). Called once per real test-case persistence
+    /// (`api.rs::create_test_case_scoped`) — never at draft/generation
+    /// time, since a draft may be discarded and never becomes a real,
+    /// durable fact worth graphing. A case with no real requirement
+    /// reference or text (`requirement_identity` returns `None`) writes
+    /// nothing at all and returns `Ok(())` — not an error, just genuinely
+    /// nothing to link.
+    ///
+    /// Upserts a `"requirement"` node (real identity — see
+    /// `requirement_identity`) and a `"test_case"` node (identity: the
+    /// real, already-persisted test case's own id — distinct from the
+    /// `"test"` node type `update_test_intelligence` above creates from
+    /// *execution* history; a case can exist, and be graphed here, long
+    /// before it is ever run), then a real `"validates"` edge between them.
+    pub async fn link_test_case_to_requirement(
+        &self,
+        project_id: &str,
+        test_case_id: Uuid,
+        test_case_title: &str,
+        requirement_reference: Option<&str>,
+        source_requirement: Option<&str>,
+    ) -> Result<()> {
+        let Some((req_ref, req_name)) =
+            requirement_identity(requirement_reference, source_requirement)
+        else {
+            return Ok(());
+        };
+        let pid = tenant_key(Some(project_id));
+
+        let req_node_id = self
+            .store
+            .upsert_quality_node(pid, "requirement", &req_ref, &req_name)
+            .await?;
+        let case_node_id = self
+            .store
+            .upsert_quality_node(pid, "test_case", &test_case_id.to_string(), test_case_title)
+            .await?;
+        self.store
+            .upsert_quality_relation(case_node_id, req_node_id, "validates")
+            .await?;
+        Ok(())
+    }
 }
 
 // ------------------------------------------------- AI-assisted root cause (BugAnalysis)
@@ -503,6 +636,342 @@ mod tests {
             .0
             .contains("Assertion"));
         assert!(classify_failure("some totally novel failure text").1 <= 0.2);
+    }
+
+    // ------------------------------------------------------ requirement graph
+
+    #[test]
+    fn requirement_identity_prefers_a_real_reference_over_the_source_text() {
+        let (key, name) = requirement_identity(Some("REQ-042"), Some("Users can log in.")).unwrap();
+        assert_eq!(key, "REQ-042");
+        assert_eq!(name, "REQ-042");
+    }
+
+    #[test]
+    fn requirement_identity_falls_back_to_a_stable_hash_of_the_real_text() {
+        let (key1, name1) = requirement_identity(None, Some("Users can log in.")).unwrap();
+        let (key2, _) = requirement_identity(None, Some("Users can log in.")).unwrap();
+        assert!(key1.starts_with("text:"), "key={key1}");
+        assert_eq!(
+            key1, key2,
+            "the same real text must always hash to the same identity"
+        );
+        assert_eq!(name1, "Users can log in.");
+    }
+
+    #[test]
+    fn requirement_identity_of_different_real_text_never_collides() {
+        let (key1, _) = requirement_identity(None, Some("Users can log in.")).unwrap();
+        let (key2, _) =
+            requirement_identity(None, Some("Users can reset their password.")).unwrap();
+        assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn requirement_identity_trims_whitespace_before_hashing_and_before_comparing_references() {
+        let (key1, _) = requirement_identity(None, Some("Users can log in.")).unwrap();
+        let (key2, _) = requirement_identity(None, Some("  Users can log in.  \n")).unwrap();
+        assert_eq!(key1, key2);
+        let (ref1, _) = requirement_identity(Some("REQ-042"), None).unwrap();
+        let (ref2, _) = requirement_identity(Some("  REQ-042  "), None).unwrap();
+        assert_eq!(ref1, ref2);
+    }
+
+    #[test]
+    fn requirement_identity_is_none_when_neither_field_carries_anything_real() {
+        assert!(requirement_identity(None, None).is_none());
+        assert!(
+            requirement_identity(Some("   "), Some("")).is_none(),
+            "whitespace-only/empty strings are not real content either"
+        );
+    }
+
+    fn minimal_create_request(
+        title: &str,
+        reference: Option<&str>,
+    ) -> crate::domain::CreateTestCaseRequest {
+        crate::domain::CreateTestCaseRequest {
+            title: title.to_string(),
+            description: "description".to_string(),
+            category: "Functional".to_string(),
+            priority: "MEDIUM".to_string(),
+            severity: "MINOR".to_string(),
+            preconditions: vec![],
+            steps: vec![crate::domain::TestStep {
+                step_number: 1,
+                action: "Do X".to_string(),
+                expected_result: "Y happens".to_string(),
+            }],
+            expected_result: Some("Y happens".to_string()),
+            assertions: vec![],
+            test_data: None,
+            source_document: None,
+            requirement_reference: reference.map(String::from),
+            source_requirement: None,
+            traceability: None,
+            risk_factor: None,
+            tags: vec![],
+            suite_id: None,
+        }
+    }
+
+    /// Real `Store`, real sqlite file, and — unlike a test that only calls
+    /// `link_test_case_to_requirement` in isolation — real `test_cases` rows
+    /// inserted first via `Store::insert_test_case`, the same real sequence
+    /// `api.rs::create_test_case_scoped` actually runs. This matters
+    /// because `list_test_cases_for_requirement` genuinely INNER JOINs
+    /// against `test_cases` (a graphed case that was since deleted must not
+    /// come back as a phantom result) — a test that skipped the real insert
+    /// would pass for the wrong reason. Proves: two test cases citing the
+    /// same real `requirement_reference` link to the SAME requirement node
+    /// (not two), a third citing a different reference does not, a fourth
+    /// with neither field writes nothing at all (no crash, no phantom
+    /// node), and project isolation holds. The identity-derivation rules
+    /// themselves are already fully covered, DB-free, by
+    /// `requirement_identity`'s own unit tests above.
+    #[tokio::test]
+    async fn link_test_case_to_requirement_reflects_real_edges_and_respects_project_isolation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = crate::store::Store::connect(&dir.path().join("intel.sqlite3"))
+            .await
+            .expect("connect");
+        let intel = Intelligence::new(&store);
+
+        let case_a = store
+            .insert_test_case(
+                "proj-1",
+                &minimal_create_request("Login succeeds", Some("REQ-042")),
+                None,
+            )
+            .await
+            .expect("insert case_a");
+        let case_b = store
+            .insert_test_case(
+                "proj-1",
+                &minimal_create_request("Login rejects bad password", Some("REQ-042")),
+                None,
+            )
+            .await
+            .expect("insert case_b");
+        let case_c = store
+            .insert_test_case(
+                "proj-1",
+                &minimal_create_request("Password reset works", Some("REQ-099")),
+                None,
+            )
+            .await
+            .expect("insert case_c");
+        let case_d = store
+            .insert_test_case(
+                "proj-1",
+                &minimal_create_request("Unrelated case", None),
+                None,
+            )
+            .await
+            .expect("insert case_d");
+        let case_other_project = store
+            .insert_test_case(
+                "proj-2",
+                &minimal_create_request("Other project's login case", Some("REQ-042")),
+                None,
+            )
+            .await
+            .expect("insert case_other_project");
+
+        for (project, id, title, reference) in [
+            ("proj-1", case_a, "Login succeeds", Some("REQ-042")),
+            (
+                "proj-1",
+                case_b,
+                "Login rejects bad password",
+                Some("REQ-042"),
+            ),
+            ("proj-1", case_c, "Password reset works", Some("REQ-099")),
+            ("proj-1", case_d, "Unrelated case", None),
+            (
+                "proj-2",
+                case_other_project,
+                "Other project's login case",
+                Some("REQ-042"),
+            ),
+        ] {
+            intel
+                .link_test_case_to_requirement(project, id, title, reference, None)
+                .await
+                .unwrap_or_else(|e| panic!("link {id}: {e}"));
+        }
+
+        let affected = store
+            .list_test_cases_for_requirement("proj-1", "REQ-042")
+            .await
+            .expect("list_test_cases_for_requirement");
+        let affected_ids: Vec<Uuid> = affected.iter().map(|c| c.id).collect();
+        assert_eq!(
+            affected_ids.len(),
+            2,
+            "must contain exactly case_a and case_b, not case_c/case_d/the other project's case: {affected:?}"
+        );
+        assert!(affected_ids.contains(&case_a));
+        assert!(affected_ids.contains(&case_b));
+        assert!(!affected_ids.contains(&case_c));
+        assert!(!affected_ids.contains(&case_other_project));
+
+        let unrelated = store
+            .list_test_cases_for_requirement("proj-1", "REQ-does-not-exist")
+            .await
+            .expect("a never-linked key must return a real, empty answer, not an error");
+        assert!(unrelated.is_empty());
+    }
+
+    // --------------------------------------------------- feedback context loader
+
+    /// Real `Store`, real sqlite file (tempdir-backed, same pattern
+    /// `api_tests.rs::test_state()` already uses) — not a mock. Proves the
+    /// actual wiring end-to-end: a genuinely risky node and a genuinely
+    /// CONFIRMED bug draft come back in the loaded `FeedbackContext`; an
+    /// ordinary node, a NEEDS_REVIEW draft, a DISMISSED draft, and another
+    /// project's same-named risky node do not. The filtering/threshold/cap
+    /// logic itself is already fully covered, DB-free, by
+    /// `ai_generation.rs`'s own `build_feedback_context` unit tests — this
+    /// test's job is only to prove the two real `Store` reads feeding it are
+    /// wired to the right project and the right columns.
+    #[tokio::test]
+    async fn load_feedback_context_reflects_real_seeded_risk_and_confirmed_defect_data_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = crate::store::Store::connect(&dir.path().join("intel.sqlite3"))
+            .await
+            .expect("connect");
+
+        // A genuinely risky, named node in "proj-1".
+        let risky_node = store
+            .upsert_quality_node("proj-1", "test", "Checkout Flow", "Checkout Flow")
+            .await
+            .expect("upsert risky node");
+        store
+            .upsert_risk_assessment(risky_node, 0.8, 0.0, 0.0, 0.9, 2, 0.0, 500.0, "{}")
+            .await
+            .expect("upsert risk assessment");
+        store
+            .upsert_flakiness(risky_node, 0.1, 10, 1)
+            .await
+            .expect("upsert flakiness");
+
+        // An ordinary, low-risk node in the same project — must not appear.
+        let safe_node = store
+            .upsert_quality_node("proj-1", "test", "About Page", "About Page")
+            .await
+            .expect("upsert safe node");
+        store
+            .upsert_risk_assessment(safe_node, 0.1, 0.0, 0.0, 0.05, 0, 0.0, 100.0, "{}")
+            .await
+            .expect("upsert risk assessment");
+
+        // The exact same risky node name, but under a DIFFERENT project —
+        // tenant isolation must hold, same as `list_test_intelligence`'s own
+        // B3 guarantee this loader relies on rather than reimplementing.
+        let other_project_node = store
+            .upsert_quality_node("proj-2", "test", "Checkout Flow", "Checkout Flow")
+            .await
+            .expect("upsert other-project node");
+        store
+            .upsert_risk_assessment(
+                other_project_node,
+                0.95,
+                0.0,
+                0.0,
+                0.99,
+                3,
+                0.0,
+                900.0,
+                "{}",
+            )
+            .await
+            .expect("upsert risk assessment");
+
+        // A CONFIRMED bug draft — must appear.
+        let (confirmed_cluster, _) = store
+            .upsert_failure_cluster("proj-1", "sig-confirmed", "hypothesis", 0.5)
+            .await
+            .expect("upsert failure cluster");
+        let confirmed_draft = store
+            .insert_bug_draft(
+                confirmed_cluster,
+                "Recurring checkout crash",
+                "description",
+                "High",
+                0.5,
+            )
+            .await
+            .expect("insert bug draft");
+        store
+            .review_bug_draft(confirmed_draft, "CONFIRMED", "tester")
+            .await
+            .expect("review bug draft");
+
+        // A DISMISSED bug draft — a human already judged this NOT a real
+        // defect pattern; must not appear.
+        let (dismissed_cluster, _) = store
+            .upsert_failure_cluster("proj-1", "sig-dismissed", "hypothesis", 0.5)
+            .await
+            .expect("upsert failure cluster");
+        let dismissed_draft = store
+            .insert_bug_draft(
+                dismissed_cluster,
+                "Dismissed as environment noise",
+                "description",
+                "Medium",
+                0.4,
+            )
+            .await
+            .expect("insert bug draft");
+        store
+            .review_bug_draft(dismissed_draft, "DISMISSED", "tester")
+            .await
+            .expect("review bug draft");
+
+        // A still-unreviewed (NEEDS_REVIEW) bug draft — unverified, must not
+        // appear either.
+        let (needs_review_cluster, _) = store
+            .upsert_failure_cluster("proj-1", "sig-needs-review", "hypothesis", 0.5)
+            .await
+            .expect("upsert failure cluster");
+        store
+            .insert_bug_draft(
+                needs_review_cluster,
+                "Unreviewed recurring timeout",
+                "description",
+                "Medium",
+                0.3,
+            )
+            .await
+            .expect("insert bug draft");
+
+        let intel = Intelligence::new(&store);
+        let ctx = intel
+            .load_feedback_context("proj-1")
+            .await
+            .expect("load_feedback_context");
+
+        let risky_names: Vec<&str> = ctx.risky_areas.iter().map(|r| r.name.as_str()).collect();
+        assert!(
+            risky_names.contains(&"Checkout Flow"),
+            "the real risky node must appear: {risky_names:?}"
+        );
+        assert!(
+            !risky_names.contains(&"About Page"),
+            "an ordinary-risk node must not appear: {risky_names:?}"
+        );
+        assert_eq!(
+            ctx.risky_areas.iter().filter(|r| r.name == "Checkout Flow").count(),
+            1,
+            "must reflect only this project's own 'Checkout Flow', not proj-2's same-named node too"
+        );
+
+        assert_eq!(
+            ctx.confirmed_defect_patterns,
+            vec!["Recurring checkout crash".to_string()],
+            "only the CONFIRMED draft may appear, never NEEDS_REVIEW or DISMISSED"
+        );
     }
 
     // ------------------------------------------------- AI-assisted root cause

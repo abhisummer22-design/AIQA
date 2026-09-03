@@ -21,7 +21,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppShell } from '../../App';
 import { setApiKey } from '../../services/aiqaApi';
-import type { GenerateAiTestCasesResponse, Project, TestCaseRow } from '../../types/contract';
+import type { GenerateAiTestCasesResponse, Project, TestCaseRow, RunDetail, CrawlOutput } from '../../types/contract';
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -86,6 +86,7 @@ function aiGenerateResponse(overrides: Partial<GenerateAiTestCasesResponse> = {}
     provider: 'ollama',
     model: 'llama3',
     fallback_reason: null,
+    crawl_pages_used: 0,
     ...overrides,
   };
 }
@@ -661,6 +662,57 @@ describe('TestCaseGeneratorPage — Phase 1 regression (local draft review still
     // The model's own real category string ("Access Control") is used
     // verbatim, not silently coerced into one of the 14 fixed local labels.
     expect(screen.getAllByText('Access Control').length).toBeGreaterThan(0);
+  }, 15000);
+
+  it('a category chip correctly counts and filters a real case whose AI-returned category is the skill display name, not the bare category id', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') {
+          return jsonResponse(200, aiGenerateResponse({
+            test_cases: [
+              {
+                // The model's real, common phrasing -- not the bare
+                // "Functional" id the "Functional" category chip below
+                // filters/counts by. A strict `===` match would silently
+                // show 0 on that chip even though this real case exists.
+                title: 'Valid login succeeds',
+                category: 'Functional Testing',
+                skill_id: 'skill-functional-testing',
+                preconditions: [],
+                steps: [{ action: 'Log in with valid credentials', expected_result: 'User reaches dashboard' }],
+                expected_result: 'User reaches dashboard',
+                priority: 'HIGH',
+                severity: 'MAJOR',
+                evidence: 'evidenced',
+                source_reference: null,
+              },
+            ],
+          }));
+        }
+        if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+        return jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+    await generate();
+
+    await waitFor(() => expect(screen.getByText(/Generated Test Suite/)).toBeTruthy());
+    const chip = screen.getByText('Functional').closest('button')!;
+    expect(within(chip).getByText('1')).toBeTruthy();
+
+    // Clicking it must actually show the real case, not the honest-but-
+    // wrong "No matching test cases found" the bug produced.
+    await act(async () => {
+      chip.click();
+    });
+    expect(screen.getAllByText('Valid login succeeds').length).toBeGreaterThan(0);
+    expect(screen.queryByText(/No matching test cases found/)).toBeNull();
   }, 15000);
 });
 
@@ -1552,4 +1604,196 @@ describe('TestCaseGeneratorPage — Skills & MCP Phase 1', () => {
     await waitFor(() => expect(page()).toBeTruthy());
     expect(document.getElementById('aiqa-test-case-generator-page')).toBeTruthy();
   });
+});
+
+// ================================================ crawl grounding (Phase 6 -> Phase 8)
+
+function runDetail(overrides: Partial<RunDetail> = {}): RunDetail {
+  return {
+    run_id: 'crawl-run-1',
+    name: 'Crawl: https://target.example.com',
+    state: 'RUNNING',
+    total: 1,
+    queued: 0,
+    running: 1,
+    passed: 0,
+    failed: 0,
+    blocked: 0,
+    skipped: 0,
+    cancelled: 0,
+    timeout: 0,
+    infra_error: 0,
+    needs_review: 0,
+    started_at: new Date().toISOString(),
+    finished_at: null,
+    project_id: PROJECT_A.id,
+    requested_by: null,
+    policy_notes: null,
+    approved_by: null,
+    approved_at: null,
+    tasks: [
+      { id: 'crawl-task-1', name: 'Crawl', prerequisites: [], status: 'RUNNING', reason: null, started_at: null, finished_at: null },
+    ],
+    ...overrides,
+  };
+}
+
+function crawlOutput(): CrawlOutput {
+  return {
+    roles: [
+      {
+        role: 'anonymous',
+        login_succeeded: true,
+        login_error: null,
+        pages: [
+          {
+            url: 'https://target.example.com/login',
+            title: 'Login',
+            elements: [{ kind: 'button', text: 'Sign In', selector_hint: 'button', href: null }],
+          },
+        ],
+      },
+    ],
+    visibility_matrix: [],
+  };
+}
+
+describe('TestCaseGeneratorPage — crawl grounding (Phase 6 -> Phase 8 wiring)', () => {
+  it('Crawl This Application makes a real POST to the real crawl endpoint with the entered URL', async () => {
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/crawl') && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body));
+        expect(body.base_url).toBe('https://target.example.com');
+        expect(body.roles).toEqual([{ name: 'anonymous', login_actions: [] }]);
+        return jsonResponse(201, { run_id: 'crawl-run-1' });
+      }
+      if (url.includes('/executions/crawl-run-1')) return jsonResponse(200, runDetail());
+      if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+      return jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+
+    const urlInput = document.getElementById('crawl-target-url') as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(urlInput, { target: { value: 'https://target.example.com' } });
+    });
+    await act(async () => {
+      document.getElementById('btn-start-crawl')!.click();
+    });
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([u, i]) => String(u).includes('/crawl') && (i as RequestInit)?.method === 'POST')).toBe(true),
+    );
+  }, 15000);
+
+  it('a completed crawl shows real page/element counts and opts its real run_id into the next generate-ai request', async () => {
+    const generateAiCalls: unknown[] = [];
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/crawl') && url.endsWith('/result')) return jsonResponse(200, crawlOutput());
+      if (url.includes('/crawl') && init?.method === 'POST') return jsonResponse(201, { run_id: 'crawl-run-1' });
+      if (url.includes('/executions/crawl-run-1')) return jsonResponse(200, runDetail({ state: 'COMPLETED', finished_at: new Date().toISOString() }));
+      if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') {
+        generateAiCalls.push(JSON.parse(String(init.body)));
+        return jsonResponse(200, aiGenerateResponse({ crawl_pages_used: 1 }));
+      }
+      if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+      return jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+
+    const urlInput = document.getElementById('crawl-target-url') as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(urlInput, { target: { value: 'https://target.example.com' } });
+    });
+    await act(async () => {
+      document.getElementById('btn-start-crawl')!.click();
+    });
+
+    // Real counts from the real crawl result, and the "use it" checkbox
+    // defaults on for a genuinely completed crawl.
+    await waitFor(() => expect(screen.getByText(/Crawled 1 real page, 1 real element/)).toBeTruthy(), { timeout: 10000 });
+    const checkbox = document.getElementById('crawl-use-in-generation') as HTMLInputElement;
+    expect(checkbox.checked).toBe(true);
+
+    await generate();
+
+    expect(generateAiCalls.length).toBe(1);
+    expect((generateAiCalls[0] as { crawl_run_id: string | null }).crawl_run_id).toBe('crawl-run-1');
+
+    // A successful generate navigates away from this branch; the real
+    // selection persists at the page level and its real summary is
+    // restored on returning here — proven by the checkbox still being
+    // checked without re-crawling.
+    await goToSourcesBranch();
+    const restoredCheckbox = await waitFor(() => document.getElementById('crawl-use-in-generation') as HTMLInputElement);
+    expect(restoredCheckbox.checked).toBe(true);
+
+    // Unchecking it must make the next real request omit real grounding.
+    await act(async () => {
+      fireEvent.click(restoredCheckbox);
+    });
+    expect(restoredCheckbox.checked).toBe(false);
+    await generate();
+    expect((generateAiCalls[1] as { crawl_run_id: string | null }).crawl_run_id).toBeNull();
+  }, 20000);
+
+  it('a crawl that genuinely fails shows the real reason and never opts a run_id into generation', async () => {
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/crawl') && init?.method === 'POST') return jsonResponse(201, { run_id: 'crawl-run-1' });
+      if (url.includes('/executions/crawl-run-1')) {
+        return jsonResponse(
+          200,
+          runDetail({
+            state: 'FAILED',
+            failed: 1,
+            running: 0,
+            finished_at: new Date().toISOString(),
+            tasks: [
+              {
+                id: 'crawl-task-1',
+                name: 'Crawl',
+                prerequisites: [],
+                status: 'INFRA_ERROR',
+                reason: 'NO_COMPATIBLE_EXECUTOR: playwright is not registered',
+                started_at: null,
+                finished_at: null,
+              },
+            ],
+          }),
+        );
+      }
+      if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+      return jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+
+    const urlInput = document.getElementById('crawl-target-url') as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(urlInput, { target: { value: 'https://target.example.com' } });
+    });
+    await act(async () => {
+      document.getElementById('btn-start-crawl')!.click();
+    });
+
+    await waitFor(() => expect(screen.getByText(/NO_COMPATIBLE_EXECUTOR/)).toBeTruthy(), { timeout: 10000 });
+    expect(document.getElementById('crawl-use-in-generation')).toBeNull();
+  }, 15000);
 });

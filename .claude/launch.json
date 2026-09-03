@@ -7,6 +7,16 @@
       "runtimeArgs": ["--prefix", "forentend", "run", "dev"],
       "port": 3000,
       "autoPort": false
+    },
+    {
+      "name": "orchestrator",
+      "runtimeExecutable": "cargo",
+      "runtimeArgs": ["run", "-p", "aiqa-orchestrator", "--manifest-path", "services/orchestrator/Cargo.toml"],
+      "port": 8080,
+      "autoPort": false,
+      "env": {
+        "OLLAMA_BASE_URL": "http://100.64.34.28:11434"
+      }
     }
   ]
 }

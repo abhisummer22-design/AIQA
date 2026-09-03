@@ -4,6 +4,7 @@ pub mod api;
 pub mod api_testing;
 pub mod app_source;
 pub mod auth;
+pub mod crawler;
 pub mod custom_testing;
 pub mod domain;
 pub mod engine;

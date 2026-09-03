@@ -35,6 +35,7 @@ import {
 } from '../../types';
 import { TraceabilityGraph } from './TraceabilityGraph';
 import { TEST_CATEGORIES } from './GenerationConfigSection';
+import { skillStem } from '../../services/skillRegistry';
 import { EXECUTOR_OPTIONS, SIMULATE_OUTCOMES } from '../pages/ExecutionHubPage';
 import type { HandoffChoice } from '../pages/TestCaseGeneratorPage';
 import type { CompilationOutcome } from '../../types/contract';
@@ -49,6 +50,30 @@ const HANDOFF_OPTIONS = [
   { value: COMPILE_OPTION_VALUE, label: 'Compile & Execute (real, from this case’s own content)' },
   ...EXECUTOR_OPTIONS,
 ];
+
+/** Every canonical category id, keyed by its own stem, for `resolveCategoryId`. */
+const CATEGORY_ID_BY_STEM = new Map(TEST_CATEGORIES.map((c) => [c.id.toLowerCase(), c.id]));
+
+/** A generated test case's real `category` field is freeform AI output
+ *  (`ai_generation.rs::GeneratedTestCaseDraft.category: String` — the
+ *  model is never constrained to the 14 canonical category ids), and it
+ *  demonstrably sometimes writes the originating skill's own display name
+ *  into it (e.g. "Functional Testing") instead of the bare category id
+ *  ("Functional") — so a strict `===` match against `TEST_CATEGORIES`
+ *  silently drops those real cases from every per-category filter/count
+ *  while they still count under "All Categories" (the visible symptom:
+ *  most category chips read 0 even though the cases genuinely exist).
+ *
+ *  Reuses the exact same testing-verb-suffix stemming
+ *  `categoryMatchedSkillIds` (`skillRegistry.ts`) already applies the
+ *  other direction (category -> matching skill), so "Functional Testing"
+ *  and "Functional" resolve to the same real id here too. When the raw
+ *  text does not stem-match any canonical id (e.g. "RBAC" — a real skill
+ *  with no corresponding category), the real text is returned unchanged
+ *  rather than forced into a category it does not belong to. */
+function resolveCategoryId(rawCategory: string): string {
+  return CATEGORY_ID_BY_STEM.get(skillStem(rawCategory)) ?? rawCategory;
+}
 
 interface GeneratedTestCasesViewProps {
   testCases: GeneratedTestCase[];
@@ -134,7 +159,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
 
   // Filtered cases
   const filteredCases = testCases.filter((tc) => {
-    if (selectedCategory !== 'ALL' && tc.category !== selectedCategory) return false;
+    if (selectedCategory !== 'ALL' && resolveCategoryId(tc.category) !== selectedCategory) return false;
     if (statusFilter !== 'ALL' && tc.status !== statusFilter) return false;
     if (priorityFilter !== 'ALL' && tc.priority !== priorityFilter) return false;
     if (searchQuery.trim()) {
@@ -460,7 +485,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
 
           {/* 14 Individual Categories */}
           {TEST_CATEGORIES.map((cat) => {
-            const count = testCases.filter((tc) => tc.category === cat.id).length;
+            const count = testCases.filter((tc) => resolveCategoryId(tc.category) === cat.id).length;
             const isSelected = selectedCategory === cat.id;
             const Icon = cat.icon;
 

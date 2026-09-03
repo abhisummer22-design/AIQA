@@ -33,6 +33,7 @@ import { useAIQA } from '../../context/AIQAContext';
 import { useProject } from '../../context/ProjectContext';
 import { DocumentUploadSection } from '../test-generator/DocumentUploadSection';
 import { ApplicationSourceSection } from '../test-generator/ApplicationSourceSection';
+import { CrawlGroundingSection } from '../test-generator/CrawlGroundingSection';
 import { GenerationConfigSection, TEST_CATEGORIES } from '../test-generator/GenerationConfigSection';
 import { GeneratedTestCasesView } from '../test-generator/GeneratedTestCasesView';
 import { SkillsAndMcpPanel } from '../test-generator/SkillsAndMcpPanel';
@@ -177,6 +178,12 @@ export const TestCaseGeneratorPage: React.FC = () => {
       FIGMA: { type: 'FIGMA', label: 'Figma', url: '', status: 'IDLE' },
     }
   );
+
+  // 2b. Real crawl grounding (Phase 6 -> Phase 8 wiring) — the real,
+  // completed crawl `run_id` opted into generation, or `null`. Not part of
+  // `activeGenerationSession` yet (a session-restore concern out of this
+  // increment's scope) — always starts fresh, same as `documents` does.
+  const [crawlRunId, setCrawlRunId] = useState<string | null>(null);
 
   // 3. Selected Test Categories (Defaults to all 14 or customizable)
   const [selectedCategories, setSelectedCategories] = useState<TestGenerationCategory[]>(
@@ -626,6 +633,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
       const response = await aiqaApi.testCases.generateAi(realProjectId, {
         requirement_text: reqText,
         skills: requestSkills,
+        crawl_run_id: crawlRunId,
       });
       setLastGenerationResult(response);
 
@@ -959,6 +967,18 @@ export const TestCaseGeneratorPage: React.FC = () => {
                 appSources={appSources}
                 onAppSourcesChange={setAppSources}
                 projectId={realProjectId}
+                disabled={isGeneratingNow}
+              />
+            </div>
+
+            {/* 2b. Crawl Grounding Section — Phase 6's real crawler, now
+                wired into generation. */}
+            <div className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm">
+              <CrawlGroundingSection
+                appSources={appSources}
+                projectId={realProjectId}
+                crawlRunId={crawlRunId}
+                onCrawlRunIdChange={setCrawlRunId}
                 disabled={isGeneratingNow}
               />
             </div>

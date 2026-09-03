@@ -100,6 +100,41 @@ fn test_case_from_row(r: sqlx::sqlite::SqliteRow) -> Result<TestCaseRow> {
         created_by: r.get("created_by"),
         created_at: parse_ts(&r.get::<String, _>("created_at")),
         updated_at: parse_ts(&r.get::<String, _>("updated_at")),
+        suite_id: r
+            .get::<Option<String>, _>("suite_id")
+            .and_then(|s| Uuid::parse_str(&s).ok()),
+    })
+}
+
+fn test_plan_from_row(r: sqlx::sqlite::SqliteRow) -> Result<TestPlanRow> {
+    Ok(TestPlanRow {
+        id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap_or_default(),
+        project_id: r.get("project_id"),
+        name: r.get("name"),
+        description: r.get("description"),
+        status: TestPlanStatus::from_db_str(&r.get::<String, _>("status")),
+        entry_criteria: r.get("entry_criteria"),
+        exit_criteria: r.get("exit_criteria"),
+        created_by: r.get("created_by"),
+        created_at: parse_ts(&r.get::<String, _>("created_at")),
+        updated_at: parse_ts(&r.get::<String, _>("updated_at")),
+        suite_count: r.get("suite_count"),
+    })
+}
+
+fn test_suite_from_row(r: sqlx::sqlite::SqliteRow) -> Result<TestSuiteRow> {
+    Ok(TestSuiteRow {
+        id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap_or_default(),
+        project_id: r.get("project_id"),
+        plan_id: r
+            .get::<Option<String>, _>("plan_id")
+            .and_then(|s| Uuid::parse_str(&s).ok()),
+        name: r.get("name"),
+        description: r.get("description"),
+        created_by: r.get("created_by"),
+        created_at: parse_ts(&r.get::<String, _>("created_at")),
+        updated_at: parse_ts(&r.get::<String, _>("updated_at")),
+        case_count: r.get("case_count"),
     })
 }
 
@@ -883,6 +918,21 @@ impl Store {
             .execute(&mut *tx)
             .await?;
 
+        // 1b. Delete test suites and test plans (Phase 5) — real, direct
+        // deletes, not left to `ON DELETE SET NULL` alone: that clause
+        // exists so removing ONE plan/suite detaches its contents without
+        // destroying them, but a whole-project delete must remove every
+        // plan/suite row that belonged to this project, not just null out
+        // references from rows already deleted above.
+        sqlx::query("DELETE FROM test_suites WHERE project_id = ?")
+            .bind(&pid_str)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM test_plans WHERE project_id = ?")
+            .bind(&pid_str)
+            .execute(&mut *tx)
+            .await?;
+
         // 2. Delete performance runs
         sqlx::query("DELETE FROM performance_runs WHERE project_id = ?")
             .bind(&pid_str)
@@ -1012,8 +1062,8 @@ impl Store {
                 preconditions, steps, expected_result, assertions, test_data,
                 source_document, requirement_reference, source_requirement,
                 traceability, risk_factor, tags, source, status,
-                created_by, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                created_by, created_at, updated_at, suite_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(id.to_string())
         .bind(project_id)
@@ -1038,6 +1088,7 @@ impl Store {
         .bind(created_by)
         .bind(&now)
         .bind(&now)
+        .bind(req.suite_id.map(|u| u.to_string()))
         .execute(&self.pool)
         .await?;
         Ok(id)
@@ -1048,7 +1099,7 @@ impl Store {
             "SELECT id, project_id, title, description, category, priority, severity, \
              preconditions, steps, expected_result, assertions, test_data, source_document, \
              requirement_reference, source_requirement, traceability, risk_factor, tags, source, status, \
-             validation_notes, executed_run_id, executed_task_id, created_by, created_at, updated_at \
+             validation_notes, executed_run_id, executed_task_id, created_by, created_at, updated_at, suite_id \
              FROM test_cases WHERE id = ?",
         )
         .bind(id.to_string())
@@ -1057,21 +1108,44 @@ impl Store {
         row.map(test_case_from_row).transpose()
     }
 
-    /// Project-scoped list, optionally narrowed to one lifecycle status —
-    /// same optional-filter shape `list_projects`/`list_test_intelligence`
-    /// already use. Newest first, matching every other list endpoint.
+    /// Project-scoped list, optionally narrowed to one lifecycle status
+    /// and/or one suite (Phase 5) — same optional-filter shape
+    /// `list_projects`/`list_test_intelligence` already use, extended to a
+    /// second independent filter rather than a second function. Newest
+    /// first, matching every other list endpoint. Four literal query
+    /// strings, not one built by `format!`: sqlx 0.9 requires a real
+    /// `&'static str` for `query()` specifically so dynamic SQL can't
+    /// silently slip through (`SqlSafeStr` is only implemented for
+    /// `&'static str`, confirmed at compile time, not just a style
+    /// preference — same reason `list_bug_drafts` above is two literal
+    /// statements rather than one built by `format!`).
     pub async fn list_test_cases(
         &self,
         project_id: &str,
         status_filter: Option<&str>,
+        suite_id_filter: Option<Uuid>,
     ) -> Result<Vec<TestCaseRow>> {
-        let rows = match status_filter {
-            Some(status) => {
+        let rows = match (status_filter, suite_id_filter) {
+            (Some(status), Some(suite_id)) => {
                 sqlx::query(
                     "SELECT id, project_id, title, description, category, priority, severity, \
                      preconditions, steps, expected_result, assertions, test_data, source_document, \
                      requirement_reference, source_requirement, traceability, risk_factor, tags, source, status, \
-                     validation_notes, executed_run_id, executed_task_id, created_by, created_at, updated_at \
+                     validation_notes, executed_run_id, executed_task_id, created_by, created_at, updated_at, suite_id \
+                     FROM test_cases WHERE project_id = ? AND status = ? AND suite_id = ? ORDER BY created_at DESC",
+                )
+                .bind(project_id)
+                .bind(status)
+                .bind(suite_id.to_string())
+                .fetch_all(&self.pool)
+                .await?
+            }
+            (Some(status), None) => {
+                sqlx::query(
+                    "SELECT id, project_id, title, description, category, priority, severity, \
+                     preconditions, steps, expected_result, assertions, test_data, source_document, \
+                     requirement_reference, source_requirement, traceability, risk_factor, tags, source, status, \
+                     validation_notes, executed_run_id, executed_task_id, created_by, created_at, updated_at, suite_id \
                      FROM test_cases WHERE project_id = ? AND status = ? ORDER BY created_at DESC",
                 )
                 .bind(project_id)
@@ -1079,12 +1153,25 @@ impl Store {
                 .fetch_all(&self.pool)
                 .await?
             }
-            None => {
+            (None, Some(suite_id)) => {
                 sqlx::query(
                     "SELECT id, project_id, title, description, category, priority, severity, \
                      preconditions, steps, expected_result, assertions, test_data, source_document, \
                      requirement_reference, source_requirement, traceability, risk_factor, tags, source, status, \
-                     validation_notes, executed_run_id, executed_task_id, created_by, created_at, updated_at \
+                     validation_notes, executed_run_id, executed_task_id, created_by, created_at, updated_at, suite_id \
+                     FROM test_cases WHERE project_id = ? AND suite_id = ? ORDER BY created_at DESC",
+                )
+                .bind(project_id)
+                .bind(suite_id.to_string())
+                .fetch_all(&self.pool)
+                .await?
+            }
+            (None, None) => {
+                sqlx::query(
+                    "SELECT id, project_id, title, description, category, priority, severity, \
+                     preconditions, steps, expected_result, assertions, test_data, source_document, \
+                     requirement_reference, source_requirement, traceability, risk_factor, tags, source, status, \
+                     validation_notes, executed_run_id, executed_task_id, created_by, created_at, updated_at, suite_id \
                      FROM test_cases WHERE project_id = ? ORDER BY created_at DESC",
                 )
                 .bind(project_id)
@@ -1139,6 +1226,236 @@ impl Store {
 
     pub async fn delete_test_case(&self, id: Uuid) -> Result<bool> {
         let result = sqlx::query("DELETE FROM test_cases WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Phase 5 (Output maturity) — the one place a case's suite membership
+    /// is set OR cleared. Unlike `update_test_case`'s `COALESCE` fields,
+    /// `suite_id` here is a real, direct assignment: `Some(id)` sets it,
+    /// `None` clears it back to ungrouped. See `domain.rs::
+    /// SetTestCaseSuiteRequest`'s own doc comment for why this needs to be
+    /// its own method/endpoint rather than a third `COALESCE` field.
+    pub async fn set_test_case_suite(&self, id: Uuid, suite_id: Option<Uuid>) -> Result<bool> {
+        let result = sqlx::query("UPDATE test_cases SET suite_id = ?, updated_at = ? WHERE id = ?")
+            .bind(suite_id.map(|u| u.to_string()))
+            .bind(now_rfc3339())
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    // ------------------------------------------------- test plans (Phase 5)
+
+    pub async fn insert_test_plan(
+        &self,
+        project_id: &str,
+        req: &CreateTestPlanRequest,
+        created_by: Option<&str>,
+    ) -> Result<Uuid> {
+        let id = Uuid::new_v4();
+        let now = now_rfc3339();
+        sqlx::query(
+            "INSERT INTO test_plans (id, project_id, name, description, status, entry_criteria, exit_criteria, created_by, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(project_id)
+        .bind(&req.name)
+        .bind(&req.description)
+        .bind(TestPlanStatus::Draft.as_db_str())
+        .bind(&req.entry_criteria)
+        .bind(&req.exit_criteria)
+        .bind(created_by)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        Ok(id)
+    }
+
+    pub async fn get_test_plan(&self, id: Uuid) -> Result<Option<TestPlanRow>> {
+        let row = sqlx::query(
+            "SELECT p.id, p.project_id, p.name, p.description, p.status, p.entry_criteria, p.exit_criteria, \
+             p.created_by, p.created_at, p.updated_at, \
+             (SELECT COUNT(*) FROM test_suites s WHERE s.plan_id = p.id) as suite_count \
+             FROM test_plans p WHERE p.id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(test_plan_from_row).transpose()
+    }
+
+    pub async fn list_test_plans(&self, project_id: &str) -> Result<Vec<TestPlanRow>> {
+        let rows = sqlx::query(
+            "SELECT p.id, p.project_id, p.name, p.description, p.status, p.entry_criteria, p.exit_criteria, \
+             p.created_by, p.created_at, p.updated_at, \
+             (SELECT COUNT(*) FROM test_suites s WHERE s.plan_id = p.id) as suite_count \
+             FROM test_plans p WHERE p.project_id = ? ORDER BY p.created_at DESC",
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(test_plan_from_row).collect()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_test_plan(
+        &self,
+        id: Uuid,
+        name: Option<&str>,
+        description: Option<&str>,
+        status: Option<&str>,
+        entry_criteria: Option<&str>,
+        exit_criteria: Option<&str>,
+    ) -> Result<bool> {
+        let result = sqlx::query(
+            "UPDATE test_plans SET
+                name = COALESCE(?, name),
+                description = COALESCE(?, description),
+                status = COALESCE(?, status),
+                entry_criteria = COALESCE(?, entry_criteria),
+                exit_criteria = COALESCE(?, exit_criteria),
+                updated_at = ?
+             WHERE id = ?",
+        )
+        .bind(name)
+        .bind(description)
+        .bind(status)
+        .bind(entry_criteria)
+        .bind(exit_criteria)
+        .bind(now_rfc3339())
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Real, direct deletion — `test_suites.plan_id` detaches
+    /// (`ON DELETE SET NULL`, see 0011_test_plan_suite_hierarchy.sql's own
+    /// comment) rather than cascading: removing a plan must never silently
+    /// delete the real suites/cases that were inside it.
+    pub async fn delete_test_plan(&self, id: Uuid) -> Result<bool> {
+        let result = sqlx::query("DELETE FROM test_plans WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    // ------------------------------------------------ test suites (Phase 5)
+
+    pub async fn insert_test_suite(
+        &self,
+        project_id: &str,
+        req: &CreateTestSuiteRequest,
+        created_by: Option<&str>,
+    ) -> Result<Uuid> {
+        let id = Uuid::new_v4();
+        let now = now_rfc3339();
+        sqlx::query(
+            "INSERT INTO test_suites (id, project_id, plan_id, name, description, created_by, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(project_id)
+        .bind(req.plan_id.map(|u| u.to_string()))
+        .bind(&req.name)
+        .bind(&req.description)
+        .bind(created_by)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        Ok(id)
+    }
+
+    pub async fn get_test_suite(&self, id: Uuid) -> Result<Option<TestSuiteRow>> {
+        let row = sqlx::query(
+            "SELECT s.id, s.project_id, s.plan_id, s.name, s.description, s.created_by, s.created_at, s.updated_at, \
+             (SELECT COUNT(*) FROM test_cases c WHERE c.suite_id = s.id) as case_count \
+             FROM test_suites s WHERE s.id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(test_suite_from_row).transpose()
+    }
+
+    /// Project-scoped list, optionally narrowed to one plan — same
+    /// optional-filter shape `list_test_cases` above uses.
+    pub async fn list_test_suites(
+        &self,
+        project_id: &str,
+        plan_id_filter: Option<Uuid>,
+    ) -> Result<Vec<TestSuiteRow>> {
+        let rows = match plan_id_filter {
+            Some(plan_id) => {
+                sqlx::query(
+                    "SELECT s.id, s.project_id, s.plan_id, s.name, s.description, s.created_by, s.created_at, s.updated_at, \
+                     (SELECT COUNT(*) FROM test_cases c WHERE c.suite_id = s.id) as case_count \
+                     FROM test_suites s WHERE s.project_id = ? AND s.plan_id = ? ORDER BY s.created_at DESC",
+                )
+                .bind(project_id)
+                .bind(plan_id.to_string())
+                .fetch_all(&self.pool)
+                .await?
+            }
+            None => {
+                sqlx::query(
+                    "SELECT s.id, s.project_id, s.plan_id, s.name, s.description, s.created_by, s.created_at, s.updated_at, \
+                     (SELECT COUNT(*) FROM test_cases c WHERE c.suite_id = s.id) as case_count \
+                     FROM test_suites s WHERE s.project_id = ? ORDER BY s.created_at DESC",
+                )
+                .bind(project_id)
+                .fetch_all(&self.pool)
+                .await?
+            }
+        };
+        rows.into_iter().map(test_suite_from_row).collect()
+    }
+
+    pub async fn update_test_suite(
+        &self,
+        id: Uuid,
+        name: Option<&str>,
+        description: Option<&str>,
+    ) -> Result<bool> {
+        let result = sqlx::query(
+            "UPDATE test_suites SET name = COALESCE(?, name), description = COALESCE(?, description), updated_at = ? WHERE id = ?",
+        )
+        .bind(name)
+        .bind(description)
+        .bind(now_rfc3339())
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// The one place a suite's plan membership is set OR cleared — same
+    /// "real direct assignment, not `COALESCE`" shape as
+    /// `set_test_case_suite` above, and for the same reason (see
+    /// `domain.rs::SetTestSuitePlanRequest`'s own doc comment).
+    pub async fn set_test_suite_plan(&self, id: Uuid, plan_id: Option<Uuid>) -> Result<bool> {
+        let result = sqlx::query("UPDATE test_suites SET plan_id = ?, updated_at = ? WHERE id = ?")
+            .bind(plan_id.map(|u| u.to_string()))
+            .bind(now_rfc3339())
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Real, direct deletion — `test_cases.suite_id` detaches
+    /// (`ON DELETE SET NULL`) rather than cascading, same reasoning as
+    /// `delete_test_plan` above.
+    pub async fn delete_test_suite(&self, id: Uuid) -> Result<bool> {
+        let result = sqlx::query("DELETE FROM test_suites WHERE id = ?")
             .bind(id.to_string())
             .execute(&self.pool)
             .await?;
@@ -1545,6 +1862,79 @@ impl Store {
         .execute(&self.pool)
         .await?;
         Ok(id)
+    }
+
+    /// A real edge between two quality-graph nodes — `quality_relations`,
+    /// defined in schema since an earlier phase but never written to by any
+    /// code path until this one (`intelligence::Intelligence::
+    /// link_test_case_to_requirement`, the first real caller — Phase 3
+    /// self-learning's own `list_test_intelligence`/`list_bug_drafts` were
+    /// reads of pre-existing data; this is the first real write to this
+    /// specific table). Upsert on the schema's own real uniqueness
+    /// constraint (`from_node_id, to_node_id, relation_type`) — calling
+    /// this again for the same real edge is a genuine no-op, not a
+    /// duplicate row.
+    pub async fn upsert_quality_relation(
+        &self,
+        from_node_id: Uuid,
+        to_node_id: Uuid,
+        relation_type: &str,
+    ) -> Result<()> {
+        let existing = sqlx::query(
+            "SELECT id FROM quality_relations WHERE from_node_id = ? AND to_node_id = ? AND relation_type = ?",
+        )
+        .bind(from_node_id.to_string())
+        .bind(to_node_id.to_string())
+        .bind(relation_type)
+        .fetch_optional(&self.pool)
+        .await?;
+        if existing.is_some() {
+            return Ok(());
+        }
+        sqlx::query(
+            "INSERT INTO quality_relations (id, from_node_id, to_node_id, relation_type, created_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(from_node_id.to_string())
+        .bind(to_node_id.to_string())
+        .bind(relation_type)
+        .bind(now_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Real requirement-graph impact analysis: every real, persisted test
+    /// case reachable from a `requirement` node via a real `validates` edge
+    /// — i.e., every test case actually created with this exact
+    /// `requirement_key` (a real `requirement_reference` string, or
+    /// `"text:<sha256>"` of a real `source_requirement` — see
+    /// `intelligence::requirement_identity`). Empty when nothing was ever
+    /// linked (no such requirement node, or a node with no real edges to
+    /// it yet) — never a guess standing in for a real answer.
+    pub async fn list_test_cases_for_requirement(
+        &self,
+        project_id: &str,
+        requirement_key: &str,
+    ) -> Result<Vec<TestCaseRow>> {
+        let rows = sqlx::query(
+            "SELECT tc.id, tc.project_id, tc.title, tc.description, tc.category, tc.priority, tc.severity, \
+             tc.preconditions, tc.steps, tc.expected_result, tc.assertions, tc.test_data, tc.source_document, \
+             tc.requirement_reference, tc.source_requirement, tc.traceability, tc.risk_factor, tc.tags, tc.source, tc.status, \
+             tc.validation_notes, tc.executed_run_id, tc.executed_task_id, tc.created_by, tc.created_at, tc.updated_at, tc.suite_id \
+             FROM test_cases tc
+             JOIN quality_nodes case_node ON case_node.node_type = 'test_case' AND case_node.external_ref = tc.id AND case_node.project_id = ?
+             JOIN quality_relations rel ON rel.from_node_id = case_node.id AND rel.relation_type = 'validates'
+             JOIN quality_nodes req_node ON req_node.id = rel.to_node_id AND req_node.node_type = 'requirement' AND req_node.project_id = ?
+             WHERE req_node.external_ref = ?
+             ORDER BY tc.created_at DESC",
+        )
+        .bind(project_id)
+        .bind(project_id)
+        .bind(requirement_key)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(test_case_from_row).collect()
     }
 
     /// Execution history for every quality-node with this `external_ref`
@@ -2204,6 +2594,42 @@ pub struct TestCaseRow {
     pub created_by: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+    /// Phase 5 (Output maturity) — `None` for every case that predates this
+    /// column, and for any case deliberately left outside a suite.
+    pub suite_id: Option<Uuid>,
+}
+
+/// Phase 5 (Output maturity). `suite_count` is real, computed at query
+/// time (`COUNT(*)` over `test_suites.plan_id`) — never a cached/stale
+/// counter that could drift from the real rows.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TestPlanRow {
+    pub id: Uuid,
+    pub project_id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub status: TestPlanStatus,
+    pub entry_criteria: Option<String>,
+    pub exit_criteria: Option<String>,
+    pub created_by: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+    pub suite_count: i64,
+}
+
+/// `case_count` is the same kind of real, computed-at-query-time count
+/// `TestPlanRow::suite_count` is.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TestSuiteRow {
+    pub id: Uuid,
+    pub project_id: String,
+    pub plan_id: Option<Uuid>,
+    pub name: String,
+    pub description: Option<String>,
+    pub created_by: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+    pub case_count: i64,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]

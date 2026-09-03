@@ -1298,6 +1298,48 @@ pub mod test_support {
         }
     }
 
+    /// A scripted *sequence* of responses, one per call, consumed in order
+    /// — unlike `FakeExecutor` (always the same fixed response, and never
+    /// records what it was asked), this is for proving a caller makes N
+    /// genuinely separate real calls with genuinely different prompt
+    /// content, e.g. `ai_generation.rs`'s wave-based generation. Panics if
+    /// called more times than scripted, so an unexpected extra real call is
+    /// a loud test failure, not a silently-reused last response.
+    pub struct RecordingExecutor {
+        responses: std::sync::Mutex<std::collections::VecDeque<Result<String, ExecutionError>>>,
+        pub prompts: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl RecordingExecutor {
+        pub fn sequence(responses: Vec<Result<String, ExecutionError>>) -> Self {
+            Self {
+                responses: std::sync::Mutex::new(responses.into_iter().collect()),
+                prompts: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        pub fn ok_sequence(responses: Vec<&str>) -> Self {
+            Self::sequence(responses.into_iter().map(|r| Ok(r.to_string())).collect())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl AiExecutor for RecordingExecutor {
+        async fn execute(
+            &self,
+            _provider_id: &str,
+            _model_id: &str,
+            prompt: &str,
+        ) -> Result<String, ExecutionError> {
+            self.prompts.lock().unwrap().push(prompt.to_string());
+            self.responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("RecordingExecutor called more times than it was scripted for")
+        }
+    }
+
     pub fn healthy_model(
         id: &str,
         provider_id: &str,
