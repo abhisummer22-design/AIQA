@@ -132,20 +132,33 @@ async fn main() {
     // the `ai_settings` singleton row; `AiSettings::default()` (AUTO,
     // MJ-gateway-first via `mj-default`, fallback enabled) if no row
     // exists yet.
-    if let Ok(Some((mode, preferred_provider, preferred_model, fallback_enabled))) =
-        store.get_ai_settings().await
+    if let Ok(Some((
+        mode,
+        preferred_provider,
+        preferred_model,
+        fallback_enabled,
+        task_overrides_json,
+    ))) = store.get_ai_settings().await
     {
         let mode = if mode == "MANUAL" {
             aiqa_orchestrator::ai_router::RoutingMode::Manual
         } else {
             aiqa_orchestrator::ai_router::RoutingMode::Auto
         };
+        // Real per-task overrides, restored the same way the rest of this
+        // row is — a genuinely absent/corrupt value falls back to an
+        // honest empty map (no overrides) rather than failing startup.
+        let task_overrides = task_overrides_json
+            .as_deref()
+            .and_then(|raw| serde_json::from_str(raw).ok())
+            .unwrap_or_default();
         ai_infra
             .set_settings(aiqa_orchestrator::ai_router::AiSettings {
                 mode,
                 preferred_provider,
                 preferred_model,
                 fallback_enabled,
+                task_overrides,
             })
             .await;
     }

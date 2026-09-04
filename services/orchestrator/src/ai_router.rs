@@ -129,7 +129,9 @@ pub enum RequiredCapability {
 
 /// The task taxonomy (brief §9). Each task's required capabilities are a
 /// documented, static fact about that task — not derived from any model.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// `Hash` (alongside the existing `Eq`) lets this key `AiSettings::
+/// task_overrides` directly, with no synthetic string-id indirection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum AiTask {
     TestCaseGeneration,
@@ -199,6 +201,26 @@ pub struct AiProviderInfo {
     pub reachable: bool,
     pub status: ProviderStatus,
     pub models: Vec<ModelDefinition>,
+    /// Real billing fact about this provider — never a guessed rate.
+    /// `Unmetered` for a provider that genuinely has no per-token bill
+    /// (both providers wired today, Ollama and the MJ Gateway, run against
+    /// this deployment's own local compute — a real architectural fact,
+    /// not an assumption). A future paid provider gets a real, disclosed
+    /// `Metered` rate only once one is actually configured.
+    pub pricing: ProviderPricing,
+}
+
+/// See `AiProviderInfo::pricing`. `input_usd_per_1k`/`output_usd_per_1k`
+/// must be the provider's real, disclosed published rate when set — this
+/// module never invents a plausible-looking number.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ProviderPricing {
+    Unmetered,
+    Metered {
+        input_usd_per_1k: f64,
+        output_usd_per_1k: f64,
+    },
 }
 
 // -------------------------------------------------------------- discovery
@@ -293,6 +315,7 @@ impl ProviderDiscovery for OllamaDiscovery {
             reachable: false,
             status: ProviderStatus::Unavailable,
             models: Vec::new(),
+            pricing: ProviderPricing::Unmetered, // real fact: local Ollama has no per-token bill
         };
 
         let resp = match resp {
@@ -429,6 +452,10 @@ impl ProviderDiscovery for MjGatewayDiscovery {
                 ProviderStatus::NotConfigured
             },
             models: Vec::new(),
+            // Real fact, not a guess: this deployment's gateway sits in
+            // front of a local Ollama (module doc comment above) — no
+            // per-token bill exists behind it today.
+            pricing: ProviderPricing::Unmetered,
         };
         let Some(key) = &self.api_key else {
             tracing::info!("MJ gateway discovery: MJ_AI_API_KEY not set — not configured");
@@ -532,6 +559,23 @@ impl std::fmt::Display for ExecutionError {
     }
 }
 
+/// Real token counts from one execution, exactly as the provider itself
+/// reported them — `None` when a response genuinely carries no usage
+/// figure (never estimated by counting words/characters as a substitute).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct TokenUsage {
+    pub prompt_tokens: Option<u32>,
+    pub completion_tokens: Option<u32>,
+}
+
+/// One executor call's real result: the raw text plus whatever real usage
+/// figures came back alongside it.
+#[derive(Debug, Clone)]
+pub struct ExecutionOutput {
+    pub text: String,
+    pub usage: TokenUsage,
+}
+
 /// Executes a prompt against one specific, already-selected model. Real
 /// providers implement this for real inference; test doubles implement it
 /// deterministically (brief §28: mocks are for tests only).
@@ -597,7 +641,7 @@ pub trait AiExecutor: Send + Sync {
         provider_id: &str,
         model_id: &str,
         prompt: &str,
-    ) -> Result<String, ExecutionError>;
+    ) -> Result<ExecutionOutput, ExecutionError>;
 
     async fn execute_task(
         &self,
@@ -605,7 +649,7 @@ pub trait AiExecutor: Send + Sync {
         model_id: &str,
         prompt: &str,
         task: AiTask,
-    ) -> Result<String, ExecutionError> {
+    ) -> Result<ExecutionOutput, ExecutionError> {
         let _ = task;
         self.execute(provider_id, model_id, prompt).await
     }
@@ -657,7 +701,7 @@ impl AiExecutor for OllamaExecutor {
         provider_id: &str,
         model_id: &str,
         prompt: &str,
-    ) -> Result<String, ExecutionError> {
+    ) -> Result<ExecutionOutput, ExecutionError> {
         self.execute_task(provider_id, model_id, prompt, AiTask::GeneralAi)
             .await
     }
@@ -668,7 +712,7 @@ impl AiExecutor for OllamaExecutor {
         model_id: &str,
         prompt: &str,
         task: AiTask,
-    ) -> Result<String, ExecutionError> {
+    ) -> Result<ExecutionOutput, ExecutionError> {
         if provider_id != "ollama" {
             return Err(ExecutionError::ProviderUnavailable(provider_id.to_string()));
         }
@@ -705,7 +749,21 @@ impl AiExecutor for OllamaExecutor {
                 "empty response".to_string(),
             ));
         }
-        Ok(text)
+        // Ollama's own real, documented non-streaming `/api/generate` reply
+        // fields (confirmed live during this unit's own manual verification)
+        // — `prompt_eval_count`/`eval_count` are the real input/output token
+        // counts, not derived or estimated here.
+        let usage = TokenUsage {
+            prompt_tokens: parsed
+                .get("prompt_eval_count")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32),
+            completion_tokens: parsed
+                .get("eval_count")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32),
+        };
+        Ok(ExecutionOutput { text, usage })
     }
 }
 
@@ -755,7 +813,7 @@ impl AiExecutor for MjGatewayExecutor {
         provider_id: &str,
         model_id: &str,
         prompt: &str,
-    ) -> Result<String, ExecutionError> {
+    ) -> Result<ExecutionOutput, ExecutionError> {
         if provider_id != MjGatewayDiscovery::PROVIDER_ID {
             return Err(ExecutionError::ProviderUnavailable(provider_id.to_string()));
         }
@@ -810,7 +868,23 @@ impl AiExecutor for MjGatewayExecutor {
                 "empty response".to_string(),
             ));
         }
-        Ok(text)
+        // The real, standard OpenAI-shaped top-level `usage` object, when
+        // this gateway's reply actually includes one — genuinely absent on
+        // some OpenAI-compatible servers, so `None` here is honest, not a
+        // parsing failure.
+        let usage = TokenUsage {
+            prompt_tokens: parsed
+                .get("usage")
+                .and_then(|u| u.get("prompt_tokens"))
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32),
+            completion_tokens: parsed
+                .get("usage")
+                .and_then(|u| u.get("completion_tokens"))
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32),
+        };
+        Ok(ExecutionOutput { text, usage })
     }
 }
 
@@ -823,12 +897,39 @@ pub enum RoutingMode {
     Manual,
 }
 
+/// A real, explicit routing rule for one specific task — e.g. "always use
+/// a real, paid Gemini/OpenAI model for `TEST_CASE_GENERATION` once one is
+/// configured, leave every other task on the default/global preference."
+///
+/// Without this, adding a second, stronger-scoring paid provider would
+/// change routing for EVERY task at once in AUTO mode (capability scoring
+/// has no notion of "only route this specific task type here") — the one
+/// real gap between this router and a genuine "routine work stays free and
+/// local, heavy work goes to a paid API" policy. `provider`/`model` are
+/// each independently optional so a caller can pin just the provider (any
+/// of its models) or just the model (whichever provider serves it) for
+/// this one task, matching `AiSettings`' own `preferred_provider`/
+/// `preferred_model` split.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TaskProviderPreference {
+    pub provider: Option<String>,
+    pub model: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiSettings {
     pub mode: RoutingMode,
     pub preferred_provider: Option<String>,
     pub preferred_model: Option<String>,
     pub fallback_enabled: bool,
+    /// Real, explicit per-task overrides (see `TaskProviderPreference`'s
+    /// own doc comment). Empty by default — every task then behaves
+    /// exactly as it did before this field existed, using
+    /// `preferred_provider`/`preferred_model`; this is purely additive.
+    /// `#[serde(default)]` so a PUT body from a client that predates this
+    /// field (or simply has nothing to override) still deserializes.
+    #[serde(default)]
+    pub task_overrides: HashMap<AiTask, TaskProviderPreference>,
 }
 
 impl Default for AiSettings {
@@ -845,6 +946,7 @@ impl Default for AiSettings {
             preferred_provider: Some(MjGatewayDiscovery::PROVIDER_ID.to_string()),
             preferred_model: Some("mj-default".to_string()),
             fallback_enabled: true,
+            task_overrides: HashMap::new(),
         }
     }
 }
@@ -959,6 +1061,36 @@ pub struct GenerationResult {
     pub routing_mode: RoutingMode,
     pub routing_score: f64,
     pub fallback_used: bool,
+    /// Real token counts, exactly as the executing provider reported them
+    /// (`None` when that provider's response genuinely carried none).
+    pub prompt_tokens: Option<u32>,
+    pub completion_tokens: Option<u32>,
+    /// Real, measured wall-clock time for this one executor call — always
+    /// known (it is timed here, not reported by the provider), unlike the
+    /// token fields above.
+    pub latency_ms: u64,
+    /// `estimate_cost`'s real result for the provider that actually served
+    /// this request — `Some(0.0)` for today's unmetered providers, `None`
+    /// only if a future metered provider's response omitted token counts.
+    pub estimated_cost_usd: Option<f64>,
+}
+
+/// Real, disclosed cost math — `Unmetered` is always a real `$0.00`, never
+/// "unknown" (this deployment's own architecture genuinely has no bill for
+/// it). A `Metered` provider without real token counts to multiply against
+/// honestly reports `None` rather than a silently-wrong `$0.00`.
+fn estimate_cost(usage: &TokenUsage, pricing: ProviderPricing) -> Option<f64> {
+    match pricing {
+        ProviderPricing::Unmetered => Some(0.0),
+        ProviderPricing::Metered {
+            input_usd_per_1k,
+            output_usd_per_1k,
+        } => {
+            let prompt = usage.prompt_tokens? as f64;
+            let completion = usage.completion_tokens? as f64;
+            Some((prompt / 1000.0) * input_usd_per_1k + (completion / 1000.0) * output_usd_per_1k)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1068,11 +1200,23 @@ impl AiInfrastructure {
     ) -> Result<RoutingDecision, RoutingError> {
         let required = required_capabilities(task);
 
+        // A real, explicit `task_overrides` entry for this exact task
+        // takes precedence over the global preference — see
+        // `AiSettings::task_overrides`'s own doc comment. Falls through to
+        // the global preference when no override exists for this task, so
+        // a settings object with an empty `task_overrides` map (today's
+        // only shape, before this field existed) behaves identically to
+        // before.
+        let task_override = settings.task_overrides.get(&task);
+        let manual_provider = task_override
+            .and_then(|o| o.provider.as_deref())
+            .or(settings.preferred_provider.as_deref());
+        let manual_model = task_override
+            .and_then(|o| o.model.as_deref())
+            .or(settings.preferred_model.as_deref());
+
         if settings.mode == RoutingMode::Manual {
-            let (Some(pid), Some(mid)) = (
-                settings.preferred_provider.as_deref(),
-                settings.preferred_model.as_deref(),
-            ) else {
+            let (Some(pid), Some(mid)) = (manual_provider, manual_model) else {
                 return Err(RoutingError::NoCompatibleModel { task });
             };
             let provider = providers.iter().find(|p| p.id == pid).ok_or_else(|| {
@@ -1149,6 +1293,12 @@ impl AiInfrastructure {
         // Preference precedence:
         // - A per-request preference is a HARD filter (the caller asked
         //   for that provider specifically).
+        // - A real, explicit `task_overrides` entry for this request's own
+        //   task is next — same SOFT treatment as the global preference
+        //   below, just scoped to one task (see `AiSettings::
+        //   task_overrides`'s own doc comment). Kept in sync with
+        //   `route_among`'s own MANUAL-mode resolution of the same field,
+        //   so a task override behaves identically in either routing mode.
         // - The persisted/default AiSettings preference is SOFT: applied
         //   as the model bonus (`mj-default` outscores everything else
         //   while its gateway is healthy) so a dead or erroring gateway
@@ -1157,10 +1307,12 @@ impl AiInfrastructure {
         //   settings.preferred_provider was read in MANUAL mode only —
         //   AUTO mode silently ignored it.)
         let hard_provider = request.preferred_provider.clone();
-        let soft_model = request
-            .preferred_model
-            .clone()
+        let settings_model = settings
+            .task_overrides
+            .get(&request.task)
+            .and_then(|o| o.model.clone())
             .or_else(|| settings.preferred_model.clone());
+        let soft_model = request.preferred_model.clone().or(settings_model);
 
         let decision = match Self::route_among(
             &providers,
@@ -1182,7 +1334,17 @@ impl AiInfrastructure {
                 reason: format!("no executor wired for provider {}", decision.provider_id),
             };
         };
+        // Real fact about the provider that actually won routing — used
+        // only for its disclosed `pricing`; absent only if `providers`
+        // changed between routing and here (never happens within one
+        // `generate` call, since both read the same local `providers`).
+        let primary_pricing = providers
+            .iter()
+            .find(|p| p.id == decision.provider_id)
+            .map(|p| p.pricing)
+            .unwrap_or(ProviderPricing::Unmetered);
 
+        let started = Instant::now();
         match executor
             .execute_task(
                 &decision.provider_id,
@@ -1192,14 +1354,22 @@ impl AiInfrastructure {
             )
             .await
         {
-            Ok(text) => GenerationOutcome2::Ok(GenerationResult {
-                text,
-                provider: decision.provider_id,
-                model: decision.model_id,
-                routing_mode: settings.mode,
-                routing_score: decision.routing_score,
-                fallback_used: false,
-            }),
+            Ok(output) => {
+                let latency_ms = started.elapsed().as_millis() as u64;
+                let estimated_cost_usd = estimate_cost(&output.usage, primary_pricing);
+                GenerationOutcome2::Ok(GenerationResult {
+                    text: output.text,
+                    provider: decision.provider_id,
+                    model: decision.model_id,
+                    routing_mode: settings.mode,
+                    routing_score: decision.routing_score,
+                    fallback_used: false,
+                    prompt_tokens: output.usage.prompt_tokens,
+                    completion_tokens: output.usage.completion_tokens,
+                    latency_ms,
+                    estimated_cost_usd,
+                })
+            }
             Err(primary_err) => {
                 if settings.mode == RoutingMode::Auto && settings.fallback_enabled {
                     let required = required_capabilities(request.task);
@@ -1219,17 +1389,24 @@ impl AiInfrastructure {
                         else {
                             continue;
                         };
-                        if let Ok(text) = fallback_executor
+                        let fallback_started = Instant::now();
+                        if let Ok(output) = fallback_executor
                             .execute_task(&provider.id, &model.id, &request.prompt, request.task)
                             .await
                         {
+                            let latency_ms = fallback_started.elapsed().as_millis() as u64;
+                            let estimated_cost_usd = estimate_cost(&output.usage, provider.pricing);
                             return GenerationOutcome2::Ok(GenerationResult {
-                                text,
+                                text: output.text,
                                 provider: provider.id.clone(),
                                 model: model.id.clone(),
                                 routing_mode: settings.mode,
                                 routing_score: score,
                                 fallback_used: true,
+                                prompt_tokens: output.usage.prompt_tokens,
+                                completion_tokens: output.usage.completion_tokens,
+                                latency_ms,
+                                estimated_cost_usd,
                             });
                         }
                     }
@@ -1257,13 +1434,29 @@ pub mod test_support {
     }
 
     pub struct FakeExecutor {
-        pub result: Result<String, ExecutionError>,
+        pub result: Result<ExecutionOutput, ExecutionError>,
     }
 
     impl FakeExecutor {
         pub fn ok(text: impl Into<String>) -> Self {
             Self {
-                result: Ok(text.into()),
+                result: Ok(ExecutionOutput {
+                    text: text.into(),
+                    usage: TokenUsage::default(),
+                }),
+            }
+        }
+        /// Like `ok`, but with real, scripted (test-fixture) token counts —
+        /// for tests that verify usage/cost actually flow through.
+        pub fn ok_with_usage(text: impl Into<String>, prompt: u32, completion: u32) -> Self {
+            Self {
+                result: Ok(ExecutionOutput {
+                    text: text.into(),
+                    usage: TokenUsage {
+                        prompt_tokens: Some(prompt),
+                        completion_tokens: Some(completion),
+                    },
+                }),
             }
         }
         pub fn err(e: ExecutionError) -> Self {
@@ -1278,9 +1471,9 @@ pub mod test_support {
             _provider_id: &str,
             _model_id: &str,
             _prompt: &str,
-        ) -> Result<String, ExecutionError> {
+        ) -> Result<ExecutionOutput, ExecutionError> {
             match &self.result {
-                Ok(t) => Ok(t.clone()),
+                Ok(o) => Ok(o.clone()),
                 Err(ExecutionError::Timeout) => Err(ExecutionError::Timeout),
                 Err(ExecutionError::ProviderUnavailable(s)) => {
                     Err(ExecutionError::ProviderUnavailable(s.clone()))
@@ -1306,12 +1499,13 @@ pub mod test_support {
     /// called more times than scripted, so an unexpected extra real call is
     /// a loud test failure, not a silently-reused last response.
     pub struct RecordingExecutor {
-        responses: std::sync::Mutex<std::collections::VecDeque<Result<String, ExecutionError>>>,
+        responses:
+            std::sync::Mutex<std::collections::VecDeque<Result<ExecutionOutput, ExecutionError>>>,
         pub prompts: std::sync::Mutex<Vec<String>>,
     }
 
     impl RecordingExecutor {
-        pub fn sequence(responses: Vec<Result<String, ExecutionError>>) -> Self {
+        pub fn sequence(responses: Vec<Result<ExecutionOutput, ExecutionError>>) -> Self {
             Self {
                 responses: std::sync::Mutex::new(responses.into_iter().collect()),
                 prompts: std::sync::Mutex::new(Vec::new()),
@@ -1319,7 +1513,17 @@ pub mod test_support {
         }
 
         pub fn ok_sequence(responses: Vec<&str>) -> Self {
-            Self::sequence(responses.into_iter().map(|r| Ok(r.to_string())).collect())
+            Self::sequence(
+                responses
+                    .into_iter()
+                    .map(|r| {
+                        Ok(ExecutionOutput {
+                            text: r.to_string(),
+                            usage: TokenUsage::default(),
+                        })
+                    })
+                    .collect(),
+            )
         }
     }
 
@@ -1330,7 +1534,7 @@ pub mod test_support {
             _provider_id: &str,
             _model_id: &str,
             prompt: &str,
-        ) -> Result<String, ExecutionError> {
+        ) -> Result<ExecutionOutput, ExecutionError> {
             self.prompts.lock().unwrap().push(prompt.to_string());
             self.responses
                 .lock()
@@ -1375,6 +1579,7 @@ pub mod test_support {
             reachable: true,
             status: ProviderStatus::Healthy,
             models,
+            pricing: ProviderPricing::Unmetered,
         }
     }
 }
@@ -1563,6 +1768,7 @@ mod tests {
             preferred_provider: Some("p".to_string()),
             preferred_model: Some("weaker-but-user-chose-it".to_string()),
             fallback_enabled: false,
+            task_overrides: std::collections::HashMap::new(),
         };
 
         let decision = AiInfrastructure::route_among(
@@ -1587,6 +1793,7 @@ mod tests {
             preferred_provider: Some("p".to_string()),
             preferred_model: Some("model-that-vanished".to_string()),
             fallback_enabled: false,
+            task_overrides: std::collections::HashMap::new(),
         };
 
         let result =
@@ -1612,6 +1819,196 @@ mod tests {
             result,
             Err(RoutingError::NoCompatibleModel { .. })
         ));
+    }
+
+    // ------------------------------------------------ per-task provider overrides
+
+    #[test]
+    fn default_settings_have_no_task_overrides() {
+        // Documents the "purely additive" contract in `AiSettings::
+        // task_overrides`'s own doc comment as a real, checked fact, not
+        // just a claim in a comment.
+        assert!(AiSettings::default().task_overrides.is_empty());
+    }
+
+    #[test]
+    fn manual_mode_task_override_wins_over_the_global_preference_for_its_own_task() {
+        let model_a = healthy_model("global-default-model", "ollama", CapabilityLevel::Strong);
+        let model_b = healthy_model("gemini-heavy-model", "gemini", CapabilityLevel::Strong);
+        let providers = vec![
+            healthy_provider("ollama", vec![model_a]),
+            healthy_provider("gemini", vec![model_b]),
+        ];
+        let mut task_overrides = HashMap::new();
+        task_overrides.insert(
+            AiTask::TestCaseGeneration,
+            TaskProviderPreference {
+                provider: Some("gemini".to_string()),
+                model: Some("gemini-heavy-model".to_string()),
+            },
+        );
+        let settings = AiSettings {
+            mode: RoutingMode::Manual,
+            preferred_provider: Some("ollama".to_string()),
+            preferred_model: Some("global-default-model".to_string()),
+            fallback_enabled: false,
+            task_overrides,
+        };
+
+        let decision = AiInfrastructure::route_among(
+            &providers,
+            AiTask::TestCaseGeneration,
+            &settings,
+            None,
+            None,
+        )
+        .expect("a compatible model must be found");
+        assert_eq!(
+            decision.provider_id, "gemini",
+            "the task-specific override must win for its own task, even though it is not the global preference"
+        );
+        assert_eq!(decision.model_id, "gemini-heavy-model");
+    }
+
+    #[test]
+    fn manual_mode_a_task_without_an_override_still_uses_the_global_preference() {
+        // Same settings as the test above — proves the override is scoped
+        // to the one task it names, not a global switch that leaks into
+        // every other task's routing.
+        let model_a = healthy_model("global-default-model", "ollama", CapabilityLevel::Strong);
+        let model_b = healthy_model("gemini-heavy-model", "gemini", CapabilityLevel::Strong);
+        let providers = vec![
+            healthy_provider("ollama", vec![model_a]),
+            healthy_provider("gemini", vec![model_b]),
+        ];
+        let mut task_overrides = HashMap::new();
+        task_overrides.insert(
+            AiTask::TestCaseGeneration,
+            TaskProviderPreference {
+                provider: Some("gemini".to_string()),
+                model: Some("gemini-heavy-model".to_string()),
+            },
+        );
+        let settings = AiSettings {
+            mode: RoutingMode::Manual,
+            preferred_provider: Some("ollama".to_string()),
+            preferred_model: Some("global-default-model".to_string()),
+            fallback_enabled: false,
+            task_overrides,
+        };
+
+        let decision = AiInfrastructure::route_among(
+            &providers,
+            AiTask::GeneralAi, // not TestCaseGeneration — no override configured for this task
+            &settings,
+            None,
+            None,
+        )
+        .expect("a compatible model must be found");
+        assert_eq!(decision.provider_id, "ollama");
+        assert_eq!(decision.model_id, "global-default-model");
+    }
+
+    #[test]
+    fn manual_mode_a_partial_task_override_pins_only_the_field_it_names() {
+        // `TaskProviderPreference.provider`/`model` are each independently
+        // optional — pinning only the provider must still require the
+        // global model, and vice versa (never silently pick "any model").
+        let model = healthy_model("only-real-model", "gemini", CapabilityLevel::Strong);
+        let providers = vec![healthy_provider("gemini", vec![model])];
+        let mut task_overrides = HashMap::new();
+        task_overrides.insert(
+            AiTask::TestCaseGeneration,
+            TaskProviderPreference {
+                provider: Some("gemini".to_string()),
+                model: None, // deliberately unset — must fall through to the global model
+            },
+        );
+        let settings = AiSettings {
+            mode: RoutingMode::Manual,
+            preferred_provider: None,
+            preferred_model: Some("only-real-model".to_string()),
+            fallback_enabled: false,
+            task_overrides,
+        };
+
+        let decision = AiInfrastructure::route_among(
+            &providers,
+            AiTask::TestCaseGeneration,
+            &settings,
+            None,
+            None,
+        )
+        .expect("provider from the override + model from the global preference must combine");
+        assert_eq!(decision.provider_id, "gemini");
+        assert_eq!(decision.model_id, "only-real-model");
+    }
+
+    #[tokio::test]
+    async fn auto_mode_task_override_gives_its_soft_bonus_only_to_the_matching_task() {
+        // Two real, equally-capable candidates that would otherwise tie —
+        // the override's +1000 preference bonus (`score_model`) must break
+        // the tie for TestCaseGeneration, but a different task must still
+        // resolve however AUTO mode would without any override at all
+        // (here, either candidate is a legitimate winner — the real
+        // assertion is that the override does NOT force `gemini` there).
+        let mut executors: HashMap<&'static str, Arc<dyn AiExecutor>> = HashMap::new();
+        executors.insert("ollama", Arc::new(FakeExecutor::ok(r#"{"ok":"ollama"}"#)));
+        executors.insert("gemini", Arc::new(FakeExecutor::ok(r#"{"ok":"gemini"}"#)));
+        let infra = AiInfrastructure::new(
+            vec![
+                Arc::new(FakeDiscovery(healthy_provider(
+                    "ollama",
+                    vec![healthy_model(
+                        "ollama-model",
+                        "ollama",
+                        CapabilityLevel::Strong,
+                    )],
+                ))),
+                Arc::new(FakeDiscovery(healthy_provider(
+                    "gemini",
+                    vec![healthy_model(
+                        "gemini-model",
+                        "gemini",
+                        CapabilityLevel::Strong,
+                    )],
+                ))),
+            ],
+            executors,
+        );
+        let mut task_overrides = HashMap::new();
+        task_overrides.insert(
+            AiTask::TestCaseGeneration,
+            TaskProviderPreference {
+                provider: None,
+                model: Some("gemini-model".to_string()),
+            },
+        );
+        infra
+            .set_settings(AiSettings {
+                mode: RoutingMode::Auto,
+                preferred_provider: None,
+                preferred_model: None, // no global preference — proves the bonus came from the override
+                fallback_enabled: true,
+                task_overrides,
+            })
+            .await;
+
+        let outcome = infra
+            .generate(AiRequest {
+                task: AiTask::TestCaseGeneration,
+                prompt: "hi".to_string(),
+                preferred_provider: None,
+                preferred_model: None,
+            })
+            .await;
+        match outcome {
+            GenerationOutcome2::Ok(result) => assert_eq!(
+                result.provider, "gemini",
+                "the task override's soft bonus must decide this specific task's routing"
+            ),
+            GenerationOutcome2::Failed { reason } => panic!("expected Ok, got Failed: {reason}"),
+        }
     }
 
     // ------------------------------------------------------ capability matching
@@ -1717,6 +2114,7 @@ mod tests {
                 preferred_provider: Some("ollama".to_string()),
                 preferred_model: Some("gemma3:12b".to_string()),
                 fallback_enabled: false,
+                task_overrides: std::collections::HashMap::new(),
             })
             .await;
         let settings = infra.settings().await;
@@ -1793,6 +2191,7 @@ mod tests {
                 preferred_provider: Some("primary".to_string()),
                 preferred_model: None,
                 fallback_enabled: true,
+                task_overrides: std::collections::HashMap::new(),
             })
             .await;
 
@@ -1838,6 +2237,7 @@ mod tests {
                 preferred_provider: None,
                 preferred_model: None,
                 fallback_enabled: false,
+                task_overrides: std::collections::HashMap::new(),
             })
             .await;
 
@@ -1978,6 +2378,7 @@ mod tests {
             }
             axum::Json(serde_json::json!({
                 "choices": [{"message": {"role": "assistant", "content": "real gateway reply"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 4, "total_tokens": 16},
                 "gateway": {"model": body.model}
             }))
             .into_response()
@@ -2075,11 +2476,17 @@ mod tests {
             timeout: Duration::from_secs(2),
             max_tokens: 4096,
         };
-        let text = executor
+        let output = executor
             .execute(MjGatewayDiscovery::PROVIDER_ID, "mj-default", "hello")
             .await
             .expect("execute");
-        assert_eq!(text, "real gateway reply");
+        assert_eq!(output.text, "real gateway reply");
+        assert_eq!(
+            output.usage.prompt_tokens,
+            Some(12),
+            "the gateway's real usage.prompt_tokens must flow through, not be dropped"
+        );
+        assert_eq!(output.usage.completion_tokens, Some(4));
     }
 
     #[tokio::test]
@@ -2133,6 +2540,17 @@ mod tests {
                 assert_eq!(result.provider, MjGatewayDiscovery::PROVIDER_ID);
                 assert_eq!(result.model, "mj-default");
                 assert!(!result.fallback_used);
+                assert_eq!(
+                    result.prompt_tokens,
+                    Some(12),
+                    "real usage from the live gateway must reach the end-to-end GenerationResult"
+                );
+                assert_eq!(result.completion_tokens, Some(4));
+                assert_eq!(
+                    result.estimated_cost_usd,
+                    Some(0.0),
+                    "the MJ gateway is a real, disclosed Unmetered provider — cost is a real $0.00, not unknown"
+                );
             }
             GenerationOutcome2::Failed { reason } => {
                 panic!("expected a real end-to-end generation, got Failed: {reason}")
@@ -2225,5 +2643,237 @@ mod tests {
         let body_prompt =
             OllamaExecutor::build_generate_body("qwen3:14b", "Return json with test_cases", None);
         assert_eq!(body_prompt["format"]["type"], "object");
+    }
+
+    // ---------------------------------------------- token usage, latency & cost
+
+    /// Spawns a real local HTTP server mimicking Ollama's real, documented
+    /// non-streaming `/api/generate` reply shape — including the real
+    /// `prompt_eval_count`/`eval_count` usage fields this executor now
+    /// parses, previously entirely untested against a live response.
+    async fn spawn_mock_ollama(prompt_eval_count: u64, eval_count: u64) -> String {
+        use axum::routing::post as post_route;
+
+        async fn generate(
+            axum::extract::State((p, e)): axum::extract::State<(u64, u64)>,
+        ) -> axum::Json<serde_json::Value> {
+            axum::Json(serde_json::json!({
+                "response": "{\"test_cases\":[]}",
+                "done": true,
+                "prompt_eval_count": p,
+                "eval_count": e,
+            }))
+        }
+
+        let app = axum::Router::new()
+            .route("/api/generate", post_route(generate))
+            .with_state((prompt_eval_count, eval_count));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn ollama_executor_parses_real_prompt_eval_count_and_eval_count_as_token_usage() {
+        let base_url = spawn_mock_ollama(321, 87).await;
+        let executor = OllamaExecutor {
+            base_url,
+            timeout: Duration::from_secs(2),
+        };
+        let output = executor
+            .execute_task("ollama", "gemma3:12b", "hi", AiTask::GeneralAi)
+            .await
+            .expect("execute_task");
+        assert_eq!(
+            output.usage.prompt_tokens,
+            Some(321),
+            "real prompt_eval_count must become prompt_tokens, not be dropped"
+        );
+        assert_eq!(
+            output.usage.completion_tokens,
+            Some(87),
+            "real eval_count must become completion_tokens, not be dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn ollama_executor_reports_unknown_usage_honestly_when_the_response_omits_it() {
+        // A response with no usage fields at all (a real, legal shape some
+        // Ollama builds/proxies may return) must never fabricate a count.
+        async fn generate() -> axum::Json<serde_json::Value> {
+            axum::Json(serde_json::json!({ "response": "{\"test_cases\":[]}", "done": true }))
+        }
+        let app = axum::Router::new().route("/api/generate", axum::routing::post(generate));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
+
+        let executor = OllamaExecutor {
+            base_url: format!("http://{addr}"),
+            timeout: Duration::from_secs(2),
+        };
+        let output = executor
+            .execute_task("ollama", "gemma3:12b", "hi", AiTask::GeneralAi)
+            .await
+            .expect("execute_task");
+        assert_eq!(output.usage.prompt_tokens, None);
+        assert_eq!(output.usage.completion_tokens, None);
+    }
+
+    #[test]
+    fn unmetered_pricing_is_always_a_real_zero_cost_regardless_of_usage() {
+        assert_eq!(
+            estimate_cost(&TokenUsage::default(), ProviderPricing::Unmetered),
+            Some(0.0),
+            "a genuinely unmetered provider has no bill even when token counts are unknown"
+        );
+        assert_eq!(
+            estimate_cost(
+                &TokenUsage {
+                    prompt_tokens: Some(10_000),
+                    completion_tokens: Some(5_000)
+                },
+                ProviderPricing::Unmetered
+            ),
+            Some(0.0)
+        );
+    }
+
+    #[test]
+    fn metered_pricing_computes_the_real_disclosed_rate_against_real_token_counts() {
+        let usage = TokenUsage {
+            prompt_tokens: Some(1000),
+            completion_tokens: Some(2000),
+        };
+        let pricing = ProviderPricing::Metered {
+            input_usd_per_1k: 0.01,
+            output_usd_per_1k: 0.02,
+        };
+        // 1000/1000 * 0.01 + 2000/1000 * 0.02 = 0.01 + 0.04 = 0.05
+        assert_eq!(estimate_cost(&usage, pricing), Some(0.05));
+    }
+
+    #[test]
+    fn metered_pricing_without_real_token_counts_reports_unknown_cost_not_a_wrong_zero() {
+        let pricing = ProviderPricing::Metered {
+            input_usd_per_1k: 0.01,
+            output_usd_per_1k: 0.02,
+        };
+        assert_eq!(
+            estimate_cost(&TokenUsage::default(), pricing),
+            None,
+            "cost must never silently default to $0 for a real metered provider whose usage is unknown"
+        );
+    }
+
+    #[tokio::test]
+    async fn generate_carries_real_usage_latency_and_cost_through_to_the_result() {
+        let mut executors: HashMap<&'static str, Arc<dyn AiExecutor>> = HashMap::new();
+        executors.insert(
+            "p",
+            Arc::new(FakeExecutor::ok_with_usage(r#"{"ok":true}"#, 50, 20)),
+        );
+        let infra = AiInfrastructure::new(
+            vec![Arc::new(FakeDiscovery(healthy_provider(
+                "p",
+                vec![healthy_model("m", "p", CapabilityLevel::Strong)],
+            )))],
+            executors,
+        );
+
+        let outcome = infra
+            .generate(AiRequest {
+                task: AiTask::GeneralAi,
+                prompt: "hi".to_string(),
+                preferred_provider: None,
+                preferred_model: None,
+            })
+            .await;
+        match outcome {
+            GenerationOutcome2::Ok(result) => {
+                assert_eq!(result.prompt_tokens, Some(50));
+                assert_eq!(result.completion_tokens, Some(20));
+                assert_eq!(
+                    result.estimated_cost_usd,
+                    Some(0.0),
+                    "the test fixture provider is Unmetered — a real $0.00, not unknown"
+                );
+                // A real, measured duration — no fixed lower bound beyond
+                // "it exists"; the fake executor returns near-instantly.
+                let _ = result.latency_ms;
+            }
+            GenerationOutcome2::Failed { reason } => panic!("expected Ok, got Failed: {reason}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn fallback_result_carries_the_fallback_providers_own_real_usage_not_the_primarys() {
+        let mut executors: HashMap<&'static str, Arc<dyn AiExecutor>> = HashMap::new();
+        executors.insert(
+            "primary",
+            Arc::new(FakeExecutor::err(ExecutionError::Timeout)),
+        );
+        executors.insert(
+            "backup",
+            Arc::new(FakeExecutor::ok_with_usage(r#"{"ok":true}"#, 77, 33)),
+        );
+        let infra = AiInfrastructure::new(
+            vec![
+                Arc::new(FakeDiscovery(healthy_provider(
+                    "primary",
+                    vec![healthy_model(
+                        "primary-model",
+                        "primary",
+                        CapabilityLevel::Strong,
+                    )],
+                ))),
+                Arc::new(FakeDiscovery(healthy_provider(
+                    "backup",
+                    vec![healthy_model(
+                        "backup-model",
+                        "backup",
+                        CapabilityLevel::Basic,
+                    )],
+                ))),
+            ],
+            executors,
+        );
+        infra
+            .set_settings(AiSettings {
+                mode: RoutingMode::Auto,
+                preferred_provider: Some("primary".to_string()),
+                preferred_model: None,
+                fallback_enabled: true,
+                task_overrides: std::collections::HashMap::new(),
+            })
+            .await;
+
+        let outcome = infra
+            .generate(AiRequest {
+                task: AiTask::GeneralAi,
+                prompt: "hi".to_string(),
+                preferred_provider: Some("primary".to_string()),
+                preferred_model: None,
+            })
+            .await;
+        match outcome {
+            GenerationOutcome2::Ok(result) => {
+                assert_eq!(result.provider, "backup");
+                assert_eq!(
+                    result.prompt_tokens,
+                    Some(77),
+                    "must be the backup's own real usage, not the failed primary's"
+                );
+                assert_eq!(result.completion_tokens, Some(33));
+            }
+            GenerationOutcome2::Failed { reason } => {
+                panic!("expected a real fallback to succeed, got Failed: {reason}")
+            }
+        }
     }
 }

@@ -236,50 +236,9 @@ export interface GenerationSession {
   createdAt: string;
 }
 
-// System Settings Models
-export interface SystemSettings {
-  general: {
-    organizationName: string;
-    projectKey: string;
-    timezone: string;
-    dataRetentionDays: number;
-  };
-  authentication: {
-    ssoEnabled: boolean;
-    provider: 'OKTA' | 'GOOGLE_WORKSPACE' | 'AZURE_AD' | 'LOCAL';
-    apiTokenStatus: 'ACTIVE' | 'EXPIRED' | 'NOT_CONFIGURED';
-  };
-  execution: {
-    defaultExecutor: string;
-    maxConcurrency: number;
-    globalTimeoutSeconds: number;
-    autoRetryCount: number;
-    isolateInfraFailures: boolean;
-  };
-  environments: Array<{
-    id: Environment;
-    name: string;
-    baseUrl: string;
-    healthEndpoint: string;
-    isActive: boolean;
-  }>;
-  policies: {
-    blockOnProductFailures: boolean;
-    blockOnInfraFailures: boolean;
-    requireManualApprovalForProd: boolean;
-    minimumPassPercentage: number;
-  };
-  aiModels: {
-    defaultModel: string;
-    temperature: number;
-    reasoningEffort: 'LOW' | 'MEDIUM' | 'HIGH';
-    ragGroundingEnabled: boolean;
-  };
-  notifications: {
-    slackWebhook: string;
-    emailAlertsEnabled: boolean;
-    pagerDutyKeyConfigured: boolean;
-    notifyOnInfraErrorOnly: boolean;
-  };
-}
+// Cleanup: the fabricated `SystemSettings` model (general org info, fake
+// SSO/execution/environment/policy/notification config, all local-only
+// with no backend behind any of it) is removed — `SettingsPage.tsx` was
+// its only consumer, and that page's mockup UI for it was removed at the
+// explicit instruction to keep only what's real.
 

@@ -848,6 +848,29 @@ export const TestCaseGeneratorPage: React.FC = () => {
                   ? `Yes — ${lastGenerationResult.fallback_reason ?? 'no reason reported'}`
                   : 'No'}
               </div>
+              {lastGenerationResult.generation_method === 'ai' && (
+                <>
+                  <div>
+                    <span className="text-slate-500">Tokens: </span>
+                    {lastGenerationResult.total_prompt_tokens !== null &&
+                    lastGenerationResult.total_completion_tokens !== null
+                      ? `${lastGenerationResult.total_prompt_tokens} in / ${lastGenerationResult.total_completion_tokens} out`
+                      : 'Not Reported'}
+                  </div>
+                  <div>
+                    <span className="text-slate-500">Latency: </span>
+                    {(lastGenerationResult.total_latency_ms / 1000).toFixed(1)}s
+                  </div>
+                  <div>
+                    <span className="text-slate-500">Est. Cost: </span>
+                    {lastGenerationResult.total_estimated_cost_usd !== null
+                      ? lastGenerationResult.total_estimated_cost_usd === 0
+                        ? 'Free (self-hosted)'
+                        : `$${lastGenerationResult.total_estimated_cost_usd.toFixed(4)}`
+                      : 'Not Reported'}
+                  </div>
+                </>
+              )}
             </div>
           )}
         </div>

@@ -1,0 +1,14 @@
+-- Real, explicit per-task provider/model overrides for the AI router
+-- (`ai_router.rs::AiSettings::task_overrides`) — e.g. "always use a real
+-- paid API for TEST_CASE_GENERATION once one is configured, leave every
+-- other task on the default/global preference", so a newly-added, higher-
+-- scoring paid provider does not silently get routed EVERY task in AUTO
+-- mode just because it out-scores the free local one.
+--
+-- Stored as a JSON object (SQLite has no native map/array column type),
+-- keyed by the real `AiTask` variant name, each value a
+-- `{"provider": ..., "model": ...}` pair — the exact shape
+-- `ai_router.rs::TaskProviderPreference` serializes to. NULL means "no
+-- overrides configured" (today's behavior, unchanged), same as an absent
+-- JSON key on the settings object the frontend PUTs.
+ALTER TABLE ai_settings ADD COLUMN task_overrides TEXT;

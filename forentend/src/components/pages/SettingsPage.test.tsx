@@ -60,6 +60,7 @@ const OLLAMA_PROVIDER: AiProviderInfo = {
       status: 'AVAILABLE',
     },
   ],
+  pricing: { kind: 'UNMETERED' },
 };
 
 const GEMINI_NOT_CONFIGURED: AiProviderInfo = {
@@ -71,6 +72,7 @@ const GEMINI_NOT_CONFIGURED: AiProviderInfo = {
   reachable: false,
   status: 'NOT_CONFIGURED',
   models: [],
+  pricing: { kind: 'METERED', input_usd_per_1k: 0.01, output_usd_per_1k: 0.03 },
 };
 
 function statusResponse(overrides: Partial<AiStatusResponse> = {}): AiStatusResponse {
@@ -111,6 +113,10 @@ describe('SettingsPage — AI Intelligence panel (Central AI Model Auto-Discover
     expect(screen.getByText('Not Configured')).toBeTruthy();
     expect(screen.getByText('Ready')).toBeTruthy();
     expect(document.getElementById('ai-intelligence-panel')!.textContent).not.toContain('Connected');
+    // Real pricing facts, not a guessed rate: the self-hosted Ollama
+    // provider shows Free, the (fixture) metered Gemini shows its real rate.
+    expect(screen.getByText('Free')).toBeTruthy();
+    expect(screen.getByText('$0.01/$0.03 per 1K')).toBeTruthy();
   });
 
   it('shows a truthful Degraded status and "no AI model currently available" when nothing is healthy — never a fake Ready', async () => {

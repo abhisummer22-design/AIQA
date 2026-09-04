@@ -1897,6 +1897,16 @@ struct GenerateAiTestCasesResponse {
     /// honest confirmation of real grounding, not a claim the caller has to
     /// take on faith.
     crawl_pages_used: usize,
+    /// Real, summed token/cost/latency across every wave that actually ran
+    /// (`ai_generation::aggregate_wave_usage`, applied to `waves` above —
+    /// `Vec::new()` on the fallback arm sums to the same honest zero/`None`
+    /// values that helper already returns for no waves, no special-casing
+    /// needed here). Token/cost totals are `None` only when at least one
+    /// wave that ran has a genuinely unknown figure of its own.
+    total_prompt_tokens: Option<u32>,
+    total_completion_tokens: Option<u32>,
+    total_estimated_cost_usd: Option<f64>,
+    total_latency_ms: u64,
 }
 
 /// Loads this project's real feedback signal (risk/flakiness scores +
@@ -2023,7 +2033,14 @@ async fn generate_ai_test_cases_scoped(
             fallback_used,
             routing_mode,
             waves,
+            prompt_tokens: _,
+            completion_tokens: _,
+            latency_ms: _,
+            estimated_cost_usd: _,
         } => {
+            // Real totals summed from `waves`, not this variant's own
+            // (last-wave-only, per its own doc comment) top-level fields.
+            let usage = crate::ai_generation::aggregate_wave_usage(&waves);
             // The real routing decision, emitted on its own `ai_router`
             // source so the Orchestrator view can show *why* this route
             // won (score, mode, whether it was the primary choice) rather
@@ -2122,6 +2139,10 @@ async fn generate_ai_test_cases_scoped(
                 fallback_reason: None,
                 waves,
                 crawl_pages_used,
+                total_prompt_tokens: usage.prompt_tokens,
+                total_completion_tokens: usage.completion_tokens,
+                total_estimated_cost_usd: usage.estimated_cost_usd,
+                total_latency_ms: usage.latency_ms,
             }
         }
         crate::ai_generation::GenerationOutcome::Failed { reason } => {
@@ -2153,6 +2174,10 @@ async fn generate_ai_test_cases_scoped(
                 fallback_reason: Some(reason),
                 waves: Vec::new(),
                 crawl_pages_used,
+                total_prompt_tokens: None,
+                total_completion_tokens: None,
+                total_estimated_cost_usd: None,
+                total_latency_ms: 0,
             }
         }
     };
@@ -3134,6 +3159,14 @@ async fn put_ai_settings_handler(
         crate::ai_router::RoutingMode::Auto => "AUTO",
         crate::ai_router::RoutingMode::Manual => "MANUAL",
     };
+    // `task_overrides` round-trips as real JSON text — `None` (not `"{}"`)
+    // when the map is empty, so a settings row that never used this field
+    // stores the same NULL it always has, not a needless empty object.
+    let task_overrides_json = if body.task_overrides.is_empty() {
+        None
+    } else {
+        Some(serde_json::to_string(&body.task_overrides).map_err(to_500)?)
+    };
     state
         .store
         .upsert_ai_settings(
@@ -3141,6 +3174,7 @@ async fn put_ai_settings_handler(
             body.preferred_provider.as_deref(),
             body.preferred_model.as_deref(),
             body.fallback_enabled,
+            task_overrides_json.as_deref(),
         )
         .await
         .map_err(to_500)?;

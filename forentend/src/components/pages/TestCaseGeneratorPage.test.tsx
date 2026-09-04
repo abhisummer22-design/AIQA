@@ -87,6 +87,10 @@ function aiGenerateResponse(overrides: Partial<GenerateAiTestCasesResponse> = {}
     model: 'llama3',
     fallback_reason: null,
     crawl_pages_used: 0,
+    total_prompt_tokens: 120,
+    total_completion_tokens: 340,
+    total_estimated_cost_usd: 0,
+    total_latency_ms: 4200,
     ...overrides,
   };
 }
@@ -342,6 +346,43 @@ describe('TestCaseGeneratorPage — Phase 1 real AI generation', () => {
     expect(within(panel).getByText('ollama')).toBeTruthy();
     expect(within(panel).getByText('llama3')).toBeTruthy();
     expect(within(panel).getByText('AI')).toBeTruthy();
+    // Real usage/cost/latency from the response (the default fixture:
+    // 120 prompt / 340 completion tokens, $0 — an Unmetered provider —,
+    // 4200ms), never fabricated when the backend actually reported them.
+    expect(within(panel).getByText('120 in / 340 out')).toBeTruthy();
+    expect(within(panel).getByText('4.2s')).toBeTruthy();
+    expect(within(panel).getByText('Free (self-hosted)')).toBeTruthy();
+  }, 15000);
+
+  it('a genuinely unknown token/cost figure is shown honestly as "Not Reported", never a fabricated number', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') {
+          return jsonResponse(
+            200,
+            aiGenerateResponse({
+              total_prompt_tokens: null,
+              total_completion_tokens: null,
+              total_estimated_cost_usd: null,
+            }),
+          );
+        }
+        if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+        return jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+    await generate();
+
+    await waitFor(() => expect(document.getElementById('generation-details-panel')).toBeTruthy());
+    const panel = document.getElementById('generation-details-panel')!;
+    expect(within(panel).getAllByText('Not Reported').length).toBeGreaterThanOrEqual(2);
   }, 15000);
 
   it('a fallback response (no compatible AI model) is displayed truthfully — never presented as a successful AI generation', async () => {

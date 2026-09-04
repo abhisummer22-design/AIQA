@@ -715,6 +715,15 @@ pub enum GenerationOutcome {
         fallback_used: bool,
         /// `"AUTO"` or `"MANUAL"` — the real routing mode in force.
         routing_mode: String,
+        /// Real token counts / latency / cost for the one call this variant
+        /// describes (see the field-level docs on `waves` immediately below
+        /// for what "this variant describes" means for `generate_test_cases`
+        /// specifically) — carried through from `ai_router::GenerationResult`
+        /// verbatim, never re-derived.
+        prompt_tokens: Option<u32>,
+        completion_tokens: Option<u32>,
+        latency_ms: u64,
+        estimated_cost_usd: Option<f64>,
         /// The real, per-wave breakdown (`generate_test_cases`'s own doc
         /// comment) — empty for a single-wave `generate_one_wave` result
         /// (it has no sub-waves of its own to report), populated by
@@ -949,6 +958,21 @@ pub struct WaveSummary {
     pub routing_score: Option<f64>,
     pub fallback_used: Option<bool>,
     pub routing_mode: Option<String>,
+    /// This wave's own real token counts / cost — `None` for a
+    /// skipped/failed wave (it made no real call), and also honestly
+    /// `None` on a successful wave whose provider genuinely reported no
+    /// usage figure (`ai_router::TokenUsage`'s own contract).
+    pub prompt_tokens: Option<u32>,
+    pub completion_tokens: Option<u32>,
+    pub estimated_cost_usd: Option<f64>,
+    /// Real, measured wall-clock time for this wave's one call — `None`
+    /// only when the wave never made a call at all (skipped); always
+    /// `Some` for a wave that was attempted, success or failure alike, so
+    /// consider extending this to failed waves too before relying on it
+    /// there (`run_wave`'s failure arm currently leaves it `None`, matching
+    /// `provider`/`model`'s own precedent of describing a *successful*
+    /// call only).
+    pub latency_ms: Option<u64>,
     pub failure_reason: Option<String>,
     pub skipped: bool,
 }
@@ -964,6 +988,10 @@ impl WaveSummary {
             routing_score: None,
             fallback_used: None,
             routing_mode: None,
+            prompt_tokens: None,
+            completion_tokens: None,
+            estimated_cost_usd: None,
+            latency_ms: None,
             failure_reason: None,
             skipped: true,
         }
@@ -971,6 +999,56 @@ impl WaveSummary {
 
     fn succeeded(&self) -> bool {
         !self.skipped && self.failure_reason.is_none()
+    }
+}
+
+/// Real, summed usage across every wave that actually ran and produced
+/// output (mirrors `crawl_pages_used_count`'s role for crawl grounding — a
+/// small, independently testable rollup the API layer calls rather than
+/// re-deriving). A skipped or failed wave made no real call and
+/// contributes nothing. `prompt_tokens`/`completion_tokens`/
+/// `estimated_cost_usd` are `None` the moment even one wave that DID run
+/// has an honestly-unknown figure of its own — a partial sum would silently
+/// understate real usage, which is worse than admitting the total isn't
+/// fully knowable.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct WaveUsageTotals {
+    pub prompt_tokens: Option<u32>,
+    pub completion_tokens: Option<u32>,
+    pub estimated_cost_usd: Option<f64>,
+    pub latency_ms: u64,
+}
+
+pub fn aggregate_wave_usage(waves: &[WaveSummary]) -> WaveUsageTotals {
+    let ran: Vec<&WaveSummary> = waves.iter().filter(|w| w.succeeded()).collect();
+
+    let mut prompt_tokens = Some(0u32);
+    let mut completion_tokens = Some(0u32);
+    let mut estimated_cost_usd = Some(0.0f64);
+    let mut latency_ms = 0u64;
+
+    for w in &ran {
+        prompt_tokens = prompt_tokens.zip(w.prompt_tokens).map(|(a, b)| a + b);
+        completion_tokens = completion_tokens
+            .zip(w.completion_tokens)
+            .map(|(a, b)| a + b);
+        estimated_cost_usd = estimated_cost_usd
+            .zip(w.estimated_cost_usd)
+            .map(|(a, b)| a + b);
+        latency_ms += w.latency_ms.unwrap_or(0);
+    }
+
+    if ran.is_empty() {
+        prompt_tokens = None;
+        completion_tokens = None;
+        estimated_cost_usd = None;
+    }
+
+    WaveUsageTotals {
+        prompt_tokens,
+        completion_tokens,
+        estimated_cost_usd,
+        latency_ms,
     }
 }
 
@@ -1006,6 +1084,10 @@ async fn run_wave(
             routing_score,
             fallback_used,
             routing_mode,
+            prompt_tokens,
+            completion_tokens,
+            latency_ms,
+            estimated_cost_usd,
             ..
         } => {
             let summary = WaveSummary {
@@ -1017,6 +1099,10 @@ async fn run_wave(
                 routing_score: Some(routing_score),
                 fallback_used: Some(fallback_used),
                 routing_mode: Some(routing_mode),
+                prompt_tokens,
+                completion_tokens,
+                estimated_cost_usd,
+                latency_ms: Some(latency_ms),
                 failure_reason: None,
                 skipped: false,
             };
@@ -1032,6 +1118,10 @@ async fn run_wave(
                 routing_score: None,
                 fallback_used: None,
                 routing_mode: None,
+                prompt_tokens: None,
+                completion_tokens: None,
+                estimated_cost_usd: None,
+                latency_ms: None,
                 failure_reason: Some(reason),
                 skipped: false,
             };
@@ -1165,6 +1255,14 @@ pub async fn generate_test_cases(
         .routing_mode
         .clone()
         .expect("a succeeded wave always has a routing_mode");
+    let latency_ms = last_success
+        .latency_ms
+        .expect("a succeeded wave always has a measured latency");
+    // Real, but honestly optional even on success (the provider itself may
+    // not have reported usage) — passed through as-is, never `.expect()`ed.
+    let prompt_tokens = last_success.prompt_tokens;
+    let completion_tokens = last_success.completion_tokens;
+    let estimated_cost_usd = last_success.estimated_cost_usd;
 
     // Cross-wave dedup: a later wave can still coincidentally repeat an
     // earlier wave's exact scenario despite `build_prior_wave_block` asking
@@ -1180,6 +1278,10 @@ pub async fn generate_test_cases(
         routing_score,
         fallback_used,
         routing_mode,
+        prompt_tokens,
+        completion_tokens,
+        latency_ms,
+        estimated_cost_usd,
         waves,
     }
 }
@@ -1231,6 +1333,10 @@ fn validate_structured_output(
             crate::ai_router::RoutingMode::Manual => "MANUAL".to_string(),
             crate::ai_router::RoutingMode::Auto => "AUTO".to_string(),
         },
+        prompt_tokens: result.prompt_tokens,
+        completion_tokens: result.completion_tokens,
+        latency_ms: result.latency_ms,
+        estimated_cost_usd: result.estimated_cost_usd,
         // A single wave call has no sub-waves of its own to report —
         // `generate_test_cases` is the only place that ever populates this.
         waves: Vec::new(),
@@ -2195,7 +2301,10 @@ mod tests {
         // outright (no retry — a raw execution error returns immediately,
         // unlike a validation failure). Exactly two scripted responses.
         let recorder = Arc::new(RecordingExecutor::sequence(vec![
-            Ok(r#"{"test_cases":[{"title":"Valid login succeeds","category":"Functional","skill_id":"skill-functional-testing","preconditions":[],"steps":[{"action":"Log in with valid credentials","expected_result":"User reaches dashboard"}],"expected_result":"User reaches dashboard","priority":"HIGH","severity":"MAJOR","evidence":"evidenced","source_reference":"log in"}]}"#.to_string()),
+            Ok(crate::ai_router::ExecutionOutput {
+                text: r#"{"test_cases":[{"title":"Valid login succeeds","category":"Functional","skill_id":"skill-functional-testing","preconditions":[],"steps":[{"action":"Log in with valid credentials","expected_result":"User reaches dashboard"}],"expected_result":"User reaches dashboard","priority":"HIGH","severity":"MAJOR","evidence":"evidenced","source_reference":"log in"}]}"#.to_string(),
+                usage: crate::ai_router::TokenUsage::default(),
+            }),
             Err(ExecutionError::Timeout),
         ]));
         let mut executors: HashMap<&'static str, Arc<dyn crate::ai_router::AiExecutor>> =
@@ -2596,5 +2705,118 @@ mod tests {
             .join(" ")
             .to_lowercase();
         assert_ne!(functional_text, security_text, "the two skill selections must produce genuinely different content, not the same text twice");
+    }
+
+    // --------------------------------------------------------- wave usage totals
+
+    fn succeeded_wave(
+        prompt_tokens: Option<u32>,
+        completion_tokens: Option<u32>,
+        estimated_cost_usd: Option<f64>,
+        latency_ms: u64,
+        case_count: usize,
+    ) -> WaveSummary {
+        WaveSummary {
+            wave: "Base",
+            skill_names: Vec::new(),
+            case_count,
+            provider: Some("ollama".to_string()),
+            model: Some("gemma3:12b".to_string()),
+            routing_score: Some(42.0),
+            fallback_used: Some(false),
+            routing_mode: Some("AUTO".to_string()),
+            prompt_tokens,
+            completion_tokens,
+            estimated_cost_usd,
+            latency_ms: Some(latency_ms),
+            failure_reason: None,
+            skipped: false,
+        }
+    }
+
+    fn failed_wave() -> WaveSummary {
+        WaveSummary {
+            wave: "Dependent",
+            skill_names: Vec::new(),
+            case_count: 0,
+            provider: None,
+            model: None,
+            routing_score: None,
+            fallback_used: None,
+            routing_mode: None,
+            prompt_tokens: None,
+            completion_tokens: None,
+            estimated_cost_usd: None,
+            latency_ms: None,
+            failure_reason: Some("timeout".to_string()),
+            skipped: false,
+        }
+    }
+
+    #[test]
+    fn aggregate_wave_usage_of_no_waves_is_honestly_unknown_not_a_fabricated_zero() {
+        let totals = aggregate_wave_usage(&[]);
+        assert_eq!(totals.prompt_tokens, None);
+        assert_eq!(totals.completion_tokens, None);
+        assert_eq!(totals.estimated_cost_usd, None);
+        assert_eq!(totals.latency_ms, 0);
+    }
+
+    #[test]
+    fn aggregate_wave_usage_of_only_skipped_waves_is_the_same_as_no_waves() {
+        let totals = aggregate_wave_usage(&[
+            WaveSummary::skipped(Wave::Dependent),
+            WaveSummary::skipped(Wave::NonFunctional),
+        ]);
+        assert_eq!(totals.prompt_tokens, None);
+        assert_eq!(totals.estimated_cost_usd, None);
+    }
+
+    #[test]
+    fn aggregate_wave_usage_sums_real_figures_across_every_wave_that_ran() {
+        let waves = vec![
+            succeeded_wave(Some(100), Some(50), Some(0.0), 1200, 3),
+            succeeded_wave(Some(80), Some(40), Some(0.0), 900, 2),
+        ];
+        let totals = aggregate_wave_usage(&waves);
+        assert_eq!(totals.prompt_tokens, Some(180));
+        assert_eq!(totals.completion_tokens, Some(90));
+        assert_eq!(totals.estimated_cost_usd, Some(0.0));
+        assert_eq!(totals.latency_ms, 2100);
+    }
+
+    #[test]
+    fn aggregate_wave_usage_excludes_a_failed_wave_even_if_it_carried_stray_data() {
+        let waves = vec![
+            succeeded_wave(Some(100), Some(50), Some(0.0), 1000, 3),
+            failed_wave(),
+        ];
+        let totals = aggregate_wave_usage(&waves);
+        assert_eq!(
+            totals.prompt_tokens,
+            Some(100),
+            "a failed wave made no real call and must not contribute to the total"
+        );
+        assert_eq!(totals.latency_ms, 1000);
+    }
+
+    #[test]
+    fn aggregate_wave_usage_reports_unknown_total_when_any_ran_wave_has_unknown_tokens() {
+        // One wave's provider reported real usage; the other's genuinely
+        // did not. The total must not silently understate real usage by
+        // summing only the known half.
+        let waves = vec![
+            succeeded_wave(Some(100), Some(50), Some(0.0), 1000, 3),
+            succeeded_wave(None, None, Some(0.0), 500, 1),
+        ];
+        let totals = aggregate_wave_usage(&waves);
+        assert_eq!(totals.prompt_tokens, None);
+        assert_eq!(totals.completion_tokens, None);
+        // Cost happened to be known on both real waves here, so it sums
+        // independently of the token totals' own unknown-ness.
+        assert_eq!(totals.estimated_cost_usd, Some(0.0));
+        // Latency is always genuinely measured — never optional — so it
+        // still sums even when token counts are unknown.
+        assert_eq!(totals.latency_ms, 1500);
     }
 }

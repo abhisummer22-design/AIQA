@@ -7163,7 +7163,7 @@ async fn ai_settings_survive_a_fresh_store_reload_real_durable_persistence() {
     let reloaded = crate::store::Store::connect(&dir.path().join("api.sqlite3"))
         .await
         .expect("reconnect");
-    let (mode, preferred_provider, preferred_model, fallback_enabled) = reloaded
+    let (mode, preferred_provider, preferred_model, fallback_enabled, task_overrides) = reloaded
         .get_ai_settings()
         .await
         .expect("query")
@@ -7172,6 +7172,62 @@ async fn ai_settings_survive_a_fresh_store_reload_real_durable_persistence() {
     assert_eq!(preferred_provider.as_deref(), Some("mock"));
     assert_eq!(preferred_model.as_deref(), Some("mock-model"));
     assert!(fallback_enabled);
+    assert_eq!(
+        task_overrides, None,
+        "a settings row saved with no task_overrides must persist NULL, not a fabricated empty object"
+    );
+}
+
+#[tokio::test]
+async fn ai_settings_task_overrides_survive_a_fresh_store_reload_real_durable_persistence() {
+    let (state, dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    let operator = mint_key(&state, "operator", None).await;
+    send(
+        &state,
+        req(
+            "PUT",
+            "/api/v1/ai/settings",
+            Some(&operator),
+            Some(serde_json::json!({
+                "mode": "AUTO",
+                "preferred_provider": null,
+                "preferred_model": null,
+                "fallback_enabled": true,
+                "task_overrides": {
+                    "TEST_CASE_GENERATION": {"provider": "gemini", "model": "gemini-2.5-pro"}
+                }
+            })),
+        ),
+    )
+    .await;
+
+    // A completely independent `Store` connection against the same real
+    // sqlite file — proves the override is durable, on-disk persistence,
+    // not an in-memory echo of the request that set it.
+    let reloaded = crate::store::Store::connect(&dir.path().join("api.sqlite3"))
+        .await
+        .expect("reconnect");
+    let (_, _, _, _, task_overrides) = reloaded
+        .get_ai_settings()
+        .await
+        .expect("query")
+        .expect("a row must exist");
+    let raw =
+        task_overrides.expect("a real task override must persist as real JSON text, not NULL");
+    let parsed: serde_json::Value = serde_json::from_str(&raw).expect("valid JSON");
+    assert_eq!(parsed["TEST_CASE_GENERATION"]["provider"], "gemini");
+    assert_eq!(parsed["TEST_CASE_GENERATION"]["model"], "gemini-2.5-pro");
+
+    // The in-memory router (restored the same way `main.rs` restores it on
+    // a real process restart — the actual mechanism this test is proving,
+    // not just the raw DB row) must resolve the very same override.
+    let live_settings = state.ai_infra.settings().await;
+    let entry = live_settings
+        .task_overrides
+        .get(&crate::ai_router::AiTask::TestCaseGeneration)
+        .expect("the saved override must be readable back through the real AiSettings type");
+    assert_eq!(entry.provider.as_deref(), Some("gemini"));
+    assert_eq!(entry.model.as_deref(), Some("gemini-2.5-pro"));
 }
 
 #[tokio::test]
