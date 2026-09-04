@@ -220,12 +220,22 @@ export class NeuralActivity {
    *  occupy. Small enough to be a non-event for a caller using neither. */
   private static readonly TOP_MARGIN = 14;
   private static readonly BOTTOM_MARGIN = 20;
+  /** A real, deterministic layout aid, not random jitter: a node sharing a
+   *  layer with the real active node (see `setActiveNode`) is nudged a
+   *  little further away from it, purely so the two don't read as visually
+   *  merged together when a layer has few nodes. Never applied to the
+   *  active node itself. */
+  private static readonly ACTIVE_SEPARATION_PX = 10;
 
   private pos(n: NeuralNode): [number, number] {
     const L = this.opts.layers;
     const top = NeuralActivity.TOP_MARGIN;
     const band = Math.max(1, this.h - NeuralActivity.TOP_MARGIN - NeuralActivity.BOTTOM_MARGIN);
-    return [((n.l + 0.5) / L.length) * this.w, top + ((n.i + 0.5) / L[n.l]) * band];
+    let y = top + ((n.i + 0.5) / L[n.l]) * band;
+    if (this.activeNode && n.l === this.activeNode.l && n.i !== this.activeNode.i) {
+      y += n.i > this.activeNode.i ? NeuralActivity.ACTIVE_SEPARATION_PX : -NeuralActivity.ACTIVE_SEPARATION_PX;
+    }
+    return [((n.l + 0.5) / L.length) * this.w, y];
   }
 
   /** Real per-node coordinate marking the one node genuinely on the real
@@ -347,13 +357,24 @@ export class NeuralActivity {
     }
 
     // nodes — each in its own real colour when one was set for it,
-    // otherwise the shared accent.
+    // otherwise the shared accent. A "middle" node (neither the real
+    // capability inputs nor the single output — in this app's real usage,
+    // a discovered provider) gets a small real glow floor: it structurally
+    // exists right now, so it must never read as fully dead, even when it
+    // is not the active winning path (which stays visually distinct via
+    // its own edges/signals, per `isEdgeActive`, not via this floor).
+    // Layer 0's glow is deliberately left alone — there, low opacity IS
+    // the real signal for a genuinely weak/absent capability, and boosting
+    // it would blur that real distinction.
+    const isMiddleLayer = (n: NeuralNode) => n.l > 0 && n.l < opts.layers.length - 1;
     this.nodes.forEach((n) => {
       const [x, y] = this.pos(n);
       const [nr, ng, nb] = this.rgbForNode(n);
+      const glowFloor = isMiddleLayer(n) ? 0.14 : 0;
+      const fillFloor = isMiddleLayer(n) ? 0.4 : 0.3;
       const rad = opts.minRadius + n.act * (opts.maxRadius - opts.minRadius);
       const glow = ctx.createRadialGradient(x, y, 0, x, y, rad * 2.2);
-      glow.addColorStop(0, `rgba(${nr},${ng},${nb},${0.25 * n.act})`);
+      glow.addColorStop(0, `rgba(${nr},${ng},${nb},${glowFloor + 0.25 * n.act})`);
       glow.addColorStop(1, `rgba(${nr},${ng},${nb},0)`);
       ctx.fillStyle = glow;
       ctx.beginPath();
@@ -361,7 +382,7 @@ export class NeuralActivity {
       ctx.fill();
       ctx.beginPath();
       ctx.arc(x, y, rad, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(${nr},${ng},${nb},${0.3 + n.act * 0.7})`;
+      ctx.fillStyle = `rgba(${nr},${ng},${nb},${fillFloor + n.act * (1 - fillFloor)})`;
       ctx.fill();
     });
 
