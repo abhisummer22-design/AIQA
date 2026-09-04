@@ -863,6 +863,14 @@ export interface GenerateAiTestCasesResponse {
    *  reached the prompt (0 when no `crawl_run_id` was supplied) — an honest
    *  confirmation of real grounding, not a claim to take on faith. */
   crawl_pages_used: number;
+  /** Real, summed token/cost/latency across every wave that actually ran
+   *  (`ai_generation::aggregate_wave_usage`). The token/cost totals are
+   *  `null` only when at least one wave that ran has a genuinely unknown
+   *  figure of its own — never a silently-undercounted partial sum. */
+  total_prompt_tokens: number | null;
+  total_completion_tokens: number | null;
+  total_estimated_cost_usd: number | null;
+  total_latency_ms: number;
 }
 
 // ---------------------------------------------------------------- crawler
@@ -1041,7 +1049,16 @@ export interface AiProviderInfo {
   reachable: boolean;
   status: AiProviderStatus;
   models: AiModelDefinition[];
+  /** Real billing fact (`ai_router.rs::ProviderPricing`) — never a guessed
+   *  rate. `UNMETERED` for a provider with genuinely no per-token bill
+   *  (both providers wired today run against this deployment's own local
+   *  compute); `METERED` only once a real, disclosed rate is configured. */
+  pricing: AiProviderPricing;
 }
+
+export type AiProviderPricing =
+  | { kind: 'UNMETERED' }
+  | { kind: 'METERED'; input_usd_per_1k: number; output_usd_per_1k: number };
 
 export type AiRoutingMode = 'AUTO' | 'MANUAL';
 
@@ -1052,6 +1069,21 @@ export interface AiSettings {
   preferred_provider: string | null;
   preferred_model: string | null;
   fallback_enabled: boolean;
+  /** Real, explicit per-task routing rules (`ai_router.rs::AiSettings::
+   *  task_overrides`), keyed by the real `AiTask` variant name — e.g.
+   *  "always use a real paid API for `TEST_CASE_GENERATION` once one is
+   *  configured, leave every other task on the default/global
+   *  preference." Optional here (`#[serde(default)]` on the backend) —
+   *  absent/empty means no overrides, identical to today's behavior. */
+  task_overrides?: Record<string, TaskProviderPreference>;
+}
+
+/** `ai_router.rs::TaskProviderPreference` — each field independently
+ *  optional: pin just the provider (any of its models) or just the model
+ *  (whichever provider serves it) for one specific task. */
+export interface TaskProviderPreference {
+  provider: string | null;
+  model: string | null;
 }
 
 /** `ai_router.rs::RoutingDecision` — a documented heuristic score, not a

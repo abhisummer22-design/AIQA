@@ -1201,6 +1201,7 @@ mod tests {
                 preferred_provider: Some("primary".to_string()),
                 preferred_model: None,
                 fallback_enabled: true,
+                task_overrides: std::collections::HashMap::new(),
             })
             .await;
 
@@ -1276,6 +1277,7 @@ mod tests {
                 preferred_provider: Some("primary".to_string()),
                 preferred_model: None,
                 fallback_enabled: true,
+                task_overrides: std::collections::HashMap::new(),
             })
             .await;
 

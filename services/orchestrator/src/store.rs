@@ -992,10 +992,14 @@ impl Store {
     // are the only two operations this needs; there is nothing to list or
     // delete.
 
+    /// The 5th element is the real, raw JSON text of
+    /// `ai_router.rs::AiSettings::task_overrides` (`None` when no overrides
+    /// are configured) — the caller deserializes it, this layer only moves
+    /// real bytes in and out of the real column.
     pub async fn get_ai_settings(
         &self,
-    ) -> Result<Option<(String, Option<String>, Option<String>, bool)>> {
-        let row = sqlx::query("SELECT mode, preferred_provider, preferred_model, fallback_enabled FROM ai_settings WHERE id = 'global'")
+    ) -> Result<Option<(String, Option<String>, Option<String>, bool, Option<String>)>> {
+        let row = sqlx::query("SELECT mode, preferred_provider, preferred_model, fallback_enabled, task_overrides FROM ai_settings WHERE id = 'global'")
             .fetch_optional(&self.pool)
             .await?;
         Ok(row.map(|r| {
@@ -1003,32 +1007,39 @@ impl Store {
             let preferred_provider: Option<String> = r.get("preferred_provider");
             let preferred_model: Option<String> = r.get("preferred_model");
             let fallback_enabled: i64 = r.get("fallback_enabled");
+            let task_overrides: Option<String> = r.get("task_overrides");
             (
                 mode,
                 preferred_provider,
                 preferred_model,
                 fallback_enabled != 0,
+                task_overrides,
             )
         }))
     }
 
+    /// `task_overrides` is the real, pre-serialized JSON text of
+    /// `AiSettings::task_overrides` (`None` to persist "no overrides").
     pub async fn upsert_ai_settings(
         &self,
         mode: &str,
         preferred_provider: Option<&str>,
         preferred_model: Option<&str>,
         fallback_enabled: bool,
+        task_overrides: Option<&str>,
     ) -> Result<()> {
         sqlx::query(
-            "INSERT INTO ai_settings (id, mode, preferred_provider, preferred_model, fallback_enabled, updated_at)
-             VALUES ('global', ?, ?, ?, ?, ?)
+            "INSERT INTO ai_settings (id, mode, preferred_provider, preferred_model, fallback_enabled, task_overrides, updated_at)
+             VALUES ('global', ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET mode = excluded.mode, preferred_provider = excluded.preferred_provider,
-               preferred_model = excluded.preferred_model, fallback_enabled = excluded.fallback_enabled, updated_at = excluded.updated_at",
+               preferred_model = excluded.preferred_model, fallback_enabled = excluded.fallback_enabled,
+               task_overrides = excluded.task_overrides, updated_at = excluded.updated_at",
         )
         .bind(mode)
         .bind(preferred_provider)
         .bind(preferred_model)
         .bind(fallback_enabled as i64)
+        .bind(task_overrides)
         .bind(now_rfc3339())
         .execute(&self.pool)
         .await?;
