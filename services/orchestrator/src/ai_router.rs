@@ -233,6 +233,31 @@ pub trait ProviderDiscovery: Send + Sync {
     async fn discover(&self) -> AiProviderInfo;
 }
 
+/// Real, publicly documented model families with an explicit reasoning /
+/// "thinking" mode — Qwen3's own hybrid thinking mode, QwQ's dedicated
+/// reasoning-preview design, DeepSeek-R1's dedicated reasoning training
+/// (and its R1-distill variants, which keep "deepseek-r1" in their own
+/// real tag), Phi-4-reasoning's own name. Matched against the model's own
+/// real name/tag or `family`, never a benchmark this deployment cannot
+/// actually run — this app has no eval harness, so "strong reasoning" here
+/// means "a real, named, documented reasoning-tuned release", not a
+/// measured score.
+///
+/// A model whose name/family matches none of these is NOT thereby judged
+/// to have *weak* reasoning — it stays at the existing honest `Basic`
+/// floor ("real text models can reason to some degree"). This list can
+/// only ever upgrade a real, recognized release to `Strong`; it never
+/// downgrades an unrecognized one, since not being on a short, necessarily
+/// incomplete list is evidence of nothing.
+const KNOWN_REASONING_MODEL_FAMILIES: &[&str] = &["qwen3", "qwq", "deepseek-r1", "phi4-reasoning"];
+
+fn is_known_reasoning_model(name: &str, family: Option<&str>) -> bool {
+    let haystack = format!("{name} {}", family.unwrap_or("")).to_lowercase();
+    KNOWN_REASONING_MODEL_FAMILIES
+        .iter()
+        .any(|f| haystack.contains(f))
+}
+
 /// Parses Ollama's own `capabilities` array (from `/api/tags`, confirmed
 /// real during this unit's own manual verification — a running instance
 /// returned `"capabilities":["completion"]`) into this module's
@@ -240,8 +265,26 @@ pub trait ProviderDiscovery: Send + Sync {
 /// `Unknown`, not `None` — its absence from the array does not prove the
 /// model truly lacks it, only that this discovery pass found no evidence
 /// either way.
-fn capabilities_from_ollama(tags: &[String], family: Option<&str>) -> ModelCapabilities {
-    let has = |name: &str| tags.iter().any(|t| t == name);
+/// Real context length -> a real capability level. Every model genuinely
+/// has *some* context window (never truly absent the way vision can be on
+/// a text-only model) — these tiers only ever distinguish "genuinely
+/// large" from "workable", never disqualify a model for a document-shaped
+/// task outright just because its window is on the smaller side.
+fn long_context_level(context_window: Option<u32>) -> CapabilityLevel {
+    match context_window {
+        Some(n) if n >= 32_768 => CapabilityLevel::Strong,
+        Some(_) => CapabilityLevel::Basic,
+        None => CapabilityLevel::Unknown, // no real evidence fetched — never guessed
+    }
+}
+
+fn capabilities_from_ollama(
+    name: &str,
+    tags: &[String],
+    family: Option<&str>,
+    context_window: Option<u32>,
+) -> ModelCapabilities {
+    let has = |tag: &str| tags.iter().any(|t| t == tag);
     ModelCapabilities {
         text_generation: Some(if has("completion") {
             CapabilityLevel::Strong
@@ -253,7 +296,11 @@ fn capabilities_from_ollama(tags: &[String], family: Option<&str>) -> ModelCapab
         } else {
             CapabilityLevel::Unknown
         }),
-        reasoning: Some(CapabilityLevel::Basic), // real text models can reason to some degree; not independently benchmarked here
+        reasoning: Some(if is_known_reasoning_model(name, family) {
+            CapabilityLevel::Strong
+        } else {
+            CapabilityLevel::Basic // real text models can reason to some degree; not independently benchmarked here
+        }),
         vision: Some(if has("vision") {
             CapabilityLevel::Strong
         } else {
@@ -269,10 +316,51 @@ fn capabilities_from_ollama(tags: &[String], family: Option<&str>) -> ModelCapab
         } else {
             CapabilityLevel::Unknown
         }),
-        long_context: family
-            .map(|_| CapabilityLevel::Unknown)
-            .or(Some(CapabilityLevel::Unknown)),
+        long_context: Some(long_context_level(context_window)),
     }
+}
+
+/// Ollama's own real `POST /api/show` reply nests real context-length
+/// metadata inside `model_info`, under a family-prefixed key (e.g.
+/// `"qwen3.context_length"`, `"llama.context_length"`) — the prefix
+/// varies by family and isn't worth predicting ahead of time, so this
+/// matches any key ending in the real, fixed suffix instead. `None` when
+/// the server's reply genuinely carries no such key — an honest absence,
+/// never assumed to be zero or "small".
+fn context_length_from_show_response(body: &serde_json::Value) -> Option<u32> {
+    let model_info = body.get("model_info")?.as_object()?;
+    model_info
+        .iter()
+        .find(|(k, _)| k.ends_with(".context_length"))
+        .and_then(|(_, v)| v.as_u64())
+        .map(|v| v as u32)
+}
+
+/// A real, bounded, per-model `POST /api/show` call — the one extra real
+/// round-trip needed to get a real context-length figure, since `/api/tags`
+/// (the bulk listing) never carries one. Failure (timeout, non-2xx,
+/// malformed body) is swallowed to `None` here, exactly like every other
+/// "no real evidence" path in this module — a slow/broken `/api/show` for
+/// one model must never fail discovery for every other model.
+async fn fetch_ollama_context_window(
+    client: &reqwest::Client,
+    base_url: &str,
+    model_name: &str,
+    timeout: Duration,
+) -> Option<u32> {
+    let url = format!("{}/api/show", base_url.trim_end_matches('/'));
+    let resp = client
+        .post(&url)
+        .json(&serde_json::json!({ "model": model_name }))
+        .timeout(timeout)
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body: serde_json::Value = resp.json().await.ok()?;
+    context_length_from_show_response(&body)
 }
 
 /// Real Ollama discovery: a bounded `GET /api/tags` against a real,
@@ -374,14 +462,27 @@ impl ProviderDiscovery for OllamaDiscovery {
                         .collect()
                 })
                 .unwrap_or_default();
+            // One extra real, bounded round-trip per model for a real
+            // context-length figure — `/api/tags` alone never carries one.
+            // Sequential, not concurrent (matching this module's own
+            // established preference — see `discover_all`'s doc comment —
+            // for a real list this short over pulling in a join-all
+            // dependency); a slow/broken one honestly falls back to
+            // `None`, never blocking or failing the rest of discovery.
+            let context_window =
+                fetch_ollama_context_window(&client, &self.base_url, &name, self.timeout).await;
+            // Computed before the struct literal below moves `name` into
+            // `display_name` — this still needs to borrow the real name.
+            let capabilities =
+                capabilities_from_ollama(&name, &tags, family.as_deref(), context_window);
             info.models.push(ModelDefinition {
                 id: name.clone(),
                 provider_id: "ollama".to_string(),
                 display_name: name,
                 family: family.clone(),
                 parameter_size,
-                context_window: None, // not present on /api/tags; would need /api/show per model (a real, separate follow-up, not invented here)
-                capabilities: capabilities_from_ollama(&tags, family.as_deref()),
+                context_window,
+                capabilities,
                 status: ModelStatus::Available, // reachable and listed; not yet inference-health-checked
             });
         }
@@ -506,6 +607,16 @@ impl ProviderDiscovery for MjGatewayDiscovery {
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown")
                 .to_string();
+            // Same real, named-release recognition `capabilities_from_ollama`
+            // uses — the gateway can list the exact same real underlying
+            // models (this deployment's own gateway sits in front of a
+            // local Ollama), so a model id like "qwen3:14b" gets the same
+            // real, disclosed upgrade here too.
+            let reasoning = if is_known_reasoning_model(&id, None) {
+                CapabilityLevel::Strong
+            } else {
+                CapabilityLevel::Basic // real text models reason to some degree; not benchmarked here
+            };
             info.models.push(ModelDefinition {
                 provider_id: Self::PROVIDER_ID.to_string(),
                 id: id.clone(),
@@ -518,8 +629,8 @@ impl ProviderDiscovery for MjGatewayDiscovery {
                     // these models — text generation is its one evidenced core.
                     text_generation: Some(CapabilityLevel::Strong),
                     structured_output: Some(CapabilityLevel::Basic), // text-out only; JSON discipline unverified
-                    reasoning: Some(CapabilityLevel::Basic), // real text models reason to some degree; not benchmarked here
-                    vision: Some(CapabilityLevel::Unknown),  // no signal either way
+                    reasoning: Some(reasoning),
+                    vision: Some(CapabilityLevel::Unknown), // no signal either way
                     embedding: Some(CapabilityLevel::None), // scope doc: embeddings are a future endpoint
                     tool_use: Some(CapabilityLevel::Unknown),
                     long_context: Some(CapabilityLevel::Unknown),
@@ -1605,6 +1716,237 @@ mod tests {
         assert!(info.models.is_empty());
     }
 
+    /// Spawns a real local HTTP server mimicking Ollama's real `/api/tags`
+    /// (bulk listing) and `/api/show` (real per-model context-length
+    /// metadata, nested under a family-prefixed `model_info` key) — the
+    /// full real discovery happy path had no live-server test at all
+    /// before this fix, only the "not reachable" one above.
+    async fn spawn_mock_ollama_discovery(context_length: u64) -> String {
+        use axum::routing::{get, post as post_route};
+
+        async fn tags() -> axum::Json<serde_json::Value> {
+            axum::Json(serde_json::json!({
+                "models": [{
+                    "name": "qwen3:14b",
+                    "details": { "family": "qwen3", "parameter_size": "14.8B" },
+                    "capabilities": ["completion", "tools"]
+                }]
+            }))
+        }
+
+        async fn show(
+            axum::extract::State(context_length): axum::extract::State<u64>,
+        ) -> axum::Json<serde_json::Value> {
+            axum::Json(serde_json::json!({
+                "model_info": { "qwen3.context_length": context_length }
+            }))
+        }
+
+        let app = axum::Router::new()
+            .route("/api/tags", get(tags))
+            .route("/api/show", post_route(show))
+            .with_state(context_length);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn discovery_reports_a_real_healthy_model_with_its_real_context_length() {
+        let base_url = spawn_mock_ollama_discovery(40_960).await;
+        let discovery = OllamaDiscovery {
+            base_url,
+            timeout: Duration::from_secs(2),
+        };
+        let info = discovery.discover().await;
+
+        assert!(info.reachable);
+        assert_eq!(info.status, ProviderStatus::Healthy);
+        let model = info.models.first().expect("one real model");
+        assert_eq!(model.id, "qwen3:14b");
+        assert_eq!(model.parameter_size.as_deref(), Some("14.8B"));
+        assert_eq!(
+            model.context_window,
+            Some(40_960),
+            "the real /api/show context length must reach ModelDefinition, not stay None"
+        );
+        assert_eq!(
+            model.capabilities.long_context,
+            Some(CapabilityLevel::Strong),
+            "40,960 real tokens clears the Strong threshold"
+        );
+        assert_eq!(
+            model.capabilities.reasoning,
+            Some(CapabilityLevel::Strong),
+            "qwen3 is a known reasoning family — both fixes apply together"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_smaller_real_context_length_is_basic_not_strong_and_never_disqualifying() {
+        let base_url = spawn_mock_ollama_discovery(4096).await;
+        let discovery = OllamaDiscovery {
+            base_url,
+            timeout: Duration::from_secs(2),
+        };
+        let info = discovery.discover().await;
+        let model = info.models.first().expect("one real model");
+        assert_eq!(model.context_window, Some(4096));
+        assert_eq!(
+            model.capabilities.long_context,
+            Some(CapabilityLevel::Basic)
+        );
+
+        // Never disqualifying — a small-but-real context window still
+        // yields a valid candidate for a document-shaped task.
+        let required = required_capabilities(AiTask::DocumentAnalysis);
+        let provider = healthy_provider("ollama", vec![model.clone()]);
+        assert!(score_model(model, &provider, &required, None).is_some());
+    }
+
+    #[test]
+    fn context_length_from_show_response_finds_the_real_family_prefixed_key() {
+        let body = serde_json::json!({ "model_info": { "llama.context_length": 8192, "llama.embedding_length": 4096 } });
+        assert_eq!(context_length_from_show_response(&body), Some(8192));
+    }
+
+    #[test]
+    fn context_length_from_show_response_is_none_when_the_real_reply_carries_no_such_key() {
+        let body = serde_json::json!({ "model_info": { "some.other_field": 1 } });
+        assert_eq!(context_length_from_show_response(&body), None);
+        assert_eq!(
+            context_length_from_show_response(&serde_json::json!({})),
+            None
+        );
+    }
+
+    #[test]
+    fn long_context_level_thresholds() {
+        assert_eq!(long_context_level(Some(32_768)), CapabilityLevel::Strong);
+        assert_eq!(long_context_level(Some(32_767)), CapabilityLevel::Basic);
+        assert_eq!(long_context_level(Some(1)), CapabilityLevel::Basic);
+        assert_eq!(
+            long_context_level(None),
+            CapabilityLevel::Unknown,
+            "no real evidence fetched must stay Unknown, never guessed"
+        );
+    }
+
+    // --------------------------------------------- known reasoning models
+
+    #[test]
+    fn a_real_deployed_qwen3_model_is_recognized_as_a_known_reasoning_model() {
+        // The exact real model this deployment routes to today
+        // (qwen3:14b, via Ollama) — this is the concrete regression the
+        // fix closes: it must no longer be flattened to the generic
+        // "Basic" every other text model also gets.
+        assert!(is_known_reasoning_model("qwen3:14b", Some("qwen3")));
+    }
+
+    #[test]
+    fn other_real_named_reasoning_releases_are_also_recognized() {
+        assert!(is_known_reasoning_model("qwq:32b", None));
+        assert!(is_known_reasoning_model("deepseek-r1:32b", None));
+        assert!(is_known_reasoning_model(
+            "deepseek-r1-distill-qwen-14b",
+            None
+        ));
+        assert!(is_known_reasoning_model("phi4-reasoning:14b", None));
+    }
+
+    #[test]
+    fn matching_is_case_insensitive_since_a_real_tag_could_be_cased_either_way() {
+        assert!(is_known_reasoning_model("Qwen3:14B", None));
+    }
+
+    #[test]
+    fn an_unrecognized_model_is_not_flagged_strong_but_is_not_judged_weak_either() {
+        // Absence from a real but necessarily incomplete list is evidence
+        // of nothing — this only ever asserts what `is_known_reasoning_model`
+        // itself returns (false), never a downgrade elsewhere.
+        assert!(!is_known_reasoning_model("gemma3:12b", Some("gemma3")));
+        assert!(!is_known_reasoning_model("llama3:8b", Some("llama")));
+    }
+
+    #[test]
+    fn capabilities_from_ollama_reports_strong_reasoning_for_a_real_known_reasoning_model() {
+        let caps = capabilities_from_ollama(
+            "qwen3:14b",
+            &["completion".to_string()],
+            Some("qwen3"),
+            None,
+        );
+        assert_eq!(
+            caps.reasoning,
+            Some(CapabilityLevel::Strong),
+            "a real, named reasoning-tuned release must score higher than the generic text-model floor"
+        );
+    }
+
+    #[test]
+    fn capabilities_from_ollama_keeps_the_honest_basic_floor_for_an_unrecognized_model() {
+        let caps = capabilities_from_ollama(
+            "gemma3:12b",
+            &["completion".to_string()],
+            Some("gemma3"),
+            None,
+        );
+        assert_eq!(
+            caps.reasoning,
+            Some(CapabilityLevel::Basic),
+            "an unrecognized model must keep the same honest floor as before this fix — never invented as either higher or lower"
+        );
+    }
+
+    #[test]
+    fn a_known_reasoning_model_scores_higher_for_a_task_that_requires_reasoning() {
+        // End-to-end proof this actually changes real routing, not just
+        // the capability field in isolation.
+        let required = required_capabilities(AiTask::TestCaseGeneration);
+        let qwen3 = ModelDefinition {
+            id: "qwen3:14b".to_string(),
+            provider_id: "ollama".to_string(),
+            display_name: "qwen3:14b".to_string(),
+            family: Some("qwen3".to_string()),
+            parameter_size: None,
+            context_window: None,
+            capabilities: capabilities_from_ollama(
+                "qwen3:14b",
+                &["completion".to_string()],
+                Some("qwen3"),
+                None,
+            ),
+            status: ModelStatus::Available,
+        };
+        let gemma3 = ModelDefinition {
+            id: "gemma3:12b".to_string(),
+            provider_id: "ollama".to_string(),
+            display_name: "gemma3:12b".to_string(),
+            family: Some("gemma3".to_string()),
+            parameter_size: None,
+            context_window: None,
+            capabilities: capabilities_from_ollama(
+                "gemma3:12b",
+                &["completion".to_string()],
+                Some("gemma3"),
+                None,
+            ),
+            status: ModelStatus::Available,
+        };
+        let provider = healthy_provider("ollama", vec![]);
+        let qwen3_score = score_model(&qwen3, &provider, &required, None)
+            .expect("qwen3 must be a valid candidate");
+        let gemma3_score = score_model(&gemma3, &provider, &required, None)
+            .expect("gemma3 must be a valid candidate");
+        assert!(
+            qwen3_score > gemma3_score,
+            "the real, named reasoning model must genuinely outscore an otherwise-identical model with unrecognized reasoning support: qwen3={qwen3_score}, gemma3={gemma3_score}"
+        );
+    }
+
     // Phase B cleanup: the two ApiKeyProviderDiscovery env-var tests were
     // removed together with that stub type — the MJ gateway discovery
     // tests below cover the same honest-status contract against a real,
@@ -2055,7 +2397,12 @@ mod tests {
     #[test]
     fn a_real_ollama_shaped_healthy_model_is_a_valid_requirement_analysis_candidate() {
         let required = required_capabilities(AiTask::RequirementAnalysis);
-        let ollama_shaped = capabilities_from_ollama(&["completion".to_string()], Some("gemma3"));
+        let ollama_shaped = capabilities_from_ollama(
+            "gemma3:12b",
+            &["completion".to_string()],
+            Some("gemma3"),
+            None,
+        );
         let model = ModelDefinition {
             id: "gemma3:12b".to_string(),
             provider_id: "ollama".to_string(),
@@ -2465,6 +2812,17 @@ mod tests {
             );
             assert_eq!(m.status, ModelStatus::Available);
         }
+        // The gateway can list the exact same real underlying models
+        // Ollama does — a real, named reasoning release must be recognized
+        // through this path too, not just Ollama's own discovery.
+        let qwen3 = info.models.iter().find(|m| m.id == "qwen3:14b").unwrap();
+        assert_eq!(qwen3.capabilities.reasoning, Some(CapabilityLevel::Strong));
+        let mj_default = info.models.iter().find(|m| m.id == "mj-default").unwrap();
+        assert_eq!(
+            mj_default.capabilities.reasoning,
+            Some(CapabilityLevel::Basic),
+            "an unrecognized alias must keep the same honest floor as before this fix"
+        );
     }
 
     #[tokio::test]

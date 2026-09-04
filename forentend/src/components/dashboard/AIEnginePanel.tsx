@@ -32,6 +32,7 @@
 import React from 'react';
 import { AlertTriangle, BrainCircuit, CircleSlash, Info, Loader2 } from 'lucide-react';
 import { AIEngineOrb } from './AIEngineOrb';
+import { CAPABILITY_ORDER } from './aiCapabilities';
 import type { AiCapabilityLevel, AiModelDefinition, AiStatusResponse } from '../../types/contract';
 
 export interface AIEnginePanelProps {
@@ -57,19 +58,6 @@ const providerStatusStyles: Record<string, string> = {
   UNAVAILABLE: 'text-rose-300 bg-rose-950/70 border-rose-800',
   ERROR: 'text-rose-300 bg-rose-950/70 border-rose-800',
 };
-
-/** Capability keys in a fixed, real order — every one of these is a real
- *  field on `ai_router.rs::ModelCapabilities`, so nothing here is a label
- *  without a backing value. */
-const CAPABILITY_ORDER: Array<{ key: keyof AiModelDefinition['capabilities']; label: string }> = [
-  { key: 'text_generation', label: 'text gen' },
-  { key: 'structured_output', label: 'structured' },
-  { key: 'reasoning', label: 'reasoning' },
-  { key: 'tool_use', label: 'tool use' },
-  { key: 'long_context', label: 'long ctx' },
-  { key: 'vision', label: 'vision' },
-  { key: 'embedding', label: 'embedding' },
-];
 
 const Pill: React.FC<{ label: string; className?: string }> = ({ label, className }) => (
   <span
