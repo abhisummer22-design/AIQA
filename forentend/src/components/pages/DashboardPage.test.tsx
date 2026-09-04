@@ -963,7 +963,7 @@ describe('DashboardPage — real AI Engine panel', () => {
     expect(within(panel).getByText('NOT_CONFIGURED')).toBeTruthy();
   });
 
-  it('the network diagram has one real input node per capability field, coloured by its real evidenced level', async () => {
+  it('the neural-activity canvas is driven by one real value per capability field, at its real evidenced level', async () => {
     setApiKey(RAW_KEY);
     mockWithAiStatus();
     renderApp();
@@ -972,53 +972,47 @@ describe('DashboardPage — real AI Engine panel', () => {
 
     const orb = await waitFor(() => document.getElementById('ai-engine-orb')!);
     expect(orb.getAttribute('data-live')).toBe('true');
-    // Exactly one input node per real field on `AiModelCapabilities` —
-    // never a count derived from anything else.
-    expect(orb.querySelectorAll('[data-node="input"]').length).toBe(7);
-    // Each node's colour is that exact real field's evidenced level
-    // (text_generation/tool_use STRONG, structured_output/reasoning BASIC,
-    // long_context UNKNOWN, vision/embedding NONE) — the real per-field
-    // mix, not a random palette.
-    expect(orb.querySelector('[data-capability="text_generation"]')?.getAttribute('data-level')).toBe('STRONG');
-    expect(orb.querySelector('[data-capability="tool_use"]')?.getAttribute('data-level')).toBe('STRONG');
-    expect(orb.querySelector('[data-capability="structured_output"]')?.getAttribute('data-level')).toBe('BASIC');
-    expect(orb.querySelector('[data-capability="reasoning"]')?.getAttribute('data-level')).toBe('BASIC');
-    expect(orb.querySelector('[data-capability="long_context"]')?.getAttribute('data-level')).toBe('UNKNOWN');
-    expect(orb.querySelector('[data-capability="vision"]')?.getAttribute('data-level')).toBe('NONE');
-    expect(orb.querySelector('[data-capability="embedding"]')?.getAttribute('data-level')).toBe('NONE');
-    // The real routing score is rendered inside the output node.
+    // The real per-field mix (text_generation/tool_use STRONG,
+    // structured_output/reasoning BASIC, long_context UNKNOWN,
+    // vision/embedding NONE) — the same 7 real fields the previous SVG
+    // diagram's input column showed, now fed to the canvas engine instead.
+    expect(orb.getAttribute('data-cap-text_generation')).toBe('STRONG');
+    expect(orb.getAttribute('data-cap-tool_use')).toBe('STRONG');
+    expect(orb.getAttribute('data-cap-structured_output')).toBe('BASIC');
+    expect(orb.getAttribute('data-cap-reasoning')).toBe('BASIC');
+    expect(orb.getAttribute('data-cap-long_context')).toBe('UNKNOWN');
+    expect(orb.getAttribute('data-cap-vision')).toBe('NONE');
+    expect(orb.getAttribute('data-cap-embedding')).toBe('NONE');
+    // The real routing decision is rendered as real, visible text below
+    // the canvas (a canvas has no text nodes of its own to read it from).
+    expect(orb.getAttribute('data-active-provider')).toBe('ollama');
+    // The raw, real, unrounded score (the fixture's own 211.48) on the
+    // data attribute; the visible label below the canvas rounds it for
+    // display, same as the previous SVG diagram's own `.toFixed(0)`.
+    expect(orb.getAttribute('data-routing-score')).toBe('211.48');
     expect(orb.textContent).toContain('211');
-    // Every one of the 8 real connections touching the real winning
-    // provider (7 inputs + provider->output) carries a genuinely moving
-    // pulse while a route exists.
-    expect(orb.querySelectorAll('animate').length).toBe(8);
   });
 
-  it('the hidden layer is the real discovered providers, not a decorative node count — the real winner is highlighted, the rest are not', async () => {
+  it('the canvas activity level is a real, computed function of how many discovered providers are actually healthy', async () => {
     setApiKey(RAW_KEY);
-    mockWithAiStatus();
+    mockWithAiStatus(); // 2 real providers: ollama HEALTHY, mj-gateway NOT_CONFIGURED
     renderApp();
     await verifyKey();
     await openAndSelectProject(PROJECT_A);
 
     const orb = await waitFor(() => document.getElementById('ai-engine-orb')!);
-    // One hidden node per real provider from GET /api/v1/ai/status —
-    // exactly 2 here (ollama, mj-gateway), never a fixed decorative count.
-    const hiddenNodes = orb.querySelectorAll('[data-node="hidden"]');
-    expect(hiddenNodes.length).toBe(2);
-    // ollama is the real routing_preview.provider_id -> its node is the
-    // real winner, coloured by its real HEALTHY status.
-    const ollama = orb.querySelector('[data-provider="ollama"]')!;
-    expect(ollama.getAttribute('data-status')).toBe('HEALTHY');
-    expect(ollama.getAttribute('data-active')).toBe('true');
-    // mj-gateway is real, discovered, and shown — but it did not win, so
-    // its node is not highlighted, even though it is genuinely present.
-    const mjGateway = orb.querySelector('[data-provider="mj-gateway"]')!;
-    expect(mjGateway.getAttribute('data-status')).toBe('NOT_CONFIGURED');
-    expect(mjGateway.getAttribute('data-active')).toBe('false');
+    // level = 0.35 + healthyFraction * 0.45 (AIEngineOrb's own real,
+    // disclosed formula) = 0.35 + (1/2)*0.45 = 0.575 — real math on the
+    // real provider list, not an arbitrary constant.
+    expect(orb.getAttribute('data-level')).toBe('0.575');
+    // The real per-provider detail this single scalar cannot carry on its
+    // own (which provider, which exact status) remains fully shown,
+    // unchanged, in the "Providers" list this same real GET /api/v1/ai/
+    // status response drives — see the "shows real provider health"
+    // test above for that assertion.
   });
 
-  it('the diagram goes inert with no route — no flow, no score, an honest idle field, and it says so', async () => {
+  it('the canvas goes inert with no route — no flow, no score, an honest idle field, and it says so', async () => {
     setApiKey(RAW_KEY);
     mockWithAiStatus({ ...AI_STATUS_BODY, routing_preview: null });
     renderApp();
@@ -1027,19 +1021,15 @@ describe('DashboardPage — real AI Engine panel', () => {
 
     const orb = await waitFor(() => document.getElementById('ai-engine-orb')!);
     expect(orb.getAttribute('data-live')).toBe('false');
+    expect(orb.getAttribute('data-active-provider')).toBe('');
     expect(orb.textContent).toContain('NO ROUTE');
     expect(orb.textContent).not.toContain('211');
-    // No route -> all seven input nodes fall back to the same honest idle
-    // grey, never a stale real level left over from a previous render.
-    expect(orb.querySelectorAll('[data-node="input"][data-level="idle"]').length).toBe(7);
-    // The real providers are still genuinely discovered and still shown —
-    // "no route" is a fact about the routing decision, not about whether
-    // providers exist — but neither is highlighted as a winner.
-    expect(orb.querySelectorAll('[data-node="hidden"]').length).toBe(2);
-    expect(orb.querySelectorAll('[data-node="hidden"][data-active="true"]').length).toBe(0);
-    // Nothing animates when nothing is routable — motion must always mean
-    // something real is true.
-    expect(orb.querySelectorAll('animate').length).toBe(0);
+    // No route -> every capability input falls back to the same honest
+    // idle marker, never a stale real level left over from a previous
+    // render.
+    for (const cap of ['text_generation', 'structured_output', 'reasoning', 'tool_use', 'long_context', 'vision', 'embedding']) {
+      expect(orb.getAttribute(`data-cap-${cap}`)).toBe('idle');
+    }
   });
 
   it('shows no route at all when the backend reports none — nothing fabricated in its place', async () => {
