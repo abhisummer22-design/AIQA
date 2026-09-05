@@ -793,6 +793,26 @@ export interface VerifyApplicationSourceResponse {
   message: string;
 }
 
+/** `api.rs::ExtractDocumentTextBody` — `POST .../documents/extract-text`.
+ *  `content_base64` is the real, unmodified file's raw bytes, base64-encoded
+ *  client-side (`File.arrayBuffer()` -> base64) — the file's content never
+ *  needs to be parsed in the browser; the real parsing happens server-side
+ *  in `doc_extract.rs`. */
+export interface ExtractDocumentTextRequest {
+  file_name: string;
+  content_base64: string;
+}
+
+/** `doc_extract.rs::ExtractedDocument` — the real, extracted text of one
+ *  uploaded Product Documentation file. `truncated` is only ever true when
+ *  the real document exceeded the server's cap (20,000 characters) and was
+ *  genuinely cut off — never set for any other reason. */
+export interface ExtractDocumentTextResponse {
+  text: string;
+  char_count: number;
+  truncated: boolean;
+}
+
 // ---------------------------------------------------- AI-powered test generation
 
 /** `api.rs::SkillInputBody` / `ai_generation::SkillInput` — one selected

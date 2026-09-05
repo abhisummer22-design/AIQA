@@ -72,6 +72,8 @@ import type {
   KpisResponse,
   VerifyApplicationSourceRequest,
   VerifyApplicationSourceResponse,
+  ExtractDocumentTextRequest,
+  ExtractDocumentTextResponse,
   PerformanceTestConfig,
   PerformanceTestStartResponse,
   PerformanceRunStatusResponse,
@@ -617,6 +619,16 @@ export const aiqaApi = {
   appSource: {
     verify: (projectId: string, body: VerifyApplicationSourceRequest, signal?: AbortSignal) =>
       requestJson<VerifyApplicationSourceResponse>(`/projects/${projectId}/verify-application-source`, { method: 'POST', body, signal }),
+  },
+
+  /** Real Product Documentation content extraction
+   *  (`services/orchestrator/src/doc_extract.rs`) — makes an uploaded
+   *  PRD/FRD/SRD/Additional document's real text genuinely available to
+   *  AI generation, instead of the document being referenced by filename
+   *  only. */
+  documents: {
+    extractText: (projectId: string, body: ExtractDocumentTextRequest, signal?: AbortSignal) =>
+      requestJson<ExtractDocumentTextResponse>(`/projects/${projectId}/documents/extract-text`, { method: 'POST', body, signal }),
   },
 
   /** Central AI Provider & Model Intelligence Layer

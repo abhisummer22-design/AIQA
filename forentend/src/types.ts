@@ -96,6 +96,22 @@ export interface UploadedRequirementDoc {
   uploadedAt: string;
   status: 'READY' | 'UPLOADING' | 'ERROR';
   errorMessage?: string;
+  /** Real text extracted server-side (`doc_extract.rs`) from this file's
+   *  actual bytes — present only once a real extraction call has
+   *  succeeded. This is the same text folded into the real generation
+   *  prompt; nothing here is a placeholder or a guess. */
+  extractedText?: string;
+  extractedCharCount?: number;
+  /** True only when the real document exceeded the server's extraction
+   *  cap and was genuinely cut off. */
+  extractedTruncated?: boolean;
+  /** Real, specific reason `extractedText` is absent (e.g. a legacy .doc
+   *  or .pdf file, whose content this app cannot yet extract) — distinct
+   *  from `errorMessage`, which is about the upload itself, not content
+   *  analysis. The file is still attached and named in the real prompt
+   *  either way; this only means its content specifically isn't part of
+   *  it. */
+  extractionError?: string;
 }
 
 export type AppSourceType = 'STAGING' | 'DEMO' | 'LIVE' | 'FIGMA';
