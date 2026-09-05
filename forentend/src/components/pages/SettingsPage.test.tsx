@@ -5,7 +5,7 @@
  * in this app (`DashboardPage.test.tsx`/`TestCaseGeneratorPage.test.tsx`).
  */
 import React from 'react';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppShell } from '../../App';
@@ -230,5 +230,140 @@ describe('SettingsPage — AI Intelligence panel (Central AI Model Auto-Discover
     await waitFor(() => expect(document.getElementById('ai-intelligence-panel')).toBeNull());
     expect(screen.queryByText('Ready')).toBeNull();
     expect(screen.queryByText('Healthy')).toBeNull();
+  });
+});
+
+describe('SettingsPage — custom AI providers (add/remove via the Settings UI)', () => {
+  it('renders a real, previously-added custom provider from GET /ai/providers/custom', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        if (url.endsWith('/ai/status')) return jsonResponse(200, statusResponse());
+        if (url.endsWith('/ai/providers/custom')) {
+          return jsonResponse(200, [
+            { id: 'custom-ai-1', name: 'My Real Provider', base_url: 'https://real.example.com/v1', created_by: 'test-key', created_at: '2026-01-01T00:00:00Z' },
+          ]);
+        }
+        return jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await waitFor(() => expect(screen.getByText('System Settings & Governance')).toBeTruthy());
+    await openAiTab();
+
+    await waitFor(() => expect(screen.getByText('My Real Provider')).toBeTruthy());
+    expect(screen.getByText('https://real.example.com/v1')).toBeTruthy();
+  });
+
+  it('Add Custom Provider sends a real POST with the entered fields, clears the key input, and forces a real re-discovery', async () => {
+    let createdBody: any = null;
+    let refreshCalled = false;
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/ai/providers/custom') && init?.method === 'POST') {
+        createdBody = JSON.parse(String(init.body));
+        return jsonResponse(201, { id: 'custom-ai-new', name: createdBody.name, base_url: createdBody.base_url, created_by: 'test-key', created_at: '2026-01-01T00:00:00Z' });
+      }
+      if (url.endsWith('/ai/providers/custom')) return jsonResponse(200, []);
+      if (url.endsWith('/ai/refresh') && init?.method === 'POST') {
+        refreshCalled = true;
+        return jsonResponse(200, []);
+      }
+      if (url.endsWith('/ai/status')) return jsonResponse(200, statusResponse());
+      return jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await waitFor(() => expect(screen.getByText('System Settings & Governance')).toBeTruthy());
+    await openAiTab();
+    await waitFor(() => expect(document.getElementById('new-custom-provider-name')).toBeTruthy());
+
+    const nameInput = document.getElementById('new-custom-provider-name') as HTMLInputElement;
+    const urlInput = document.getElementById('new-custom-provider-base-url') as HTMLInputElement;
+    const keyInput = document.getElementById('new-custom-provider-api-key') as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(nameInput, { target: { value: 'My Custom Provider' } });
+      fireEvent.change(urlInput, { target: { value: 'https://custom.example.com' } });
+      fireEvent.change(keyInput, { target: { value: 'sk-real-secret-value' } });
+    });
+
+    await act(async () => {
+      document.getElementById('btn-add-custom-ai-provider')!.click();
+    });
+
+    await waitFor(() => expect(createdBody).toBeTruthy());
+    expect(createdBody.name).toBe('My Custom Provider');
+    expect(createdBody.base_url).toBe('https://custom.example.com');
+    expect(createdBody.api_key).toBe('sk-real-secret-value');
+    await waitFor(() => expect(refreshCalled).toBe(true));
+
+    // The raw key must never linger in the input once saved (same
+    // discipline the real orchestrator key panel already holds itself to).
+    expect((document.getElementById('new-custom-provider-api-key') as HTMLInputElement).value).toBe('');
+  });
+
+  it('a real backend validation failure is shown honestly, never silently swallowed', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.endsWith('/ai/providers/custom') && init?.method === 'POST') {
+          return jsonResponse(400, { error: { code: 'VALIDATION_ERROR', message: 'base_url must be a real http:// or https:// endpoint', details: null, request_id: 'r1' } });
+        }
+        if (url.endsWith('/ai/status')) return jsonResponse(200, statusResponse());
+        return jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await waitFor(() => expect(screen.getByText('System Settings & Governance')).toBeTruthy());
+    await openAiTab();
+    await waitFor(() => expect(document.getElementById('new-custom-provider-name')).toBeTruthy());
+
+    const nameInput = document.getElementById('new-custom-provider-name') as HTMLInputElement;
+    const urlInput = document.getElementById('new-custom-provider-base-url') as HTMLInputElement;
+    const keyInput = document.getElementById('new-custom-provider-api-key') as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(nameInput, { target: { value: 'Bad Provider' } });
+      fireEvent.change(urlInput, { target: { value: 'not-a-real-url' } });
+      fireEvent.change(keyInput, { target: { value: 'sk-whatever' } });
+    });
+    await act(async () => {
+      document.getElementById('btn-add-custom-ai-provider')!.click();
+    });
+
+    await waitFor(() => expect(screen.getByText(/base_url must be a real/)).toBeTruthy());
+  });
+
+  it('Delete on a custom provider sends a real DELETE and removes it from the list', async () => {
+    let deletedId: string | null = null;
+    let listCallCount = 0;
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/ai/providers/custom/custom-ai-1') && init?.method === 'DELETE') {
+        deletedId = 'custom-ai-1';
+        return new Response(null, { status: 204 });
+      }
+      if (url.endsWith('/ai/providers/custom')) {
+        listCallCount += 1;
+        // First load shows the real provider; after delete + reload, it's
+        // genuinely gone — not just hidden client-side.
+        return jsonResponse(200, listCallCount === 1 ? [{ id: 'custom-ai-1', name: 'My Real Provider', base_url: 'https://real.example.com', created_by: 'test-key', created_at: '2026-01-01T00:00:00Z' }] : []);
+      }
+      if (url.endsWith('/ai/status')) return jsonResponse(200, statusResponse());
+      return jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await waitFor(() => expect(screen.getByText('System Settings & Governance')).toBeTruthy());
+    await openAiTab();
+    await waitFor(() => expect(screen.getByText('My Real Provider')).toBeTruthy());
+
+    await act(async () => {
+      document.getElementById('btn-delete-custom-provider-custom-ai-1')!.click();
+    });
+
+    await waitFor(() => expect(deletedId).toBe('custom-ai-1'));
+    await waitFor(() => expect(screen.queryByText('My Real Provider')).toBeNull());
   });
 });

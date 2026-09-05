@@ -45,7 +45,9 @@ import type {
   AdHocApiRequest,
   ApiTestExecutionResponse,
   ApiKeyListRow,
+  CreateCustomAiProviderRequest,
   CreateCustomSkillRequest,
+  CustomAiProviderView,
   CustomSkillRow,
   FileSkillScan,
   MobileFleet,
@@ -626,6 +628,20 @@ export const aiqaApi = {
     getSettings: (signal?: AbortSignal) => requestJson<AiSettings>('/ai/settings', { signal }),
     updateSettings: (body: AiSettings, signal?: AbortSignal) => requestJson<AiSettings>('/ai/settings', { method: 'PUT', body, signal }),
     refresh: (signal?: AbortSignal) => requestJson<AiProviderInfo[]>('/ai/refresh', { method: 'POST', signal }),
+    /** Real, user-added AI providers (Settings UI ->
+     *  `api.rs::create_custom_ai_provider` / `list_custom_ai_providers_handler`
+     *  / `delete_custom_ai_provider_handler`) — persisted, and live for real
+     *  routing/generation on the very next discovery cycle, no restart
+     *  needed. `create`'s response never carries the real `api_key` back
+     *  (see `CustomAiProviderView`'s own doc comment) — it was already sent
+     *  once, in the request that created it. */
+    customProviders: {
+      list: (signal?: AbortSignal) => requestJson<CustomAiProviderView[]>('/ai/providers/custom', { signal }),
+      create: (body: CreateCustomAiProviderRequest, signal?: AbortSignal) =>
+        requestJson<CustomAiProviderView>('/ai/providers/custom', { method: 'POST', body, signal }),
+      delete: (id: string, signal?: AbortSignal) =>
+        requestVoid(`/ai/providers/custom/${encodeURIComponent(id)}`, { method: 'DELETE', signal }),
+    },
   },
 
   /** Build order item 2 (22 Aug 2026, System Telemetry) — `GET /metrics`

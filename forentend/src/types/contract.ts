@@ -130,6 +130,29 @@ export interface CreateCustomSkillRequest {
   source_file?: string | null;
 }
 
+// --------------------------------------------------------- custom AI providers
+
+/** `store.rs::CustomAiProviderRow`'s real, public-safe view
+ *  (`api.rs::CustomAiProviderView`) — a user-added AI provider, persisted
+ *  and live for real routing on the very next discovery cycle (no
+ *  restart). Deliberately carries no `api_key` field at all — the real
+ *  backend row does hold one, but it is never serialized into this
+ *  response (see that struct's own doc comment), so there is nothing here
+ *  to accidentally render. */
+export interface CustomAiProviderView {
+  id: string;
+  name: string;
+  base_url: string;
+  created_by: string;
+  created_at: string;
+}
+
+export interface CreateCustomAiProviderRequest {
+  name: string;
+  base_url: string;
+  api_key: string;
+}
+
 // ------------------------------------------------------------------- projects
 
 /** `store.rs::Project` (Contract §5). */

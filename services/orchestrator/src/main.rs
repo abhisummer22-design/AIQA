@@ -162,6 +162,23 @@ async fn main() {
             })
             .await;
     }
+    // Real, user-added custom providers (Settings UI, `custom_ai_providers`
+    // table) — loaded once here so they're included in the very first real
+    // discovery pass below, exactly like the persisted `ai_settings` row
+    // just above. A read failure degrades to an honest empty set (no
+    // custom providers this run) rather than failing startup.
+    if let Ok(rows) = store.list_custom_ai_providers().await {
+        let configs = rows
+            .into_iter()
+            .map(|r| aiqa_orchestrator::ai_router::CustomProviderConfig {
+                id: r.id,
+                name: r.name,
+                base_url: r.base_url,
+                api_key: r.api_key,
+            })
+            .collect();
+        ai_infra.set_custom_providers(configs).await;
+    }
     {
         let ai_infra = ai_infra.clone();
         tokio::spawn(async move {

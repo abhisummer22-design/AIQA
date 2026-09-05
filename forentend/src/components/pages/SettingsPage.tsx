@@ -22,12 +22,12 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { Settings as SettingsIcon, Key, Sparkles, Save, Loader2, RefreshCw, AlertTriangle, CircleHelp } from 'lucide-react';
+import { Settings as SettingsIcon, Key, Sparkles, Save, Loader2, RefreshCw, AlertTriangle, CircleHelp, Plus, Trash2 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { renderAuthState } from '../state/StateViews';
 import { SectionHeader } from '../common/SectionHeader';
 import { ApiError, aiqaApi } from '../../services/aiqaApi';
-import type { AiProviderInfo, AiSettings, AiStatusResponse } from '../../types/contract';
+import type { AiProviderInfo, AiSettings, AiStatusResponse, CustomAiProviderView } from '../../types/contract';
 
 /**
  * FE-2/FE-3 — the real orchestrator credential panel: everything on this
@@ -158,6 +158,18 @@ const AiIntelligencePanel: React.FC = () => {
   const [draftModel, setDraftModel] = useState<string>('');
   const [draftFallback, setDraftFallback] = useState<boolean>(true);
 
+  // Real, user-added providers (Settings UI -> `custom_ai_providers` DB
+  // table) — a separate list from `status.providers` (which already shows
+  // these generically too, once added; this list exists so each one has
+  // its own real Delete control, which built-in env-var providers don't).
+  const [customProviders, setCustomProviders] = useState<CustomAiProviderView[]>([]);
+  const [newProviderName, setNewProviderName] = useState('');
+  const [newProviderBaseUrl, setNewProviderBaseUrl] = useState('');
+  const [newProviderApiKey, setNewProviderApiKey] = useState('');
+  const [addingProvider, setAddingProvider] = useState(false);
+  const [addProviderError, setAddProviderError] = useState<string | null>(null);
+  const [deletingProviderId, setDeletingProviderId] = useState<string | null>(null);
+
   const loadStatus = async () => {
     try {
       const s = await aiqaApi.ai.status();
@@ -174,9 +186,61 @@ const AiIntelligencePanel: React.FC = () => {
     }
   };
 
+  const loadCustomProviders = async () => {
+    try {
+      setCustomProviders(await aiqaApi.ai.customProviders.list());
+    } catch {
+      // Non-fatal: the main status panel above still loads/works even if
+      // this real-but-secondary list fails to fetch.
+    }
+  };
+
   useEffect(() => {
     void loadStatus();
+    void loadCustomProviders();
   }, []);
+
+  const handleAddCustomProvider = async () => {
+    setAddingProvider(true);
+    setAddProviderError(null);
+    try {
+      await aiqaApi.ai.customProviders.create({
+        name: newProviderName.trim(),
+        base_url: newProviderBaseUrl.trim(),
+        api_key: newProviderApiKey.trim(),
+      });
+      // The raw key never lingers in component state once saved — same
+      // real-secret discipline `OrchestratorAuthPanel` above already
+      // holds itself to.
+      setNewProviderName('');
+      setNewProviderBaseUrl('');
+      setNewProviderApiKey('');
+      await loadCustomProviders();
+      // Force a real, immediate discovery pass (same call "Scan Providers"
+      // makes) so the new provider shows up in "Discovered Providers"
+      // right away, not just after the next TTL-gated refresh.
+      await aiqaApi.ai.refresh();
+      await loadStatus();
+    } catch (err) {
+      setAddProviderError(err instanceof ApiError ? err.message : 'Failed to add custom provider.');
+    } finally {
+      setAddingProvider(false);
+    }
+  };
+
+  const handleDeleteCustomProvider = async (id: string) => {
+    setDeletingProviderId(id);
+    try {
+      await aiqaApi.ai.customProviders.delete(id);
+      await loadCustomProviders();
+      await aiqaApi.ai.refresh();
+      await loadStatus();
+    } catch (err) {
+      setAddProviderError(err instanceof ApiError ? err.message : 'Failed to remove custom provider.');
+    } finally {
+      setDeletingProviderId(null);
+    }
+  };
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -318,6 +382,89 @@ const AiIntelligencePanel: React.FC = () => {
             {providerStatusBadge(p.status)}
           </div>
         ))}
+      </div>
+
+      {/* Custom providers you've added — separate from the read-only
+          "Discovered Providers" list above (which already shows these too,
+          generically) because only a provider added here can be removed
+          again; Ollama/MJ Gateway/Groq/Gemini are env-var-configured and
+          have no real "delete" this UI could perform. */}
+      <div id="custom-ai-providers-section" className="p-3 rounded-lg bg-[#020617] border border-slate-800 space-y-2.5">
+        <span className="text-[10px] font-mono uppercase tracking-wider text-slate-500 font-semibold">Your Custom Providers</span>
+
+        {customProviders.length > 0 && (
+          <div className="space-y-1.5">
+            {customProviders.map((p) => (
+              <div key={p.id} className="p-2 rounded-md bg-[#0B1120] border border-slate-800 flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="font-mono text-xs font-semibold text-slate-200 truncate">{p.name}</div>
+                  <div className="font-mono text-[10px] text-slate-500 truncate">{p.base_url}</div>
+                </div>
+                <button
+                  type="button"
+                  id={`btn-delete-custom-provider-${p.id}`}
+                  onClick={() => void handleDeleteCustomProvider(p.id)}
+                  disabled={deletingProviderId === p.id}
+                  title="Remove this custom provider"
+                  className="p-1.5 rounded text-slate-500 hover:text-rose-300 hover:bg-rose-950/40 cursor-pointer disabled:opacity-50 shrink-0"
+                >
+                  {deletingProviderId === p.id ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Trash2 className="w-3.5 h-3.5" />
+                  )}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          <input
+            type="text"
+            id="new-custom-provider-name"
+            value={newProviderName}
+            onChange={(e) => setNewProviderName(e.target.value)}
+            placeholder="Name (e.g. My Provider)"
+            className="px-2.5 py-1.5 rounded bg-[#0B1120] border border-slate-700 text-xs font-mono text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-indigo-500"
+          />
+          <input
+            type="text"
+            id="new-custom-provider-base-url"
+            value={newProviderBaseUrl}
+            onChange={(e) => setNewProviderBaseUrl(e.target.value)}
+            placeholder="Base URL (https://...)"
+            className="px-2.5 py-1.5 rounded bg-[#0B1120] border border-slate-700 text-xs font-mono text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-indigo-500"
+          />
+          <input
+            type="password"
+            id="new-custom-provider-api-key"
+            value={newProviderApiKey}
+            onChange={(e) => setNewProviderApiKey(e.target.value)}
+            placeholder="API key"
+            className="px-2.5 py-1.5 rounded bg-[#0B1120] border border-slate-700 text-xs font-mono text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-indigo-500"
+          />
+        </div>
+        <p className="text-[10px] font-mono text-slate-500">
+          Must be a real, OpenAI-compatible endpoint (<code>{'{base_url}'}/v1/models</code> and{' '}
+          <code>{'{base_url}'}/v1/chat/completions</code>) — the same convention Groq and most hosted providers already use.
+        </p>
+        {addProviderError && (
+          <p className="text-[11px] font-mono text-rose-300 flex items-start gap-1.5">
+            <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5" />
+            <span>{addProviderError}</span>
+          </p>
+        )}
+        <button
+          type="button"
+          id="btn-add-custom-ai-provider"
+          onClick={() => void handleAddCustomProvider()}
+          disabled={addingProvider || !newProviderName.trim() || !newProviderBaseUrl.trim() || !newProviderApiKey.trim()}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white font-mono text-xs font-semibold cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {addingProvider ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+          <span>Add Custom Provider</span>
+        </button>
       </div>
 
       {/* Mode */}

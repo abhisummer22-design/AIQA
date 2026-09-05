@@ -7255,6 +7255,296 @@ async fn ai_settings_rbac_viewer_cannot_mutate_but_can_read() {
     assert_eq!(status, StatusCode::OK);
 }
 
+// -------------------------------------------- custom AI providers (Settings UI)
+
+#[tokio::test]
+async fn custom_ai_provider_create_is_live_on_the_very_next_discovery_no_restart_needed() {
+    let (state, _dir) = test_state_with_ai_router(inert_ai_router()).await;
+    let operator = mint_key(&state, "operator", None).await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            "/api/v1/ai/providers/custom",
+            Some(&operator),
+            Some(serde_json::json!({
+                "name": "My Custom Provider",
+                "base_url": "http://127.0.0.1:1",
+                "api_key": "sk-real-secret-value"
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    assert_eq!(body["name"], "My Custom Provider");
+    assert!(
+        body.get("api_key").is_none(),
+        "the real secret must never be echoed back in the create response: body={body}"
+    );
+    let id = body["id"].as_str().expect("real id").to_string();
+
+    // The real, in-memory AiInfrastructure — the actual thing `generate()`
+    // reads from — must already know about it, with no process restart.
+    let providers = state.ai_infra.discover_all().await;
+    assert!(
+        providers.iter().any(|p| p.id == id),
+        "the new custom provider must be discoverable immediately: providers={providers:?}"
+    );
+}
+
+#[tokio::test]
+async fn custom_ai_provider_list_never_includes_the_raw_api_key() {
+    let (state, _dir) = test_state_with_ai_router(inert_ai_router()).await;
+    let operator = mint_key(&state, "operator", None).await;
+    send(
+        &state,
+        req(
+            "POST",
+            "/api/v1/ai/providers/custom",
+            Some(&operator),
+            Some(serde_json::json!({
+                "name": "My Custom Provider",
+                "base_url": "http://127.0.0.1:1",
+                "api_key": "sk-real-secret-value"
+            })),
+        ),
+    )
+    .await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "GET",
+            "/api/v1/ai/providers/custom",
+            Some(&operator),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let list = body.as_array().expect("array");
+    assert_eq!(list.len(), 1);
+    assert!(
+        list[0].get("api_key").is_none(),
+        "the real secret must never appear in the list response: body={body}"
+    );
+    let raw = body.to_string();
+    assert!(
+        !raw.contains("sk-real-secret-value"),
+        "the raw key must not appear anywhere in the response body at all: body={raw}"
+    );
+}
+
+#[tokio::test]
+async fn custom_ai_providers_survive_a_fresh_store_reload_real_durable_persistence() {
+    let (state, dir) = test_state_with_ai_router(inert_ai_router()).await;
+    let operator = mint_key(&state, "operator", None).await;
+    send(
+        &state,
+        req(
+            "POST",
+            "/api/v1/ai/providers/custom",
+            Some(&operator),
+            Some(serde_json::json!({
+                "name": "My Custom Provider",
+                "base_url": "http://127.0.0.1:1",
+                "api_key": "sk-real-secret-value"
+            })),
+        ),
+    )
+    .await;
+
+    // A completely independent `Store` connection against the same real
+    // sqlite file — proves this is durable, on-disk persistence, not an
+    // in-memory echo of the request that created it.
+    let reloaded = crate::store::Store::connect(&dir.path().join("api.sqlite3"))
+        .await
+        .expect("reconnect");
+    let rows = reloaded
+        .list_custom_ai_providers()
+        .await
+        .expect("query");
+    assert_eq!(rows.len(), 1, "rows={rows:?}");
+    assert_eq!(rows[0].name, "My Custom Provider");
+    assert_eq!(rows[0].base_url, "http://127.0.0.1:1");
+    assert_eq!(
+        rows[0].api_key, "sk-real-secret-value",
+        "the real key must round-trip exactly — it has to be usable for real outbound auth"
+    );
+}
+
+#[tokio::test]
+async fn custom_ai_provider_delete_removes_it_and_it_stops_being_discovered() {
+    let (state, _dir) = test_state_with_ai_router(inert_ai_router()).await;
+    let operator = mint_key(&state, "operator", None).await;
+    let (_, created) = send(
+        &state,
+        req(
+            "POST",
+            "/api/v1/ai/providers/custom",
+            Some(&operator),
+            Some(serde_json::json!({
+                "name": "My Custom Provider",
+                "base_url": "http://127.0.0.1:1",
+                "api_key": "sk-real-secret-value"
+            })),
+        ),
+    )
+    .await;
+    let id = created["id"].as_str().expect("real id").to_string();
+
+    let (status, _) = send(
+        &state,
+        req(
+            "DELETE",
+            &format!("/api/v1/ai/providers/custom/{id}"),
+            Some(&operator),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let providers = state.ai_infra.discover_all().await;
+    assert!(
+        !providers.iter().any(|p| p.id == id),
+        "a deleted custom provider must genuinely stop being discovered: providers={providers:?}"
+    );
+
+    let (status, _) = send(
+        &state,
+        req(
+            "DELETE",
+            &format!("/api/v1/ai/providers/custom/{id}"),
+            Some(&operator),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "deleting an already-deleted (or never-existed) id must be a real 404, never a false ok"
+    );
+}
+
+#[tokio::test]
+async fn custom_ai_provider_rbac_viewer_can_list_but_cannot_create_or_delete() {
+    let (state, _dir) = test_state_with_ai_router(inert_ai_router()).await;
+    let operator = mint_key(&state, "operator", None).await;
+    let viewer = mint_key(&state, "viewer", None).await;
+
+    let (status, _) = send(
+        &state,
+        req(
+            "POST",
+            "/api/v1/ai/providers/custom",
+            Some(&viewer),
+            Some(serde_json::json!({
+                "name": "Should Not Be Created",
+                "base_url": "http://127.0.0.1:1",
+                "api_key": "sk-whatever"
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, _) = send(
+        &state,
+        req(
+            "GET",
+            "/api/v1/ai/providers/custom",
+            Some(&viewer),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "reading configured providers is not a privileged action");
+
+    let (_, created) = send(
+        &state,
+        req(
+            "POST",
+            "/api/v1/ai/providers/custom",
+            Some(&operator),
+            Some(serde_json::json!({
+                "name": "Real Provider",
+                "base_url": "http://127.0.0.1:1",
+                "api_key": "sk-whatever"
+            })),
+        ),
+    )
+    .await;
+    let id = created["id"].as_str().expect("real id").to_string();
+    let (status, _) = send(
+        &state,
+        req(
+            "DELETE",
+            &format!("/api/v1/ai/providers/custom/{id}"),
+            Some(&viewer),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn custom_ai_provider_rejects_a_real_validation_failure_never_silently_accepted() {
+    let (state, _dir) = test_state_with_ai_router(inert_ai_router()).await;
+    let operator = mint_key(&state, "operator", None).await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            "/api/v1/ai/providers/custom",
+            Some(&operator),
+            Some(serde_json::json!({
+                "name": "",
+                "base_url": "http://127.0.0.1:1",
+                "api_key": "sk-whatever"
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            "/api/v1/ai/providers/custom",
+            Some(&operator),
+            Some(serde_json::json!({
+                "name": "Bad URL",
+                "base_url": "not-a-real-url",
+                "api_key": "sk-whatever"
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            "/api/v1/ai/providers/custom",
+            Some(&operator),
+            Some(serde_json::json!({
+                "name": "No Key",
+                "base_url": "http://127.0.0.1:1",
+                "api_key": ""
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+}
+
 #[tokio::test]
 async fn ai_refresh_requires_operator_and_returns_real_providers() {
     let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;

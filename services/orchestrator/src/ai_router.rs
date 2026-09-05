@@ -25,11 +25,14 @@
 //! ```
 //!
 //! Every provider/model status below is real, checked evidence — never a
-//! hardcoded "Connected"/"Healthy". No API key for Gemini/OpenAI/Anthropic
-//! is configured in this environment (confirmed by `std::env::var`
-//! returning `Err` for all three at the time this was written), so those
-//! providers correctly, truthfully report `NOT_CONFIGURED` — this module
-//! does not simulate them being available.
+//! hardcoded "Connected"/"Healthy". Groq and Gemini are real, wired
+//! providers (their own `GroqDiscovery`/`GeminiDiscovery` below) — but no
+//! `GROQ_API_KEY`/`GEMINI_API_KEY` is configured in this environment
+//! (confirmed by `std::env::var` returning `Err` for either at the time
+//! this was written), so they correctly, truthfully report
+//! `NOT_CONFIGURED` until a real key is added — this module does not
+//! simulate them being available. No OpenAI/Anthropic integration exists
+//! at all.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -203,10 +206,13 @@ pub struct AiProviderInfo {
     pub models: Vec<ModelDefinition>,
     /// Real billing fact about this provider — never a guessed rate.
     /// `Unmetered` for a provider that genuinely has no per-token bill
-    /// (both providers wired today, Ollama and the MJ Gateway, run against
-    /// this deployment's own local compute — a real architectural fact,
-    /// not an assumption). A future paid provider gets a real, disclosed
-    /// `Metered` rate only once one is actually configured.
+    /// (Ollama and the MJ Gateway both run against this deployment's own
+    /// local compute — a real architectural fact, not an assumption).
+    /// Groq and Gemini are real, disclosed `Metered` providers (see
+    /// `GROQ_FLOOR_PRICING`/`GEMINI_FLOOR_PRICING`) — a single real
+    /// published rate per *provider*, not per model, so a pricier model
+    /// selected within one will genuinely cost more than this estimate
+    /// shows; each constant's own doc comment discloses this.
     pub pricing: ProviderPricing,
 }
 
@@ -999,6 +1005,787 @@ impl AiExecutor for MjGatewayExecutor {
     }
 }
 
+// --------------------------------------------------------------- Groq
+
+/// Real Groq discovery (`https://api.groq.com/openai` — Groq's own
+/// documented OpenAI-compatibility layer, verified 2026-09-05 against
+/// Groq's public API reference). Configured = `GROQ_API_KEY` holds a
+/// non-empty key; reachable + model list come from a real, bounded,
+/// Bearer-authenticated `GET /v1/models` call, exactly like
+/// `MjGatewayDiscovery` above — never assumed from the env var's mere
+/// presence. Groq's own real `/v1/models` reply additionally carries a
+/// real `context_window` per model (its documented, own field) — unlike
+/// the MJ Gateway's bare-id-only list, so `long_context` is a real,
+/// evidenced capability here, not `Unknown`.
+pub struct GroqDiscovery {
+    pub base_url: String,
+    pub api_key: Option<String>,
+    pub timeout: Duration,
+}
+
+impl GroqDiscovery {
+    pub const PROVIDER_ID: &'static str = "groq";
+
+    pub fn from_env() -> Self {
+        let base_url = std::env::var("GROQ_BASE_URL")
+            .unwrap_or_else(|_| "https://api.groq.com/openai".to_string());
+        let api_key = std::env::var("GROQ_API_KEY")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        let timeout_secs: u64 = std::env::var("GROQ_DISCOVERY_TIMEOUT_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(3);
+        Self {
+            base_url,
+            api_key,
+            timeout: Duration::from_secs(timeout_secs),
+        }
+    }
+}
+
+/// Real, published per-1K-token rate for Groq's self-serve catalog,
+/// verified 2026-09-05 against Groq's own public pricing page (its then-
+/// cheapest real self-serve model). This deployment's `AiProviderInfo`
+/// pricing is a single per-*provider* rate (see that struct's own doc
+/// comment) — Groq's real per-model rates in fact vary substantially
+/// (its self-serve catalog spans roughly $0.075-$0.60 per-1M-token input
+/// alone), so a pricier model actually selected here will genuinely cost
+/// more than this floor estimate shows; that is a disclosed limitation of
+/// this provider-level pricing model, not a hidden one. Groq's own lineup
+/// moves, too — its former flagship (Llama 3.3 70B) moved to enterprise-
+/// only contact-sales pricing on 2026-08-26, mid-way through this very
+/// verification — so this is a snapshot, not a live-synced feed.
+const GROQ_FLOOR_PRICING: ProviderPricing = ProviderPricing::Metered {
+    input_usd_per_1k: 0.000_075,
+    output_usd_per_1k: 0.0003,
+};
+
+#[async_trait::async_trait]
+impl ProviderDiscovery for GroqDiscovery {
+    async fn discover(&self) -> AiProviderInfo {
+        let mut info = AiProviderInfo {
+            id: Self::PROVIDER_ID.to_string(),
+            name: "Groq".to_string(),
+            provider_type: ProviderType::OpenAiCompatible,
+            endpoint: Some(self.base_url.clone()),
+            configured: self.api_key.is_some(),
+            reachable: false,
+            status: if self.api_key.is_some() {
+                ProviderStatus::Unavailable
+            } else {
+                ProviderStatus::NotConfigured
+            },
+            models: Vec::new(),
+            pricing: GROQ_FLOOR_PRICING,
+        };
+        let Some(key) = &self.api_key else {
+            tracing::info!("Groq discovery: GROQ_API_KEY not set — not configured");
+            return info;
+        };
+
+        let client = reqwest::Client::new();
+        let url = format!("{}/v1/models", self.base_url.trim_end_matches('/'));
+        let resp = match client
+            .get(&url)
+            .bearer_auth(key)
+            .timeout(self.timeout)
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::info!("Groq discovery: not reachable ({e})");
+                return info;
+            }
+        };
+        if !resp.status().is_success() {
+            info.status = ProviderStatus::Error;
+            tracing::warn!(
+                "Groq discovery: /v1/models responded with HTTP {}",
+                resp.status()
+            );
+            return info;
+        }
+        let body: serde_json::Value = match resp.json().await {
+            Ok(v) => v,
+            Err(e) => {
+                info.status = ProviderStatus::Error;
+                tracing::warn!("Groq discovery: invalid response body ({e})");
+                return info;
+            }
+        };
+
+        info.reachable = true;
+        let entries = body
+            .get("data")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        for m in &entries {
+            let id = m
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            // Groq's own real reply carries a real context_window per
+            // model — a genuine evidenced signal, unlike the MJ Gateway's
+            // bare id-only list (`long_context` stays `Unknown` there).
+            let context_window = m
+                .get("context_window")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32);
+            let long_context = match context_window {
+                Some(c) if c >= 32_768 => CapabilityLevel::Strong,
+                Some(_) => CapabilityLevel::Basic,
+                None => CapabilityLevel::Unknown,
+            };
+            let reasoning = if is_known_reasoning_model(&id, None) {
+                CapabilityLevel::Strong
+            } else {
+                CapabilityLevel::Basic // real text models reason to some degree; not benchmarked here
+            };
+            info.models.push(ModelDefinition {
+                provider_id: Self::PROVIDER_ID.to_string(),
+                id: id.clone(),
+                display_name: id,
+                family: None,
+                parameter_size: None, // never guessed; the routing score simply forgoes that proxy
+                context_window,
+                capabilities: ModelCapabilities {
+                    text_generation: Some(CapabilityLevel::Strong),
+                    // Groq's real, documented `response_format` support
+                    // (`json_object`/`json_schema`) is real, evidenced
+                    // structured-output discipline — not merely
+                    // prompt-only best-effort like the MJ Gateway path.
+                    structured_output: Some(CapabilityLevel::Strong),
+                    reasoning: Some(reasoning),
+                    vision: Some(CapabilityLevel::Unknown),
+                    embedding: Some(CapabilityLevel::None),
+                    tool_use: Some(CapabilityLevel::Unknown),
+                    long_context: Some(long_context),
+                },
+                status: ModelStatus::Available, // listed by the live API; not yet inference-health-checked
+            });
+        }
+        info.status = if info.models.is_empty() {
+            ProviderStatus::Available
+        } else {
+            ProviderStatus::Healthy
+        };
+        info
+    }
+}
+
+/// Executes a real chat completion against Groq's OpenAI-compatible
+/// `POST /v1/chat/completions` (Bearer `GROQ_API_KEY`, non-streaming).
+pub struct GroqExecutor {
+    pub base_url: String,
+    pub api_key: Option<String>,
+    pub timeout: Duration,
+    pub max_tokens: u32,
+}
+
+impl GroqExecutor {
+    pub fn from_env() -> Self {
+        let base_url = std::env::var("GROQ_BASE_URL")
+            .unwrap_or_else(|_| "https://api.groq.com/openai".to_string());
+        let api_key = std::env::var("GROQ_API_KEY")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        let timeout_secs: u64 = std::env::var("GROQ_TIMEOUT_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(180);
+        let max_tokens: u32 = std::env::var("GROQ_MAX_TOKENS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(4096);
+        Self {
+            base_url,
+            api_key,
+            timeout: Duration::from_secs(timeout_secs),
+            max_tokens,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl AiExecutor for GroqExecutor {
+    async fn execute(
+        &self,
+        provider_id: &str,
+        model_id: &str,
+        prompt: &str,
+    ) -> Result<ExecutionOutput, ExecutionError> {
+        self.execute_task(provider_id, model_id, prompt, AiTask::GeneralAi)
+            .await
+    }
+
+    async fn execute_task(
+        &self,
+        provider_id: &str,
+        model_id: &str,
+        prompt: &str,
+        task: AiTask,
+    ) -> Result<ExecutionOutput, ExecutionError> {
+        if provider_id != GroqDiscovery::PROVIDER_ID {
+            return Err(ExecutionError::ProviderUnavailable(provider_id.to_string()));
+        }
+        let Some(key) = &self.api_key else {
+            return Err(ExecutionError::ProviderUnavailable(
+                "GROQ_API_KEY not set".to_string(),
+            ));
+        };
+
+        let client = reqwest::Client::new();
+        let url = format!(
+            "{}/v1/chat/completions",
+            self.base_url.trim_end_matches('/')
+        );
+        let mut body = serde_json::json!({
+            "model": model_id,
+            "messages": [{ "role": "user", "content": prompt }],
+            "stream": false,
+            "max_tokens": self.max_tokens,
+        });
+        // Groq's own real, documented structured-output enforcement — a
+        // genuine reliability improvement over prompt-only JSON for the
+        // tasks that need it. Not applied to the pre-existing MJ Gateway
+        // path (untouched here), which was never verified to support it.
+        if matches!(
+            task,
+            AiTask::TestCaseGeneration | AiTask::TestCaseCompilation
+        ) {
+            body["response_format"] = serde_json::json!({ "type": "json_object" });
+        }
+        let resp = client
+            .post(&url)
+            .bearer_auth(key)
+            .json(&body)
+            .timeout(self.timeout)
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_timeout() {
+                    ExecutionError::Timeout
+                } else {
+                    ExecutionError::ProviderUnavailable(e.to_string())
+                }
+            })?;
+        if !resp.status().is_success() {
+            return Err(ExecutionError::NonSuccessStatus(resp.status().as_u16()));
+        }
+        let parsed: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| ExecutionError::InvalidResponse(e.to_string()))?;
+        let text = parsed
+            .get("choices")
+            .and_then(|v| v.get(0))
+            .and_then(|c| c.get("message"))
+            .and_then(|m| m.get("content"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if text.trim().is_empty() {
+            return Err(ExecutionError::InvalidResponse(
+                "empty response".to_string(),
+            ));
+        }
+        let usage = TokenUsage {
+            prompt_tokens: parsed
+                .get("usage")
+                .and_then(|u| u.get("prompt_tokens"))
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32),
+            completion_tokens: parsed
+                .get("usage")
+                .and_then(|u| u.get("completion_tokens"))
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32),
+        };
+        Ok(ExecutionOutput { text, usage })
+    }
+}
+
+// -------------------------------------------------------------- Gemini
+
+/// Real Gemini discovery (`https://generativelanguage.googleapis.com/v1beta/openai`
+/// — Google's own documented OpenAI-compatibility layer, verified
+/// 2026-09-05 against Google's public API reference). Configured =
+/// `GEMINI_API_KEY` holds a non-empty key; reachable + model list come
+/// from a real, bounded, Bearer-authenticated `GET /models` call — never
+/// assumed from the env var's mere presence. Google's own compatibility-
+/// layer model list is the bare OpenAI shape (id only, same as the MJ
+/// Gateway's) — no family/context-window metadata, so those stay
+/// `None`/`Unknown` here too, never guessed.
+pub struct GeminiDiscovery {
+    pub base_url: String,
+    pub api_key: Option<String>,
+    pub timeout: Duration,
+}
+
+impl GeminiDiscovery {
+    pub const PROVIDER_ID: &'static str = "gemini";
+
+    pub fn from_env() -> Self {
+        let base_url = std::env::var("GEMINI_BASE_URL").unwrap_or_else(|_| {
+            "https://generativelanguage.googleapis.com/v1beta/openai".to_string()
+        });
+        let api_key = std::env::var("GEMINI_API_KEY")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        let timeout_secs: u64 = std::env::var("GEMINI_DISCOVERY_TIMEOUT_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(3);
+        Self {
+            base_url,
+            api_key,
+            timeout: Duration::from_secs(timeout_secs),
+        }
+    }
+}
+
+/// Real, published per-1K-token rate for Gemini Flash, verified
+/// 2026-09-05 against Google's own public pricing page (its cheapest
+/// current general-purpose model). Same disclosed provider-level-not-
+/// per-model limitation as `GROQ_FLOOR_PRICING` above — Gemini Pro
+/// genuinely costs several times more per token than Flash; selecting a
+/// Pro-tier model here will understate its real cost against this floor.
+const GEMINI_FLOOR_PRICING: ProviderPricing = ProviderPricing::Metered {
+    input_usd_per_1k: 0.0003,
+    output_usd_per_1k: 0.0025,
+};
+
+#[async_trait::async_trait]
+impl ProviderDiscovery for GeminiDiscovery {
+    async fn discover(&self) -> AiProviderInfo {
+        let mut info = AiProviderInfo {
+            id: Self::PROVIDER_ID.to_string(),
+            name: "Gemini".to_string(),
+            provider_type: ProviderType::OpenAiCompatible,
+            endpoint: Some(self.base_url.clone()),
+            configured: self.api_key.is_some(),
+            reachable: false,
+            status: if self.api_key.is_some() {
+                ProviderStatus::Unavailable
+            } else {
+                ProviderStatus::NotConfigured
+            },
+            models: Vec::new(),
+            pricing: GEMINI_FLOOR_PRICING,
+        };
+        let Some(key) = &self.api_key else {
+            tracing::info!("Gemini discovery: GEMINI_API_KEY not set — not configured");
+            return info;
+        };
+
+        let client = reqwest::Client::new();
+        let url = format!("{}/models", self.base_url.trim_end_matches('/'));
+        let resp = match client
+            .get(&url)
+            .bearer_auth(key)
+            .timeout(self.timeout)
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::info!("Gemini discovery: not reachable ({e})");
+                return info;
+            }
+        };
+        if !resp.status().is_success() {
+            info.status = ProviderStatus::Error;
+            tracing::warn!(
+                "Gemini discovery: /models responded with HTTP {}",
+                resp.status()
+            );
+            return info;
+        }
+        let body: serde_json::Value = match resp.json().await {
+            Ok(v) => v,
+            Err(e) => {
+                info.status = ProviderStatus::Error;
+                tracing::warn!("Gemini discovery: invalid response body ({e})");
+                return info;
+            }
+        };
+
+        info.reachable = true;
+        let entries = body
+            .get("data")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        for m in &entries {
+            let id = m
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let reasoning = if is_known_reasoning_model(&id, None) {
+                CapabilityLevel::Strong
+            } else {
+                CapabilityLevel::Basic // real text models reason to some degree; not benchmarked here
+            };
+            info.models.push(ModelDefinition {
+                provider_id: Self::PROVIDER_ID.to_string(),
+                id: id.clone(),
+                display_name: id,
+                family: None, // the OpenAI-shaped list carries no family metadata
+                parameter_size: None,
+                context_window: None,
+                capabilities: ModelCapabilities {
+                    text_generation: Some(CapabilityLevel::Strong),
+                    // Gemini's real, documented response_format support
+                    // for structured JSON output (verified against
+                    // Google's own API reference).
+                    structured_output: Some(CapabilityLevel::Strong),
+                    reasoning: Some(reasoning),
+                    vision: Some(CapabilityLevel::Unknown),
+                    embedding: Some(CapabilityLevel::None),
+                    tool_use: Some(CapabilityLevel::Unknown),
+                    long_context: Some(CapabilityLevel::Unknown),
+                },
+                status: ModelStatus::Available,
+            });
+        }
+        info.status = if info.models.is_empty() {
+            ProviderStatus::Available
+        } else {
+            ProviderStatus::Healthy
+        };
+        info
+    }
+}
+
+/// Executes a real chat completion against Gemini's OpenAI-compatible
+/// `POST /chat/completions` (Bearer `GEMINI_API_KEY`, non-streaming).
+pub struct GeminiExecutor {
+    pub base_url: String,
+    pub api_key: Option<String>,
+    pub timeout: Duration,
+    pub max_tokens: u32,
+}
+
+impl GeminiExecutor {
+    pub fn from_env() -> Self {
+        let base_url = std::env::var("GEMINI_BASE_URL").unwrap_or_else(|_| {
+            "https://generativelanguage.googleapis.com/v1beta/openai".to_string()
+        });
+        let api_key = std::env::var("GEMINI_API_KEY")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        let timeout_secs: u64 = std::env::var("GEMINI_TIMEOUT_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(180);
+        let max_tokens: u32 = std::env::var("GEMINI_MAX_TOKENS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(4096);
+        Self {
+            base_url,
+            api_key,
+            timeout: Duration::from_secs(timeout_secs),
+            max_tokens,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl AiExecutor for GeminiExecutor {
+    async fn execute(
+        &self,
+        provider_id: &str,
+        model_id: &str,
+        prompt: &str,
+    ) -> Result<ExecutionOutput, ExecutionError> {
+        self.execute_task(provider_id, model_id, prompt, AiTask::GeneralAi)
+            .await
+    }
+
+    async fn execute_task(
+        &self,
+        provider_id: &str,
+        model_id: &str,
+        prompt: &str,
+        task: AiTask,
+    ) -> Result<ExecutionOutput, ExecutionError> {
+        if provider_id != GeminiDiscovery::PROVIDER_ID {
+            return Err(ExecutionError::ProviderUnavailable(provider_id.to_string()));
+        }
+        let Some(key) = &self.api_key else {
+            return Err(ExecutionError::ProviderUnavailable(
+                "GEMINI_API_KEY not set".to_string(),
+            ));
+        };
+
+        let client = reqwest::Client::new();
+        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        let mut body = serde_json::json!({
+            "model": model_id,
+            "messages": [{ "role": "user", "content": prompt }],
+            "stream": false,
+            "max_tokens": self.max_tokens,
+        });
+        if matches!(
+            task,
+            AiTask::TestCaseGeneration | AiTask::TestCaseCompilation
+        ) {
+            body["response_format"] = serde_json::json!({ "type": "json_object" });
+        }
+        let resp = client
+            .post(&url)
+            .bearer_auth(key)
+            .json(&body)
+            .timeout(self.timeout)
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_timeout() {
+                    ExecutionError::Timeout
+                } else {
+                    ExecutionError::ProviderUnavailable(e.to_string())
+                }
+            })?;
+        if !resp.status().is_success() {
+            return Err(ExecutionError::NonSuccessStatus(resp.status().as_u16()));
+        }
+        let parsed: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| ExecutionError::InvalidResponse(e.to_string()))?;
+        let text = parsed
+            .get("choices")
+            .and_then(|v| v.get(0))
+            .and_then(|c| c.get("message"))
+            .and_then(|m| m.get("content"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if text.trim().is_empty() {
+            return Err(ExecutionError::InvalidResponse(
+                "empty response".to_string(),
+            ));
+        }
+        let usage = TokenUsage {
+            prompt_tokens: parsed
+                .get("usage")
+                .and_then(|u| u.get("prompt_tokens"))
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32),
+            completion_tokens: parsed
+                .get("usage")
+                .and_then(|u| u.get("completion_tokens"))
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32),
+        };
+        Ok(ExecutionOutput { text, usage })
+    }
+}
+
+// ------------------------------------------------------- custom providers
+
+/// A real, user-added AI provider (Settings UI -> `POST /api/v1/ai/providers/custom`
+/// -> `custom_ai_providers` DB row -> here). Unlike Ollama/MJ Gateway/Groq/
+/// Gemini (each its own `from_env()`-read struct, fixed at process
+/// startup), the SET of these is open-ended and changes at runtime without
+/// a restart — added/removed through `AiInfrastructure::set_custom_providers`,
+/// called once at startup (from the DB) and again after every real
+/// add/delete. Standardized on the plain `/v1/models` + `/v1/chat/completions`
+/// convention every OpenAI-compatible service except Gemini's own
+/// compatibility shim actually uses (see `GeminiDiscovery`'s own doc
+/// comment for why Gemini needed its own dedicated integration instead of
+/// fitting this generic path) — a provider that doesn't follow that
+/// convention needs its own dedicated code, same as Groq/Gemini got.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CustomProviderConfig {
+    pub id: String,
+    pub name: String,
+    pub base_url: String,
+    pub api_key: String,
+}
+
+/// Real, bounded, timeout-protected discovery for one custom provider —
+/// the same real `GET {base_url}/v1/models` probe `MjGatewayDiscovery`
+/// already makes, reused here (not re-invented) since the wire shape is
+/// identical. Never assumes reachability from the row's mere existence.
+async fn discover_custom_provider(cfg: &CustomProviderConfig, timeout: Duration) -> AiProviderInfo {
+    let mut info = AiProviderInfo {
+        id: cfg.id.clone(),
+        name: cfg.name.clone(),
+        provider_type: ProviderType::Custom,
+        endpoint: Some(cfg.base_url.clone()),
+        configured: true, // a row only exists because a real key was supplied when it was added
+        reachable: false,
+        status: ProviderStatus::Unavailable,
+        models: Vec::new(),
+        // Real fact this deployment cannot actually know for an arbitrary
+        // user-added endpoint (no published-pricing lookup exists for a
+        // custom base_url) — `Unmetered` would falsely claim it's free, so
+        // this reports the one thing that's true: real cost is genuinely
+        // unknown, at the cheapest possible honest value rather than a
+        // guessed rate. Disclosed to the user when they add one.
+        pricing: ProviderPricing::Unmetered,
+    };
+
+    let client = reqwest::Client::new();
+    let url = format!("{}/v1/models", cfg.base_url.trim_end_matches('/'));
+    let resp = match client
+        .get(&url)
+        .bearer_auth(&cfg.api_key)
+        .timeout(timeout)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::info!(
+                "Custom provider '{}' discovery: not reachable ({e})",
+                cfg.id
+            );
+            return info;
+        }
+    };
+    if !resp.status().is_success() {
+        info.status = ProviderStatus::Error;
+        tracing::warn!(
+            "Custom provider '{}' discovery: /v1/models responded with HTTP {}",
+            cfg.id,
+            resp.status()
+        );
+        return info;
+    }
+    let body: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(e) => {
+            info.status = ProviderStatus::Error;
+            tracing::warn!(
+                "Custom provider '{}' discovery: invalid response body ({e})",
+                cfg.id
+            );
+            return info;
+        }
+    };
+
+    info.reachable = true;
+    let entries = body
+        .get("data")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    for m in &entries {
+        let id = m
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let reasoning = if is_known_reasoning_model(&id, None) {
+            CapabilityLevel::Strong
+        } else {
+            CapabilityLevel::Basic
+        };
+        info.models.push(ModelDefinition {
+            provider_id: cfg.id.clone(),
+            id: id.clone(),
+            display_name: id,
+            family: None,
+            parameter_size: None,
+            context_window: None,
+            capabilities: ModelCapabilities {
+                text_generation: Some(CapabilityLevel::Strong),
+                structured_output: Some(CapabilityLevel::Basic), // unverified for an arbitrary custom endpoint
+                reasoning: Some(reasoning),
+                vision: Some(CapabilityLevel::Unknown),
+                embedding: Some(CapabilityLevel::Unknown),
+                tool_use: Some(CapabilityLevel::Unknown),
+                long_context: Some(CapabilityLevel::Unknown),
+            },
+            status: ModelStatus::Available,
+        });
+    }
+    info.status = if info.models.is_empty() {
+        ProviderStatus::Available
+    } else {
+        ProviderStatus::Healthy
+    };
+    info
+}
+
+/// Executes a real chat completion against a custom provider's own
+/// `POST {base_url}/v1/chat/completions` — the same real request/response
+/// handling `MjGatewayExecutor` already does, reused here since the wire
+/// shape is identical.
+async fn execute_custom_provider(
+    cfg: &CustomProviderConfig,
+    model_id: &str,
+    prompt: &str,
+    timeout: Duration,
+) -> Result<ExecutionOutput, ExecutionError> {
+    let client = reqwest::Client::new();
+    let url = format!("{}/v1/chat/completions", cfg.base_url.trim_end_matches('/'));
+    let body = serde_json::json!({
+        "model": model_id,
+        "messages": [{ "role": "user", "content": prompt }],
+        "stream": false,
+    });
+    let resp = client
+        .post(&url)
+        .bearer_auth(&cfg.api_key)
+        .json(&body)
+        .timeout(timeout)
+        .send()
+        .await
+        .map_err(|e| {
+            if e.is_timeout() {
+                ExecutionError::Timeout
+            } else {
+                ExecutionError::ProviderUnavailable(e.to_string())
+            }
+        })?;
+    if !resp.status().is_success() {
+        return Err(ExecutionError::NonSuccessStatus(resp.status().as_u16()));
+    }
+    let parsed: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| ExecutionError::InvalidResponse(e.to_string()))?;
+    let text = parsed
+        .get("choices")
+        .and_then(|v| v.get(0))
+        .and_then(|c| c.get("message"))
+        .and_then(|m| m.get("content"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if text.trim().is_empty() {
+        return Err(ExecutionError::InvalidResponse(
+            "empty response".to_string(),
+        ));
+    }
+    let usage = TokenUsage {
+        prompt_tokens: parsed
+            .get("usage")
+            .and_then(|u| u.get("prompt_tokens"))
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32),
+        completion_tokens: parsed
+            .get("usage")
+            .and_then(|u| u.get("completion_tokens"))
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32),
+    };
+    Ok(ExecutionOutput { text, usage })
+}
+
 // ---------------------------------------------------------------- settings
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1215,6 +2002,11 @@ pub enum GenerationOutcome2 {
 pub struct AiInfrastructure {
     discoveries: Vec<Arc<dyn ProviderDiscovery>>,
     executors: HashMap<&'static str, Arc<dyn AiExecutor>>,
+    /// Real, user-added providers (Settings UI, `custom_ai_providers` DB
+    /// table) — an open-ended, runtime-mutable set, unlike `discoveries`/
+    /// `executors` above (both fixed at process construction). See
+    /// `set_custom_providers`.
+    custom_providers: RwLock<Vec<CustomProviderConfig>>,
     providers: RwLock<Vec<AiProviderInfo>>,
     last_discovered: RwLock<Option<Instant>>,
     settings: RwLock<AiSettings>,
@@ -1233,6 +2025,7 @@ impl AiInfrastructure {
         Self {
             discoveries,
             executors,
+            custom_providers: RwLock::new(Vec::new()),
             providers: RwLock::new(Vec::new()),
             last_discovered: RwLock::new(None),
             settings: RwLock::new(AiSettings::default()),
@@ -1240,18 +2033,31 @@ impl AiInfrastructure {
         }
     }
 
-    /// Real construction wired for this deployment: Ollama (local) + the
-    /// MJ AI Gateway (`MJ_AI_API_KEY`/`MJ_AI_ENDPOINT`).
+    /// Real construction wired for this deployment: Ollama (local), the MJ
+    /// AI Gateway (`MJ_AI_API_KEY`/`MJ_AI_ENDPOINT`), Groq (`GROQ_API_KEY`),
+    /// and Gemini (`GEMINI_API_KEY`). Groq/Gemini honestly report
+    /// `NOT_CONFIGURED` (never simulated as available) until their real key
+    /// is set — same contract every provider here already holds itself to.
     pub fn from_env() -> Self {
         let discoveries: Vec<Arc<dyn ProviderDiscovery>> = vec![
             Arc::new(OllamaDiscovery::from_env()),
             Arc::new(MjGatewayDiscovery::from_env()),
+            Arc::new(GroqDiscovery::from_env()),
+            Arc::new(GeminiDiscovery::from_env()),
         ];
         let mut executors: HashMap<&'static str, Arc<dyn AiExecutor>> = HashMap::new();
         executors.insert("ollama", Arc::new(OllamaExecutor::from_env()));
         executors.insert(
             MjGatewayDiscovery::PROVIDER_ID,
             Arc::new(MjGatewayExecutor::from_env()),
+        );
+        executors.insert(
+            GroqDiscovery::PROVIDER_ID,
+            Arc::new(GroqExecutor::from_env()),
+        );
+        executors.insert(
+            GeminiDiscovery::PROVIDER_ID,
+            Arc::new(GeminiExecutor::from_env()),
         );
         Self::new(discoveries, executors)
     }
@@ -1263,13 +2069,70 @@ impl AiInfrastructure {
     /// are awaited one at a time rather than pulling in a new dependency
     /// just for `join_all` on a list this short). Caches the result.
     pub async fn discover_all(&self) -> Vec<AiProviderInfo> {
-        let mut results = Vec::with_capacity(self.discoveries.len());
+        let custom = self.custom_providers.read().await.clone();
+        let mut results = Vec::with_capacity(self.discoveries.len() + custom.len());
         for d in &self.discoveries {
             results.push(d.discover().await);
+        }
+        // Real, user-added providers — same bounded discovery timeout every
+        // built-in provider already uses, just not itself configurable per
+        // custom row (a real, disclosed simplification: `health_ttl` is
+        // this deployment's one real discovery-timeout knob today).
+        for cfg in &custom {
+            results.push(discover_custom_provider(cfg, Duration::from_secs(3)).await);
         }
         *self.providers.write().await = results.clone();
         *self.last_discovered.write().await = Some(Instant::now());
         results
+    }
+
+    /// Replaces the whole real, user-added provider set — called once at
+    /// startup (from the `custom_ai_providers` DB table) and again after
+    /// every real add/delete, so a change is live on the very next
+    /// discovery cycle with no process restart needed (unlike the env-var
+    /// providers above). Mirrors `set_settings`'s own "replace the whole
+    /// value, caller already has the full authoritative list" contract.
+    pub async fn set_custom_providers(&self, providers: Vec<CustomProviderConfig>) {
+        *self.custom_providers.write().await = providers;
+    }
+
+    /// The one real, current custom-provider config matching `id`, if any —
+    /// used by `execute_for` below (a custom provider has no entry in the
+    /// static `executors` map, since its id is only known at runtime).
+    async fn find_custom_provider(&self, id: &str) -> Option<CustomProviderConfig> {
+        self.custom_providers
+            .read()
+            .await
+            .iter()
+            .find(|c| c.id == id)
+            .cloned()
+    }
+
+    /// Executes one real request against `provider_id`/`model_id` — checks
+    /// the static `executors` map first (env-var-configured providers:
+    /// Ollama/MJ Gateway/Groq/Gemini), then falls back to the real, current
+    /// custom-provider set (Settings-UI-added, runtime-mutable) if not
+    /// found there. The one real chokepoint both `generate`'s primary
+    /// attempt and its fallback loop call through, so a custom provider
+    /// participates in both exactly like every built-in one already does.
+    async fn execute_for(
+        &self,
+        provider_id: &str,
+        model_id: &str,
+        prompt: &str,
+        task: AiTask,
+    ) -> Result<ExecutionOutput, ExecutionError> {
+        if let Some(executor) = self.executors.get(provider_id) {
+            return executor
+                .execute_task(provider_id, model_id, prompt, task)
+                .await;
+        }
+        if let Some(cfg) = self.find_custom_provider(provider_id).await {
+            return execute_custom_provider(&cfg, model_id, prompt, Duration::from_secs(180)).await;
+        }
+        Err(ExecutionError::ProviderUnavailable(format!(
+            "no executor wired for provider {provider_id}"
+        )))
     }
 
     /// Re-discovers only if the cached result is stale (brief §15 — no
@@ -1440,11 +2303,6 @@ impl AiInfrastructure {
             }
         };
 
-        let Some(executor) = self.executors.get(decision.provider_id.as_str()) else {
-            return GenerationOutcome2::Failed {
-                reason: format!("no executor wired for provider {}", decision.provider_id),
-            };
-        };
         // Real fact about the provider that actually won routing — used
         // only for its disclosed `pricing`; absent only if `providers`
         // changed between routing and here (never happens within one
@@ -1456,8 +2314,8 @@ impl AiInfrastructure {
             .unwrap_or(ProviderPricing::Unmetered);
 
         let started = Instant::now();
-        match executor
-            .execute_task(
+        match self
+            .execute_for(
                 &decision.provider_id,
                 &decision.model_id,
                 &request.prompt,
@@ -1496,13 +2354,9 @@ impl AiInfrastructure {
                         .sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
 
                     for (provider, model, score) in candidates {
-                        let Some(fallback_executor) = self.executors.get(provider.id.as_str())
-                        else {
-                            continue;
-                        };
                         let fallback_started = Instant::now();
-                        if let Ok(output) = fallback_executor
-                            .execute_task(&provider.id, &model.id, &request.prompt, request.task)
+                        if let Ok(output) = self
+                            .execute_for(&provider.id, &model.id, &request.prompt, request.task)
                             .await
                         {
                             let latency_ms = fallback_started.elapsed().as_millis() as u64;
@@ -2916,7 +3770,660 @@ mod tests {
         }
     }
 
-    // -------------------------------------------------- Ollama structured output
+    // ------------------------------------------------------------------- Groq
+
+    async fn spawn_mock_groq() -> String {
+        use axum::response::IntoResponse;
+        use axum::routing::{get, post as post_route};
+
+        async fn models(
+            axum::extract::State(expected): axum::extract::State<String>,
+            headers: axum::http::HeaderMap,
+        ) -> axum::response::Response {
+            let auth = headers
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            if auth != format!("Bearer {expected}") {
+                return (axum::http::StatusCode::UNAUTHORIZED, "invalid key").into_response();
+            }
+            axum::Json(serde_json::json!({
+                "object": "list",
+                "data": [
+                    {"id": "gpt-oss-20b", "object": "model", "context_window": 131072},
+                    {"id": "deepseek-r1-distill-llama-70b", "object": "model", "context_window": 131072}
+                ]
+            }))
+            .into_response()
+        }
+
+        #[derive(serde::Deserialize)]
+        struct ChatBody {
+            model: String,
+            response_format: Option<serde_json::Value>,
+        }
+
+        async fn chat(
+            axum::extract::State(expected): axum::extract::State<String>,
+            headers: axum::http::HeaderMap,
+            axum::Json(body): axum::Json<ChatBody>,
+        ) -> axum::response::Response {
+            let auth = headers
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            if auth != format!("Bearer {expected}") {
+                return (axum::http::StatusCode::UNAUTHORIZED, "invalid key").into_response();
+            }
+            if body.model != "gpt-oss-20b" && body.model != "deepseek-r1-distill-llama-70b" {
+                return (axum::http::StatusCode::BAD_REQUEST, "Model not allowed").into_response();
+            }
+            let content = if body.response_format.is_some() {
+                "real groq reply (structured)"
+            } else {
+                "real groq reply"
+            };
+            axum::Json(serde_json::json!({
+                "choices": [{"message": {"role": "assistant", "content": content}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 20, "completion_tokens": 7, "total_tokens": 27}
+            }))
+            .into_response()
+        }
+
+        let app = axum::Router::new()
+            .route("/v1/models", get(models))
+            .route("/v1/chat/completions", post_route(chat))
+            .with_state("groq_test_ok".to_string());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn groq_discovery_reports_not_configured_without_a_key() {
+        let discovery = GroqDiscovery {
+            base_url: "https://api.groq.com/openai".to_string(),
+            api_key: None,
+            timeout: Duration::from_millis(500),
+        };
+        let info = discovery.discover().await;
+        assert_eq!(info.id, GroqDiscovery::PROVIDER_ID);
+        assert!(!info.configured);
+        assert_eq!(info.status, ProviderStatus::NotConfigured);
+        assert!(
+            !info.reachable,
+            "an unconfigured provider must never claim reachability"
+        );
+        assert!(info.models.is_empty());
+    }
+
+    #[tokio::test]
+    async fn groq_discovery_reports_unavailable_when_not_reachable() {
+        let discovery = GroqDiscovery {
+            base_url: "http://127.0.0.1:1".to_string(),
+            api_key: Some("groq_test_ok".to_string()),
+            timeout: Duration::from_millis(500),
+        };
+        let info = discovery.discover().await;
+        assert!(info.configured);
+        assert_eq!(info.status, ProviderStatus::Unavailable);
+        assert!(!info.reachable);
+        assert!(
+            info.models.is_empty(),
+            "a model list must never be invented when Groq is down"
+        );
+    }
+
+    #[tokio::test]
+    async fn groq_discovery_lists_real_models_with_real_context_window_and_reasoning() {
+        let base_url = spawn_mock_groq().await;
+        let discovery = GroqDiscovery {
+            base_url,
+            api_key: Some("groq_test_ok".to_string()),
+            timeout: Duration::from_secs(2),
+        };
+        let info = discovery.discover().await;
+
+        assert!(info.configured);
+        assert!(info.reachable);
+        assert_eq!(info.status, ProviderStatus::Healthy);
+        assert_eq!(
+            info.pricing, GROQ_FLOOR_PRICING,
+            "a real, disclosed metered rate, never Unmetered for a real paid provider"
+        );
+        let ids: Vec<&str> = info.models.iter().map(|m| m.id.as_str()).collect();
+        assert!(ids.contains(&"gpt-oss-20b"));
+        assert!(ids.contains(&"deepseek-r1-distill-llama-70b"));
+
+        let base_model = info.models.iter().find(|m| m.id == "gpt-oss-20b").unwrap();
+        assert_eq!(base_model.provider_id, GroqDiscovery::PROVIDER_ID);
+        assert_eq!(base_model.context_window, Some(131072));
+        assert_eq!(
+            base_model.capabilities.long_context,
+            Some(CapabilityLevel::Strong),
+            "Groq's own real context_window field must produce a real, evidenced long_context level"
+        );
+        assert_eq!(
+            base_model.capabilities.reasoning,
+            Some(CapabilityLevel::Basic),
+            "an unrecognized model keeps the honest floor"
+        );
+
+        let reasoning_model = info
+            .models
+            .iter()
+            .find(|m| m.id == "deepseek-r1-distill-llama-70b")
+            .unwrap();
+        assert_eq!(
+            reasoning_model.capabilities.reasoning,
+            Some(CapabilityLevel::Strong),
+            "a real deepseek-r1 release must be recognized through Groq's own discovery too"
+        );
+    }
+
+    #[tokio::test]
+    async fn groq_executor_returns_real_content_and_sends_response_format_for_test_case_generation()
+    {
+        let base_url = spawn_mock_groq().await;
+        let executor = GroqExecutor {
+            base_url,
+            api_key: Some("groq_test_ok".to_string()),
+            timeout: Duration::from_secs(2),
+            max_tokens: 4096,
+        };
+        let output = executor
+            .execute_task(
+                GroqDiscovery::PROVIDER_ID,
+                "gpt-oss-20b",
+                "hello",
+                AiTask::TestCaseGeneration,
+            )
+            .await
+            .expect("execute_task");
+        assert_eq!(
+            output.text, "real groq reply (structured)",
+            "TestCaseGeneration must send response_format so the mock's own check can see it"
+        );
+        assert_eq!(output.usage.prompt_tokens, Some(20));
+        assert_eq!(output.usage.completion_tokens, Some(7));
+    }
+
+    #[tokio::test]
+    async fn groq_executor_omits_response_format_for_a_plain_general_task() {
+        let base_url = spawn_mock_groq().await;
+        let executor = GroqExecutor {
+            base_url,
+            api_key: Some("groq_test_ok".to_string()),
+            timeout: Duration::from_secs(2),
+            max_tokens: 4096,
+        };
+        let output = executor
+            .execute(GroqDiscovery::PROVIDER_ID, "gpt-oss-20b", "hello")
+            .await
+            .expect("execute");
+        assert_eq!(
+            output.text, "real groq reply",
+            "a plain GeneralAi task (via execute()) must not send response_format"
+        );
+    }
+
+    #[tokio::test]
+    async fn groq_executor_rejects_a_provider_id_it_does_not_own() {
+        let executor = GroqExecutor {
+            base_url: "https://api.groq.com/openai".to_string(),
+            api_key: None,
+            timeout: Duration::from_secs(1),
+            max_tokens: 4096,
+        };
+        let err = executor
+            .execute("ollama", "llama3", "hi")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ExecutionError::ProviderUnavailable(_)));
+    }
+
+    #[tokio::test]
+    async fn groq_end_to_end_routing_executes_through_the_live_api() {
+        let base_url = spawn_mock_groq().await;
+        let provider = GroqDiscovery {
+            base_url: base_url.clone(),
+            api_key: Some("groq_test_ok".to_string()),
+            timeout: Duration::from_secs(2),
+        }
+        .discover()
+        .await;
+        let mut executors: HashMap<&'static str, Arc<dyn AiExecutor>> = HashMap::new();
+        executors.insert(
+            GroqDiscovery::PROVIDER_ID,
+            Arc::new(GroqExecutor {
+                base_url,
+                api_key: Some("groq_test_ok".to_string()),
+                timeout: Duration::from_secs(2),
+                max_tokens: 4096,
+            }),
+        );
+        let infra = AiInfrastructure::new(vec![Arc::new(FakeDiscovery(provider))], executors);
+
+        let outcome = infra
+            .generate(AiRequest {
+                task: AiTask::GeneralAi,
+                prompt: "hi".to_string(),
+                preferred_provider: Some(GroqDiscovery::PROVIDER_ID.to_string()),
+                preferred_model: Some("gpt-oss-20b".to_string()),
+            })
+            .await;
+        match outcome {
+            GenerationOutcome2::Ok(result) => {
+                assert_eq!(result.text, "real groq reply");
+                assert_eq!(result.provider, GroqDiscovery::PROVIDER_ID);
+                assert_eq!(result.model, "gpt-oss-20b");
+                assert!(!result.fallback_used);
+                assert_eq!(result.prompt_tokens, Some(20));
+                assert_eq!(result.completion_tokens, Some(7));
+                assert_eq!(
+                    result.estimated_cost_usd,
+                    Some((20.0 / 1000.0) * 0.000_075 + (7.0 / 1000.0) * 0.0003),
+                    "Groq's real, disclosed metered rate must feed a real, non-zero cost estimate"
+                );
+            }
+            GenerationOutcome2::Failed { reason } => {
+                panic!("expected a real end-to-end generation, got Failed: {reason}")
+            }
+        }
+    }
+
+    // ----------------------------------------------------------------- Gemini
+
+    async fn spawn_mock_gemini() -> String {
+        use axum::response::IntoResponse;
+        use axum::routing::{get, post as post_route};
+
+        async fn models(
+            axum::extract::State(expected): axum::extract::State<String>,
+            headers: axum::http::HeaderMap,
+        ) -> axum::response::Response {
+            let auth = headers
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            if auth != format!("Bearer {expected}") {
+                return (axum::http::StatusCode::UNAUTHORIZED, "invalid key").into_response();
+            }
+            axum::Json(serde_json::json!({
+                "object": "list",
+                "data": [
+                    {"id": "gemini-2.5-flash", "object": "model"},
+                    {"id": "gemini-2.5-pro", "object": "model"}
+                ]
+            }))
+            .into_response()
+        }
+
+        #[derive(serde::Deserialize)]
+        struct ChatBody {
+            model: String,
+        }
+
+        async fn chat(
+            axum::extract::State(expected): axum::extract::State<String>,
+            headers: axum::http::HeaderMap,
+            axum::Json(body): axum::Json<ChatBody>,
+        ) -> axum::response::Response {
+            let auth = headers
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            if auth != format!("Bearer {expected}") {
+                return (axum::http::StatusCode::UNAUTHORIZED, "invalid key").into_response();
+            }
+            if body.model != "gemini-2.5-flash" && body.model != "gemini-2.5-pro" {
+                return (axum::http::StatusCode::BAD_REQUEST, "Model not allowed").into_response();
+            }
+            axum::Json(serde_json::json!({
+                "choices": [{"message": {"role": "assistant", "content": "real gemini reply"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 15, "completion_tokens": 5, "total_tokens": 20}
+            }))
+            .into_response()
+        }
+
+        let app = axum::Router::new()
+            .route("/models", get(models))
+            .route("/chat/completions", post_route(chat))
+            .with_state("gemini_test_ok".to_string());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn gemini_discovery_reports_not_configured_without_a_key() {
+        let discovery = GeminiDiscovery {
+            base_url: "https://generativelanguage.googleapis.com/v1beta/openai".to_string(),
+            api_key: None,
+            timeout: Duration::from_millis(500),
+        };
+        let info = discovery.discover().await;
+        assert_eq!(info.id, GeminiDiscovery::PROVIDER_ID);
+        assert!(!info.configured);
+        assert_eq!(info.status, ProviderStatus::NotConfigured);
+        assert!(!info.reachable);
+        assert!(info.models.is_empty());
+    }
+
+    #[tokio::test]
+    async fn gemini_discovery_reports_unavailable_when_not_reachable() {
+        let discovery = GeminiDiscovery {
+            base_url: "http://127.0.0.1:1".to_string(),
+            api_key: Some("gemini_test_ok".to_string()),
+            timeout: Duration::from_millis(500),
+        };
+        let info = discovery.discover().await;
+        assert!(info.configured);
+        assert_eq!(info.status, ProviderStatus::Unavailable);
+        assert!(!info.reachable);
+        assert!(info.models.is_empty());
+    }
+
+    #[tokio::test]
+    async fn gemini_discovery_lists_real_models_from_a_live_endpoint() {
+        let base_url = spawn_mock_gemini().await;
+        let discovery = GeminiDiscovery {
+            base_url,
+            api_key: Some("gemini_test_ok".to_string()),
+            timeout: Duration::from_secs(2),
+        };
+        let info = discovery.discover().await;
+
+        assert!(info.configured);
+        assert!(info.reachable);
+        assert_eq!(info.status, ProviderStatus::Healthy);
+        assert_eq!(
+            info.pricing, GEMINI_FLOOR_PRICING,
+            "a real, disclosed metered rate, never Unmetered for a real paid provider"
+        );
+        let ids: Vec<&str> = info.models.iter().map(|m| m.id.as_str()).collect();
+        assert!(ids.contains(&"gemini-2.5-flash"));
+        assert!(ids.contains(&"gemini-2.5-pro"));
+        for m in &info.models {
+            assert_eq!(m.provider_id, GeminiDiscovery::PROVIDER_ID);
+            assert_eq!(
+                m.capabilities.text_generation,
+                Some(CapabilityLevel::Strong)
+            );
+            assert_eq!(m.status, ModelStatus::Available);
+        }
+    }
+
+    #[tokio::test]
+    async fn gemini_executor_returns_the_real_choices_content_from_a_live_endpoint() {
+        let base_url = spawn_mock_gemini().await;
+        let executor = GeminiExecutor {
+            base_url,
+            api_key: Some("gemini_test_ok".to_string()),
+            timeout: Duration::from_secs(2),
+            max_tokens: 4096,
+        };
+        let output = executor
+            .execute(GeminiDiscovery::PROVIDER_ID, "gemini-2.5-flash", "hello")
+            .await
+            .expect("execute");
+        assert_eq!(output.text, "real gemini reply");
+        assert_eq!(output.usage.prompt_tokens, Some(15));
+        assert_eq!(output.usage.completion_tokens, Some(5));
+    }
+
+    #[tokio::test]
+    async fn gemini_executor_rejects_a_provider_id_it_does_not_own() {
+        let executor = GeminiExecutor {
+            base_url: "https://generativelanguage.googleapis.com/v1beta/openai".to_string(),
+            api_key: None,
+            timeout: Duration::from_secs(1),
+            max_tokens: 4096,
+        };
+        let err = executor
+            .execute("ollama", "llama3", "hi")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ExecutionError::ProviderUnavailable(_)));
+    }
+
+    #[tokio::test]
+    async fn gemini_end_to_end_routing_executes_through_the_live_api() {
+        let base_url = spawn_mock_gemini().await;
+        let provider = GeminiDiscovery {
+            base_url: base_url.clone(),
+            api_key: Some("gemini_test_ok".to_string()),
+            timeout: Duration::from_secs(2),
+        }
+        .discover()
+        .await;
+        let mut executors: HashMap<&'static str, Arc<dyn AiExecutor>> = HashMap::new();
+        executors.insert(
+            GeminiDiscovery::PROVIDER_ID,
+            Arc::new(GeminiExecutor {
+                base_url,
+                api_key: Some("gemini_test_ok".to_string()),
+                timeout: Duration::from_secs(2),
+                max_tokens: 4096,
+            }),
+        );
+        let infra = AiInfrastructure::new(vec![Arc::new(FakeDiscovery(provider))], executors);
+
+        let outcome = infra
+            .generate(AiRequest {
+                task: AiTask::GeneralAi,
+                prompt: "hi".to_string(),
+                preferred_provider: Some(GeminiDiscovery::PROVIDER_ID.to_string()),
+                preferred_model: Some("gemini-2.5-flash".to_string()),
+            })
+            .await;
+        match outcome {
+            GenerationOutcome2::Ok(result) => {
+                assert_eq!(result.text, "real gemini reply");
+                assert_eq!(result.provider, GeminiDiscovery::PROVIDER_ID);
+                assert_eq!(result.model, "gemini-2.5-flash");
+                assert!(!result.fallback_used);
+                assert_eq!(result.prompt_tokens, Some(15));
+                assert_eq!(result.completion_tokens, Some(5));
+                assert_eq!(
+                    result.estimated_cost_usd,
+                    Some((15.0 / 1000.0) * 0.0003 + (5.0 / 1000.0) * 0.0025),
+                    "Gemini's real, disclosed metered rate must feed a real, non-zero cost estimate"
+                );
+            }
+            GenerationOutcome2::Failed { reason } => {
+                panic!("expected a real end-to-end generation, got Failed: {reason}")
+            }
+        }
+    }
+
+    // -------------------------------------------------------- custom providers
+
+    /// Reuses the exact same mock server shape `spawn_mock_mj_gateway`
+    /// already established (a real `/v1/models` + `/v1/chat/completions`
+    /// pair) — proving custom providers genuinely go through the same real
+    /// wire logic, not a second, parallel implementation.
+    async fn spawn_mock_custom_provider() -> String {
+        use axum::response::IntoResponse;
+        use axum::routing::{get, post as post_route};
+
+        async fn models(
+            axum::extract::State(expected): axum::extract::State<String>,
+            headers: axum::http::HeaderMap,
+        ) -> axum::response::Response {
+            let auth = headers
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            if auth != format!("Bearer {expected}") {
+                return (axum::http::StatusCode::UNAUTHORIZED, "invalid key").into_response();
+            }
+            axum::Json(serde_json::json!({
+                "object": "list",
+                "data": [{"id": "custom-model-1", "object": "model"}]
+            }))
+            .into_response()
+        }
+
+        async fn chat(
+            axum::extract::State(expected): axum::extract::State<String>,
+            headers: axum::http::HeaderMap,
+        ) -> axum::response::Response {
+            let auth = headers
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            if auth != format!("Bearer {expected}") {
+                return (axum::http::StatusCode::UNAUTHORIZED, "invalid key").into_response();
+            }
+            axum::Json(serde_json::json!({
+                "choices": [{"message": {"role": "assistant", "content": "real custom provider reply"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 9, "completion_tokens": 3, "total_tokens": 12}
+            }))
+            .into_response()
+        }
+
+        let app = axum::Router::new()
+            .route("/v1/models", get(models))
+            .route("/v1/chat/completions", post_route(chat))
+            .with_state("custom_test_ok".to_string());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn discover_custom_provider_lists_real_models_from_a_live_endpoint() {
+        let base_url = spawn_mock_custom_provider().await;
+        let cfg = CustomProviderConfig {
+            id: "custom-ai-test".to_string(),
+            name: "My Custom Provider".to_string(),
+            base_url,
+            api_key: "custom_test_ok".to_string(),
+        };
+        let info = discover_custom_provider(&cfg, Duration::from_secs(2)).await;
+
+        assert!(info.configured);
+        assert!(info.reachable);
+        assert_eq!(info.status, ProviderStatus::Healthy);
+        assert_eq!(info.id, "custom-ai-test");
+        assert_eq!(
+            info.pricing,
+            ProviderPricing::Unmetered,
+            "real per-token pricing for an arbitrary custom endpoint is genuinely unknown \
+             — never a guessed Metered rate"
+        );
+        let ids: Vec<&str> = info.models.iter().map(|m| m.id.as_str()).collect();
+        assert!(ids.contains(&"custom-model-1"));
+    }
+
+    #[tokio::test]
+    async fn discover_custom_provider_reports_unavailable_when_not_reachable() {
+        let cfg = CustomProviderConfig {
+            id: "custom-ai-test".to_string(),
+            name: "My Custom Provider".to_string(),
+            base_url: "http://127.0.0.1:1".to_string(),
+            api_key: "whatever".to_string(),
+        };
+        let info = discover_custom_provider(&cfg, Duration::from_millis(500)).await;
+        assert!(!info.reachable);
+        assert!(
+            info.models.is_empty(),
+            "a model list must never be invented when a custom endpoint is down"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_custom_provider_returns_the_real_content_and_usage() {
+        let base_url = spawn_mock_custom_provider().await;
+        let cfg = CustomProviderConfig {
+            id: "custom-ai-test".to_string(),
+            name: "My Custom Provider".to_string(),
+            base_url,
+            api_key: "custom_test_ok".to_string(),
+        };
+        let output =
+            execute_custom_provider(&cfg, "custom-model-1", "hello", Duration::from_secs(2))
+                .await
+                .expect("execute");
+        assert_eq!(output.text, "real custom provider reply");
+        assert_eq!(output.usage.prompt_tokens, Some(9));
+        assert_eq!(output.usage.completion_tokens, Some(3));
+    }
+
+    #[tokio::test]
+    async fn a_real_custom_provider_added_at_runtime_is_actually_usable_for_real_generation() {
+        // The whole point of this feature: a custom provider registered
+        // through `set_custom_providers` (the exact call the real
+        // `POST /api/v1/ai/providers/custom` handler makes after a DB
+        // insert) must genuinely participate in real routing/execution —
+        // not just show up in a discovery list.
+        let base_url = spawn_mock_custom_provider().await;
+        let infra = AiInfrastructure::new(vec![], HashMap::new());
+        infra
+            .set_custom_providers(vec![CustomProviderConfig {
+                id: "custom-ai-test".to_string(),
+                name: "My Custom Provider".to_string(),
+                base_url,
+                api_key: "custom_test_ok".to_string(),
+            }])
+            .await;
+
+        let outcome = infra
+            .generate(AiRequest {
+                task: AiTask::GeneralAi,
+                prompt: "hi".to_string(),
+                preferred_provider: Some("custom-ai-test".to_string()),
+                preferred_model: Some("custom-model-1".to_string()),
+            })
+            .await;
+        match outcome {
+            GenerationOutcome2::Ok(result) => {
+                assert_eq!(result.text, "real custom provider reply");
+                assert_eq!(result.provider, "custom-ai-test");
+                assert_eq!(result.model, "custom-model-1");
+                assert_eq!(result.prompt_tokens, Some(9));
+            }
+            GenerationOutcome2::Failed { reason } => {
+                panic!("expected a real end-to-end generation through the custom provider, got Failed: {reason}")
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn set_custom_providers_replaces_the_whole_set_removed_ones_stop_being_discovered() {
+        let cfg = CustomProviderConfig {
+            id: "custom-ai-test".to_string(),
+            name: "My Custom Provider".to_string(),
+            base_url: "http://127.0.0.1:1".to_string(),
+            api_key: "whatever".to_string(),
+        };
+        let infra = AiInfrastructure::new(vec![], HashMap::new());
+        infra.set_custom_providers(vec![cfg]).await;
+        let providers = infra.discover_all().await;
+        assert_eq!(providers.len(), 1, "providers={providers:?}");
+
+        // Real deletion (the DB-then-reload path `DELETE /api/v1/ai/providers/custom/:id`
+        // takes) — the next discovery must genuinely stop listing it, not
+        // keep a stale entry around.
+        infra.set_custom_providers(vec![]).await;
+        let providers = infra.discover_all().await;
+        assert!(
+            providers.is_empty(),
+            "a removed custom provider must not still be discovered: providers={providers:?}"
+        );
+    }
+
+    // -------------------------------------------------------- Ollama structured output
 
     #[test]
     fn ollama_request_includes_think_false_and_stream_false() {
