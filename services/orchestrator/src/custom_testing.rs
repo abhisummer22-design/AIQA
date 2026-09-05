@@ -205,7 +205,11 @@ pub async fn run(
     // Custom testing has no crawl-run concept of its own (no project-scoped
     // request to resolve a `crawl_run_id` from) — always `None`, honestly
     // reducing to the exact behaviour this call already had.
-    match ai_generation::generate_test_cases(infra, &augmented, skills, feedback, None).await {
+    // No live per-wave signal to report either — this path has no
+    // project-scoped log stream caller to receive it, honestly reducing to
+    // the exact behaviour this call already had.
+    match ai_generation::generate_test_cases(infra, &augmented, skills, feedback, None, None).await
+    {
         GenerationOutcome::Ai {
             cases,
             provider,
