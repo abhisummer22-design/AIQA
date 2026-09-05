@@ -2015,12 +2015,20 @@ async fn generate_ai_test_cases_scoped(
     };
     let crawl_pages_used = crate::ai_generation::crawl_pages_used_count(crawl_output.as_ref());
 
+    // Real, in-flight "which wave is running right now" signal for the Test
+    // Case Generator's live skill indicator — emitted on the same
+    // project-scoped log stream (`GET .../logs/ws`) this project's other
+    // real-time consumers already use, distinguished only by message text
+    // ("... started"), no new schema. `project_id_str` is bound here so the
+    // reference handed to `generate_test_cases` outlives the call.
+    let project_id_str = project_id.to_string();
     let outcome = crate::ai_generation::generate_test_cases(
         &state.ai_infra,
         &body.requirement_text,
         &skills,
         &feedback,
         crawl_output.as_ref(),
+        Some((state.log_bus.as_ref(), project_id_str.as_str())),
     )
     .await;
 

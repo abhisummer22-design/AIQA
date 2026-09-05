@@ -48,7 +48,7 @@ import {
   GenerationExecutionState,
   GeneratedTestCase,
 } from '../../types';
-import { ApiError, aiqaApi } from '../../services/aiqaApi';
+import { ApiError, aiqaApi, orchestratorLogsWsUrl } from '../../services/aiqaApi';
 import type {
   CreateTestCaseRequest,
   TestCaseHandoffRequest,
@@ -58,7 +58,26 @@ import type {
   GeneratedTestCaseDraft,
   AiRoutingMode,
   CompilationOutcome,
+  OrchestratorLogEntry,
 } from '../../types/contract';
+
+/** Parses a real `generate_ai` wave-start log message
+ *  (`ai_generation.rs::run_wave`'s own `"Wave '{wave}' ({skills}) started"`
+ *  format — the exact same message shape its "generated N case(s)"/"failed"
+ *  siblings already use, distinguished only by ending in "started") into the
+ *  real skill names that wave is about to run. Returns `null` for anything
+ *  that isn't genuinely this one message shape — including this project's
+ *  other real log traffic — so an unrelated log entry never lights up a
+ *  skill it has nothing to do with. */
+export function parseWaveStartedSkillNames(message: string): string[] | null {
+  const match = /^Wave '[a-z_]+' \(([^)]*)\) started$/.exec(message);
+  if (!match) return null;
+  const names = match[1]
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return names.length > 0 ? names : null;
+}
 
 /** AUD-005 — maps a real, persisted `TestCaseRow` (backend) onto the
  *  existing `GeneratedTestCase` shape `GeneratedTestCasesView` already
@@ -221,6 +240,75 @@ export const TestCaseGeneratorPage: React.FC = () => {
   const [generationError, setGenerationError] = useState<string | null>(null);
   const [lastGenerationResult, setLastGenerationResult] = useState<GenerateAiTestCasesResponse | null>(null);
   const [lastRoutingMode, setLastRoutingMode] = useState<AiRoutingMode | null>(null);
+
+  // Real, in-flight "which skill is running right now" signal — a
+  // project-scoped WS connection listening only for the real wave-start
+  // events `ai_generation.rs::run_wave` emits on the same log stream
+  // `OrchestratorLogsPanel` already consumes elsewhere (see
+  // `parseWaveStartedSkillNames` above for the exact, narrow message shape
+  // matched — every other real log entry on this stream is ignored here).
+  // Reset to empty whenever a new generation starts or the previous one
+  // finishes (`handleTriggerGenerate` below) — the single
+  // `POST .../generate-ai` call is synchronous end-to-end, so once it
+  // resolves every wave has already really finished, and holding the glow
+  // on any longer would claim a wave is still running when it is not.
+  const [activeWaveSkillNames, setActiveWaveSkillNames] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!realProjectId) {
+      setActiveWaveSkillNames([]);
+      return;
+    }
+    const wsUrl = orchestratorLogsWsUrl(realProjectId);
+    if (!wsUrl) return;
+
+    let cancelled = false;
+    let ws: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const connect = () => {
+      if (cancelled) return;
+      try {
+        ws = new WebSocket(wsUrl);
+        ws.onmessage = (event) => {
+          try {
+            const parsed: unknown = JSON.parse(event.data);
+            if (typeof parsed !== 'object' || parsed === null) return;
+            const message = (parsed as Partial<OrchestratorLogEntry>).message;
+            if (typeof message !== 'string') return;
+            // Real, narrow match only — an unrelated real log entry (a
+            // different source/run) is silently ignored, never guessed at.
+            const names = parseWaveStartedSkillNames(message);
+            if (names) setActiveWaveSkillNames(names);
+          } catch {
+            // Malformed frame — dropped, never rendered on faith.
+          }
+        };
+        ws.onclose = () => {
+          if (cancelled) return;
+          reconnectTimer = setTimeout(connect, 3000);
+        };
+        ws.onerror = () => {
+          ws?.close();
+        };
+      } catch {
+        reconnectTimer = setTimeout(connect, 3000);
+      }
+    };
+    connect();
+
+    return () => {
+      cancelled = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (ws) {
+        ws.onopen = null;
+        ws.onmessage = null;
+        ws.onerror = null;
+        ws.onclose = null;
+        ws.close();
+      }
+    };
+  }, [realProjectId]);
 
   // 7. Generated Test Cases list (local, unsaved draft — unchanged since
   // FE-16: a fixed-template preview a user can locally triage before
@@ -612,6 +700,9 @@ export const TestCaseGeneratorPage: React.FC = () => {
 
     setGenerationError(null);
     setGenerationState('GENERATING');
+    // Clear any glow left over from a previous run before this one's own
+    // real wave-start events (if any) arrive.
+    setActiveWaveSkillNames([]);
 
     const requestSkills: GenerateAiSkillInput[] = effectiveSkillIds
       .map((id) => skills.find((s) => s.id === id))
@@ -636,6 +727,10 @@ export const TestCaseGeneratorPage: React.FC = () => {
         crawl_run_id: crawlRunId,
       });
       setLastGenerationResult(response);
+      // The whole multi-wave call has genuinely finished by now — every
+      // wave it ran has really completed, so no wave is "in progress"
+      // anymore. Holding the glow on past this point would claim otherwise.
+      setActiveWaveSkillNames([]);
 
       const meta = { method: response.generation_method, provider: response.provider, model: response.model };
       const mapped = response.test_cases.map((draft, i) => aiDraftToDisplay(draft, i, meta));
@@ -682,6 +777,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
       setLastGenerationResult(null);
       setGenerationState('FAILED');
       setGenerationError(err instanceof ApiError ? err.message : 'Test case generation failed.');
+      setActiveWaveSkillNames([]);
     }
   };
 
@@ -1041,6 +1137,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
               fileSkillErrors={fileSkillErrors}
               fileSkillsDirectory={fileSkillsDirectory}
               autoMatchedSkills={autoMatchedSkillIds}
+              activeSkillNames={activeWaveSkillNames}
             />
           </div>
 

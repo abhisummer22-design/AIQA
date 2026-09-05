@@ -35,6 +35,15 @@ interface SkillsAndMcpPanelProps {
    *  generation even when its own checkbox is off, so its row must say so
    *  rather than leaving the unchecked box looking like "not used". */
   autoMatchedSkills?: Map<string, string>;
+  /** Real, live names of the skills in whichever generation wave is
+   *  running right now (`TestCaseGeneratorPage`'s WS-parsed
+   *  `ai_generation.rs::run_wave` "started" events) — empty whenever no
+   *  generation is in flight. Matched by skill *name*, the one real value
+   *  both the backend's wave-start message and this skill list share.
+   *  Multiple names can glow at once because a wave genuinely runs every
+   *  skill assigned to it in one combined AI call, not one after another —
+   *  the glow's own real granularity, not a simplification. */
+  activeSkillNames?: string[];
 }
 
 export const SkillsAndMcpPanel: React.FC<SkillsAndMcpPanelProps> = ({
@@ -46,6 +55,7 @@ export const SkillsAndMcpPanel: React.FC<SkillsAndMcpPanelProps> = ({
   fileSkillErrors = [],
   fileSkillsDirectory = null,
   autoMatchedSkills = new Map(),
+  activeSkillNames = [],
 }) => {
   const [managerOpen, setManagerOpen] = useState(false);
   const [mcpOpen, setMcpOpen] = useState(false);
@@ -77,6 +87,11 @@ export const SkillsAndMcpPanel: React.FC<SkillsAndMcpPanelProps> = ({
             // click here is a no-op rather than a misleading toggle —
             // uncheck the category itself to actually remove it.
             const lockedByCategory = autoCategory !== undefined;
+            // Real, live: this skill's own name is in the wave the backend
+            // just reported starting (`TestCaseGeneratorPage`'s WS listener)
+            // — matched by name, not merely "selected", since only a
+            // selected skill can ever appear here in the first place.
+            const isActiveNow = activeSkillNames.includes(skill.name);
             return (
               <li key={skill.id}>
                 {/* Two separate controls on purpose: the toggle changes real
@@ -84,8 +99,14 @@ export const SkillsAndMcpPanel: React.FC<SkillsAndMcpPanelProps> = ({
                     a button inside the checkbox would make "show me what this
                     says" also flip whether the skill is used. */}
                 <div
-                  className={`flex items-center gap-1 rounded-md transition-colors ${
-                    selected ? 'bg-indigo-950/50 border border-indigo-700/70' : 'bg-[#020617] border border-slate-800 hover:border-slate-700'
+                  id={`skill-row-${skill.id}`}
+                  data-active-now={isActiveNow}
+                  className={`flex items-center gap-1 rounded-md transition-all duration-300 ${
+                    isActiveNow
+                      ? 'bg-cyan-950/60 border border-cyan-400 shadow-[0_0_14px_2px_rgba(34,211,238,0.45)]'
+                      : selected
+                        ? 'bg-indigo-950/50 border border-indigo-700/70'
+                        : 'bg-[#020617] border border-slate-800 hover:border-slate-700'
                   }`}
                 >
                   <button
@@ -93,7 +114,7 @@ export const SkillsAndMcpPanel: React.FC<SkillsAndMcpPanelProps> = ({
                     id={`skill-toggle-${skill.id}`}
                     role="checkbox"
                     aria-checked={selected}
-                    aria-label={`${skill.name} — ${selected ? 'selected' : 'not selected'}${autoCategory ? ` (auto, via ${autoCategory} category)` : ''}`}
+                    aria-label={`${skill.name} — ${selected ? 'selected' : 'not selected'}${autoCategory ? ` (auto, via ${autoCategory} category)` : ''}${isActiveNow ? ' (running now)' : ''}`}
                     title={lockedByCategory ? `Included automatically because the "${autoCategory}" category is selected — uncheck that category to remove it` : undefined}
                     disabled={isDisabled}
                     onClick={() => {
@@ -104,11 +125,26 @@ export const SkillsAndMcpPanel: React.FC<SkillsAndMcpPanelProps> = ({
                     }`}
                   >
                     {selected ? (
-                      <CheckSquare className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                      <CheckSquare className={`w-3.5 h-3.5 shrink-0 ${isActiveNow ? 'text-cyan-300' : 'text-indigo-400'}`} />
                     ) : (
                       <Square className="w-3.5 h-3.5 text-slate-600 shrink-0" />
                     )}
-                    <span className="text-xs font-sans text-slate-200 truncate flex-1">{skill.name}</span>
+                    <span className={`text-xs font-sans truncate flex-1 ${isActiveNow ? 'text-cyan-100 font-semibold' : 'text-slate-200'}`}>
+                      {skill.name}
+                    </span>
+                    {isActiveNow && (
+                      <span
+                        id={`skill-active-badge-${skill.id}`}
+                        title="This skill's wave is running right now"
+                        className="flex items-center gap-1 text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-cyan-950/80 border border-cyan-500 text-cyan-300 shrink-0"
+                      >
+                        <span className="relative flex h-1.5 w-1.5">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
+                          <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-cyan-400"></span>
+                        </span>
+                        LIVE
+                      </span>
+                    )}
                     {autoCategory && (
                       <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-emerald-950/80 border border-emerald-700 text-emerald-300 shrink-0">
                         Auto

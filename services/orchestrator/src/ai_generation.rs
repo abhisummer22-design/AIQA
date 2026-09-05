@@ -107,6 +107,7 @@
 //! "evidenced" just because a real element existed; the requirement text is
 //! still what decides evidenced vs. inferred vs. exploratory.
 
+use crate::log_bus::LogBus;
 use serde::{Deserialize, Serialize};
 
 // --------------------------------------------------------------- skill resolver
@@ -1065,8 +1066,36 @@ async fn run_wave(
     feedback: &FeedbackContext,
     prior_wave_cases: &[GeneratedTestCaseDraft],
     crawl: Option<&crate::crawler::CrawlOutput>,
+    progress: Option<(&LogBus, &str)>,
 ) -> (WaveSummary, Vec<GeneratedTestCaseDraft>) {
-    let skill_names = skills.iter().map(|s| s.name.clone()).collect();
+    let skill_names: Vec<String> = skills.iter().map(|s| s.name.clone()).collect();
+
+    // Real, in-flight signal for a caller that wants to know which wave is
+    // running *right now* (the Test Case Generator's live skill indicator),
+    // not only the after-the-fact `WaveSummary` every caller already gets
+    // once the whole multi-wave request finishes. Emitted on the same
+    // `log_bus`/source a wave's later "generated N case(s)"/"failed" lines
+    // already use, distinguished only by ending in "started" — no new
+    // message schema, just the one additional real moment reported.
+    // `None` (unit tests; `custom_testing.rs`'s synchronous batch path)
+    // changes nothing else about this function's behavior.
+    if let Some((log_bus, project_id)) = progress {
+        log_bus
+            .emit(
+                "INFO",
+                "generation",
+                &format!(
+                    "Wave '{}' ({}) started",
+                    wave.label(),
+                    skill_names.join(", ")
+                ),
+                None,
+                Some(project_id),
+                None,
+            )
+            .await;
+    }
+
     match generate_one_wave(
         infra,
         requirement_text,
@@ -1160,6 +1189,7 @@ pub async fn generate_test_cases(
     skills: &[SkillInput],
     feedback: &FeedbackContext,
     crawl: Option<&crate::crawler::CrawlOutput>,
+    progress: Option<(&LogBus, &str)>,
 ) -> GenerationOutcome {
     let (base, dependent, non_functional) = partition_skills_into_waves(skills);
 
@@ -1178,6 +1208,7 @@ pub async fn generate_test_cases(
             feedback,
             &[],
             crawl,
+            progress,
         )
         .await;
         waves.push(summary);
@@ -1197,6 +1228,7 @@ pub async fn generate_test_cases(
             feedback,
             &all_cases,
             crawl,
+            progress,
         )
         .await;
         waves.push(summary);
@@ -1215,6 +1247,7 @@ pub async fn generate_test_cases(
             feedback,
             &all_cases,
             crawl,
+            progress,
         )
         .await;
         waves.push(summary);
@@ -2109,6 +2142,7 @@ mod tests {
             &[skill("s", "Security Testing", "")],
             &FeedbackContext::default(),
             None,
+            None,
         )
         .await;
         match outcome {
@@ -2173,6 +2207,7 @@ mod tests {
             &[skill("f", "Functional Testing", "")],
             &FeedbackContext::default(),
             Some(&crawl),
+            None,
         )
         .await;
 
@@ -2205,6 +2240,7 @@ mod tests {
                 skill("s", "Security Testing", ""),
             ],
             &FeedbackContext::default(),
+            None,
             None,
         )
         .await;
@@ -2276,6 +2312,7 @@ mod tests {
             ],
             &FeedbackContext::default(),
             None,
+            None,
         )
         .await;
         match outcome {
@@ -2327,6 +2364,7 @@ mod tests {
             ],
             &FeedbackContext::default(),
             None,
+            None,
         )
         .await;
         match outcome {
@@ -2377,6 +2415,7 @@ mod tests {
             ],
             &FeedbackContext::default(),
             None,
+            None,
         )
         .await;
         match outcome {
@@ -2387,6 +2426,52 @@ mod tests {
                 panic!("every attempted wave failed — must never fabricate a success")
             }
         }
+    }
+
+    #[tokio::test]
+    async fn wave_orchestration_reports_each_real_wave_start_on_the_log_bus_when_a_progress_sink_is_given(
+    ) {
+        // The concrete mechanism behind the Test Case Generator's live
+        // "which skill is running right now" indicator: `run_wave` must
+        // emit a real "started" event on the log bus for each wave it
+        // actually attempts — one per real wave, in wave order, and NONE
+        // for a wave nothing was selected for — before that wave's own real
+        // AI call, not only the after-the-fact per-wave summary every
+        // caller already gets once the whole request finishes.
+        let base_response = r#"{"test_cases":[{"title":"Valid login succeeds","category":"Functional","skill_id":"skill-functional-testing","preconditions":[],"steps":[{"action":"Log in","expected_result":"Dashboard shown"}],"expected_result":"Dashboard shown","priority":"HIGH","severity":"MAJOR","evidence":"evidenced","source_reference":null}]}"#;
+        let dependent_response = r#"{"test_cases":[{"title":"Non-admin cannot access settings","category":"RBAC","skill_id":"skill-rbac-testing","preconditions":[],"steps":[{"action":"Try to access settings","expected_result":"Access denied"}],"expected_result":"Access denied","priority":"HIGH","severity":"MAJOR","evidence":"evidenced","source_reference":null}]}"#;
+        let (infra, _recorder) =
+            infra_with_recording_executor(vec![base_response, dependent_response]);
+        let log_bus = LogBus::new(50);
+
+        let _ = generate_test_cases(
+            &infra,
+            "Users can log in. Admins can manage settings.",
+            &[
+                skill("f", "Functional Testing", ""),
+                skill("r", "RBAC Testing", ""),
+            ],
+            &FeedbackContext::default(),
+            None,
+            Some((&log_bus, "proj-123")),
+        )
+        .await;
+
+        let logs = log_bus.recent_logs(Some("proj-123"), 50).await;
+        let started_messages: Vec<&str> = logs
+            .iter()
+            .filter(|l| l.message.ends_with("started"))
+            .map(|l| l.message.as_str())
+            .collect();
+        assert_eq!(
+            started_messages,
+            vec![
+                "Wave 'base' (Functional Testing) started",
+                "Wave 'dependent' (RBAC Testing) started",
+            ],
+            "expected exactly one real wave-start event per wave actually attempted, in wave \
+             order, and none for the un-selected NonFunctional wave: all logs={logs:?}"
+        );
     }
 
     // ---------------------------------------- JSON payload extraction robustness
@@ -2445,6 +2530,7 @@ mod tests {
             &[skill("s", "Security Testing", "")],
             &FeedbackContext::default(),
             None,
+            None,
         )
         .await;
         match outcome {
@@ -2458,8 +2544,15 @@ mod tests {
     #[tokio::test]
     async fn integration_returns_failed_outcome_on_provider_timeout_never_a_fabricated_success() {
         let infra = infra_with_executor_error(ExecutionError::Timeout);
-        let outcome =
-            generate_test_cases(&infra, "Anything.", &[], &FeedbackContext::default(), None).await;
+        let outcome = generate_test_cases(
+            &infra,
+            "Anything.",
+            &[],
+            &FeedbackContext::default(),
+            None,
+            None,
+        )
+        .await;
         match outcome {
             GenerationOutcome::Failed { reason } => assert!(reason.contains("TIMEOUT")),
             GenerationOutcome::Ai { .. } => {
@@ -2471,8 +2564,15 @@ mod tests {
     #[tokio::test]
     async fn integration_returns_failed_outcome_on_invalid_structured_output() {
         let infra = infra_with_executor_response("not json at all");
-        let outcome =
-            generate_test_cases(&infra, "Anything.", &[], &FeedbackContext::default(), None).await;
+        let outcome = generate_test_cases(
+            &infra,
+            "Anything.",
+            &[],
+            &FeedbackContext::default(),
+            None,
+            None,
+        )
+        .await;
         assert!(matches!(outcome, GenerationOutcome::Failed { .. }));
     }
 
@@ -2484,6 +2584,7 @@ mod tests {
             "Users log in with email and password.",
             &[],
             &FeedbackContext::default(),
+            None,
             None,
         )
         .await;
@@ -2553,6 +2654,7 @@ mod tests {
             &[skill("f", "Functional Testing", "")],
             &FeedbackContext::default(),
             None,
+            None,
         )
         .await;
 
@@ -2602,6 +2704,7 @@ mod tests {
             ],
             &FeedbackContext::default(),
             None,
+            None,
         )
         .await;
         match outcome {
@@ -2645,6 +2748,7 @@ mod tests {
             &[skill("f", "Functional Testing", "")],
             &FeedbackContext::default(),
             None,
+            None,
         )
         .await;
         let security_only = generate_test_cases(
@@ -2652,6 +2756,7 @@ mod tests {
             requirement,
             &[skill("s", "Security Testing", "")],
             &FeedbackContext::default(),
+            None,
             None,
         )
         .await;

@@ -21,6 +21,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppShell } from '../../App';
 import { setApiKey } from '../../services/aiqaApi';
+import { parseWaveStartedSkillNames } from './TestCaseGeneratorPage';
 import type { GenerateAiTestCasesResponse, Project, TestCaseRow, RunDetail, CrawlOutput } from '../../types/contract';
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -1837,4 +1838,42 @@ describe('TestCaseGeneratorPage — crawl grounding (Phase 6 -> Phase 8 wiring)'
     await waitFor(() => expect(screen.getByText(/NO_COMPATIBLE_EXECUTOR/)).toBeTruthy(), { timeout: 10000 });
     expect(document.getElementById('crawl-use-in-generation')).toBeNull();
   }, 15000);
+});
+
+describe('TestCaseGeneratorPage — live wave/skill indicator', () => {
+  // `parseWaveStartedSkillNames` is the one real thing standing between "a
+  // frame arrived on the project's log WS" and "this skill glows" — a
+  // false match here would light up the wrong skill, or a real message it
+  // fails to recognize would silently mean the indicator never lights at
+  // all. Pure function, no rendering/mocking needed.
+
+  it('parses the real backend wave-start message into the real skill names it names', () => {
+    expect(parseWaveStartedSkillNames("Wave 'base' (Functional Testing) started")).toEqual([
+      'Functional Testing',
+    ]);
+    expect(
+      parseWaveStartedSkillNames("Wave 'dependent' (RBAC Testing, Business Case Testing) started")
+    ).toEqual(['RBAC Testing', 'Business Case Testing']);
+    expect(
+      parseWaveStartedSkillNames("Wave 'non_functional' (Security Testing, Performance Testing) started")
+    ).toEqual(['Security Testing', 'Performance Testing']);
+  });
+
+  it('never matches this project\'s other real log messages — including the wave summary lines emitted after generation finishes', () => {
+    expect(parseWaveStartedSkillNames('Generating functional test cases with AI model')).toBeNull();
+    expect(
+      parseWaveStartedSkillNames("Wave 'base' (Functional Testing) generated 3 case(s) via ollama/qwen3:14b")
+    ).toBeNull();
+    expect(
+      parseWaveStartedSkillNames("Wave 'dependent' (RBAC Testing) failed, other waves' coverage is unaffected: timeout")
+    ).toBeNull();
+    expect(parseWaveStartedSkillNames('Routed TestCaseGeneration to ollama/qwen3:14b (score 271.48, AUTO mode)')).toBeNull();
+    expect(parseWaveStartedSkillNames('Generated 3 test case(s) via ollama (qwen3:14b)')).toBeNull();
+  });
+
+  it('is honest about a malformed or empty match rather than returning a fabricated skill list', () => {
+    expect(parseWaveStartedSkillNames('')).toBeNull();
+    expect(parseWaveStartedSkillNames("Wave 'base' () started")).toBeNull();
+    expect(parseWaveStartedSkillNames("Wave 'base' (Functional Testing) STARTED")).toBeNull();
+  });
 });
