@@ -1397,6 +1397,48 @@ describe('TestCaseGeneratorPage — Skills & MCP Phase 1', () => {
     expect(document.getElementById('skill-toggle-skill-rbac-testing')!.getAttribute('aria-checked')).toBe('false');
   });
 
+  it('Select All genuinely checks every real built-in skill, and Deselect All genuinely clears them', async () => {
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await goToSourcesBranch();
+
+    const builtInSkillIds = [
+      'skill-functional-testing',
+      'skill-edge-case-analysis',
+      'skill-security-testing',
+      'skill-performance-testing',
+      'skill-api-testing',
+      'skill-database-testing',
+      'skill-rbac-testing',
+      'skill-business-case-testing',
+    ];
+    // Not every one of these starts checked (only Functional/Edge Case are
+    // selected by default, plus whichever categories happen to auto-match) —
+    // real, mixed starting state, not a contrived all-or-nothing setup.
+    expect(document.getElementById('skill-toggle-skill-rbac-testing')!.getAttribute('aria-checked')).toBe('false');
+
+    await act(async () => {
+      document.getElementById('btn-select-all-skills')!.click();
+    });
+    for (const id of builtInSkillIds) {
+      expect(
+        document.getElementById(`skill-toggle-${id}`)!.getAttribute('aria-checked'),
+        `expected ${id} to be checked after Select All`,
+      ).toBe('true');
+    }
+    expect(document.getElementById('btn-select-all-skills')).toBeNull();
+    expect(document.getElementById('btn-deselect-all-skills')).toBeTruthy();
+
+    await act(async () => {
+      document.getElementById('btn-deselect-all-skills')!.click();
+    });
+    // RBAC Testing has no matching category (see the test above), so it's
+    // the one real, unambiguous proof Deselect All actually cleared manual
+    // selection rather than being a no-op.
+    expect(document.getElementById('skill-toggle-skill-rbac-testing')!.getAttribute('aria-checked')).toBe('false');
+  });
+
   it('a custom skill created this session is genuinely resolved server-side by its own description when selected for real generation', async () => {
     let capturedBody: any = null;
     vi.stubGlobal(

@@ -7,8 +7,8 @@
  * component in this same folder).
  */
 import React from 'react';
-import { render } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { render, screen } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
 import { SkillsAndMcpPanel } from './SkillsAndMcpPanel';
 import type { SkillDefinition } from '../../types/skills';
 
@@ -42,6 +42,8 @@ describe('SkillsAndMcpPanel — live wave/skill indicator', () => {
         skills={SKILLS}
         selectedSkillIds={['skill-functional-testing', 'skill-security-testing', 'skill-rbac-testing']}
         onToggleSkill={noop}
+        onSelectAll={noop}
+        onDeselectAll={noop}
         onAddCustomSkill={noopAdd}
         activeSkillNames={['Functional Testing']}
       />
@@ -65,6 +67,8 @@ describe('SkillsAndMcpPanel — live wave/skill indicator', () => {
         skills={SKILLS}
         selectedSkillIds={['skill-security-testing', 'skill-rbac-testing']}
         onToggleSkill={noop}
+        onSelectAll={noop}
+        onDeselectAll={noop}
         onAddCustomSkill={noopAdd}
         activeSkillNames={['Security Testing', 'RBAC Testing']}
       />
@@ -85,6 +89,8 @@ describe('SkillsAndMcpPanel — live wave/skill indicator', () => {
         skills={SKILLS}
         selectedSkillIds={['skill-functional-testing']}
         onToggleSkill={noop}
+        onSelectAll={noop}
+        onDeselectAll={noop}
         onAddCustomSkill={noopAdd}
       />
     );
@@ -93,5 +99,70 @@ describe('SkillsAndMcpPanel — live wave/skill indicator', () => {
       expect(document.querySelector(`#skill-row-${s.id}`)?.getAttribute('data-active-now')).toBe('false');
     }
     expect(document.querySelectorAll('[id^="skill-active-badge-"]').length).toBe(0);
+  });
+});
+
+describe('SkillsAndMcpPanel — Select All / Deselect All', () => {
+  it('shows the real eligible count and calls the real handler when nothing is selected yet', () => {
+    const onSelectAll = vi.fn();
+    render(
+      <SkillsAndMcpPanel
+        skills={SKILLS}
+        selectedSkillIds={[]}
+        onToggleSkill={noop}
+        onSelectAll={onSelectAll}
+        onDeselectAll={noop}
+        onAddCustomSkill={noopAdd}
+      />
+    );
+
+    expect(screen.getByText(`Select All (${SKILLS.length})`)).toBeTruthy();
+    expect(document.getElementById('btn-deselect-all-skills')).toBeNull();
+
+    document.getElementById('btn-select-all-skills')!.click();
+    expect(onSelectAll).toHaveBeenCalledTimes(1);
+  });
+
+  it('switches to Deselect All once every real eligible skill is already selected, and calls the real handler', () => {
+    const onDeselectAll = vi.fn();
+    render(
+      <SkillsAndMcpPanel
+        skills={SKILLS}
+        selectedSkillIds={SKILLS.map((s) => s.id)}
+        onToggleSkill={noop}
+        onSelectAll={noop}
+        onDeselectAll={onDeselectAll}
+        onAddCustomSkill={noopAdd}
+      />
+    );
+
+    expect(screen.getByText('Deselect All')).toBeTruthy();
+    expect(document.getElementById('btn-select-all-skills')).toBeNull();
+
+    document.getElementById('btn-deselect-all-skills')!.click();
+    expect(onDeselectAll).toHaveBeenCalledTimes(1);
+  });
+
+  it('a NOT_CONFIGURED skill never counts as eligible, so selecting every OTHER real skill still shows Deselect All', () => {
+    const skillsWithOneUnavailable: SkillDefinition[] = [
+      ...SKILLS,
+      skill({ id: 'skill-unavailable', name: 'Unavailable Skill', availability: 'NOT_CONFIGURED' }),
+    ];
+    render(
+      <SkillsAndMcpPanel
+        skills={skillsWithOneUnavailable}
+        selectedSkillIds={SKILLS.map((s) => s.id)}
+        onToggleSkill={noop}
+        onSelectAll={noop}
+        onDeselectAll={noop}
+        onAddCustomSkill={noopAdd}
+      />
+    );
+
+    // Every real, selectable skill IS selected (the unavailable one can
+    // never be, by design) — this must already read as "all selected",
+    // not stuck showing "Select All" because of a skill nobody could
+    // ever actually select.
+    expect(screen.getByText('Deselect All')).toBeTruthy();
   });
 });
