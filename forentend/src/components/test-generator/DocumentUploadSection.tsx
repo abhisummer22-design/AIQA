@@ -32,16 +32,24 @@ interface DocSlotConfig {
 
 const DOCUMENT_SLOTS: DocSlotConfig[] = [
   {
+    id: 'BRD',
+    label: '1. BRD',
+    fullName: 'Business Requirements Document',
+    description: 'Business goals, target market, ROI justification, and stakeholder success criteria.',
+    roleInHierarchy: 'Top-level Business Case & Goals',
+    badgeColor: 'border-fuchsia-700/60 bg-fuchsia-950/40 text-fuchsia-300',
+  },
+  {
     id: 'PRD',
-    label: '1. PRD',
+    label: '2. PRD',
     fullName: 'Product Requirements Document',
     description: 'Core product vision, user personas, success metrics, and scope boundaries.',
-    roleInHierarchy: 'Top-level Product Vision',
+    roleInHierarchy: 'Product Vision, Derived from BRD',
     badgeColor: 'border-cyan-700/60 bg-cyan-950/40 text-cyan-300',
   },
   {
     id: 'FRD',
-    label: '2. FRD',
+    label: '3. FRD',
     fullName: 'Functional Requirements Document',
     description: 'Detailed feature behavior, user stories, interaction flows, and acceptance criteria.',
     roleInHierarchy: 'Functional Mechanics & Rules',
@@ -49,7 +57,7 @@ const DOCUMENT_SLOTS: DocSlotConfig[] = [
   },
   {
     id: 'SRD',
-    label: '3. SRD',
+    label: '4. SRD',
     fullName: 'System Requirements Document',
     description: 'Architecture specifications, protocol constraints, SLA benchmarks, and API contracts.',
     roleInHierarchy: 'System Architecture & SLAs',
@@ -57,7 +65,7 @@ const DOCUMENT_SLOTS: DocSlotConfig[] = [
   },
   {
     id: 'ADDITIONAL',
-    label: '4. Additional Document',
+    label: '5. Additional Document',
     fullName: 'Supporting Specification / Reference',
     description: 'Database schemas, OpenAPI definitions, edge-case logs, or legacy runbooks.',
     roleInHierarchy: 'Supplemental Technical Context',
@@ -74,12 +82,14 @@ export const DocumentUploadSection: React.FC<DocumentUploadSectionProps> = ({
 }) => {
   const [dragOverSlot, setDragOverSlot] = useState<RequirementDocType | null>(null);
   const [uploadProgress, setUploadProgress] = useState<Record<RequirementDocType, number>>({
+    BRD: 0,
     PRD: 0,
     FRD: 0,
     SRD: 0,
     ADDITIONAL: 0,
   });
   const [errors, setErrors] = useState<Record<RequirementDocType, string | null>>({
+    BRD: null,
     PRD: null,
     FRD: null,
     SRD: null,
@@ -87,6 +97,7 @@ export const DocumentUploadSection: React.FC<DocumentUploadSectionProps> = ({
   });
 
   const fileInputRefs = useRef<Record<RequirementDocType, HTMLInputElement | null>>({
+    BRD: null,
     PRD: null,
     FRD: null,
     SRD: null,
@@ -192,7 +203,7 @@ export const DocumentUploadSection: React.FC<DocumentUploadSectionProps> = ({
               Product Documentation
             </h2>
             <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded bg-cyan-950/60 border border-cyan-800/60 text-cyan-300">
-              4 SLOTS
+              5 SLOTS
             </span>
           </div>
           <p className="text-xs text-slate-400 font-sans mt-0.5">
@@ -216,6 +227,10 @@ export const DocumentUploadSection: React.FC<DocumentUploadSectionProps> = ({
 
         {/* Horizontal Hierarchy Diagram */}
         <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-mono">
+          <span className="px-2 py-0.5 rounded bg-fuchsia-950/80 border border-fuchsia-800 text-fuchsia-300 font-bold">
+            BRD
+          </span>
+          <ArrowDown className="w-3 h-3 text-slate-500 rotate-[-90deg] shrink-0" />
           <span className="px-2 py-0.5 rounded bg-cyan-950/80 border border-cyan-800 text-cyan-300 font-bold">
             PRD
           </span>
