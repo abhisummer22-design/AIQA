@@ -19,6 +19,12 @@ interface SkillsAndMcpPanelProps {
   skills: SkillDefinition[];
   selectedSkillIds: string[];
   onToggleSkill: (id: string) => void;
+  /** Selects every real, currently-selectable skill at once (see
+   *  `useSkillSelection::selectAllSkills`'s own doc comment for exactly
+   *  which skills that includes). */
+  onSelectAll: () => void;
+  /** Clears every manual selection (see `useSkillSelection::deselectAllSkills`). */
+  onDeselectAll: () => void;
   onAddCustomSkill: (draft: { name: string; description: string }) => Promise<SkillDefinition>;
   disabled?: boolean;
   /** Real per-file parse failures from the backend's last skills-folder
@@ -50,6 +56,8 @@ export const SkillsAndMcpPanel: React.FC<SkillsAndMcpPanelProps> = ({
   skills,
   selectedSkillIds,
   onToggleSkill,
+  onSelectAll,
+  onDeselectAll,
   onAddCustomSkill,
   disabled = false,
   fileSkillErrors = [],
@@ -64,11 +72,40 @@ export const SkillsAndMcpPanel: React.FC<SkillsAndMcpPanelProps> = ({
    *  is applied. */
   const [detailSkill, setDetailSkill] = useState<SkillDefinition | null>(null);
 
+  // Same real eligibility every individual skill's own checkbox already
+  // enforces — `allSelected` can only ever be true once every one of
+  // those (not every skill in the raw list) is actually selected.
+  const eligibleSkills = skills.filter((s) => s.configurable && s.availability !== 'NOT_CONFIGURED');
+  const allSelected = eligibleSkills.length > 0 && eligibleSkills.every((s) => selectedSkillIds.includes(s.id));
+
   return (
     <div id="skills-and-mcp-panel" className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm space-y-3 h-full flex flex-col">
-      <div className="flex items-center gap-2 pb-2 border-b border-slate-800/80">
-        <Sparkles className="w-4 h-4 text-cyan-400" />
-        <h2 className="text-sm font-bold text-slate-100 font-sans tracking-tight">Skills & MCP</h2>
+      <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-800/80">
+        <div className="flex items-center gap-2">
+          <Sparkles className="w-4 h-4 text-cyan-400" />
+          <h2 className="text-sm font-bold text-slate-100 font-sans tracking-tight">Skills & MCP</h2>
+        </div>
+        {allSelected ? (
+          <button
+            type="button"
+            id="btn-deselect-all-skills"
+            onClick={onDeselectAll}
+            disabled={disabled}
+            className="text-[11px] font-mono text-slate-400 hover:text-slate-200 px-2 py-1 rounded bg-[#020617] border border-slate-800 cursor-pointer disabled:opacity-50 shrink-0"
+          >
+            Deselect All
+          </button>
+        ) : (
+          <button
+            type="button"
+            id="btn-select-all-skills"
+            onClick={onSelectAll}
+            disabled={disabled}
+            className="text-[11px] font-mono text-indigo-400 hover:text-indigo-300 px-2.5 py-1 rounded bg-indigo-950/60 border border-indigo-800/80 cursor-pointer disabled:opacity-50 shrink-0"
+          >
+            Select All ({eligibleSkills.length})
+          </button>
+        )}
       </div>
 
       <div className="space-y-1.5">

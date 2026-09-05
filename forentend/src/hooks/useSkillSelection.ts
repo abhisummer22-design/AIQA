@@ -64,6 +64,20 @@ export interface UseSkillSelectionResult {
   selectedSkillIds: string[];
   isSelected: (id: string) => boolean;
   toggleSkill: (id: string) => void;
+  /** Selects every real, currently-selectable skill at once — the same
+   *  `configurable && availability !== 'NOT_CONFIGURED'` eligibility every
+   *  individual skill's own checkbox already enforces (`SkillsAndMcpPanel`'s
+   *  `isDisabled` check), so this can never select a skill an individual
+   *  click couldn't. A skill only selected via its matching category
+   *  (`categoryMatchedSkillIds`) is untouched either way — that is driven
+   *  by category selection, not `selectedSkillIds`, exactly like a single
+   *  click on a locked/auto-matched skill is already a no-op. */
+  selectAllSkills: () => void;
+  /** Clears every manual selection — an auto-matched-via-category skill
+   *  stays exactly as selected as it was (see `selectAllSkills`'s own doc
+   *  comment); uncheck the category itself to actually remove one of
+   *  those. */
+  deselectAllSkills: () => void;
   /** Creates a real, backend-persisted custom skill and selects it. Throws
    *  `ApiError` on failure — the caller (the Skill Manager) is responsible
    *  for surfacing that, never for treating a failed create as if it
@@ -161,6 +175,16 @@ export function useSkillSelection(
     setSelectedSkillIds((prev) => (prev.includes(id) ? prev.filter((existing) => existing !== id) : [...prev, id]));
   }, []);
 
+  const selectAllSkills = useCallback(() => {
+    setSelectedSkillIds(
+      skills.filter((s) => s.configurable && s.availability !== 'NOT_CONFIGURED').map((s) => s.id),
+    );
+  }, [skills]);
+
+  const deselectAllSkills = useCallback(() => {
+    setSelectedSkillIds([]);
+  }, []);
+
   const addCustomSkill = useCallback(async (draft: CustomSkillDraft): Promise<SkillDefinition> => {
     const row = await aiqaApi.skills.create({ name: draft.name.trim(), description: draft.description.trim() });
     const skill = customSkillRowToDefinition(row);
@@ -174,6 +198,8 @@ export function useSkillSelection(
     selectedSkillIds,
     isSelected,
     toggleSkill,
+    selectAllSkills,
+    deselectAllSkills,
     addCustomSkill,
     customSkills,
     customSkillsLoading,

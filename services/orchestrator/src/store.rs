@@ -166,6 +166,17 @@ fn custom_skill_from_row(r: sqlx::sqlite::SqliteRow) -> CustomSkillRow {
     }
 }
 
+fn custom_ai_provider_from_row(r: sqlx::sqlite::SqliteRow) -> CustomAiProviderRow {
+    CustomAiProviderRow {
+        id: r.get("id"),
+        name: r.get("name"),
+        base_url: r.get("base_url"),
+        api_key: r.get("api_key"),
+        created_by: r.get("created_by"),
+        created_at: parse_ts(&r.get::<String, _>("created_at")),
+    }
+}
+
 impl Store {
     pub async fn connect(db_path: &Path) -> Result<Self> {
         if let Some(parent) = db_path.parent() {
@@ -806,6 +817,63 @@ impl Store {
     /// caller can return 404 rather than a false "ok".
     pub async fn delete_custom_skill(&self, id: &str) -> Result<bool> {
         let result = sqlx::query("DELETE FROM custom_skills WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    // ------------------------------------------------- custom AI providers
+
+    /// Persist a real, user-added AI provider (see migration
+    /// `0013_custom_ai_providers.sql`'s own doc comment for why `api_key` is
+    /// plaintext here, not the one-way `key_hash` this app's own auth keys
+    /// use). Platform-wide like `ai_settings`/`custom_skills` — no
+    /// `project_id`.
+    pub async fn insert_custom_ai_provider(
+        &self,
+        id: &str,
+        name: &str,
+        base_url: &str,
+        api_key: &str,
+        created_by: &str,
+    ) -> Result<()> {
+        let now = now_rfc3339();
+        sqlx::query(
+            "INSERT INTO custom_ai_providers (id, name, base_url, api_key, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(id)
+        .bind(name)
+        .bind(base_url)
+        .bind(api_key)
+        .bind(created_by)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// All persisted custom AI providers, oldest first — same ordering
+    /// convention as `list_custom_skills`. Includes the real `api_key` in
+    /// full (this is the one internal read path that genuinely needs it —
+    /// to actually authenticate real outbound requests, and to rebuild
+    /// `AiInfrastructure`'s in-memory set on startup/after a mutation); the
+    /// real HTTP-facing list endpoint (`api.rs::list_custom_ai_providers_handler`)
+    /// never serializes this row directly, so the raw key never reaches a
+    /// client response.
+    pub async fn list_custom_ai_providers(&self) -> Result<Vec<CustomAiProviderRow>> {
+        let rows = sqlx::query(
+            "SELECT id, name, base_url, api_key, created_by, created_at FROM custom_ai_providers ORDER BY created_at",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(custom_ai_provider_from_row).collect())
+    }
+
+    /// Returns `false` (no row deleted) when `id` does not exist, so the
+    /// caller can return 404 rather than a false "ok".
+    pub async fn delete_custom_ai_provider(&self, id: &str) -> Result<bool> {
+        let result = sqlx::query("DELETE FROM custom_ai_providers WHERE id = ?")
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -2551,6 +2619,22 @@ pub struct CustomSkillRow {
     /// frameworks, ...), preserved as the file wrote it. `None` for a skill
     /// created by hand.
     pub metadata: Option<serde_json::Value>,
+    pub created_by: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// A real, persisted custom AI provider (see migration
+/// `0013_custom_ai_providers.sql`). Deliberately does NOT derive
+/// `Serialize` — this row's `api_key` is real, live-usable plaintext, and
+/// the lack of a derive forces every caller to explicitly build a redacted
+/// view rather than accidentally returning this type directly from an HTTP
+/// handler.
+#[derive(Debug, Clone)]
+pub struct CustomAiProviderRow {
+    pub id: String,
+    pub name: String,
+    pub base_url: String,
+    pub api_key: String,
     pub created_by: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }

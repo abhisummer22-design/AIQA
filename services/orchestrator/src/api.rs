@@ -56,6 +56,17 @@ pub fn router(state: AppState) -> Router {
             post(create_custom_skill).get(list_custom_skills_handler),
         )
         .route("/api/v1/skills/:id", delete(delete_custom_skill_handler))
+        // Real, persisted custom AI providers a user adds through the
+        // Settings UI (see `store::insert_custom_ai_provider`'s doc
+        // comment) — live on the next discovery cycle, no restart needed.
+        .route(
+            "/api/v1/ai/providers/custom",
+            post(create_custom_ai_provider).get(list_custom_ai_providers_handler),
+        )
+        .route(
+            "/api/v1/ai/providers/custom/:id",
+            delete(delete_custom_ai_provider_handler),
+        )
         // The real instruction each skill resolves to — same function the
         // generator uses, so the UI cannot show a drifted copy.
         .route("/api/v1/skills/resolve", post(resolve_skills))
@@ -1010,6 +1021,166 @@ async fn delete_custom_skill_handler(
         return Err(ApiError::not_found("skill not found"));
     }
     audit(&state, &ctx, "skill.delete", Some(&id), None, "ok").await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ------------------------------------------------- custom AI providers
+
+/// The real, public-safe view of a `store::CustomAiProviderRow` — every
+/// field except `api_key`. `store::CustomAiProviderRow` deliberately does
+/// not derive `Serialize` at all (see its own doc comment), so building
+/// this view is the only way a handler here can respond with one; there is
+/// no direct path that could accidentally leak the raw key.
+#[derive(Serialize)]
+struct CustomAiProviderView {
+    id: String,
+    name: String,
+    base_url: String,
+    created_by: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl From<&crate::store::CustomAiProviderRow> for CustomAiProviderView {
+    fn from(r: &crate::store::CustomAiProviderRow) -> Self {
+        Self {
+            id: r.id.clone(),
+            name: r.name.clone(),
+            base_url: r.base_url.clone(),
+            created_by: r.created_by.clone(),
+            created_at: r.created_at,
+        }
+    }
+}
+
+/// Refreshes `AiInfrastructure`'s real, runtime-mutable custom-provider set
+/// from the DB's own current full list — the one real source of truth,
+/// re-read after every mutation rather than hand-editing the in-memory
+/// copy, so the two can never drift.
+async fn reload_custom_providers_into_infra(state: &AppState) -> Result<(), ApiError> {
+    let rows = state
+        .store
+        .list_custom_ai_providers()
+        .await
+        .map_err(to_500)?;
+    let configs = rows
+        .into_iter()
+        .map(|r| crate::ai_router::CustomProviderConfig {
+            id: r.id,
+            name: r.name,
+            base_url: r.base_url,
+            api_key: r.api_key,
+        })
+        .collect();
+    state.ai_infra.set_custom_providers(configs).await;
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct CreateCustomAiProviderBody {
+    name: String,
+    base_url: String,
+    api_key: String,
+}
+
+fn validate_custom_provider_fields(
+    name: &str,
+    base_url: &str,
+    api_key: &str,
+) -> Result<(), ApiError> {
+    if name.trim().is_empty() {
+        return Err(ApiError::validation("provider name must not be empty"));
+    }
+    if !(base_url.starts_with("http://") || base_url.starts_with("https://")) {
+        return Err(ApiError::validation(
+            "base_url must be a real http:// or https:// endpoint",
+        ));
+    }
+    if api_key.trim().is_empty() {
+        return Err(ApiError::validation("api_key must not be empty"));
+    }
+    Ok(())
+}
+
+/// POST /api/v1/ai/providers/custom — persists a real, user-added AI
+/// provider and makes it live for real routing/generation on the very
+/// next discovery cycle (`reload_custom_providers_into_infra` — no
+/// process restart needed, unlike the env-var providers). Operator+,
+/// matching `create_custom_skill`'s own bar for a real configuration-value
+/// write.
+async fn create_custom_ai_provider(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiJson(body): ApiJson<CreateCustomAiProviderBody>,
+) -> Result<(StatusCode, Json<CustomAiProviderView>), ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    let name = body.name.trim();
+    let base_url = body.base_url.trim().trim_end_matches('/');
+    let api_key = body.api_key.trim();
+    validate_custom_provider_fields(name, base_url, api_key)?;
+    let id = format!("custom-ai-{}", Uuid::new_v4());
+
+    state
+        .store
+        .insert_custom_ai_provider(&id, name, base_url, api_key, &ctx.name)
+        .await
+        .map_err(to_500)?;
+    reload_custom_providers_into_infra(&state).await?;
+
+    audit(
+        &state,
+        &ctx,
+        "ai_provider.create",
+        Some(&id),
+        Some(name),
+        "ok",
+    )
+    .await;
+
+    let rows = state
+        .store
+        .list_custom_ai_providers()
+        .await
+        .map_err(to_500)?;
+    let created = rows
+        .iter()
+        .find(|r| r.id == id)
+        .map(CustomAiProviderView::from)
+        .ok_or_else(|| to_500("custom AI provider vanished immediately after insert"))?;
+    Ok((StatusCode::CREATED, Json(created)))
+}
+
+/// GET /api/v1/ai/providers/custom — Viewer+, matching `GET /skills`:
+/// reading configured providers is not a privileged action. Never
+/// includes a raw `api_key` (see `CustomAiProviderView`).
+async fn list_custom_ai_providers_handler(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<CustomAiProviderView>>, ApiError> {
+    let rows = state
+        .store
+        .list_custom_ai_providers()
+        .await
+        .map_err(to_500)?;
+    Ok(Json(rows.iter().map(CustomAiProviderView::from).collect()))
+}
+
+/// DELETE /api/v1/ai/providers/custom/:id — Operator+, matching
+/// `create_custom_ai_provider`.
+async fn delete_custom_ai_provider_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(id): ApiPath<String>,
+) -> Result<StatusCode, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    let deleted = state
+        .store
+        .delete_custom_ai_provider(&id)
+        .await
+        .map_err(to_500)?;
+    if !deleted {
+        return Err(ApiError::not_found("custom AI provider not found"));
+    }
+    reload_custom_providers_into_infra(&state).await?;
+    audit(&state, &ctx, "ai_provider.delete", Some(&id), None, "ok").await;
     Ok(StatusCode::NO_CONTENT)
 }
 

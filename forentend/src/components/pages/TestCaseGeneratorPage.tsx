@@ -333,7 +333,16 @@ export const TestCaseGeneratorPage: React.FC = () => {
   // hook, not inline state here, so a future generation-engine unit can
   // reuse the exact same selection contract without depending on this
   // page's other internals.
-  const { skills, selectedSkillIds, toggleSkill, addCustomSkill, fileSkillErrors, fileSkillsDirectory } = useSkillSelection(
+  const {
+    skills,
+    selectedSkillIds,
+    toggleSkill,
+    selectAllSkills,
+    deselectAllSkills,
+    addCustomSkill,
+    fileSkillErrors,
+    fileSkillsDirectory,
+  } = useSkillSelection(
     activeGenerationSession?.selectedSkillIds || DEFAULT_SELECTED_SKILL_IDS,
   );
   // A skill whose name genuinely is a selected category (e.g. category
@@ -1137,6 +1146,8 @@ export const TestCaseGeneratorPage: React.FC = () => {
               skills={skills}
               selectedSkillIds={selectedSkillIds}
               onToggleSkill={toggleSkill}
+              onSelectAll={selectAllSkills}
+              onDeselectAll={deselectAllSkills}
               onAddCustomSkill={addCustomSkill}
               disabled={isGeneratingNow}
               fileSkillErrors={fileSkillErrors}
