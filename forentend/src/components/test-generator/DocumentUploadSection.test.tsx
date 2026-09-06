@@ -1,15 +1,23 @@
 /**
- * Truthfulness Cleanup — real Product Documentation content extraction.
+ * Truthfulness Cleanup — real Product Documentation content extraction,
+ * plus the later BRD (Business Requirements Document) slot addition.
  *
- * Before this, `handleFileUpload` ran a fixed-duration `setInterval` fake
- * progress ramp ("Simulate real asynchronous file ingestion") and never
- * read a single byte of the uploaded file — it only ever recorded the
- * file's name/size/type. This suite proves the real replacement: a real
+ * Before the content-extraction work, `handleFileUpload` ran a
+ * fixed-duration `setInterval` fake progress ramp ("Simulate real
+ * asynchronous file ingestion") and never read a single byte of the
+ * uploaded file — it only ever recorded the file's name/size/type. The
+ * first describe block below proves the real replacement: a real
  * `aiqaApi.documents.extractText` call is made with the file's real,
  * base64-encoded bytes, and the UI renders exactly what that real
  * response says — never a fabricated success, never a hidden failure.
  * `fetch` is mocked only at the transport boundary, same convention as
  * every other test in this app.
+ *
+ * The second describe block covers the later BRD slot addition — a
+ * focused, standalone rendering check (BRD joins PRD/FRD/SRD/Additional
+ * as the new first slot). It renders `DocumentUploadSection` directly
+ * with `projectId={null}` since none of its cases exercise the real
+ * extraction request path above; they only check what's on screen.
  */
 import React from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -149,5 +157,77 @@ describe('DocumentUploadSection — real content extraction', () => {
 
     await waitFor(() => expect(screen.getByText(/Unsupported file format/)).toBeTruthy());
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+function noop() {}
+
+describe('DocumentUploadSection — BRD slot', () => {
+  it('renders all 5 slots, BRD first, with the real 5 SLOTS count', () => {
+    const { container } = render(
+      <DocumentUploadSection documents={[]} onDocumentsChange={noop} projectId={null} />
+    );
+
+    expect(screen.getByText('5 SLOTS')).toBeTruthy();
+    expect(document.getElementById('doc-slot-brd')).toBeTruthy();
+    expect(document.getElementById('doc-slot-prd')).toBeTruthy();
+    expect(document.getElementById('doc-slot-frd')).toBeTruthy();
+    expect(document.getElementById('doc-slot-srd')).toBeTruthy();
+    expect(document.getElementById('doc-slot-additional')).toBeTruthy();
+
+    expect(screen.getByText('1. BRD')).toBeTruthy();
+    expect(screen.getByText('Business Requirements Document')).toBeTruthy();
+    // Renumbered to make room for BRD as slot 1.
+    expect(screen.getByText('2. PRD')).toBeTruthy();
+    expect(screen.getByText('5. Additional Document')).toBeTruthy();
+
+    // BRD genuinely leads the Source-of-Truth Context Flow banner (and
+    // therefore the whole page), ahead of PRD -- not just present somewhere.
+    const text = container.textContent ?? '';
+    const brdIndex = text.indexOf('BRD');
+    const prdIndex = text.indexOf('PRD');
+    expect(brdIndex).toBeGreaterThanOrEqual(0);
+    expect(prdIndex).toBeGreaterThan(brdIndex);
+  });
+
+  it('shows a real uploaded BRD document as Ready in its own slot, independent of the other slots', () => {
+    const brdDoc: UploadedRequirementDoc = {
+      slotId: 'BRD',
+      label: '1. BRD',
+      fullName: 'Business Requirements Document',
+      fileName: 'business-case.pdf',
+      fileSize: 2048,
+      fileType: 'PDF',
+      uploadedAt: new Date().toISOString(),
+      status: 'READY',
+    };
+
+    render(<DocumentUploadSection documents={[brdDoc]} onDocumentsChange={noop} projectId={null} />);
+
+    const brdSlot = document.getElementById('doc-slot-brd')!;
+    expect(brdSlot.textContent).toContain('business-case.pdf');
+    expect(brdSlot.textContent).toContain('Ready');
+
+    // The other 4 slots remain open — this document only fills BRD's slot.
+    const prdSlot = document.getElementById('doc-slot-prd')!;
+    expect(prdSlot.textContent).toContain('Slot Open');
+  });
+
+  it('lets a real file drop trigger real BRD extraction the same way any other slot already can', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () =>
+      jsonResponse(200, { text: 'Business case content.', char_count: 23, truncated: false })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    setApiKey(RAW_KEY);
+    render(<Harness />);
+
+    const input = document.querySelector('#doc-slot-brd input[type=file]') as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(input, {
+        target: { files: [new File(['Business case content.'], 'BRD.md', { type: 'text/markdown' })] },
+      });
+    });
+
+    await waitFor(() => expect(screen.getByText(/23 chars of real content analyzed/)).toBeTruthy());
   });
 });

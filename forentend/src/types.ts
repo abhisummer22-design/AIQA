@@ -84,7 +84,7 @@ export type GeneratorPipelineStep =
   | 'APPROVE'
   | 'READY_FOR_EXECUTION';
 
-export type RequirementDocType = 'PRD' | 'FRD' | 'SRD' | 'ADDITIONAL';
+export type RequirementDocType = 'BRD' | 'PRD' | 'FRD' | 'SRD' | 'ADDITIONAL';
 
 export interface UploadedRequirementDoc {
   slotId: RequirementDocType;
