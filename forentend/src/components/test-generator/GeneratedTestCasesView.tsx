@@ -152,6 +152,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
   const [priorityFilter, setPriorityFilter] = useState<string>('ALL');
   const [showTestData, setShowTestData] = useState<boolean>(false);
+  const [showSourceExcerpt, setShowSourceExcerpt] = useState<boolean>(false);
 
   // If selected test case is no longer available or was cleared, keep sync
   const activeTestCase =
@@ -740,11 +741,26 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                 </div>
 
                 {activeTestCase.sourceRequirement && (
-                  <div className="text-xs text-slate-300 p-3 rounded bg-[#020617] border border-slate-800/80 italic font-sans">
-                    <span className="text-[10px] font-mono text-slate-400 not-italic block mb-1 font-semibold uppercase">
-                      Document Excerpt:
-                    </span>
-                    "{activeTestCase.sourceRequirement}"
+                  <div className="rounded bg-[#020617] border border-slate-800/80">
+                    <button
+                      type="button"
+                      id="btn-toggle-source-excerpt"
+                      onClick={() => setShowSourceExcerpt(!showSourceExcerpt)}
+                      className="w-full flex items-center justify-between gap-2 p-3 text-left cursor-pointer"
+                    >
+                      <span className="text-[10px] font-mono text-slate-400 font-semibold uppercase tracking-wider">
+                        Document Excerpt
+                      </span>
+                      <span className="text-[11px] font-mono text-indigo-400 hover:text-indigo-300 shrink-0">
+                        {showSourceExcerpt ? 'Collapse' : 'Expand'}
+                      </span>
+                    </button>
+
+                    {showSourceExcerpt && (
+                      <div className="text-xs text-slate-300 px-3 pb-3 italic font-sans">
+                        "{activeTestCase.sourceRequirement}"
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
