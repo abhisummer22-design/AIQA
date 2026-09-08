@@ -25,9 +25,19 @@ describe('categoryMatchedSkillIds', () => {
     expect(matched.size).toBe(0);
   });
 
-  it('never fuzzy-matches a near-miss name — "Business Logic" category does not pull in "Business Case Testing"', () => {
+  it('matches "Business Logic" to "Business Case Testing" via the curated alias, not a general fuzzy guess', () => {
     const skills = [skill('skill-business-case-testing', 'Business Case Testing')];
     const matched = categoryMatchedSkillIds(['Business Logic'], skills);
+    expect(matched.get('skill-business-case-testing')).toBe('Business Logic');
+  });
+
+  it('still never fuzzy-matches an unrelated near-miss name with no real alias', () => {
+    const skills = [skill('skill-database-testing', 'Database Testing')];
+    // "Data" is a real near-miss of "Database" but the two are not the same
+    // concept, and no alias exists for it — must stay unmatched, proving
+    // the alias table is a small, curated exception list, not a general
+    // fuzzy-matching mechanism.
+    const matched = categoryMatchedSkillIds(['Data'], skills);
     expect(matched.size).toBe(0);
   });
 
