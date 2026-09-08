@@ -910,10 +910,17 @@ impl MjGatewayExecutor {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(180);
+        // 8192 (was 4096): a per-skill test-case generation call
+        // (ai_generation.rs) can now legitimately ask for a large, exhaustive
+        // set of structured cases in one response — 4096 completion tokens
+        // was a real, silent ceiling on how many a single call could ever
+        // return regardless of what the prompt asked for. Still real,
+        // finite headroom, not "unlimited" — and still overridable per
+        // deployment via the env var.
         let max_tokens: u32 = std::env::var("MJ_AI_MAX_TOKENS")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(4096);
+            .unwrap_or(8192);
         Self {
             base_url,
             api_key,
@@ -1199,10 +1206,12 @@ impl GroqExecutor {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(180);
+        // 8192 (was 4096) — see the same real reasoning on MJ_AI_MAX_TOKENS's
+        // own default above; still overridable per deployment.
         let max_tokens: u32 = std::env::var("GROQ_MAX_TOKENS")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(4096);
+            .unwrap_or(8192);
         Self {
             base_url,
             api_key,
@@ -1487,10 +1496,12 @@ impl GeminiExecutor {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(180);
+        // 8192 (was 4096) — see the same real reasoning on MJ_AI_MAX_TOKENS's
+        // own default above; still overridable per deployment.
         let max_tokens: u32 = std::env::var("GEMINI_MAX_TOKENS")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(4096);
+            .unwrap_or(8192);
         Self {
             base_url,
             api_key,
