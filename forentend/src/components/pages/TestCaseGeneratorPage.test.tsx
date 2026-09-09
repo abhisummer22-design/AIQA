@@ -1364,6 +1364,53 @@ describe('TestCaseGeneratorPage — AUD-005 real persistence, validation, execut
     );
   });
 
+  it('Edit Test Case sends a real PATCH with the real edited fields, closing a real gap: reject-and-regenerate was the only fix before', async () => {
+    let patchBody: unknown = null;
+    let currentTitle = 'Wrong title';
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/test-cases/case-edit') && init?.method === 'PATCH') {
+        patchBody = JSON.parse(String(init.body));
+        currentTitle = (patchBody as { title: string }).title;
+        return jsonResponse(200, testCaseRow({ id: 'case-edit', title: currentTitle, status: 'GENERATED' }));
+      }
+      // A real backend remembers the update — the refetch after a
+      // successful PATCH must see it too, not the original fixture again.
+      if (url.includes('/test-cases')) return jsonResponse(200, [testCaseRow({ id: 'case-edit', title: currentTitle, status: 'GENERATED' })]);
+      if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+      return jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToGeneratedCasesBranch();
+    await waitFor(() => expect(screen.getAllByText('Wrong title').length).toBeGreaterThan(0));
+
+    await act(async () => {
+      document.getElementById('btn-edit-test-case')!.click();
+    });
+    expect(document.getElementById('edit-test-case-modal')).toBeTruthy();
+
+    const titleInput = document.getElementById('edit-tc-title') as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(titleInput, { target: { value: 'Corrected title' } });
+    });
+    await act(async () => {
+      document.getElementById('btn-save-test-case-edit')!.click();
+    });
+
+    await waitFor(() => expect(patchBody).not.toBeNull());
+    expect((patchBody as { title: string }).title).toBe('Corrected title');
+    // The real, unmodified other fields are still sent — not a partial
+    // patch missing everything the user didn't touch.
+    expect((patchBody as { steps: unknown[] }).steps.length).toBeGreaterThan(0);
+    // A successful real save refetches the real persisted list — the
+    // corrected title (from the server's own response) is what's shown.
+    await waitFor(() => expect(screen.getAllByText('Corrected title').length).toBeGreaterThan(0));
+  });
+
   it('shows the real loading state while persisted cases are being fetched', async () => {
     let resolveFetch: (value: Response) => void;
     const pending = new Promise<Response>((resolve) => {

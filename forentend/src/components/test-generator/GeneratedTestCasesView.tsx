@@ -26,6 +26,7 @@ import {
   Info,
   ExternalLink,
   HelpCircle,
+  Pencil,
 } from 'lucide-react';
 import {
   GeneratedTestCase,
@@ -38,6 +39,7 @@ import { TEST_CATEGORIES } from './GenerationConfigSection';
 import { skillStem } from '../../services/skillRegistry';
 import { EXECUTOR_OPTIONS, SIMULATE_OUTCOMES } from '../pages/ExecutionHubPage';
 import type { HandoffChoice } from '../pages/TestCaseGeneratorPage';
+import { EditTestCaseModal, type EditTestCaseUpdates } from './EditTestCaseModal';
 import type { CompilationOutcome } from '../../types/contract';
 
 /** Phase 2.1 — the one non-real-executor addition to the handoff dropdown:
@@ -96,6 +98,12 @@ interface GeneratedTestCasesViewProps {
   casesLoading?: boolean;
   casesError?: string | null;
   onValidateTestCase?: (id: string) => void;
+  /** Real save — a backend PATCH for an already-persisted case, or a local
+   *  draft mutation for one not yet saved (the caller decides which,
+   *  exactly like every other action here already branches on
+   *  `hasPersisted`). Rejects with a real, specific error on failure; the
+   *  modal surfaces it and does not close. */
+  onEditTestCase?: (id: string, updates: EditTestCaseUpdates) => Promise<void>;
   /** Phase 2 — `choice` is either a real executor (`{ mode: 'executor',
    *  executor }`, dispatched via `TestCaseHandoffRequest.executor` with no
    *  params, exactly like the Execution Hub's own manually-created tasks —
@@ -132,6 +140,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
   casesLoading = false,
   casesError = null,
   onValidateTestCase,
+  onEditTestCase,
   onHandoffTestCase,
   handoffError = null,
   onCompilePreview,
@@ -145,6 +154,10 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
   // any other value is a real, registered executor name.
   const [handoffExecutor, setHandoffExecutor] = useState<string>('');
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
+  // Self-contained modal-open state, same convention `SkillManagerModal`'s
+  // own caller (`SkillsAndMcpPanel`) already uses — the real save logic
+  // itself lives in `onEditTestCase`, owned by the page.
+  const [editingCase, setEditingCase] = useState<GeneratedTestCase | null>(null);
   const [selectedTestCaseId, setSelectedTestCaseId] = useState<string | null>(
     testCases.length > 0 ? testCases[0].id : null
   );
@@ -690,6 +703,17 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                     {getPriorityBadge(activeTestCase.priority)}
                     {getSeverityBadge(activeTestCase.severity)}
                     {getStatusBadge(activeTestCase.status)}
+                    {onEditTestCase && (
+                      <button
+                        type="button"
+                        id="btn-edit-test-case"
+                        onClick={() => setEditingCase(activeTestCase)}
+                        className="flex items-center gap-1 px-2.5 py-1 rounded border border-slate-700 hover:border-indigo-600 text-slate-400 hover:text-indigo-300 font-mono text-[10px] font-semibold cursor-pointer transition-colors"
+                      >
+                        <Pencil className="w-3 h-3" />
+                        <span>Edit</span>
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -1247,6 +1271,14 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
           )}
         </div>
       </div>
+
+      {editingCase && onEditTestCase && (
+        <EditTestCaseModal
+          testCase={editingCase}
+          onClose={() => setEditingCase(null)}
+          onSave={(updates) => onEditTestCase(editingCase.id, updates)}
+        />
+      )}
     </div>
   );
 };

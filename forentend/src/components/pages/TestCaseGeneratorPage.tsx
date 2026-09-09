@@ -49,6 +49,7 @@ import {
   GeneratedTestCase,
 } from '../../types';
 import { ApiError, aiqaApi, orchestratorLogsWsUrl } from '../../services/aiqaApi';
+import type { EditTestCaseUpdates } from '../test-generator/EditTestCaseModal';
 import type {
   CreateTestCaseRequest,
   TestCaseHandoffRequest,
@@ -465,6 +466,48 @@ export const TestCaseGeneratorPage: React.FC = () => {
     } catch (err) {
       setSaveErrorMessage(err instanceof ApiError ? err.message : 'Reject failed.');
     }
+  };
+
+  /** Real save for the Edit Test Case modal — a real backend PATCH for an
+   *  already-persisted case (refetching the real row afterward, same
+   *  `refetchPersistedCases` every other real lifecycle action above
+   *  already uses), or a plain local mutation for a still-local draft.
+   *  Deliberately lets a real failure propagate (no local catch here) so
+   *  the modal's own error display shows it and the modal does not close
+   *  on a failed save. */
+  const handleEditTestCase = async (id: string, updates: EditTestCaseUpdates): Promise<void> => {
+    if (hasPersisted) {
+      if (!realProjectId) throw new Error('No project selected.');
+      await aiqaApi.testCases.update(realProjectId, id, {
+        title: updates.title,
+        description: updates.description,
+        priority: updates.priority,
+        preconditions: updates.preconditions,
+        steps: updates.steps.map((s) => ({
+          step_number: s.stepNumber,
+          action: s.action,
+          expected_result: s.expectedResult,
+        })),
+        expected_result: updates.expectedResult,
+      });
+      await refetchPersistedCases();
+      return;
+    }
+    setGeneratedCases((prev) =>
+      prev.map((tc) =>
+        tc.id === id
+          ? {
+              ...tc,
+              title: updates.title,
+              description: updates.description,
+              priority: updates.priority,
+              preconditions: updates.preconditions,
+              steps: updates.steps,
+              expectedResult: updates.expectedResult,
+            }
+          : tc,
+      ),
+    );
   };
 
   /** The real bridge to the real Execution Hub (FRD-EXE-11). `choice` is a
@@ -1207,6 +1250,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
           casesLoading={casesLoading}
           casesError={casesError?.message ?? null}
           onValidateTestCase={handleValidateReal}
+          onEditTestCase={handleEditTestCase}
           onHandoffTestCase={handleHandoffReal}
           handoffError={handoffError}
           onCompilePreview={handleCompilePreview}
