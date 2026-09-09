@@ -107,6 +107,22 @@ export function skillStem(name: string): string {
   return name.replace(/\s+(Testing|Analysis)$/i, '').trim().toLowerCase();
 }
 
+/** A small, explicit, human-reviewed table of the real cases where one of
+ *  the 14 canonical test-category names and a built-in skill's own stemmed
+ *  name are the same underlying concept, just worded differently — e.g.
+ *  category "Business Logic" and skill "Business Case Testing" both mean
+ *  "identify business-rule/workflow/decision-path scenarios". Each entry
+ *  is a deliberate, individually-justified synonym, never a generic
+ *  fuzzy/edit-distance guess: `categoryMatchedSkillIds` below still does
+ *  exact stem equality — this table only widens what counts as "the same
+ *  stem" for these specific, reviewed pairs. Add to this table only when a
+ *  category and a skill are genuinely the same real concept; do not use it
+ *  to paper over a category (like "Senior Base") that has no real skill
+ *  counterpart at all. */
+const CATEGORY_STEM_ALIASES: Record<string, string> = {
+  'business logic': 'business case',
+};
+
 /**
  * Skills genuinely equivalent to a currently-selected test category — e.g.
  * category `"Performance"` matches skill `"Performance Testing"` — so that
@@ -115,27 +131,34 @@ export function skillStem(name: string): string {
  * skill id to the real category name it matched, so a caller can say *why*
  * a skill is included rather than just *that* it is.
  *
- * Matching is exact stem equality only, never a partial/fuzzy guess: a
- * skill is included here only when it unambiguously names the same concept
- * as a selected category. This deliberately leaves most categories
- * unmatched (no built-in skill named "Load Testing" or "UI/UX Testing"
- * exists today) and most non-built-in skills unmatched too (a custom or
- * SKILL.md-file skill only participates if its own name happens to equal a
- * category, e.g. a file literally named "Performance Testing") — those
- * stay exactly as selectable-by-hand as before. This is why a skill with no
- * category counterpart (Database Testing, RBAC Testing, most real SKILL.md
- * files) is never silently added or dropped by this function.
+ * Matching is exact stem equality only, never a general fuzzy/partial
+ * guess: a skill is included here only when it unambiguously names the
+ * same concept as a selected category, either directly or via the small,
+ * curated `CATEGORY_STEM_ALIASES` table above. This deliberately leaves
+ * most categories unmatched (no built-in skill named "Load Testing" or
+ * "UI/UX Testing" exists today, and no alias papers over that) and most
+ * non-built-in skills unmatched too (a custom or SKILL.md-file skill only
+ * participates if its own name happens to equal a category, e.g. a file
+ * literally named "Performance Testing") — those stay exactly as
+ * selectable-by-hand as before. This is why a skill with no category
+ * counterpart (Database Testing, RBAC Testing, most real SKILL.md files)
+ * is never silently added or dropped by this function.
  *
  * Works identically for built-in, custom, and filesystem skills alike,
  * since it only ever reads `SkillDefinition.name` — never `type` — so a
  * newly-dropped SKILL.md file participates with zero extra wiring the
- * moment its name matches a category.
+ * moment its name matches a category (directly or via an alias).
  */
 export function categoryMatchedSkillIds(
   selectedCategories: readonly string[],
   skills: readonly SkillDefinition[],
 ): Map<string, string> {
-  const stemToCategory = new Map(selectedCategories.map((c) => [c.trim().toLowerCase(), c]));
+  const stemToCategory = new Map(
+    selectedCategories.map((c) => {
+      const normalized = c.trim().toLowerCase();
+      return [CATEGORY_STEM_ALIASES[normalized] ?? normalized, c];
+    }),
+  );
   const matched = new Map<string, string>();
   for (const skill of skills) {
     const category = stemToCategory.get(skillStem(skill.name));

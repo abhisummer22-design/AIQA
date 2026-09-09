@@ -758,6 +758,64 @@ describe('TestCaseGeneratorPage — Phase 1 regression (local draft review still
   }, 15000);
 });
 
+describe('TestCaseGeneratorPage — real unsaved-work warning before a browser unload', () => {
+  it('warns before an actual tab close/refresh once real generated cases exist and are not yet saved', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') return jsonResponse(200, aiGenerateResponse());
+        if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+        return jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+
+    // Before any generation, there is genuinely nothing to lose yet — a
+    // real unload must never be blocked here.
+    const beforeGenerate = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(beforeGenerate);
+    expect(beforeGenerate.defaultPrevented).toBe(false);
+
+    await generate();
+
+    // Real, un-persisted cases now exist (the backend's own test-cases
+    // list is still genuinely empty — the same real gap that let 445 real
+    // cases vanish silently) — a real unload must now be blocked.
+    const afterGenerate = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(afterGenerate);
+    expect(afterGenerate.defaultPrevented).toBe(true);
+  }, 15000);
+
+  it('never warns once the real backend already has persisted cases for this project', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+        if (url.includes('/test-cases')) return jsonResponse(200, [testCaseRow()]);
+        return jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+    await waitFor(() => expect(screen.getAllByText(/Approve|Validate/).length).toBeGreaterThan(0));
+
+    // Real, already-persisted cases exist — nothing local is at risk, so a
+    // real unload must never be blocked here either.
+    const event = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
+  }, 15000);
+});
+
 // ============================================================ AUD-005
 
 describe('TestCaseGeneratorPage — AUD-005 real persistence, validation, execution handoff', () => {
