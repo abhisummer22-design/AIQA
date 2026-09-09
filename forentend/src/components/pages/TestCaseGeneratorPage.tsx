@@ -802,6 +802,28 @@ export const TestCaseGeneratorPage: React.FC = () => {
   const hasPersisted = persistedCases.length > 0;
   const displayedCases: GeneratedTestCase[] = hasPersisted ? persistedCases.map(testCaseRowToDisplay) : generatedCases;
 
+  // A real, native browser warning before losing genuinely unsaved
+  // generated cases — closes a real gap that let real AI output vanish
+  // silently on a tab close/refresh with zero warning. Only fires for an
+  // actual browser-level unload (tab close, refresh, browser close);
+  // in-app navigation to another page never reaches this, since
+  // `generatedCases` already survives that via `activeGenerationSession`
+  // (unchanged, see its own state declaration above) — this guard is only
+  // for the one case that genuinely had none at all.
+  useEffect(() => {
+    if (hasPersisted || generatedCases.length === 0) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      // A truthy `returnValue` is what makes Chrome/older browsers show
+      // their own built-in warning — the actual displayed text is
+      // browser-controlled; every modern browser ignores a custom message
+      // here, so none is invented.
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [hasPersisted, generatedCases.length]);
+
   const handleApproveTestCase = (id: string) => {
     if (hasPersisted) {
       void handleApproveReal(id);
