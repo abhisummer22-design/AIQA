@@ -161,12 +161,12 @@ export const RBACTestingPage: React.FC = () => {
       const audit = selectedProjectId
         ? aiqaApi.audit
             .list(selectedProjectId, { limit: 100 }, signal)
-            .then((rows) => {
+            .then((result) => {
               if (!isUnmounted.current) {
                 // Only real denials — this panel is about enforcement, and
                 // every row here is a real recorded refusal, never a
                 // synthesized "scenario result".
-                setDenials(rows.filter((r) => r.outcome === 'denied'));
+                setDenials(result.rows.filter((r) => r.outcome === 'denied'));
                 setDenialsError(null);
               }
             })

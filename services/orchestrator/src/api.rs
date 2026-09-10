@@ -4559,6 +4559,25 @@ async fn review_finding_scoped(
 
 // ------------------------------------------------------------ audit (§25)
 
+/// Real pagination envelope for the project-scoped audit list (added
+/// alongside real `offset` support — `AuditPage.tsx`'s own pre-existing doc
+/// comment on this file's frontend counterpart called the previous
+/// limit-only story "not an invented multi-page contract", i.e. honestly
+/// not real pagination at all). `total` is a real `COUNT(*)`
+/// (`store.rs::count_audit`), not derived from this response's own `rows`
+/// length, so a caller can show a real "X-Y of Z" and correctly disable
+/// "next" exactly at the real end. The legacy global `/admin/audit-log`
+/// route (`get_audit_log` above) deliberately keeps its original bare-array
+/// shape — out of scope here, and still a real consumer, `apps/web`'s own
+/// reference `AuditLogView.tsx`, elsewhere in this repo (unmaintained,
+/// confirmed not part of this repo's CI, but a bare-array response is still
+/// the honest choice not to break it on faith alone).
+#[derive(Serialize)]
+struct AuditLogResponse {
+    rows: Vec<crate::store::AuditRow>,
+    total: i64,
+}
+
 /// GET /api/v1/projects/:project_id/audit — API Contract §25.1. Unlike the
 /// legacy `/admin/audit-log` (global, `Role::Admin`-only), this is a
 /// project's own audit trail — visibility follows the same bar every other
@@ -4572,18 +4591,23 @@ async fn get_audit_log_scoped(
     Extension(ctx): Extension<AuthContext>,
     ApiPath(project_id): ApiPath<Uuid>,
     ApiQuery(q): ApiQuery<AuditQuery>,
-) -> Result<Json<Vec<crate::store::AuditRow>>, ApiError> {
+) -> Result<Json<AuditLogResponse>, ApiError> {
     require_scoped_project(&state, &ctx, project_id).await?;
     auth::require_role(&ctx, Role::Operator)?;
+    let pid = project_id.to_string();
+    let limit = q.limit.unwrap_or(100).clamp(1, 1000);
+    let offset = q.offset.unwrap_or(0).max(0);
     let rows = state
         .store
-        .list_audit(
-            Some(project_id.to_string().as_str()),
-            q.limit.unwrap_or(100).clamp(1, 1000),
-        )
+        .list_audit(Some(pid.as_str()), limit, offset)
         .await
         .map_err(to_500)?;
-    Ok(Json(rows))
+    let total = state
+        .store
+        .count_audit(Some(pid.as_str()))
+        .await
+        .map_err(to_500)?;
+    Ok(Json(AuditLogResponse { rows, total }))
 }
 
 // ------------------------------------------- test plans / test suites (Phase 5)
@@ -5224,6 +5248,11 @@ async fn revoke_api_key_handler(
 #[derive(Deserialize)]
 struct AuditQuery {
     limit: Option<i64>,
+    /// Real pagination (previously `limit` alone was this sprint's entire
+    /// pagination story — see `AuditLogResponse`'s own doc comment). `< 0`
+    /// is clamped to 0, same defensive floor `limit`'s own `.clamp` already
+    /// applies to its side.
+    offset: Option<i64>,
 }
 
 async fn get_audit_log(
@@ -5234,7 +5263,11 @@ async fn get_audit_log(
     auth::require_role(&ctx, Role::Admin)?;
     let rows = state
         .store
-        .list_audit(None, q.limit.unwrap_or(100).clamp(1, 1000))
+        .list_audit(
+            None,
+            q.limit.unwrap_or(100).clamp(1, 1000),
+            q.offset.unwrap_or(0).max(0),
+        )
         .await
         .map_err(to_500)?;
     Ok(Json(rows))

@@ -82,7 +82,13 @@ function mockBackend(opts: { me?: WhoAmIResponse; keysStatus?: number; audit?: A
       }
       return jsonResponse(200, KEYS);
     }
-    if (u.includes('/audit')) return jsonResponse(200, opts.audit ?? AUDIT);
+    if (u.includes('/audit')) {
+      // Real pagination envelope (api.rs::AuditLogResponse) — this
+      // fixture's real total is exactly its own length, same as every
+      // other single-page test fixture in this app.
+      const auditRows = opts.audit ?? AUDIT;
+      return jsonResponse(200, { rows: auditRows, total: auditRows.length });
+    }
     if (u.includes('/logs')) return jsonResponse(200, []);
     return jsonResponse(200, [PROJECT_A]);
   });

@@ -195,14 +195,15 @@ describe('aiqaApi.audit.list (FE-6 §24 API layer, items 1-7)', () => {
     outcome: 'ok',
   };
 
-  it('item 1/2 — uses the existing FE-1 transport and parses a real successful response', async () => {
+  it('item 1/2 — uses the existing FE-1 transport and parses a real successful response, including the real pagination envelope', async () => {
     setApiKey('aiqa_audittest0000000');
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, [AUDIT_ROW]));
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { rows: [AUDIT_ROW], total: 1 }));
     vi.stubGlobal('fetch', fetchMock);
 
-    const rows = await aiqaApi.audit.list(PROJECT_ID, { limit: 50 });
+    const result = await aiqaApi.audit.list(PROJECT_ID, { limit: 50 });
 
-    expect(rows).toEqual([AUDIT_ROW]);
+    expect(result.rows).toEqual([AUDIT_ROW]);
+    expect(result.total).toBe(1);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe(`/api/v1/projects/${PROJECT_ID}/audit?limit=50`);
     expect((init.headers as Record<string, string>).Authorization).toBe('Bearer aiqa_audittest0000000');
@@ -233,7 +234,7 @@ describe('aiqaApi.audit.list (FE-6 §24 API layer, items 1-7)', () => {
   it('item 6 — the API key never appears in the request URL', async () => {
     const raw = 'aiqa_shouldneverbeinurl0';
     setApiKey(raw);
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, []));
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { rows: [], total: 0 }));
     vi.stubGlobal('fetch', fetchMock);
 
     await aiqaApi.audit.list(PROJECT_ID, { limit: 100 });
@@ -243,17 +244,17 @@ describe('aiqaApi.audit.list (FE-6 §24 API layer, items 1-7)', () => {
     expect(url).not.toContain('aiqa_');
   });
 
-  it('item 7 — project scope is passed exactly as the real contract requires (path segment, not a query param), and only `limit` is ever sent as a query parameter — no invented filter/sort/page params', async () => {
+  it('item 7 — project scope is passed exactly as the real contract requires (path segment, not a query param), and `limit`/`offset` (real pagination) are the only query parameters ever sent — no invented filter/sort params', async () => {
     setApiKey('aiqa_audittest0000000');
-    const fetchMock = vi.fn().mockImplementation(async () => jsonResponse(200, []));
+    const fetchMock = vi.fn().mockImplementation(async () => jsonResponse(200, { rows: [], total: 0 }));
     vi.stubGlobal('fetch', fetchMock);
 
-    await aiqaApi.audit.list(PROJECT_ID, { limit: 250 });
+    await aiqaApi.audit.list(PROJECT_ID, { limit: 250, offset: 500 });
 
     const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe(`/api/v1/projects/${PROJECT_ID}/audit?limit=250`);
+    expect(url).toBe(`/api/v1/projects/${PROJECT_ID}/audit?limit=250&offset=500`);
 
-    // Omitting `limit` omits the query string entirely — nothing is ever
+    // Omitting both omits the query string entirely — nothing is ever
     // fabricated in its place.
     fetchMock.mockClear();
     await aiqaApi.audit.list(PROJECT_ID);

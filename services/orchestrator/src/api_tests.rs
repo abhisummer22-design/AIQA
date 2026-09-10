@@ -2293,7 +2293,7 @@ async fn be13_cancel_running_execution_succeeds_and_is_auditable() {
     );
 
     // Required audit behavior (Contract §12.3 "auditable").
-    let audit = state.store.list_audit(None, 50).await.expect("list_audit");
+    let audit = state.store.list_audit(None, 50, 0).await.expect("list_audit");
     assert!(
         audit.iter().any(|a| a.action == "run.cancel"
             && a.target.as_deref() == Some(run_id.as_str())
@@ -2723,7 +2723,7 @@ async fn be15_finding_analysis_correlates_real_failure_cluster_and_is_audited() 
         "analysis={analysis}"
     );
 
-    let audit = state.store.list_audit(None, 50).await.expect("list_audit");
+    let audit = state.store.list_audit(None, 50, 0).await.expect("list_audit");
     assert!(
         audit.iter().any(|a| a.action == "finding.analysis"
             && a.target.as_deref() == Some(finding_id.to_string().as_str())),
@@ -2793,7 +2793,7 @@ async fn be15_finding_review_scoped_confirms_and_dismisses() {
     .await;
     assert_eq!(detail["review_state"], "DISMISSED", "detail={detail}");
 
-    let audit = state.store.list_audit(None, 50).await.expect("list_audit");
+    let audit = state.store.list_audit(None, 50, 0).await.expect("list_audit");
     assert!(audit
         .iter()
         .any(|a| a.action == "finding.review" && a.detail.as_deref() == Some("CONFIRMED")));
@@ -3053,7 +3053,7 @@ async fn be15_audit_log_scoped_to_project_and_isolated() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body={log_a}");
-    let entries_a = log_a.as_array().unwrap();
+    let entries_a = log_a["rows"].as_array().unwrap();
     assert!(
         !entries_a.is_empty(),
         "project A must see its own audit entries"
@@ -3063,6 +3063,14 @@ async fn be15_audit_log_scoped_to_project_and_isolated() {
             .iter()
             .all(|e| e["project_id"] == project_a.to_string()),
         "project A's audit view must never include another project's rows; entries={entries_a:?}"
+    );
+    // The real total (`store.rs::count_audit`) must match this project's
+    // own real row count, not the legacy admin route's global total and
+    // not the batch's own length under a limit smaller than the real count.
+    assert_eq!(
+        log_a["total"].as_i64().unwrap(),
+        entries_a.len() as i64,
+        "body={log_a}"
     );
 
     // Cross-project blocked.
@@ -3104,6 +3112,86 @@ async fn be15_audit_log_scoped_to_project_and_isolated() {
     )
     .await;
     assert_envelope(status, &body, StatusCode::UNAUTHORIZED, "UNAUTHENTICATED");
+}
+
+/// Category: real pagination — `offset` genuinely moves the window rather
+/// than being silently ignored, `total` is the real full count (not this
+/// response's own batch length), and paging all the way through with a
+/// small `limit` reconstructs exactly the same real rows, in the same real
+/// order, as one unpaged fetch.
+#[tokio::test]
+async fn be15_audit_log_offset_pages_through_real_rows_and_total_is_the_real_full_count() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "Audit Pagination").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    // 5 real, separately-audited actions.
+    for i in 0..5 {
+        send(
+            &state,
+            req(
+                "POST",
+                &format!("/api/v1/projects/{project}/executions"),
+                Some(&owner),
+                Some(simple_plan(&format!("audit-page-{i}"))),
+            ),
+        )
+        .await;
+    }
+
+    async fn fetch_audit_page(
+        state: &AppState,
+        project: Uuid,
+        owner: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Value {
+        let (status, body) = send(
+            state,
+            req(
+                "GET",
+                &format!("/api/v1/projects/{project}/audit?limit={limit}&offset={offset}"),
+                Some(owner),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "body={body}");
+        body
+    }
+
+    let unpaged = fetch_audit_page(&state, project, &owner, 100, 0).await;
+    let all_rows = unpaged["rows"].as_array().unwrap().clone();
+    assert_eq!(unpaged["total"].as_i64().unwrap(), all_rows.len() as i64);
+    assert!(all_rows.len() >= 5, "rows={all_rows:?}");
+
+    let page1 = fetch_audit_page(&state, project, &owner, 2, 0).await;
+    let page2 = fetch_audit_page(&state, project, &owner, 2, 2).await;
+    let page3 = fetch_audit_page(&state, project, &owner, 2, 4).await;
+
+    let real_total = unpaged["total"].as_i64().unwrap();
+    for page in [&page1, &page2, &page3] {
+        assert_eq!(
+            page["total"].as_i64().unwrap(),
+            real_total,
+            "the real total must be the same regardless of which page is being viewed; page={page:?}"
+        );
+    }
+    assert_eq!(page1["rows"].as_array().unwrap().len(), 2);
+    assert_eq!(page2["rows"].as_array().unwrap().len(), 2);
+    // The real remainder — never a short/long guess from batch length.
+    assert_eq!(
+        page3["rows"].as_array().unwrap().len() as i64,
+        real_total - 4
+    );
+
+    // Concatenating every page reconstructs exactly the same real rows, in
+    // the same real order, as one unpaged fetch — offset genuinely moves
+    // the window rather than being silently ignored or double-fetching.
+    let mut paged_rows = page1["rows"].as_array().unwrap().clone();
+    paged_rows.extend(page2["rows"].as_array().unwrap().clone());
+    paged_rows.extend(page3["rows"].as_array().unwrap().clone());
+    assert_eq!(paged_rows, all_rows, "paged reconstruction must match the real unpaged order exactly");
 }
 
 /// Category: admin-route regression — the platform-wide, Admin-only
@@ -7104,7 +7192,7 @@ async fn be18_finding_ai_hypothesis_returns_real_outcome_and_never_overwrites_de
         "body={after}"
     );
 
-    let audit = state.store.list_audit(None, 50).await.expect("list_audit");
+    let audit = state.store.list_audit(None, 50, 0).await.expect("list_audit");
     assert!(
         audit.iter().any(|a| a.action == "finding.ai_hypothesis"
             && a.target.as_deref() == Some(finding_id.to_string().as_str())
@@ -7176,7 +7264,7 @@ async fn be18_finding_ai_hypothesis_reports_truthful_fallback_on_provider_timeou
         "the real deterministic hypothesis must still be present; body={body}"
     );
 
-    let audit = state.store.list_audit(None, 50).await.expect("list_audit");
+    let audit = state.store.list_audit(None, 50, 0).await.expect("list_audit");
     assert!(
         audit
             .iter()
@@ -8046,7 +8134,7 @@ async fn delete_project_admin_success_with_cascading_cleanup() {
     // Verify audit log has project.delete entry
     let audit_rows = state
         .store
-        .list_audit(None, 100)
+        .list_audit(None, 100, 0)
         .await
         .expect("audit log");
     let delete_entry = audit_rows
