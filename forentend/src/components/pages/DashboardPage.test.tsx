@@ -707,13 +707,12 @@ describe('DashboardPage (FE-10 §28 items 1-32)', () => {
       screen.getByText('Retry').closest('button')!.click();
     });
     await waitFor(() => expect(within(kpiRow()).getByText('4')).toBeTruthy());
-    // Exactly the real calls a fresh load makes — no duplicate storm. Three
-    // for the Dashboard itself (dashboard/kpis/executions) plus three for
-    // the Neural Intelligence Graph mounting for the first time now that
-    // `data` is finally non-null (test-cases/executions/audit — its own
-    // real data adapter, `useNeuralGraphData`) — not a second copy of the
-    // same three, a genuinely different real fetch for a real feature.
-    expect(fetchMock.mock.calls.length - before).toBe(6);
+    // Exactly the real calls a fresh load makes — no duplicate storm.
+    // Three for the Dashboard itself (dashboard/kpis/executions); the
+    // Neural Intelligence Graph's own extra three (test-cases/executions/
+    // audit) are gone along with that now-removed, confirmed-redundant
+    // feature.
+    expect(fetchMock.mock.calls.length - before).toBe(3);
   });
 
   // ------------------------------------------------------------ regression

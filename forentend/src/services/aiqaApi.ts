@@ -40,7 +40,7 @@ import type {
   AiSettings,
   AiStatusResponse,
   ApiErrorEnvelope,
-  AuditRow,
+  AuditLogResponse,
   CancelRunResponse,
   AdHocApiRequest,
   ApiTestExecutionResponse,
@@ -511,8 +511,15 @@ export const aiqaApi = {
   },
 
   audit: {
-    list: (projectId: string, opts: { limit?: number } = {}, signal?: AbortSignal) =>
-      requestJson<AuditRow[]>(`/projects/${projectId}/audit`, { query: { limit: opts.limit }, signal }),
+    /** Real pagination — `offset` is a real backend `OFFSET`
+     *  (`store.rs::list_audit`); the response's real `total`
+     *  (`store.rs::count_audit`) is what a caller pages against, never a
+     *  guess from `rows.length` against the just-requested `limit`. */
+    list: (projectId: string, opts: { limit?: number; offset?: number } = {}, signal?: AbortSignal) =>
+      requestJson<AuditLogResponse>(`/projects/${projectId}/audit`, {
+        query: { limit: opts.limit, offset: opts.offset },
+        signal,
+      }),
   },
 
   /** FE-22 — BE-10's project-scoped `TestIntelRow[]` route. The legacy,

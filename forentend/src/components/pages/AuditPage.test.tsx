@@ -72,7 +72,13 @@ function mockBackend(opts: {
       if (entry && typeof entry === 'object' && 'status' in entry) {
         return jsonResponse(entry.status, entry.body);
       }
-      return jsonResponse(200, entry ?? []);
+      // Real pagination envelope (api.rs::AuditLogResponse) — `total` is a
+      // real COUNT(*), but for these fixed, single-page test fixtures the
+      // real total is exactly this batch's own length (no test here seeds
+      // more rows than one page shows). The cast is safe: the `'offline'`
+      // and `{status, body}` variants both already returned above.
+      const auditRows = (entry as AuditRow[] | undefined) ?? [];
+      return jsonResponse(200, { rows: auditRows, total: auditRows.length });
     }
     // FE-10: real Dashboard endpoints — zero-valued but real-shaped, so any
     // test that renders `/dashboard` sees an honest, empty-but-real
@@ -237,7 +243,7 @@ describe('AuditPage (FE-6 §24 items 8-26)', () => {
     expect(screen.getByText('Loading audit trail')).toBeTruthy();
 
     await act(async () => {
-      resolveFetch!(jsonResponse(200, [AUDIT_ROW_A]));
+      resolveFetch!(jsonResponse(200, { rows: [AUDIT_ROW_A], total: 1 }));
       await pending;
     });
   });
@@ -383,6 +389,79 @@ describe('AuditPage (FE-6 §24 items 8-26)', () => {
     await waitFor(() => expect(document.getElementById('aiqa-test-case-generator-page')).toBeTruthy());
     expect(screen.getAllByText('Test Case Generator').length).toBeGreaterThan(0);
     expect(screen.getByText('Ready to Generate')).toBeTruthy();
+  });
+
+  it('real pagination: Next/Previous move a real offset window, and the real total (not batch length) drives "Showing X-Y of Z" and button state', async () => {
+    setApiKey(RAW_KEY);
+    const allRows: AuditRow[] = Array.from({ length: 55 }, (_, i) => ({
+      ...AUDIT_ROW_A,
+      action: `action.${i + 1}`,
+      target: `target-${i + 1}`,
+    }));
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      if (url.includes('/audit')) {
+        const limitMatch = url.match(/[?&]limit=(\d+)/);
+        const offsetMatch = url.match(/[?&]offset=(\d+)/);
+        const limit = limitMatch ? Number(limitMatch[1]) : 100;
+        const offset = offsetMatch ? Number(offsetMatch[1]) : 0;
+        return jsonResponse(200, { rows: allRows.slice(offset, offset + limit), total: allRows.length });
+      }
+      if (url.includes('/dashboard')) {
+        return jsonResponse(200, {
+          project_id: PROJECT_A.id,
+          project_name: PROJECT_A.name,
+          execution_counts: {},
+          task_counts: {},
+          pass_fail: { passed: 0, failed: 0 },
+          test_count: 0,
+          generated_at: '2026-08-19T00:00:00Z',
+        });
+      }
+      if (url.includes('/kpis')) {
+        return jsonResponse(200, { project_id: PROJECT_A.id, execution_reliability: null, execution_efficiency_ms: null, generated_at: '2026-08-19T00:00:00Z' });
+      }
+      if (url.includes('/executions')) return jsonResponse(200, []);
+      return jsonResponse(200, [PROJECT_A]);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+
+    // Default limit (100) already covers all 55 real rows on one page.
+    await waitFor(() => expect(screen.getByText('Showing 1-55 of 55')).toBeTruthy());
+    expect((document.getElementById('audit-next-page') as HTMLButtonElement).disabled).toBe(true);
+    expect((document.getElementById('audit-prev-page') as HTMLButtonElement).disabled).toBe(true);
+
+    // Narrowing the real page size to 50 lands back on a real page 1 and
+    // now genuinely has a second page.
+    await act(async () => {
+      const select = document.getElementById('audit-limit-select') as HTMLSelectElement;
+      select.value = '50';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await waitFor(() => expect(screen.getByText('Showing 1-50 of 55')).toBeTruthy());
+    expect(document.querySelectorAll('#audit-content tbody tr').length).toBe(50);
+    expect((document.getElementById('audit-prev-page') as HTMLButtonElement).disabled).toBe(true);
+    expect((document.getElementById('audit-next-page') as HTMLButtonElement).disabled).toBe(false);
+
+    await act(async () => {
+      document.getElementById('audit-next-page')!.click();
+    });
+    await waitFor(() => expect(screen.getByText('Showing 51-55 of 55')).toBeTruthy());
+    expect(document.querySelectorAll('#audit-content tbody tr').length).toBe(5);
+    expect((document.getElementById('audit-next-page') as HTMLButtonElement).disabled).toBe(true);
+    expect((document.getElementById('audit-prev-page') as HTMLButtonElement).disabled).toBe(false);
+    // The real request that produced this page really did carry the real
+    // offset — not a client-side slice of an already-fetched larger batch.
+    const lastAuditCall = fetchMock.mock.calls.filter(([u]: [string]) => String(u).includes('/audit')).at(-1);
+    expect(String(lastAuditCall![0])).toContain('offset=50');
+
+    await act(async () => {
+      document.getElementById('audit-prev-page')!.click();
+    });
+    await waitFor(() => expect(screen.getByText('Showing 1-50 of 55')).toBeTruthy());
   });
 
   it('no project selected shows a real, honest prompt rather than an empty audit list', async () => {

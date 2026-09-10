@@ -2550,26 +2550,42 @@ impl Store {
     /// project context" — an admin action — and correctly never matches a
     /// real project's scoped view). `None` is the legacy unscoped
     /// behavior (`/admin/audit-log`), unchanged.
+    ///
+    /// `offset` (added alongside real pagination — previously this was
+    /// always 0, "limit" being the sprint's entire pagination story per
+    /// `AuditPage.tsx`'s own honest doc comment on that gap): plain
+    /// `OFFSET`, not a keyset/cursor scheme. `AuditRow` has no real unique
+    /// id or monotonic sequence column to key a cursor off (re-confirmed
+    /// here, not assumed) — `occurred_at` alone is not guaranteed distinct
+    /// under concurrent writes — and this table's real size (low
+    /// thousands of rows for a single project, not millions) does not
+    /// justify the added complexity a real keyset scheme would need to be
+    /// done correctly. Paired with `count_audit` below so a caller can
+    /// show a real "page N of M" / "X-Y of Z" rather than guessing from a
+    /// fetched batch's length.
     pub async fn list_audit(
         &self,
         project_filter: Option<&str>,
         limit: i64,
+        offset: i64,
     ) -> Result<Vec<AuditRow>> {
         let rows =
             match project_filter {
                 Some(pid) => sqlx::query(
                     "SELECT occurred_at, actor, role, project_id, action, target, detail, outcome
-                     FROM audit_log WHERE project_id = ? ORDER BY occurred_at DESC LIMIT ?",
+                     FROM audit_log WHERE project_id = ? ORDER BY occurred_at DESC LIMIT ? OFFSET ?",
                 )
                 .bind(pid)
                 .bind(limit)
+                .bind(offset)
                 .fetch_all(&self.pool)
                 .await?,
                 None => sqlx::query(
                     "SELECT occurred_at, actor, role, project_id, action, target, detail, outcome
-                     FROM audit_log ORDER BY occurred_at DESC LIMIT ?",
+                     FROM audit_log ORDER BY occurred_at DESC LIMIT ? OFFSET ?",
                 )
                 .bind(limit)
+                .bind(offset)
                 .fetch_all(&self.pool)
                 .await?,
             };
@@ -2586,6 +2602,24 @@ impl Store {
                 outcome: r.get("outcome"),
             })
             .collect())
+    }
+
+    /// The real total row count `list_audit`'s own `limit`/`offset` window
+    /// is a slice of — same `project_filter` semantics as `list_audit`
+    /// above. A real `COUNT(*)`, not a batch-length guess, so a caller can
+    /// show an honest "X-Y of Z" / disable "Next" exactly at the real end,
+    /// not one batch-length short or long.
+    pub async fn count_audit(&self, project_filter: Option<&str>) -> Result<i64> {
+        let count: i64 = match project_filter {
+            Some(pid) => sqlx::query_scalar("SELECT COUNT(*) FROM audit_log WHERE project_id = ?")
+                .bind(pid)
+                .fetch_one(&self.pool)
+                .await?,
+            None => sqlx::query_scalar("SELECT COUNT(*) FROM audit_log")
+                .fetch_one(&self.pool)
+                .await?,
+        };
+        Ok(count)
     }
 }
 

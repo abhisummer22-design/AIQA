@@ -420,6 +420,18 @@ export interface AuditRow {
   outcome: string;
 }
 
+/** `api.rs::AuditLogResponse` — real pagination envelope for
+ *  `GET .../projects/:id/audit`. `total` is a real `COUNT(*)`
+ *  (`store.rs::count_audit`), not derived from `rows.length` — a caller
+ *  can show a real "X-Y of Z" and correctly disable "next" exactly at the
+ *  real end, not one batch-length short or long. The legacy global
+ *  `/admin/audit-log` route keeps its original bare-`AuditRow[]` shape,
+ *  unrelated to this type. */
+export interface AuditLogResponse {
+  rows: AuditRow[];
+  total: number;
+}
+
 // -------------------------------------------------------------- test cases
 
 /** `domain.rs::TestCaseStatus` (AUD-005). Only `APPROVED` cases may be

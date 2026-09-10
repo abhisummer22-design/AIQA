@@ -49,11 +49,12 @@ import type { AuditRow } from '../../types/contract';
  *  backend does not actually emit. */
 const AUDIT_EVENT_RESYNC_DEBOUNCE_MS = 500;
 
-/** The entirety of this sprint's pagination support (brief §13): the real
- *  backend exposes no cursor/offset/page, only `limit` — so "pagination"
- *  here is this one control, not an invented multi-page contract. Values
+/** Page size choices for the real page-through control below. Values
  *  chosen as reasonable round numbers within the backend's own 1..1000
- *  clamp, not derived from any document. */
+ *  clamp, not derived from any document. Real pagination now exists
+ *  (`api.rs::AuditLogResponse`'s real `offset`/`total`) — this is no
+ *  longer, as it once honestly was, this sprint's entire pagination
+ *  story. */
 const LIMIT_OPTIONS = [50, 100, 250, 500] as const;
 
 /** Client-side only, over already-returned rows — never a backend query
@@ -113,15 +114,23 @@ export const AuditPage: React.FC = () => {
   // These are deliberately distinct (brief §7/§18: "empty" is not "error"
   // and must never be conflated with "not yet requested").
   const [rows, setRows] = useState<AuditRow[] | null>(null);
+  // Real total row count (`api.rs::AuditLogResponse.total`, a real
+  // `COUNT(*)`) for the currently-selected project — `null` until the
+  // first real response arrives, same "not yet proven" reasoning `rows`
+  // itself already follows.
+  const [total, setTotal] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
   const [limit, setLimit] = useState<number>(100);
+  // Real pagination offset — the real window into the real backend total
+  // above, not a client-side slice of an already-fetched larger batch.
+  const [offset, setOffset] = useState(0);
   const [search, setSearch] = useState('');
   const abortRef = useRef<AbortController | null>(null);
 
   const fetchAudit = useCallback(
-    async (projectId: string, currentLimit: number, isRefresh: boolean) => {
+    async (projectId: string, currentLimit: number, currentOffset: number, isRefresh: boolean) => {
       abortRef.current?.abort();
       const controller = new AbortController();
       abortRef.current = controller;
@@ -129,17 +138,27 @@ export const AuditPage: React.FC = () => {
       else setLoading(true);
       setError(null);
       try {
-        const list = await aiqaApi.audit.list(projectId, { limit: currentLimit }, controller.signal);
+        // `offset` omitted entirely at 0 (not sent as a redundant `offset=0`)
+        // — same "never send a query param that isn't doing real work"
+        // convention `limit` itself already follows when omitted.
+        const result = await aiqaApi.audit.list(
+          projectId,
+          { limit: currentLimit, offset: currentOffset > 0 ? currentOffset : undefined },
+          controller.signal,
+        );
         if (controller.signal.aborted) return;
-        setRows(list);
+        setRows(result.rows);
+        setTotal(result.total);
       } catch (err) {
         if (err instanceof DOMException && err.name === 'AbortError') return;
         const apiErr = err instanceof ApiError ? err : new ApiError('server_error', String(err));
         setError(apiErr);
         // A failed fetch means we cannot currently prove what the real
         // audit trail looks like — never leave a stale/fabricated list
-        // sitting next to an error (same rule FE-5's `ProjectContext` uses).
+        // (or a stale real total) sitting next to an error (same rule
+        // FE-5's `ProjectContext` uses).
         setRows(null);
+        setTotal(null);
       } finally {
         if (!controller.signal.aborted) {
           setLoading(false);
@@ -158,20 +177,47 @@ export const AuditPage: React.FC = () => {
       // state, not an error and not a fetch attempt.
       abortRef.current?.abort();
       setRows(null);
+      setTotal(null);
       setError(null);
       setLoading(false);
       setRefreshing(false);
+      setOffset(0);
       return;
     }
     // Project switch (or a limit change, which is a genuinely different
     // query): never let the previous project's rows keep rendering while
     // the new scope loads (brief §16 — "old events do not remain
-    // incorrectly visible").
+    // incorrectly visible"), and always land back on the real first page —
+    // a stale offset from the previous scope/page size could point past
+    // the new real total.
     setRows(null);
-    void fetchAudit(selectedProjectId, limit, false);
+    setOffset(0);
+    void fetchAudit(selectedProjectId, limit, 0, false);
   }, [selectedProjectId, limit, fetchAudit]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
+
+  const hasPrevPage = offset > 0;
+  const hasNextPage = total === null ? false : offset + limit < total;
+
+  const handlePrevPage = useCallback(() => {
+    if (!selectedProjectId || loading || refreshing || !hasPrevPage) return;
+    const newOffset = Math.max(0, offset - limit);
+    setOffset(newOffset);
+    // A page turn is a real fetch for real new rows, not a "same data,
+    // background resync" — but it reuses the refresh (not full-loading)
+    // rendering path so the currently-visible page stays on screen while
+    // the new one loads, same "no jarring rows-to-loading-card flash"
+    // reasoning `handleRefresh` below already established.
+    void fetchAudit(selectedProjectId, limit, newOffset, true);
+  }, [selectedProjectId, limit, offset, loading, refreshing, hasPrevPage, fetchAudit]);
+
+  const handleNextPage = useCallback(() => {
+    if (!selectedProjectId || loading || refreshing || !hasNextPage) return;
+    const newOffset = offset + limit;
+    setOffset(newOffset);
+    void fetchAudit(selectedProjectId, limit, newOffset, true);
+  }, [selectedProjectId, limit, offset, loading, refreshing, hasNextPage, fetchAudit]);
 
   // FE-9: a real event on this project's stream is treated as "the audit
   // trail may have changed" (see the module doc comment above for exactly
@@ -180,7 +226,8 @@ export const AuditPage: React.FC = () => {
   // one active run collapses into a single real request, not one per
   // event. Uses `isRefresh: true` (same as the manual Refresh button) so a
   // background resync never blanks already-rendered rows with a full
-  // loading state.
+  // loading state, and resyncs the real page currently being viewed
+  // (`offset`) rather than silently jumping the user back to page 1.
   const auditResyncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (!selectedProjectId) return;
@@ -188,7 +235,7 @@ export const AuditPage: React.FC = () => {
       if (auditResyncTimeoutRef.current) clearTimeout(auditResyncTimeoutRef.current);
       auditResyncTimeoutRef.current = setTimeout(() => {
         auditResyncTimeoutRef.current = null;
-        void fetchAudit(selectedProjectId, limit, true);
+        void fetchAudit(selectedProjectId, limit, offset, true);
       }, AUDIT_EVENT_RESYNC_DEBOUNCE_MS);
     });
     return () => {
@@ -201,15 +248,16 @@ export const AuditPage: React.FC = () => {
     // (which changes on every single event via `lastEventAt`) — otherwise
     // this effect tears down and re-subscribes on every event, cancelling
     // its own just-scheduled debounce timer before it can fire.
-  }, [selectedProjectId, limit, realtime.subscribe, fetchAudit]);
+  }, [selectedProjectId, limit, offset, realtime.subscribe, fetchAudit]);
 
   const handleRefresh = useCallback(() => {
-    // A plain refresh of the *same* scope keeps the currently-rendered
-    // rows visible (only a small spinner on the button changes) — unlike a
-    // project switch, nothing here has been shown to be stale (brief §17).
+    // A plain refresh of the *same* scope + real page keeps the
+    // currently-rendered rows visible (only a small spinner on the button
+    // changes) — unlike a project switch, nothing here has been shown to
+    // be stale (brief §17).
     if (!selectedProjectId || loading || refreshing) return;
-    void fetchAudit(selectedProjectId, limit, true);
-  }, [selectedProjectId, limit, loading, refreshing, fetchAudit]);
+    void fetchAudit(selectedProjectId, limit, offset, true);
+  }, [selectedProjectId, limit, offset, loading, refreshing, fetchAudit]);
 
   const visibleRows = useMemo(() => {
     if (!rows) return [];
@@ -379,12 +427,49 @@ export const AuditPage: React.FC = () => {
               className="w-full pl-8 pr-3 py-1.5 rounded-md border border-slate-800 bg-[#020617] text-xs text-slate-200 outline-none focus:ring-1 focus:ring-indigo-500 font-sans"
             />
           </div>
+          {/* Real, disclosed scope limit — the backend has no server-side
+              search, so this only ever filters the current real page's own
+              already-fetched rows, never every page at once. */}
+          <span className="hidden sm:inline text-[10px] font-mono text-slate-500 shrink-0">
+            (this page only)
+          </span>
         </div>
       )}
 
       <section id="audit-content" className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm" aria-live="polite">
         {renderBody()}
       </section>
+
+      {selectedProjectId && rows && total !== null && total > 0 && (
+        <div
+          id="audit-pagination"
+          className="flex items-center justify-between gap-3 p-3 rounded-lg border border-slate-800 bg-[#0B1120] text-xs font-mono text-slate-400"
+        >
+          <span>
+            Showing {offset + 1}-{Math.min(offset + limit, total)} of {total}
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              id="audit-prev-page"
+              onClick={handlePrevPage}
+              disabled={!hasPrevPage || loading || refreshing}
+              className="px-2.5 py-1 rounded border border-slate-700 hover:border-indigo-600 hover:text-indigo-300 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-slate-700 disabled:hover:text-slate-400 cursor-pointer transition-colors"
+            >
+              Previous
+            </button>
+            <button
+              type="button"
+              id="audit-next-page"
+              onClick={handleNextPage}
+              disabled={!hasNextPage || loading || refreshing}
+              className="px-2.5 py-1 rounded border border-slate-700 hover:border-indigo-600 hover:text-indigo-300 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-slate-700 disabled:hover:text-slate-400 cursor-pointer transition-colors"
+            >
+              Next
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
