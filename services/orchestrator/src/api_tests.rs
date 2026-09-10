@@ -1523,6 +1523,215 @@ fn fail_plan(name: &str) -> Value {
     })
 }
 
+/// Category: real re-planning v1 (`retry_failed_tasks_scoped`) — only real
+/// INFRA_ERROR/TIMEOUT tasks are ever retried, never a real FAILED (product)
+/// failure, and a retried task's real dependency edge to a task outside the
+/// retry set is dropped (that task's own real prior result already stands).
+#[tokio::test]
+async fn be_retry_failed_only_retries_real_infra_classified_tasks_with_correctly_filtered_dependencies(
+) {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "Retry Failed").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let plan = serde_json::json!({
+        "name": "mixed-outcome-run",
+        "concurrency": 4,
+        "tasks": [
+            {"id": "t-pass", "name": "t-pass", "simulate": {"outcome": "pass", "delay_ms": 0}},
+            {"id": "t-fail", "name": "t-fail", "simulate": {"outcome": "fail", "delay_ms": 0}},
+            {"id": "t-infra-1", "name": "t-infra-1", "simulate": {"outcome": "infra_error", "delay_ms": 0}},
+            {
+                "id": "t-infra-2",
+                "name": "t-infra-2",
+                "prerequisites": ["t-pass"],
+                "simulate": {"outcome": "infra_error", "delay_ms": 0}
+            }
+        ],
+    });
+    let (_, created) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/executions"),
+            Some(&owner),
+            Some(plan),
+        ),
+    )
+    .await;
+    let run_id = created["run_id"].as_str().unwrap().to_string();
+    poll_run_state(&state, project, &run_id, &owner, "PARTIAL").await;
+
+    let (status, retry) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/executions/{run_id}/retry-failed"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={retry}");
+    let mut retried_ids: Vec<String> = retry["retried_task_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    retried_ids.sort();
+    assert_eq!(
+        retried_ids,
+        vec!["t-infra-1".to_string(), "t-infra-2".to_string()],
+        "only the two real infra-classified tasks — never t-pass or the real t-fail failure; retry={retry:?}"
+    );
+
+    let new_run_id: Uuid = retry["run_id"].as_str().unwrap().parse().unwrap();
+    let new_plan = state
+        .store
+        .get_run_plan(new_run_id)
+        .await
+        .expect("get_run_plan")
+        .expect("new run must have a real persisted plan");
+    assert_eq!(new_plan.tasks.len(), 2, "new_plan={new_plan:?}");
+    let t_infra_2 = new_plan
+        .tasks
+        .iter()
+        .find(|t| t.id == "t-infra-2")
+        .expect("t-infra-2 must be in the retry plan");
+    assert!(
+        t_infra_2.prerequisites.is_empty(),
+        "t-infra-2's real prerequisite (t-pass) is not itself being retried, so it real dependency edge must be dropped, not point at a task that does not exist in this new run: t_infra_2={t_infra_2:?}"
+    );
+
+    // The new run genuinely executes for real through the exact same real
+    // pipeline — it is not a fabricated/no-op record. (PARTIAL, not FAILED
+    // — engine.rs's own real state computation checks InfraError/Timeout
+    // before Failed, and both retried tasks are real infra_error outcomes
+    // again in this deterministic simulation.)
+    poll_run_state(&state, project, &new_run_id.to_string(), &owner, "PARTIAL").await;
+}
+
+#[tokio::test]
+async fn be_retry_failed_rejects_a_run_with_no_real_infra_classified_failures() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "Retry Failed None").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    // A real product failure only — must never be silently retried.
+    let (_, created) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/executions"),
+            Some(&owner),
+            Some(fail_plan("only-a-real-failure")),
+        ),
+    )
+    .await;
+    let run_id = created["run_id"].as_str().unwrap().to_string();
+    poll_run_state(&state, project, &run_id, &owner, "FAILED").await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/executions/{run_id}/retry-failed"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    assert_envelope(status, &body, StatusCode::BAD_REQUEST, "VALIDATION_ERROR");
+}
+
+#[tokio::test]
+async fn be_retry_failed_rejects_a_run_that_has_not_finished_yet() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "Retry Failed Not Terminal").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let long_running_plan = serde_json::json!({
+        "name": "still-running",
+        "concurrency": 1,
+        "tasks": [{"id": "t1", "name": "t1", "simulate": {"outcome": "pass", "delay_ms": 30000}}],
+    });
+    let (_, created) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/executions"),
+            Some(&owner),
+            Some(long_running_plan),
+        ),
+    )
+    .await;
+    let run_id = created["run_id"].as_str().unwrap().to_string();
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/executions/{run_id}/retry-failed"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    assert_envelope(status, &body, StatusCode::CONFLICT, "CONFLICT");
+}
+
+#[tokio::test]
+async fn be_retry_failed_is_project_scoped_and_role_gated() {
+    let (state, _dir) = test_state().await;
+    let project_a = make_project(&state, "Retry Failed Tenant A").await;
+    let project_b = make_project(&state, "Retry Failed Tenant B").await;
+    let owner_a = mint_key(&state, "operator", Some(&project_a.to_string())).await;
+    let owner_b = mint_key(&state, "operator", Some(&project_b.to_string())).await;
+    let viewer_a = mint_key(&state, "viewer", Some(&project_a.to_string())).await;
+
+    let (_, created) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_a}/executions"),
+            Some(&owner_a),
+            Some(infra_error_plan("cross-tenant-retry")),
+        ),
+    )
+    .await;
+    let run_id = created["run_id"].as_str().unwrap().to_string();
+    // PARTIAL, not FAILED — engine.rs's own real state computation checks
+    // InfraError/Timeout before Failed.
+    poll_run_state(&state, project_a, &run_id, &owner_a, "PARTIAL").await;
+
+    // A different project's real operator key must never reach it.
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_a}/executions/{run_id}/retry-failed"),
+            Some(&owner_b),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+
+    // A real viewer-role key must never be permitted to trigger a retry.
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_a}/executions/{run_id}/retry-failed"),
+            Some(&viewer_a),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+}
+
 /// Test 1 — a real, deterministic average over 2 real terminal runs.
 #[tokio::test]
 async fn be12b_avg_run_duration_is_exact_over_two_real_runs() {

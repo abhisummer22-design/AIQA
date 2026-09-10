@@ -127,6 +127,12 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/projects/:project_id/executions/:run_id/cancel",
             post(cancel_run_scoped),
         )
+        // Real re-planning v1 — see `retry_failed_tasks_scoped`'s own doc
+        // comment for exactly what "retry" means here.
+        .route(
+            "/api/v1/projects/:project_id/executions/:run_id/retry-failed",
+            post(retry_failed_tasks_scoped),
+        )
         .route(
             "/api/v1/projects/:project_id/executions/:run_id/tasks",
             get(list_run_tasks_scoped),
@@ -3923,6 +3929,112 @@ async fn cancel_run_scoped(
         run_id,
         status: current_state,
     }))
+}
+
+// --------------------------------------------------------- retry-failed
+
+#[derive(Serialize)]
+struct RetryFailedTasksResponse {
+    run_id: Uuid,
+    state: RunState,
+    retried_task_ids: Vec<String>,
+}
+
+/// POST /api/v1/projects/:project_id/executions/:run_id/retry-failed —
+/// real re-planning v1: creates a new run containing only this run's real
+/// INFRA_ERROR/TIMEOUT tasks. Never a real FAILED task — retrying a
+/// genuine product failure would not fix it, and risks silently masking a
+/// real defect behind a lucky second attempt; that distinction is the
+/// exact one `domain.rs::TaskStatus`'s own doc comment already draws
+/// ("Product failure and infrastructure failure are kept as distinct
+/// classifications... per FRD §2 / SRD §2"), reused here rather than
+/// inventing a second one.
+///
+/// Each retried task keeps its own real executor/params/simulate config
+/// from the original plan (`store.rs::get_run_plan`); real dependency
+/// edges are preserved only where BOTH ends are being retried — an edge to
+/// a task that is not in the retry set is dropped, since that task's own
+/// real prior result already stands and needs no re-run. Reuses
+/// `create_run_core` verbatim: the retry run goes through the exact same
+/// real policy-gate/scheduling/executor pipeline every other run already
+/// does, no new dispatch machinery.
+async fn retry_failed_tasks_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, run_id)): ApiPath<(Uuid, Uuid)>,
+) -> Result<(StatusCode, Json<RetryFailedTasksResponse>), ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    auth::require_role(&ctx, Role::Operator)?;
+    let summary = scoped_run_summary(&state, run_id, project_id).await?;
+
+    if !summary.state.is_terminal() {
+        return Err(ApiError::conflict(
+            "run has not reached a terminal state yet; retry-failed is only available once a run finishes",
+        ));
+    }
+
+    let plan = state
+        .store
+        .get_run_plan(run_id)
+        .await
+        .map_err(to_500)?
+        .ok_or_else(|| ApiError::not_found("this run's original plan could not be found"))?;
+
+    let tasks = scoped_run_tasks(&state, run_id).await?;
+    let retry_ids: std::collections::HashSet<String> = tasks
+        .iter()
+        .filter(|t| matches!(t.status, TaskStatus::InfraError | TaskStatus::Timeout))
+        .map(|t| t.id.clone())
+        .collect();
+
+    if retry_ids.is_empty() {
+        return Err(ApiError::validation(
+            "no real infrastructure-classified failures (INFRA_ERROR/TIMEOUT) on this run to retry — a genuine FAILED test is never auto-retried",
+        ));
+    }
+
+    let retry_tasks: Vec<crate::domain::TaskDef> = plan
+        .tasks
+        .into_iter()
+        .filter(|t| retry_ids.contains(&t.id))
+        .map(|mut t| {
+            t.prerequisites.retain(|p| retry_ids.contains(p));
+            t
+        })
+        .collect();
+
+    let retry_plan = RunPlan {
+        name: format!("Retry (infra failures): {}", summary.name),
+        tasks: retry_tasks,
+        concurrency: plan.concurrency,
+    };
+
+    let (status, created) =
+        create_run_core(&state, &ctx, Some(project_id.to_string()), retry_plan).await?;
+    let created = created.0;
+
+    audit(
+        &state,
+        &ctx,
+        "run.retry_failed",
+        Some(&run_id.to_string()),
+        Some(&format!(
+            "new run {} retrying {} real infra-classified task(s)",
+            created.run_id,
+            retry_ids.len()
+        )),
+        "ok",
+    )
+    .await;
+
+    Ok((
+        status,
+        Json(RetryFailedTasksResponse {
+            run_id: created.run_id,
+            state: created.state,
+            retried_task_ids: retry_ids.into_iter().collect(),
+        }),
+    ))
 }
 
 // ------------------------------------------------------- dashboard / kpis

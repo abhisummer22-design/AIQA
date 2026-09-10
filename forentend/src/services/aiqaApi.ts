@@ -81,6 +81,7 @@ import type {
   PerformanceRunRow,
   Project,
   ReviewFindingRequest,
+  RetryFailedTasksResponse,
   RunDetail,
   RunEvent,
   RunListItem,
@@ -446,6 +447,14 @@ export const aiqaApi = {
       requestJson<RunDetail>(`/projects/${projectId}/executions/${runId}`, { signal }),
     cancel: (projectId: string, runId: string, signal?: AbortSignal) =>
       requestJson<CancelRunResponse>(`/projects/${projectId}/executions/${runId}/cancel`, { method: 'POST', signal }),
+    /** Real re-planning v1 — creates a new run retrying only this run's
+     *  real INFRA_ERROR/TIMEOUT tasks. Rejects with a real, specific error
+     *  (400) if there are none — a genuine FAILED test is never retried. */
+    retryFailed: (projectId: string, runId: string, signal?: AbortSignal) =>
+      requestJson<RetryFailedTasksResponse>(`/projects/${projectId}/executions/${runId}/retry-failed`, {
+        method: 'POST',
+        signal,
+      }),
     // FE-8: both real handlers (`approve_run_scoped`/`reject_run_scoped`)
     // return `Json<RunSummary>` — confirmed by reading `api.rs` directly —
     // not `RunDetail` (which additionally claims a `tasks` field neither
