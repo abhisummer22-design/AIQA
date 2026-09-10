@@ -1,5 +1,5 @@
 use aiqa_orchestrator::{
-    ai_router::AiInfrastructure,
+    ai_router::{AiInfrastructure, Embedder, GeminiEmbedder},
     api, auth,
     engine::recover_incomplete_runs,
     evidence::{default_root, LocalEvidenceStore},
@@ -198,7 +198,8 @@ async fn main() {
             );
         });
     }
-    let state = AppState::new(Arc::new(registry), store, policy, evidence, ai_infra);
+    let embedder: Arc<dyn Embedder> = Arc::new(GeminiEmbedder::from_env());
+    let state = AppState::new(Arc::new(registry), store, policy, evidence, ai_infra, embedder);
     // B12 — explicit origin allow-list, not a wildcard. See
     // `api::cors_layer_from_env`'s doc comment for the default and the
     // `AIQA_CORS_ALLOWED_ORIGINS` override.

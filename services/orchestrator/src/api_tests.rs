@@ -7,9 +7,9 @@
 //! whether the JSON envelope shape is actually correct.
 
 use crate::ai_router::test_support::{
-    healthy_model, healthy_provider, FakeDiscovery, FakeExecutor,
+    healthy_model, healthy_provider, FakeDiscovery, FakeEmbedder, FakeExecutor, RecordingEmbedder,
 };
-use crate::ai_router::{AiExecutor, AiInfrastructure, CapabilityLevel};
+use crate::ai_router::{AiExecutor, AiInfrastructure, CapabilityLevel, Embedder};
 use crate::api::router;
 use crate::domain::RunState;
 use crate::evidence::LocalEvidenceStore;
@@ -118,9 +118,20 @@ async fn test_state() -> (AppState, tempfile::TempDir) {
             policy,
             evidence,
             inert_ai_router(),
+            unconfigured_embedder(),
         ),
         dir,
     )
+}
+
+/// Vector Store + RAG Retrieval v1 — the honest default every existing test
+/// (predating this feature) gets: no real `GEMINI_API_KEY`, same as a real
+/// deployment with it unset. `state.embedder.is_configured() == false`, so
+/// `find_similar_approved_test_cases`/`embed_approved_test_case` both no-op
+/// without ever attempting a real network call — an existing test's
+/// behavior is completely unchanged by this feature's addition.
+fn unconfigured_embedder() -> Arc<dyn Embedder> {
+    Arc::new(FakeEmbedder::unconfigured())
 }
 
 /// Phase 4 — same setup as `test_state()`, but with the real, unmodified
@@ -152,6 +163,7 @@ async fn test_state_with_compiled_api() -> (AppState, tempfile::TempDir) {
             policy,
             evidence,
             inert_ai_router(),
+            unconfigured_embedder(),
         ),
         dir,
     )
@@ -164,6 +176,17 @@ async fn test_state_with_compiled_api() -> (AppState, tempfile::TempDir) {
 /// ever making a real network call.
 async fn test_state_with_ai_router(
     ai_router: Arc<AiInfrastructure>,
+) -> (AppState, tempfile::TempDir) {
+    test_state_with_ai_router_and_embedder(ai_router, unconfigured_embedder()).await
+}
+
+/// Vector Store + RAG Retrieval v1 — like `test_state_with_ai_router`, but
+/// also with a caller-supplied `Embedder`, so a test can script a real,
+/// deterministic embedding vector (`FakeEmbedder::configured`) instead of
+/// ever making a real network call to Gemini.
+async fn test_state_with_ai_router_and_embedder(
+    ai_router: Arc<AiInfrastructure>,
+    embedder: Arc<dyn Embedder>,
 ) -> (AppState, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = Store::connect(&dir.path().join("api.sqlite3"))
@@ -178,7 +201,14 @@ async fn test_state_with_ai_router(
         blocked_executors: HashSet::new(),
     };
     (
-        AppState::new(Arc::new(registry), store, policy, evidence, ai_router),
+        AppState::new(
+            Arc::new(registry),
+            store,
+            policy,
+            evidence,
+            ai_router,
+            embedder,
+        ),
         dir,
     )
 }
@@ -4677,6 +4707,381 @@ async fn aud005_approve_without_validate_first_is_rejected_with_409() {
     );
 }
 
+// ============================================ Vector Store + RAG Retrieval v1
+
+/// `RecordingEmbedder` both controls what `embed` returns (a fixed,
+/// known vector) and proves the real call actually happened with this
+/// case's own real content, not a fabricated/simulated one.
+#[tokio::test]
+async fn approving_a_test_case_computes_and_stores_a_real_embedding_when_configured() {
+    let embedder = Arc::new(RecordingEmbedder::new(vec![0.1, 0.2, 0.3]));
+    let (state, _dir) =
+        test_state_with_ai_router_and_embedder(inert_ai_router(), embedder.clone()).await;
+    let project = make_project(&state, "Vector Store Approve").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (_, created) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(&owner),
+            Some(sample_test_case_body("Embed me")),
+        ),
+    )
+    .await;
+    let id = created["id"].as_str().unwrap().to_string();
+    send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/validate"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    let (status, approved) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/approve"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={approved}");
+
+    assert_eq!(
+        embedder.call_count(),
+        1,
+        "approval must trigger exactly one real embed call"
+    );
+    let embedded_text = embedder.texts.lock().unwrap()[0].clone();
+    assert!(
+        embedded_text.contains("Embed me"),
+        "the real embedded text must include this case's own real title: {embedded_text}"
+    );
+    assert_eq!(
+        state
+            .store
+            .count_test_case_embeddings(&project.to_string())
+            .await
+            .unwrap(),
+        1,
+        "a real embedding row must now exist for this project"
+    );
+}
+
+/// Same "fails open" contract `find_similar_approved_test_cases`'s own doc
+/// comment states — approval must never fail just because no embedder is
+/// configured (the honest default `test_state()` already gives every
+/// pre-existing test in this file).
+#[tokio::test]
+async fn approving_a_test_case_succeeds_even_when_no_embedder_is_configured() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "No Embedder Configured").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (_, created) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(&owner),
+            Some(sample_test_case_body("No embed")),
+        ),
+    )
+    .await;
+    let id = created["id"].as_str().unwrap().to_string();
+    send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/validate"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    let (status, approved) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/approve"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={approved}");
+    assert_eq!(
+        state
+            .store
+            .count_test_case_embeddings(&project.to_string())
+            .await
+            .unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn editing_an_approved_test_case_recomputes_its_embedding() {
+    let embedder = Arc::new(RecordingEmbedder::new(vec![0.4, 0.5, 0.6]));
+    let (state, _dir) =
+        test_state_with_ai_router_and_embedder(inert_ai_router(), embedder.clone()).await;
+    let project = make_project(&state, "Vector Store Edit Approved").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (_, created) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(&owner),
+            Some(sample_test_case_body("Approved then edited")),
+        ),
+    )
+    .await;
+    let id = created["id"].as_str().unwrap().to_string();
+    send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/validate"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/approve"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(
+        embedder.call_count(),
+        1,
+        "approval itself must have embedded once"
+    );
+
+    let (status, updated) = send(
+        &state,
+        req(
+            "PATCH",
+            &format!("/api/v1/projects/{project}/test-cases/{id}"),
+            Some(&owner),
+            Some(serde_json::json!({"title": "Edited while approved"})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={updated}");
+    assert_eq!(
+        updated["status"], "APPROVED",
+        "editing must not itself change status"
+    );
+
+    assert_eq!(
+        embedder.call_count(),
+        2,
+        "editing an already-APPROVED case must recompute its embedding"
+    );
+    let second_text = embedder.texts.lock().unwrap()[1].clone();
+    assert!(
+        second_text.contains("Edited while approved"),
+        "the recomputed embedding must reflect the real edited content: {second_text}"
+    );
+    assert_eq!(
+        state
+            .store
+            .count_test_case_embeddings(&project.to_string())
+            .await
+            .unwrap(),
+        1,
+        "must still be exactly one row, not a second stale one"
+    );
+}
+
+#[tokio::test]
+async fn editing_a_not_yet_approved_test_case_never_attempts_to_embed() {
+    let embedder = Arc::new(RecordingEmbedder::new(vec![0.7, 0.8, 0.9]));
+    let (state, _dir) =
+        test_state_with_ai_router_and_embedder(inert_ai_router(), embedder.clone()).await;
+    let project = make_project(&state, "Vector Store Edit Unapproved").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (_, created) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(&owner),
+            Some(sample_test_case_body("Never approved")),
+        ),
+    )
+    .await;
+    let id = created["id"].as_str().unwrap().to_string();
+
+    let (status, updated) = send(
+        &state,
+        req(
+            "PATCH",
+            &format!("/api/v1/projects/{project}/test-cases/{id}"),
+            Some(&owner),
+            Some(serde_json::json!({"title": "Still just generated"})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={updated}");
+    assert_eq!(updated["status"], "GENERATED");
+
+    assert_eq!(
+        embedder.call_count(),
+        0,
+        "a case that was never approved must never trigger a real embed call"
+    );
+    assert_eq!(
+        state
+            .store
+            .count_test_case_embeddings(&project.to_string())
+            .await
+            .unwrap(),
+        0
+    );
+}
+
+/// The other half of the real end-to-end loop (the approve-time half is
+/// proven in isolation by `approving_a_test_case_computes_and_stores_a_
+/// real_embedding_when_configured` above): a LATER real generation request
+/// genuinely retrieves a project's own previously-approved case and
+/// reports it honestly via `similar_cases_used` — a real, live-computed
+/// number, never a static placeholder.
+#[tokio::test]
+async fn generate_ai_retrieves_and_honestly_reports_a_real_similar_approved_case() {
+    // A fixed vector for BOTH the approved case's own embedding AND this
+    // generation request's own query embedding — guarantees a real,
+    // deterministic cosine similarity of 1.0 between them without this
+    // test needing to reproduce real semantic embedding behavior.
+    let embedder = Arc::new(FakeEmbedder::configured(vec![1.0, 0.0, 0.0]));
+    let (state, _dir) =
+        test_state_with_ai_router_and_embedder(ai_infra_with(Ok(valid_ai_response())), embedder)
+            .await;
+    let project = make_project(&state, "RAG Retrieval").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    // No case approved yet — the real, honest zero.
+    let (status, first) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/generate-ai"),
+            Some(&owner),
+            Some(serde_json::json!({"requirement_text": "Users can log in.", "skills": []})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={first}");
+    assert_eq!(first["similar_cases_used"], 0, "body={first}");
+
+    let (_, created) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(&owner),
+            Some(sample_test_case_body("Reject invalid password")),
+        ),
+    )
+    .await;
+    let id = created["id"].as_str().unwrap().to_string();
+    send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/validate"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    let (status, approved) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/approve"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={approved}");
+
+    let (status, second) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/generate-ai"),
+            Some(&owner),
+            Some(serde_json::json!({"requirement_text": "Users can log in.", "skills": []})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={second}");
+    assert_eq!(
+        second["similar_cases_used"], 1,
+        "the same project's own real, newly-approved case must now be retrieved: body={second}"
+    );
+}
+
+#[tokio::test]
+async fn pipeline_reports_replanning_vector_and_rag_as_genuinely_available_with_real_backing() {
+    let embedder = Arc::new(FakeEmbedder::configured(vec![1.0, 0.0, 0.0]));
+    let (state, _dir) =
+        test_state_with_ai_router_and_embedder(inert_ai_router(), embedder).await;
+    let project = make_project(&state, "Pipeline Stages").await;
+    let owner = mint_key(&state, "viewer", Some(&project.to_string())).await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/pipeline"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let stages = body["stages"].as_array().unwrap();
+    for stage_id in ["replanning", "vector", "rag"] {
+        let stage = stages
+            .iter()
+            .find(|s| s["id"] == stage_id)
+            .unwrap_or_else(|| panic!("stage {stage_id} must exist: {body}"));
+        assert_eq!(
+            stage["available"], true,
+            "stage {stage_id} must now report available: {stage}"
+        );
+        assert!(
+            !stage["backing"]
+                .as_str()
+                .unwrap()
+                .to_lowercase()
+                .contains("not implemented"),
+            "stage {stage_id}'s backing text must no longer claim NOT IMPLEMENTED: {stage}"
+        );
+    }
+    // Real, honest zero — nothing approved/embedded in this fresh project.
+    let vector_stage = stages.iter().find(|s| s["id"] == "vector").unwrap();
+    assert_eq!(vector_stage["metric"], 0, "body={body}");
+}
+
 /// A structurally incomplete case (an empty step) fails real validation
 /// with a specific, honest reason and stays GENERATED.
 #[tokio::test]
@@ -5374,6 +5779,7 @@ async fn test_state_with_marker_executor() -> (AppState, tempfile::TempDir) {
             policy,
             evidence,
             inert_ai_router(),
+            unconfigured_embedder(),
         ),
         dir,
     )
@@ -8156,6 +8562,7 @@ async fn restart_test_state(
         restart_test_policy(),
         evidence,
         inert_ai_router(),
+        unconfigured_embedder(),
     )
 }
 

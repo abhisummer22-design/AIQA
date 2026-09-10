@@ -9,13 +9,20 @@
  *
  * The part that matters most here is what it refuses to draw. A pipeline
  * picture is exactly the kind of UI that invites fabrication — it looks
- * complete, so the eye assumes every box works. This backend genuinely has
- * no vector store, no embedding endpoint and no RAG (`ai_router.rs` calls
- * embeddings "a future endpoint"; every discovered model reports
- * `embedding: NONE`), and nothing re-plans a failed run. Those stages are
- * therefore rendered explicitly as unavailable, with the real reason from
- * the backend, rather than omitted (which would imply the loop is closed) or
- * animated like the working ones (which would be an outright lie).
+ * complete, so the eye assumes every box works. A stage the real backend
+ * reports as `available: false` is therefore rendered explicitly as
+ * unavailable, with the real reason from the backend, in its own "Not part
+ * of this pipeline" section below — never silently omitted (which would
+ * imply the loop is closed) and never animated like the working ones
+ * (which would be an outright lie).
+ *
+ * Not every real, working stage belongs in the strict sequential loop
+ * above, though (Re-planning/Vector Store/RAG Retrieval genuinely exist as
+ * of this feature, but are not steps a run passes through in order the way
+ * router → plan → execute → observe → goal is) — those render in their own
+ * "Supporting capabilities" section instead, derived from the real
+ * response (`available && not in LOOP_ORDER && not memory`), not a second
+ * hardcoded id list to keep in sync by hand.
  *
  * "Live" here is real: the flow animation runs only while this project
  * genuinely has tasks executing, and the component refetches on real
@@ -172,6 +179,13 @@ export const NeuralPipeline: React.FC<NeuralPipelineProps> = ({ projectId }) => 
   // "Live" is a real fact: tasks are genuinely executing right now.
   const isLive = (execution?.metric ?? 0) > 0;
   const unavailableStages = data?.stages.filter((s) => !s.available) ?? [];
+  // Real, working capabilities that are not a step of the strict
+  // sequential loop above (Re-planning/Vector Store/RAG Retrieval) —
+  // derived from the real response, not a second hardcoded id list, so a
+  // future real stage of this same "supporting, not sequential" shape
+  // shows up here automatically rather than silently vanishing the way
+  // these three would have before this derivation existed.
+  const supportingStages = data?.stages.filter((s) => s.available && !LOOP_ORDER.includes(s.id) && s.id !== 'memory') ?? [];
 
   return (
     <div id="neural-pipeline-panel" className="rounded-lg border border-slate-800 bg-[#0B1120] p-4 space-y-3">
@@ -270,6 +284,22 @@ export const NeuralPipeline: React.FC<NeuralPipelineProps> = ({ projectId }) => 
               </div>
             );
           })()}
+
+          {/* Real, working capabilities alongside the loop, not a step of
+              it — same treatment "Persistent memory" already gets, just
+              derived rather than a single hardcoded id. */}
+          {supportingStages.length > 0 && (
+            <div className="space-y-1.5 pt-1">
+              <p className="text-[10px] font-mono uppercase tracking-wider text-slate-500">
+                Supporting capabilities
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                {supportingStages.map((s, i) => (
+                  <StageNode key={s.id} stage={s} active={false} index={i} />
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* What this pipeline genuinely does NOT have. */}
           {unavailableStages.length > 0 && (

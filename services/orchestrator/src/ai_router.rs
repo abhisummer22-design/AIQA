@@ -1603,6 +1603,162 @@ impl AiExecutor for GeminiExecutor {
     }
 }
 
+// --------------------------------------------------- embeddings (RAG v1)
+
+/// Real embedding calls for the Vector Store / RAG Retrieval v1 feature
+/// (`ai_generation.rs::rank_similar_test_cases`/`build_feedback_block` on
+/// the read side; `api.rs::embed_approved_test_case` on the write side).
+/// A trait — not a concrete type called directly — for exactly the same
+/// reason `AiExecutor` is: `AppState::embedder` holds an `Arc<dyn Embedder>`
+/// so tests can inject `test_support::FakeEmbedder` instead of ever making
+/// a real network call (brief §28: mocks are for tests only).
+#[async_trait::async_trait]
+pub trait Embedder: Send + Sync {
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, ExecutionError>;
+    /// Whether this embedder has real credentials configured — checked
+    /// before ever attempting `embed`, so an unconfigured provider fails
+    /// open (no grounding) with no wasted network attempt, same
+    /// `NOT_CONFIGURED`-before-`Error` distinction `GeminiDiscovery`
+    /// already draws for chat.
+    fn is_configured(&self) -> bool;
+    /// The real model name/dimensionality a successful `embed` call was
+    /// actually produced with — exposed on the trait (not read back from
+    /// env vars by a caller) so `api.rs::embed_approved_test_case` records
+    /// a stored row's real provenance without duplicating `GeminiEmbedder`'s
+    /// own env-parsing/defaulting logic in a second place.
+    fn model_name(&self) -> String;
+    fn dimensions(&self) -> u32;
+}
+
+/// Real `Embedder` for Gemini's real embedding models
+/// (`gemini-embedding-001` and siblings — verified live against the real
+/// API before writing this code, see the PR description for the exact
+/// curl transcript). Deliberately NOT built on `GeminiExecutor`/
+/// `GeminiDiscovery`'s OpenAI-compatible base: Gemini's embedding models
+/// are genuinely unreachable through that shim (`POST {openai_base}/embeddings`
+/// returns 404 for every embedding-capable model this key can see — Google's
+/// OpenAI compatibility layer does not proxy them). They live only on the
+/// native `v1beta` REST surface, authenticated by an API-key query
+/// parameter rather than a Bearer header (confirmed live: Bearer on the
+/// native surface returns 401 `API_KEY_SERVICE_BLOCKED`). No other provider
+/// in this codebase (Groq/MJ Gateway/Ollama/custom) has ever exposed a real
+/// embeddings capability — every one of their `ModelCapabilities::embedding`
+/// values is hardcoded `CapabilityLevel::None` — so this is intentionally
+/// Gemini-only for v1, not a generic abstraction over "any provider".
+pub struct GeminiEmbedder {
+    pub base_url: String,
+    pub api_key: Option<String>,
+    pub model: String,
+    pub dimensions: u32,
+    pub timeout: Duration,
+}
+
+impl GeminiEmbedder {
+    pub fn from_env() -> Self {
+        let base_url = std::env::var("GEMINI_EMBEDDING_BASE_URL")
+            .unwrap_or_else(|_| "https://generativelanguage.googleapis.com/v1beta".to_string());
+        let api_key = std::env::var("GEMINI_API_KEY")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        let model = std::env::var("GEMINI_EMBEDDING_MODEL")
+            .unwrap_or_else(|_| "gemini-embedding-001".to_string());
+        // 768 (Matryoshka-truncated from the model's native 3072-dim output)
+        // — real, documented Google behavior, verified live. Plenty for
+        // brute-force cosine similarity over one project's own test cases
+        // at a time, at a quarter of the storage/compute of the full size.
+        let dimensions: u32 = std::env::var("GEMINI_EMBEDDING_DIMENSIONS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(768);
+        let timeout_secs: u64 = std::env::var("GEMINI_EMBEDDING_TIMEOUT_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(30);
+        Self {
+            base_url,
+            api_key,
+            model,
+            dimensions,
+            timeout: Duration::from_secs(timeout_secs),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Embedder for GeminiEmbedder {
+    fn is_configured(&self) -> bool {
+        self.api_key.is_some()
+    }
+
+    fn model_name(&self) -> String {
+        self.model.clone()
+    }
+
+    fn dimensions(&self) -> u32 {
+        self.dimensions
+    }
+
+    /// Real `POST {base}/models/{model}:embedContent?key=...`. Returns a
+    /// vector of exactly `self.dimensions` floats on success.
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, ExecutionError> {
+        let Some(key) = &self.api_key else {
+            return Err(ExecutionError::ProviderUnavailable(
+                "GEMINI_API_KEY not set".to_string(),
+            ));
+        };
+        let client = reqwest::Client::new();
+        let url = format!(
+            "{}/models/{}:embedContent",
+            self.base_url.trim_end_matches('/'),
+            self.model
+        );
+        let body = serde_json::json!({
+            "content": { "parts": [{ "text": text }] },
+            "outputDimensionality": self.dimensions,
+        });
+        let resp = client
+            .post(&url)
+            .query(&[("key", key.as_str())])
+            .json(&body)
+            .timeout(self.timeout)
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_timeout() {
+                    ExecutionError::Timeout
+                } else {
+                    ExecutionError::ProviderUnavailable(e.to_string())
+                }
+            })?;
+        if !resp.status().is_success() {
+            return Err(ExecutionError::NonSuccessStatus(resp.status().as_u16()));
+        }
+        let parsed: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| ExecutionError::InvalidResponse(e.to_string()))?;
+        let values = parsed
+            .get("embedding")
+            .and_then(|e| e.get("values"))
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| {
+                ExecutionError::InvalidResponse("no embedding.values in response".to_string())
+            })?;
+        let vector: Vec<f32> = values
+            .iter()
+            .filter_map(|v| v.as_f64())
+            .map(|v| v as f32)
+            .collect();
+        if vector.is_empty() {
+            return Err(ExecutionError::InvalidResponse(
+                "empty embedding vector".to_string(),
+            ));
+        }
+        Ok(vector)
+    }
+}
+
 // ------------------------------------------------------- custom providers
 
 /// A real, user-added AI provider (Settings UI -> `POST /api/v1/ai/providers/custom`
@@ -2406,6 +2562,99 @@ pub mod test_support {
     impl ProviderDiscovery for FakeDiscovery {
         async fn discover(&self) -> AiProviderInfo {
             self.0.clone()
+        }
+    }
+
+    /// Deterministic `Embedder` test double — no real network call, ever.
+    /// `configured(vector)` always returns that exact real, scripted
+    /// vector (so a test can hand-pick two vectors with a known real
+    /// cosine similarity and assert `rank_similar_test_cases` orders them
+    /// correctly); `unconfigured()` mirrors `GeminiEmbedder` with no real
+    /// `GEMINI_API_KEY` set (`is_configured() == false`, `embed` errors if
+    /// ever called anyway — a caller is expected to check `is_configured`
+    /// first, same contract the real implementation holds itself to).
+    pub struct FakeEmbedder {
+        vector: Option<Vec<f32>>,
+    }
+
+    impl FakeEmbedder {
+        pub fn configured(vector: Vec<f32>) -> Self {
+            Self {
+                vector: Some(vector),
+            }
+        }
+
+        pub fn unconfigured() -> Self {
+            Self { vector: None }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Embedder for FakeEmbedder {
+        fn is_configured(&self) -> bool {
+            self.vector.is_some()
+        }
+
+        fn model_name(&self) -> String {
+            "fake-embedder".to_string()
+        }
+
+        fn dimensions(&self) -> u32 {
+            self.vector.as_ref().map(|v| v.len() as u32).unwrap_or(0)
+        }
+
+        async fn embed(&self, _text: &str) -> Result<Vec<f32>, ExecutionError> {
+            self.vector.clone().ok_or_else(|| {
+                ExecutionError::ProviderUnavailable("FakeEmbedder is unconfigured".to_string())
+            })
+        }
+    }
+
+    /// Like `FakeEmbedder`, but also records every real call — for proving
+    /// *how many times* and *with what real text* `embed` was actually
+    /// invoked (e.g. "editing an approved case recomputes its embedding,
+    /// editing an unapproved one never attempts to"), the same real gap
+    /// `RecordingExecutor` above exists to close for chat calls. Always
+    /// configured (a call-counting test has no use for an unconfigured
+    /// double) and always returns the one fixed, real, scripted vector —
+    /// callers proving *retrieval* behavior want a query embedding that
+    /// deterministically matches a stored one, not a fresh random vector
+    /// per call.
+    pub struct RecordingEmbedder {
+        vector: Vec<f32>,
+        pub texts: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl RecordingEmbedder {
+        pub fn new(vector: Vec<f32>) -> Self {
+            Self {
+                vector,
+                texts: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        pub fn call_count(&self) -> usize {
+            self.texts.lock().unwrap().len()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Embedder for RecordingEmbedder {
+        fn is_configured(&self) -> bool {
+            true
+        }
+
+        fn model_name(&self) -> String {
+            "recording-embedder".to_string()
+        }
+
+        fn dimensions(&self) -> u32 {
+            self.vector.len() as u32
+        }
+
+        async fn embed(&self, text: &str) -> Result<Vec<f32>, ExecutionError> {
+            self.texts.lock().unwrap().push(text.to_string());
+            Ok(self.vector.clone())
         }
     }
 

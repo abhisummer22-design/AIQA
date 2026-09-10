@@ -639,13 +639,14 @@ struct NeuralPipelineResponse {
 /// GET /api/v1/projects/:project_id/pipeline — the real stage-by-stage state
 /// of this project's execution pipeline.
 ///
-/// Deliberately reports unavailable stages instead of omitting them: this
-/// system has a real planner, real tool routing, real execution, real
-/// observation and a real quality graph, but it has **no vector store, no
-/// embedding endpoint and no RAG** (`ai_router.rs` calls embeddings "a future
-/// endpoint" and every discovered model reports `embedding: NONE`). A view
-/// that quietly dropped those would imply the pipeline is complete; one that
-/// drew them as active would invent capability outright.
+/// Deliberately reports an unavailable stage instead of omitting it, should
+/// one ever exist again: a view that quietly dropped a real gap would imply
+/// the pipeline is complete; one that drew an unimplemented stage as active
+/// would invent capability outright. As of Re-planning ("retry-failed") and
+/// Vector Store + RAG Retrieval v1 (real Gemini embeddings + brute-force
+/// cosine similarity grounding — `ai_router.rs::GeminiEmbedder`'s own doc
+/// comment), every stage below is genuinely real; `available: false` is not
+/// dead code, it is what a future stage that is not yet built reports.
 async fn get_neural_pipeline(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -681,6 +682,13 @@ async fn get_neural_pipeline(
 
     let executor_count = state.registry.registered_kinds().len() as i64;
     let ai_settings = state.ai_infra.settings().await;
+    // Vector Store v1 — real count of this project's own embedded cases,
+    // for the "vector" stage's metric below.
+    let embedded_case_count = state
+        .store
+        .count_test_case_embeddings(&pid)
+        .await
+        .map_err(to_500)?;
 
     let stages = vec![
         PipelineStage {
@@ -745,24 +753,24 @@ async fn get_neural_pipeline(
         PipelineStage {
             id: "replanning",
             label: "Re-planning",
-            backing: "Not implemented. A gated plan waits for a human (PENDING_APPROVAL) and an interrupted run is recovered at startup, but nothing re-plans a failed run.".to_string(),
-            available: false,
+            backing: "retry-failed — retries a finished run's real INFRA_ERROR/TIMEOUT tasks only (never a genuine FAILED test) via a new run through the same real execution pipeline. Deliberately scoped: a human triggers it, not an autonomous re-planner.".to_string(),
+            available: true,
             metric: None,
             metric_label: None,
         },
         PipelineStage {
             id: "vector",
             label: "Vector Store",
-            backing: "Not implemented. No embedding endpoint and no vector database exist; every discovered model reports embedding: NONE.".to_string(),
-            available: false,
-            metric: None,
-            metric_label: None,
+            backing: "test_case_embeddings — one real Gemini embedding (gemini-embedding-001) per APPROVED test case, brute-force cosine similarity at retrieval time (no ANN index at this scale). Gemini-only: no other configured provider exposes a real embeddings endpoint. Requires GEMINI_API_KEY; degrades to no grounding (not a failure) when unset.".to_string(),
+            available: true,
+            metric: Some(embedded_case_count),
+            metric_label: Some("cases embedded"),
         },
         PipelineStage {
             id: "rag",
             label: "RAG Retrieval",
-            backing: "Not implemented. Generation prompts are built from the caller's own requirement text and selected skills only — nothing is retrieved.".to_string(),
-            available: false,
+            backing: "Every test-case generation request embeds its own requirement text and retrieves this project's most similar already-APPROVED test cases as grounding examples — additive only; a case it inspires still follows the same EVIDENCE RULES as the rest of the prompt.".to_string(),
+            available: true,
             metric: None,
             metric_label: None,
         },
@@ -1619,6 +1627,13 @@ async fn update_test_case_scoped(
     )
     .await;
     let row = scoped_test_case(&state, &ctx, project_id, id).await?;
+    // Vector Store v1 — an already-APPROVED case just got edited; its
+    // stored embedding (if any) is now stale content, so recompute it. A
+    // case not yet approved has nothing to keep in sync here (see
+    // `embed_approved_test_case`'s own doc comment).
+    if row.status == TestCaseStatus::Approved {
+        embed_approved_test_case(&state, &row).await;
+    }
     Ok(Json(row))
 }
 
@@ -1839,6 +1854,9 @@ async fn approve_test_case_scoped(
     )
     .await;
     let row = scoped_test_case(&state, &ctx, project_id, id).await?;
+    // Vector Store v1 — this case just became a real candidate for future
+    // similar-case grounding (`find_similar_approved_test_cases`).
+    embed_approved_test_case(&state, &row).await;
     Ok(Json(row))
 }
 
@@ -2078,6 +2096,14 @@ struct GenerateAiTestCasesResponse {
     /// honest confirmation of real grounding, not a claim the caller has to
     /// take on faith.
     crawl_pages_used: usize,
+    /// Vector Store + RAG Retrieval v1 — how many of this project's own
+    /// similar, already-APPROVED test cases were genuinely retrieved and
+    /// folded into the prompt as grounding examples (0 for a project with
+    /// none embedded yet, or when no embedding provider is configured —
+    /// never a claim of grounding that did not really happen). See
+    /// `ai_generation::rank_similar_test_cases`/`find_similar_approved_test_cases`
+    /// below.
+    similar_cases_used: usize,
     /// Real, summed token/cost/latency across every wave that actually ran
     /// (`ai_generation::aggregate_wave_usage`, applied to `waves` above —
     /// `Vec::new()` on the fallback arm sums to the same honest zero/`None`
@@ -2127,6 +2153,152 @@ async fn load_feedback_context_for_generation(
     }
 }
 
+/// Vector Store + RAG Retrieval v1 — embeds this request's own real
+/// requirement text (`state.embedder` — Gemini in production, see
+/// `ai_router.rs::GeminiEmbedder`'s own doc comment), finds this project's
+/// most similar already-APPROVED test cases via real brute-force cosine
+/// similarity (`ai_generation::rank_similar_test_cases`), and fetches their
+/// real content. Fails open at every step, same disclosed contract
+/// `load_feedback_context_for_generation` above already holds itself to: no
+/// embedding provider configured, a real network failure, a project with
+/// nothing embedded yet, or a genuinely corrupt/orphaned embedding row all
+/// return an empty `Vec` — generation proceeds exactly as it did before
+/// this feature existed, never a hard failure over what is genuinely
+/// optional grounding.
+async fn find_similar_approved_test_cases(
+    state: &AppState,
+    project_id: Uuid,
+    requirement_text: &str,
+) -> Vec<crate::ai_generation::SimilarCaseExample> {
+    if !state.embedder.is_configured() {
+        return Vec::new();
+    }
+    let query_embedding = match state.embedder.embed(requirement_text).await {
+        Ok(v) => v,
+        Err(e) => {
+            state
+                .log_bus
+                .emit(
+                    "WARN",
+                    "generation",
+                    &format!(
+                        "Could not compute a query embedding, generating without similar-case grounding: {e}"
+                    ),
+                    None,
+                    Some(&project_id.to_string()),
+                    None,
+                )
+                .await;
+            return Vec::new();
+        }
+    };
+    let candidates = match state
+        .store
+        .list_test_case_embeddings(&project_id.to_string())
+        .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            state
+                .log_bus
+                .emit(
+                    "WARN",
+                    "generation",
+                    &format!(
+                        "Could not load this project's test case embeddings, generating without similar-case grounding: {e}"
+                    ),
+                    None,
+                    Some(&project_id.to_string()),
+                    None,
+                )
+                .await;
+            return Vec::new();
+        }
+    };
+    let ids = crate::ai_generation::rank_similar_test_cases(&query_embedding, &candidates);
+    let mut examples = Vec::with_capacity(ids.len());
+    for id in ids {
+        // A real, if unusual, orphaned embedding row (its own test case
+        // deleted through a path other than `delete_test_case` — none
+        // exists today, but this stays honest rather than unwrapping) is
+        // simply skipped, not a hard failure for the rest of generation.
+        if let Ok(Some(row)) = state.store.get_test_case(id).await {
+            examples.push(crate::ai_generation::SimilarCaseExample {
+                title: row.title,
+                category: row.category,
+                steps: row.steps,
+                expected_result: row.expected_result,
+            });
+        }
+    }
+    examples
+}
+
+/// Vector Store v1 — (re)computes and stores this real APPROVED test case's
+/// embedding, so a future generation request can retrieve it as a
+/// grounding example (`find_similar_approved_test_cases` above). Called
+/// after every successful transition that leaves a case APPROVED
+/// (`approve_test_case_scoped`, and `update_test_case_scoped` when the
+/// edited case was already approved) — never for a GENERATED/VALIDATED/
+/// REJECTED case, matching `store.rs::list_test_case_embeddings`'s own
+/// "one row per ever-approved case" contract. Fails open, same reasoning as
+/// `find_similar_approved_test_cases`: a real embedding-provider failure
+/// must never fail the approval/edit itself — logged honestly, never
+/// propagated as a 500 for what is genuinely supplementary grounding
+/// infrastructure, not the core feature this endpoint exists for (same
+/// real precedent `create_test_case_scoped`'s own graceful requirement-
+/// graph-link failure handling already set).
+async fn embed_approved_test_case(state: &AppState, row: &crate::store::TestCaseRow) {
+    if !state.embedder.is_configured() {
+        return;
+    }
+    let text = format!("{}\n{}\n{}", row.title, row.description, row.expected_result);
+    let vector = match state.embedder.embed(&text).await {
+        Ok(v) => v,
+        Err(e) => {
+            state
+                .log_bus
+                .emit(
+                    "WARN",
+                    "generation",
+                    &format!(
+                        "Could not compute this test case's embedding, similar-case grounding will not include it yet: {e}"
+                    ),
+                    None,
+                    Some(&row.project_id),
+                    None,
+                )
+                .await;
+            return;
+        }
+    };
+    if let Err(e) = state
+        .store
+        .upsert_test_case_embedding(
+            row.id,
+            &row.project_id,
+            &state.embedder.model_name(),
+            state.embedder.dimensions(),
+            &vector,
+        )
+        .await
+    {
+        state
+            .log_bus
+            .emit(
+                "WARN",
+                "generation",
+                &format!(
+                    "Could not store this test case's embedding, similar-case grounding will not include it yet: {e}"
+                ),
+                None,
+                Some(&row.project_id),
+                None,
+            )
+            .await;
+    }
+}
+
 /// POST .../test-cases/generate-ai — Phase 2. Real, skill-aware AI
 /// generation (`ai_generation::AiModelRouter`). Produces drafts only, never
 /// persists them — the frontend uses the existing
@@ -2172,7 +2344,16 @@ async fn generate_ai_test_cases_scoped(
         )
         .await;
 
-    let feedback = load_feedback_context_for_generation(&state, project_id).await;
+    let mut feedback = load_feedback_context_for_generation(&state, project_id).await;
+    // Vector Store + RAG Retrieval v1 — additive, fails open (see the
+    // function's own doc comment): a project with nothing embedded yet, or
+    // no embedding provider configured, generates exactly as it did before
+    // this feature existed. Deliberately not wired into
+    // `generate_custom_testing_scoped` below for this v1 — same disclosed
+    // boundary that endpoint's crawl-grounding already has.
+    feedback.similar_cases =
+        find_similar_approved_test_cases(&state, project_id, &body.requirement_text).await;
+    let similar_cases_used = feedback.similar_cases.len();
 
     // Real, optional crawl grounding — resolved with the exact same
     // ownership check + task lookup `get_crawl_result_scoped` already uses,
@@ -2328,6 +2509,7 @@ async fn generate_ai_test_cases_scoped(
                 fallback_reason: None,
                 waves,
                 crawl_pages_used,
+                similar_cases_used,
                 total_prompt_tokens: usage.prompt_tokens,
                 total_completion_tokens: usage.completion_tokens,
                 total_estimated_cost_usd: usage.estimated_cost_usd,
@@ -2363,6 +2545,7 @@ async fn generate_ai_test_cases_scoped(
                 fallback_reason: Some(reason),
                 waves: Vec::new(),
                 crawl_pages_used,
+                similar_cases_used,
                 total_prompt_tokens: None,
                 total_completion_tokens: None,
                 total_estimated_cost_usd: None,

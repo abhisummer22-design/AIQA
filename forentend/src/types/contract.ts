@@ -909,6 +909,12 @@ export interface GenerateAiTestCasesResponse {
    *  reached the prompt (0 when no `crawl_run_id` was supplied) — an honest
    *  confirmation of real grounding, not a claim to take on faith. */
   crawl_pages_used: number;
+  /** Vector Store + RAG Retrieval v1 — how many of this project's own
+   *  similar, already-APPROVED test cases were genuinely retrieved and
+   *  folded into the prompt as grounding examples (0 for a project with
+   *  none embedded yet, or when no embedding provider is configured —
+   *  never a claim of grounding that did not really happen). */
+  similar_cases_used: number;
   /** Real, summed token/cost/latency across every wave that actually ran
    *  (`ai_generation::aggregate_wave_usage`). The token/cost totals are
    *  `null` only when at least one wave that ran has a genuinely unknown

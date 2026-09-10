@@ -1,4 +1,4 @@
-use crate::ai_router::AiInfrastructure;
+use crate::ai_router::{AiInfrastructure, Embedder};
 use crate::domain::RunId;
 use crate::engine::{ProjectStream, RunRecord};
 use crate::evidence::LocalEvidenceStore;
@@ -37,6 +37,13 @@ pub struct AppState {
     /// so every AI-consuming handler shares one discovery cache/settings
     /// store rather than each building its own.
     pub ai_infra: Arc<AiInfrastructure>,
+    /// Vector Store / RAG Retrieval v1 (`ai_router.rs::Embedder`'s own doc
+    /// comment). A trait object — not `ai_infra`'s concrete
+    /// `GeminiEmbedder` directly — for exactly the reason `ai_infra`
+    /// itself is built on `Arc<dyn AiExecutor>`: tests inject
+    /// `ai_router::test_support::FakeEmbedder` instead of ever making a
+    /// real network call.
+    pub embedder: Arc<dyn Embedder>,
     /// Phase 6 — live, in-process handles for running (or just-finished)
     /// performance tests. Session-only, same honest limitation as `runs`
     /// above: a handle here does not survive a restart (see
@@ -55,6 +62,7 @@ impl AppState {
         policy: PolicyConfig,
         evidence: LocalEvidenceStore,
         ai_infra: Arc<AiInfrastructure>,
+        embedder: Arc<dyn Embedder>,
     ) -> Self {
         Self {
             runs: Arc::new(RwLock::new(HashMap::new())),
@@ -64,6 +72,7 @@ impl AppState {
             evidence: Arc::new(evidence),
             project_streams: Arc::new(RwLock::new(HashMap::new())),
             ai_infra,
+            embedder,
             performance_tests: Arc::new(RwLock::new(HashMap::new())),
             log_bus: Arc::new(LogBus::new(300)),
         }
