@@ -134,7 +134,6 @@ import { ApiError, aiqaApi } from '../../services/aiqaApi';
 import { StateCard, renderResourceErrorState } from '../state/StateViews';
 import { EmptyState } from '../common/EmptyState';
 import { AIEnginePanel } from '../dashboard/AIEnginePanel';
-import { NeuralGraph } from '../neural-graph/NeuralGraph';
 import { ProjectStatusDonut } from '../dashboard/ProjectStatusDonut';
 import { ProjectExecutionGraph } from '../dashboard/ProjectExecutionGraph';
 import { OrchestratorLogsPanel } from '../dashboard/OrchestratorLogsPanel';
@@ -537,13 +536,20 @@ export const DashboardPage: React.FC = () => {
           </div>
         </section>
 
-        {/* 2.5. AIQA Neural Intelligence Graph — real, project-scoped test-
-            case/execution/evidence/risk/audit intelligence. Its own data
-            adapter (`useNeuralGraphData`) fetches what the KPI row above
-            doesn't already have; `dashboard`/`aiStatus` are passed down
-            rather than re-fetched, so this can never show a number that
-            disagrees with the KPI cards above it. */}
-        <NeuralGraph projectId={selectedProjectId} projectName={dashboard.project_name} dashboard={dashboard} aiStatus={aiStatus} />
+        {/* Removed: the "AIQA Neural Intelligence Graph" — a real (not
+            fabricated) but genuinely redundant re-visualization of the exact
+            same numbers the KPI row above it already shows, plus its own
+            extra project-scoped fetches (test-cases/executions/audit) just
+            to compute them a second time. Its node-click "detail" popups
+            never showed more than a small subset of what the dedicated
+            Test Case Generator/Validator, Execution Hub, Evidence Viewer,
+            and Audit Trail pages already show in full, and it was read-only
+            — no action was ever reachable from it that wasn't already
+            reachable from those pages. Deleted entirely (component tree,
+            `neuralGraph.config.ts`/`.types.ts`, `useNeuralGraphData.ts`),
+            not just unmounted here — this codebase's own established
+            convention for a feature confirmed to have no real remaining
+            purpose (see e.g. FE-16's `runs`/`triggerNewRun` removal). */}
 
         {/* 3. Middle Section: Current Project Details + Futuristic AI Orb */}
         <section id="dashboard-middle-section" className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
