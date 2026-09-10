@@ -277,6 +277,17 @@ export interface CancelRunResponse {
   status: RunState;
 }
 
+/** `api.rs::RetryFailedTasksResponse` — real re-planning v1. `run_id`/
+ *  `state` describe the real NEW run created to retry
+ *  `retried_task_ids` — the real, non-empty subset of the original run's
+ *  own tasks that ended INFRA_ERROR/TIMEOUT (never a real FAILED test;
+ *  see the backend handler's own doc comment for why). */
+export interface RetryFailedTasksResponse {
+  run_id: string;
+  state: RunState;
+  retried_task_ids: string[];
+}
+
 // ---------------------------------------------------------------------- events
 
 /** `domain.rs::RunEvent`, as actually serialized (`type` is the renamed

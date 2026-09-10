@@ -620,8 +620,30 @@ export const ExecutionHubPage: React.FC = () => {
     }
   }, [selectedProjectId, selectedRunId, actionPending, fetchDetail]);
 
+  /** Real re-planning v1 — creates a real new run retrying only this run's
+   *  real INFRA_ERROR/TIMEOUT tasks (never a real FAILED test), then
+   *  switches straight to watching that new run, same as `handleCreate`
+   *  already does for a freshly-created one. */
+  const handleRetryFailed = useCallback(async () => {
+    if (!selectedProjectId || !selectedRunId || actionPending) return;
+    setActionPending(true);
+    setActionError(null);
+    try {
+      const retried = await aiqaApi.executions.retryFailed(selectedProjectId, selectedRunId);
+      setSelectedRunId(retried.run_id);
+      await fetchRuns(selectedProjectId, true);
+    } catch (err) {
+      setActionError(err instanceof ApiError ? err : new ApiError('server_error', String(err)));
+    } finally {
+      setActionPending(false);
+    }
+  }, [selectedProjectId, selectedRunId, actionPending, fetchRuns]);
+
   const canCancel = detail ? detail.state !== 'PENDING_APPROVAL' && !TERMINAL_RUN_STATES.has(detail.state) : false;
   const canApproveReject = detail?.state === 'PENDING_APPROVAL';
+  const canRetryFailed = detail
+    ? TERMINAL_RUN_STATES.has(detail.state) && (detail.infra_error > 0 || detail.timeout > 0)
+    : false;
 
   // -------------------------------------------------------------- render
 
@@ -737,6 +759,14 @@ export const ExecutionHubPage: React.FC = () => {
               </>
             )}
             {canCancel && <Cta label="Cancel" icon={Square} onClick={handleCancel} disabled={actionPending} />}
+            {detail && canRetryFailed && (
+              <Cta
+                label={`Retry Failed (${detail.infra_error + detail.timeout})`}
+                icon={RotateCcw}
+                onClick={handleRetryFailed}
+                disabled={actionPending}
+              />
+            )}
           </div>
         </div>
 

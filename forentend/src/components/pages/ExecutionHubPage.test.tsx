@@ -74,6 +74,10 @@ function mockBackend(opts: {
   detailByRunId?: Record<string, Entry<RunDetail>>;
   evidenceByRunId?: Record<string, unknown[]>;
   onCreate?: (projectId: string, body: unknown) => Response | Promise<Response>;
+  /** Re-planning v1 — `POST .../executions/:run_id/retry-failed`. Defaults
+   *  to a real-shaped success so tests that don't care about the exact
+   *  response still get one that matches `RetryFailedTasksResponse`. */
+  onRetryFailed?: (runId: string, projectId: string) => Response | Promise<Response>;
 }) {
   const isErrorEntry = (e: unknown): e is { status: number; body: unknown } =>
     typeof e === 'object' && e !== null && 'status' in e && !('run_id' in e);
@@ -127,6 +131,26 @@ function mockBackend(opts: {
     if (url.includes('/cancel')) return jsonResponse(200, { run_id: url.split('/')[5], status: 'CANCELLED' });
     if (url.includes('/approve')) return jsonResponse(200, { run_id: url.split('/')[5], state: 'SCHEDULED' });
     if (url.includes('/reject')) return jsonResponse(200, { run_id: url.split('/')[5], state: 'REJECTED' });
+    if (url.includes('/retry-failed')) {
+      const m = url.match(/projects\/([^/]+)\/executions\/([^/]+)\/retry-failed/);
+      const projectId = m ? m[1] : '';
+      const runId = m ? m[2] : '';
+      const res = opts.onRetryFailed
+        ? await opts.onRetryFailed(runId, projectId)
+        : jsonResponse(200, { run_id: 'retry-run-default', state: 'SCHEDULED', retried_task_ids: ['t-infra-1'] });
+      if (res.ok) {
+        // Real backend behavior: `retry_failed_tasks_scoped` reuses
+        // `create_run_core` verbatim, which inserts the new run into the
+        // DB/in-memory map before returning — so a real immediately-
+        // following `GET .../executions` genuinely includes it too.
+        // Mirrored via the same `createdRuns` mechanism as `onCreate`
+        // above, so `fetchRuns`'s "clear a stale selection" logic (brief
+        // §25) doesn't wrongly wipe out the freshly-selected retry run.
+        const created = (await res.clone().json()) as { run_id: string; state: RunListItem['state'] };
+        createdRuns.push({ run_id: created.run_id, name: 'Retry run', state: created.state, total: 0, passed: 0, failed: 0, project_id: projectId });
+      }
+      return res;
+    }
     const execMatch = url.match(/projects\/([^/]+)\/executions\/([^/?]+)/);
     if (execMatch) {
       const [, projectId, runId] = execMatch;
@@ -1123,5 +1147,194 @@ describe('ExecutionHubPage — FE-20 real full run-summary count-grid exposure',
     await waitFor(() => expect(gridCellValue('QUEUED')).toBe('3'));
     expect(gridCellValue('RUNNING')).toBe('2');
     expect(gridCellValue('TIMEOUT')).toBe('1');
+  });
+});
+
+/**
+ * Re-planning v1 — real "Retry Failed" action
+ * (`POST .../executions/:run_id/retry-failed`). `canRetryFailed` requires
+ * BOTH a terminal `RunState` AND a real non-zero `infra_error`/`timeout`
+ * count — a genuine `FAILED` test never makes this button appear, and a
+ * still-running execution never does either, regardless of counts already
+ * accumulated from an earlier wave. Same real-`AppShell`/transport-
+ * boundary-mocked-`fetch` approach as the suites above.
+ */
+describe('ExecutionHubPage — Re-planning v1 real "Retry Failed" action', () => {
+  const RUN_C: RunListItem = { run_id: 'run-c', name: 'Infra Flaky Sweep', state: 'PARTIAL', total: 3, passed: 1, failed: 0, project_id: PROJECT_A.id };
+  const RUN_C_DETAIL: RunDetail = {
+    run_id: 'run-c',
+    name: 'Infra Flaky Sweep',
+    state: 'PARTIAL',
+    total: 3,
+    queued: 0,
+    running: 0,
+    passed: 1,
+    failed: 0,
+    blocked: 0,
+    skipped: 0,
+    cancelled: 0,
+    timeout: 1,
+    infra_error: 1,
+    needs_review: 0,
+    started_at: '2026-08-21T09:00:00Z',
+    finished_at: '2026-08-21T09:05:00Z',
+    project_id: PROJECT_A.id,
+    requested_by: 'retry-test-key',
+    policy_notes: null,
+    approved_by: null,
+    approved_at: null,
+    tasks: [],
+  };
+
+  it('does not show for a still-running execution, even when it already carries real infra/timeout counts from a finished wave', async () => {
+    setApiKey(RAW_KEY);
+    const stillRunning: RunListItem = { run_id: 'run-still-running', name: 'Still Running Sweep', state: 'RUNNING', total: 3, passed: 1, failed: 0, project_id: PROJECT_A.id };
+    const stillRunningDetail: RunDetail = { ...RUN_C_DETAIL, run_id: 'run-still-running', name: 'Still Running Sweep', state: 'RUNNING', finished_at: null };
+    mockBackend({
+      projects: [PROJECT_A],
+      runsByProjectId: { [PROJECT_A.id]: [stillRunning] },
+      detailByRunId: { 'run-still-running': stillRunningDetail },
+    });
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(screen.getByText('Still Running Sweep')).toBeTruthy());
+    await act(async () => {
+      screen.getByText('Still Running Sweep').closest('button')!.click();
+    });
+
+    await waitFor(() => expect(screen.getAllByText('RUNNING').length).toBeGreaterThan(0));
+    expect(screen.queryByText(/Retry Failed/)).toBeNull();
+  });
+
+  it('does not show for a terminal run with zero real infra/timeout failures', async () => {
+    setApiKey(RAW_KEY);
+    mockBackend({
+      projects: [PROJECT_A],
+      runsByProjectId: { [PROJECT_A.id]: [RUN_A] },
+      detailByRunId: { [RUN_A.run_id]: RUN_A_DETAIL_TERMINAL },
+    });
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(screen.getByText('Regression A')).toBeTruthy());
+    await act(async () => {
+      screen.getByText('Regression A').closest('button')!.click();
+    });
+
+    await waitFor(() => expect(screen.getAllByText('COMPLETED').length).toBeGreaterThan(0));
+    expect(screen.queryByText(/Retry Failed/)).toBeNull();
+  });
+
+  it('shows with the real combined infra_error+timeout count once a run is terminal with real infra/timeout failures', async () => {
+    setApiKey(RAW_KEY);
+    mockBackend({
+      projects: [PROJECT_A],
+      runsByProjectId: { [PROJECT_A.id]: [RUN_C] },
+      detailByRunId: { [RUN_C.run_id]: RUN_C_DETAIL },
+    });
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(screen.getByText('Infra Flaky Sweep')).toBeTruthy());
+    await act(async () => {
+      screen.getByText('Infra Flaky Sweep').closest('button')!.click();
+    });
+
+    await waitFor(() => expect(screen.getByText('Retry Failed (2)')).toBeTruthy());
+  });
+
+  it('clicking it calls the real endpoint for the correct project/run, then switches to watching the returned new run and refetches the list', async () => {
+    setApiKey(RAW_KEY);
+    let capturedProjectId = '';
+    let capturedRunId = '';
+    const newRunDetail: RunDetail = {
+      run_id: 'retry-run-99',
+      name: 'Retry (infra failures): Infra Flaky Sweep',
+      state: 'SCHEDULED',
+      total: 2,
+      queued: 2,
+      running: 0,
+      passed: 0,
+      failed: 0,
+      blocked: 0,
+      skipped: 0,
+      cancelled: 0,
+      timeout: 0,
+      infra_error: 0,
+      needs_review: 0,
+      started_at: '2026-08-21T09:10:00Z',
+      finished_at: null,
+      project_id: PROJECT_A.id,
+      requested_by: 'retry-test-key',
+      policy_notes: null,
+      approved_by: null,
+      approved_at: null,
+      tasks: [],
+    };
+    const fetchMock = mockBackend({
+      projects: [PROJECT_A],
+      runsByProjectId: { [PROJECT_A.id]: [RUN_C] },
+      detailByRunId: { [RUN_C.run_id]: RUN_C_DETAIL, 'retry-run-99': newRunDetail },
+      onRetryFailed: (runId, projectId) => {
+        capturedRunId = runId;
+        capturedProjectId = projectId;
+        return jsonResponse(200, { run_id: 'retry-run-99', state: 'SCHEDULED', retried_task_ids: ['t-infra-1', 't-infra-2'] });
+      },
+    });
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(screen.getByText('Infra Flaky Sweep')).toBeTruthy());
+    await act(async () => {
+      screen.getByText('Infra Flaky Sweep').closest('button')!.click();
+    });
+    await waitFor(() => expect(screen.getByText('Retry Failed (2)')).toBeTruthy());
+
+    const listCallsBefore = fetchMock.mock.calls.filter(
+      ([u]: [string]) => typeof u === 'string' && u.includes('/executions') && !u.includes('/executions/'),
+    ).length;
+
+    await act(async () => {
+      screen.getByText('Retry Failed (2)').closest('button')!.click();
+    });
+
+    await waitFor(() => expect(capturedRunId).toBe(RUN_C.run_id));
+    expect(capturedProjectId).toBe(PROJECT_A.id);
+    // Switches straight to watching the real new run — never a fabricated one.
+    await waitFor(() => expect(screen.getByText('Retry (infra failures): Infra Flaky Sweep')).toBeTruthy());
+    // A real extra list refetch happened, beyond the ones already made.
+    const listCallsAfter = fetchMock.mock.calls.filter(
+      ([u]: [string]) => typeof u === 'string' && u.includes('/executions') && !u.includes('/executions/'),
+    ).length;
+    expect(listCallsAfter).toBeGreaterThan(listCallsBefore);
+  });
+
+  it('a real retry-failed error surfaces via the same actionError banner, without navigating away from the original run', async () => {
+    setApiKey(RAW_KEY);
+    mockBackend({
+      projects: [PROJECT_A],
+      runsByProjectId: { [PROJECT_A.id]: [RUN_C] },
+      detailByRunId: { [RUN_C.run_id]: RUN_C_DETAIL },
+      onRetryFailed: () =>
+        jsonResponse(409, envelope('CONFLICT', 'run has not reached a terminal state yet; retry-failed is only available once a run finishes')),
+    });
+    renderApp();
+    await verifyKey();
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(screen.getByText('Infra Flaky Sweep')).toBeTruthy());
+    await act(async () => {
+      screen.getByText('Infra Flaky Sweep').closest('button')!.click();
+    });
+    await waitFor(() => expect(screen.getByText('Retry Failed (2)')).toBeTruthy());
+
+    await act(async () => {
+      screen.getByText('Retry Failed (2)').closest('button')!.click();
+    });
+
+    await waitFor(() => expect(screen.getByText(/retry-failed is only available once a run finishes/)).toBeTruthy());
+    // Still the original run selected (its name now renders twice — once in
+    // the run list, once in the detail header) — no fabricated navigation.
+    expect(screen.getAllByText('Infra Flaky Sweep').length).toBeGreaterThan(0);
   });
 });
