@@ -251,7 +251,7 @@ const reviewStateBadgeClass = (state: ReviewState): string => {
     case 'DISMISSED':
       return 'bg-slate-800 text-slate-400 border-slate-700';
     default:
-      return 'bg-indigo-950 text-indigo-300 border-indigo-800';
+      return 'bg-violet-950 text-violet-300 border-violet-800';
   }
 };
 
@@ -708,7 +708,7 @@ export const ReportsPage: React.FC = () => {
         head: [BUG_REPORT_HEADERS],
         body: toPdfSafeRows(bugRows.length > 0 ? bugRows : [['No findings recorded for this project.', '', '', '', '', '', '', '']]),
         styles: { fontSize: 7 },
-        headStyles: { fillColor: [79, 70, 229] },
+        headStyles: { fillColor: [124, 58, 237] },
       });
 
       const afterBugY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 10;
@@ -730,7 +730,7 @@ export const ReportsPage: React.FC = () => {
         head: [TEST_REPORT_HEADERS],
         body: toPdfSafeRows(testRows),
         styles: { fontSize: 8 },
-        headStyles: { fillColor: [79, 70, 229] },
+        headStyles: { fillColor: [124, 58, 237] },
       });
 
       const afterTestY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 10;
@@ -741,7 +741,7 @@ export const ReportsPage: React.FC = () => {
         head: [FINAL_AUDIT_HEADERS],
         body: toPdfSafeRows(buildFinalAuditRows(findings, dashboard, projectLabel)),
         styles: { fontSize: 8 },
-        headStyles: { fillColor: [79, 70, 229] },
+        headStyles: { fillColor: [124, 58, 237] },
       });
 
       doc.save(`aiqa_report_${selectedProjectId}.pdf`);
@@ -813,10 +813,10 @@ export const ReportsPage: React.FC = () => {
       return (
         <StateCard
           icon={Sparkles}
-          iconClassName="text-indigo-400"
+          iconClassName="text-violet-400"
           spin
           statusLabel="LOADING…"
-          statusClassName="text-indigo-300 bg-indigo-950/60 border-indigo-800"
+          statusClassName="text-violet-300 bg-violet-950/60 border-violet-800"
           title="Loading findings"
           description={`Fetching auto-drafted findings for ${selectedProject?.name ?? 'this project'}…`}
         />
@@ -864,7 +864,7 @@ export const ReportsPage: React.FC = () => {
                 <div className="flex items-start justify-between gap-3">
                   <div className="space-y-0.5 min-w-0">
                     <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="font-mono font-bold text-indigo-400 text-xs">{finding.id.slice(0, 8)}</span>
+                      <span className="font-mono font-bold text-violet-400 text-xs">{finding.id.slice(0, 8)}</span>
                       <span className={`px-1.5 py-0.2 rounded border font-mono text-[9px] font-bold uppercase ${severityBadgeClass(finding.severity)}`}>
                         {finding.severity}
                       </span>
@@ -887,7 +887,7 @@ export const ReportsPage: React.FC = () => {
 
                   {analysisLoading && (
                     <div className="flex items-center gap-2 text-xs text-slate-400 font-mono">
-                      <Sparkles className="w-3.5 h-3.5 text-indigo-400 animate-spin" />
+                      <Sparkles className="w-3.5 h-3.5 text-violet-400 animate-spin" />
                       Loading root-cause analysis…
                     </div>
                   )}
@@ -1006,10 +1006,10 @@ export const ReportsPage: React.FC = () => {
       return (
         <StateCard
           icon={Gauge}
-          iconClassName="text-indigo-400"
+          iconClassName="text-violet-400"
           spin
           statusLabel="LOADING…"
-          statusClassName="text-indigo-300 bg-indigo-950/60 border-indigo-800"
+          statusClassName="text-violet-300 bg-violet-950/60 border-violet-800"
           title="Loading test intelligence"
           description={`Fetching real risk/value/flakiness scoring for ${selectedProject?.name ?? 'this project'}…`}
         />
@@ -1099,7 +1099,7 @@ export const ReportsPage: React.FC = () => {
               type="button"
               onClick={handleExportJSON}
               disabled={!findings || findings.length === 0}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs shadow-sm shadow-indigo-950/60 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-violet-600 hover:bg-violet-500 text-white font-semibold text-xs shadow-sm shadow-violet-950/60 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Download className="w-3.5 h-3.5" />
               <span>Export JSON</span>
@@ -1150,7 +1150,7 @@ export const ReportsPage: React.FC = () => {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search title, severity, review state…"
-              className="w-full pl-8 pr-3 py-1.5 rounded-md border border-slate-800 bg-[#020617] text-xs text-slate-200 outline-none focus:ring-1 focus:ring-indigo-500 font-sans"
+              className="w-full pl-8 pr-3 py-1.5 rounded-md border border-slate-800 bg-[#020617] text-xs text-slate-200 outline-none focus:ring-1 focus:ring-violet-500 font-sans"
             />
           </div>
         </div>
@@ -1163,7 +1163,7 @@ export const ReportsPage: React.FC = () => {
       {selectedProjectId && (
         <div className="space-y-2">
           <div className="flex items-center gap-1.5 px-1">
-            <Gauge className="w-3.5 h-3.5 text-indigo-400" />
+            <Gauge className="w-3.5 h-3.5 text-violet-400" />
             <h2 className="text-xs font-bold text-slate-100 font-mono uppercase tracking-wider">Test Intelligence</h2>
             <span className="text-[10px] font-mono text-slate-500">
               {testIntel ? `${testIntel.length} TEST${testIntel.length === 1 ? '' : 'S'}` : ''}

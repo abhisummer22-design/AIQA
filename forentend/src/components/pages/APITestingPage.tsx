@@ -225,7 +225,7 @@ export const APITestingPage: React.FC = () => {
             <div className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm space-y-3">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-mono text-slate-400">Project Context</span>
-                <span className="text-xs font-mono font-semibold text-cyan-300">{selectedProject?.name ?? realProjectId}</span>
+                <span className="text-xs font-mono font-semibold text-yellow-300">{selectedProject?.name ?? realProjectId}</span>
               </div>
 
               <div className="flex gap-2">
@@ -234,7 +234,7 @@ export const APITestingPage: React.FC = () => {
                   value={method}
                   onChange={(e) => setMethod(e.target.value as Method)}
                   disabled={isExecuting}
-                  className="px-2 py-2 rounded-md bg-[#020617] border border-slate-700 text-sm font-mono font-bold text-cyan-300 cursor-pointer disabled:opacity-60"
+                  className="px-2 py-2 rounded-md bg-[#020617] border border-slate-700 text-sm font-mono font-bold text-yellow-300 cursor-pointer disabled:opacity-60"
                 >
                   {METHODS.map((m) => (
                     <option key={m} value={m}>
@@ -249,7 +249,7 @@ export const APITestingPage: React.FC = () => {
                   onChange={(e) => setUrl(e.target.value)}
                   placeholder="https://api.example.com/v1/resource"
                   disabled={isExecuting}
-                  className="flex-1 min-w-0 px-3 py-2 rounded-md bg-[#020617] border border-slate-700 text-sm font-mono text-slate-100 placeholder-slate-600 focus:outline-none focus:border-indigo-500 disabled:opacity-60"
+                  className="flex-1 min-w-0 px-3 py-2 rounded-md bg-[#020617] border border-slate-700 text-sm font-mono text-slate-100 placeholder-slate-600 focus:outline-none focus:border-violet-500 disabled:opacity-60"
                 />
               </div>
 
@@ -271,7 +271,7 @@ export const APITestingPage: React.FC = () => {
                   placeholder='{"key": "value"}'
                   disabled={isExecuting}
                   rows={4}
-                  className="w-full px-3 py-2 rounded-md bg-[#020617] border border-slate-700 text-xs font-mono text-slate-100 placeholder-slate-600 focus:outline-none focus:border-indigo-500 disabled:opacity-60 resize-y"
+                  className="w-full px-3 py-2 rounded-md bg-[#020617] border border-slate-700 text-xs font-mono text-slate-100 placeholder-slate-600 focus:outline-none focus:border-violet-500 disabled:opacity-60 resize-y"
                 />
               </div>
             </div>
@@ -296,7 +296,7 @@ export const APITestingPage: React.FC = () => {
                   id="btn-execute-api-test"
                   onClick={handleExecute}
                   disabled={isExecuting}
-                  className="flex items-center gap-1.5 px-5 py-2 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white font-mono text-xs font-bold cursor-pointer transition-colors shadow-md disabled:opacity-60 disabled:cursor-not-allowed"
+                  className="flex items-center gap-1.5 px-5 py-2 rounded-md bg-violet-600 hover:bg-violet-500 text-white font-mono text-xs font-bold cursor-pointer transition-colors shadow-md disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   <Play className="w-4 h-4" />
                   <span>{isExecuting ? 'Executing…' : 'Execute'}</span>
@@ -455,8 +455,8 @@ function getStatusBadge(status: ExecStatus) {
     case 'IDLE':
     default:
       return (
-        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-mono font-semibold bg-slate-900 border border-slate-700 text-cyan-400">
-          <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
+        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-mono font-semibold bg-slate-900 border border-slate-700 text-yellow-400">
+          <span className="w-2 h-2 rounded-full bg-yellow-400 animate-pulse" />
           Ready
         </span>
       );
@@ -480,7 +480,7 @@ const KVListEditor: React.FC<{ label: string; rows: KVRow[]; setRows: (r: KVRow[
         id={`btn-add-${idPrefix}-row`}
         onClick={() => setRows([...rows, { key: '', value: '' }])}
         disabled={disabled}
-        className="flex items-center gap-1 text-[10px] font-mono text-indigo-400 hover:text-indigo-300 cursor-pointer disabled:opacity-50"
+        className="flex items-center gap-1 text-[10px] font-mono text-violet-400 hover:text-violet-300 cursor-pointer disabled:opacity-50"
       >
         <Plus className="w-3 h-3" /> Add
       </button>
@@ -528,13 +528,13 @@ const AssertionsEditor: React.FC<{ assertions: AssertionRow[]; setAssertions: (a
         <ListChecks className="w-3.5 h-3.5" /> Assertions
       </span>
       <div className="flex items-center gap-2">
-        <button type="button" onClick={() => setAssertions([...assertions, { kind: 'STATUS', status: '200' }])} disabled={disabled} className="text-[10px] font-mono text-indigo-400 hover:text-indigo-300 cursor-pointer disabled:opacity-50">
+        <button type="button" onClick={() => setAssertions([...assertions, { kind: 'STATUS', status: '200' }])} disabled={disabled} className="text-[10px] font-mono text-violet-400 hover:text-violet-300 cursor-pointer disabled:opacity-50">
           + Status
         </button>
-        <button type="button" onClick={() => setAssertions([...assertions, { kind: 'HEADER', name: '', value: '' }])} disabled={disabled} className="text-[10px] font-mono text-indigo-400 hover:text-indigo-300 cursor-pointer disabled:opacity-50">
+        <button type="button" onClick={() => setAssertions([...assertions, { kind: 'HEADER', name: '', value: '' }])} disabled={disabled} className="text-[10px] font-mono text-violet-400 hover:text-violet-300 cursor-pointer disabled:opacity-50">
           + Header
         </button>
-        <button type="button" onClick={() => setAssertions([...assertions, { kind: 'BODY_FIELD', path: '', equals: '' }])} disabled={disabled} className="text-[10px] font-mono text-indigo-400 hover:text-indigo-300 cursor-pointer disabled:opacity-50">
+        <button type="button" onClick={() => setAssertions([...assertions, { kind: 'BODY_FIELD', path: '', equals: '' }])} disabled={disabled} className="text-[10px] font-mono text-violet-400 hover:text-violet-300 cursor-pointer disabled:opacity-50">
           + Body Field
         </button>
       </div>

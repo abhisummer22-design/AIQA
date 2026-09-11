@@ -35,7 +35,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
     <div
       className={`flex flex-col items-center justify-center text-center p-6 md:p-8 rounded-lg border border-slate-800 bg-[#0B1120] ${className}`}
     >
-      <div className="w-10 h-10 rounded-lg bg-[#020617] border border-slate-700/60 flex items-center justify-center mb-3 text-indigo-400">
+      <div className="w-10 h-10 rounded-lg bg-[#020617] border border-slate-700/60 flex items-center justify-center mb-3 text-violet-400">
         <Icon className="w-5 h-5" />
       </div>
 
@@ -59,7 +59,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
           {actionLabel && (
             <button
               onClick={onAction}
-              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs transition-all shadow-sm shadow-indigo-950/60 cursor-pointer"
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-md bg-violet-600 hover:bg-violet-500 text-white font-semibold text-xs transition-all shadow-sm shadow-violet-950/60 cursor-pointer"
             >
               <span>{actionLabel}</span>
               <ArrowRight className="w-3.5 h-3.5" />

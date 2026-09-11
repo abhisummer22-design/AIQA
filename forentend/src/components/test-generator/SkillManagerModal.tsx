@@ -36,8 +36,8 @@ function readTextFile(file: File): Promise<string> {
 
 function typeBadge(type: SkillSourceType): React.ReactNode {
   const styles: Record<SkillSourceType, string> = {
-    BUILT_IN: 'bg-indigo-950/80 border-indigo-700 text-indigo-300',
-    CUSTOM: 'bg-cyan-950/80 border-cyan-700 text-cyan-300',
+    BUILT_IN: 'bg-violet-950/80 border-violet-700 text-violet-300',
+    CUSTOM: 'bg-yellow-950/80 border-yellow-700 text-yellow-300',
     FILE: 'bg-amber-950/80 border-amber-700 text-amber-300',
     PLUGIN: 'bg-slate-900 border-slate-700 text-slate-400',
     MCP: 'bg-slate-900 border-slate-700 text-slate-400',
@@ -143,7 +143,7 @@ export const SkillManagerModal: React.FC<SkillManagerModalProps> = ({
 
         {/* Search */}
         <div className="flex items-center gap-2.5 px-4 py-2.5 border-b border-slate-800">
-          <Search className="w-4 h-4 text-indigo-400 shrink-0" />
+          <Search className="w-4 h-4 text-violet-400 shrink-0" />
           <input
             autoFocus
             type="text"
@@ -172,11 +172,11 @@ export const SkillManagerModal: React.FC<SkillManagerModalProps> = ({
                   onClick={() => onToggleSkill(skill.id)}
                   aria-pressed={selected}
                   className={`w-full flex items-start gap-3 p-2.5 rounded-md text-left transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 ${
-                    selected ? 'bg-indigo-950/50 border border-indigo-700/70' : 'bg-[#020617] border border-slate-800 hover:border-slate-700'
+                    selected ? 'bg-violet-950/50 border border-violet-700/70' : 'bg-[#020617] border border-slate-800 hover:border-slate-700'
                   }`}
                 >
                   {selected ? (
-                    <CheckSquare className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />
+                    <CheckSquare className="w-4 h-4 text-violet-400 shrink-0 mt-0.5" />
                   ) : (
                     <Square className="w-4 h-4 text-slate-600 shrink-0 mt-0.5" />
                   )}
@@ -199,7 +199,7 @@ export const SkillManagerModal: React.FC<SkillManagerModalProps> = ({
         {/* Create custom skill */}
         <div className="border-t border-slate-800 p-3 space-y-2 bg-[#020617]">
           {justAddedId && !showCreateForm && (
-            <p className="text-[11px] font-mono text-cyan-300 flex items-center gap-1.5">
+            <p className="text-[11px] font-mono text-yellow-300 flex items-center gap-1.5">
               <Info className="w-3.5 h-3.5 shrink-0" />
               "{justAddedId}" saved — available to every project from now on.
             </p>
@@ -213,7 +213,7 @@ export const SkillManagerModal: React.FC<SkillManagerModalProps> = ({
                 value={draftName}
                 onChange={(e) => setDraftName(e.target.value)}
                 disabled={saving}
-                className="w-full px-2.5 py-1.5 rounded bg-[#0B1120] border border-slate-700 text-xs font-mono text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 disabled:opacity-50"
+                className="w-full px-2.5 py-1.5 rounded bg-[#0B1120] border border-slate-700 text-xs font-mono text-slate-100 placeholder-slate-500 focus:outline-none focus:border-violet-500 disabled:opacity-50"
               />
               <textarea
                 aria-label="New skill description"
@@ -222,7 +222,7 @@ export const SkillManagerModal: React.FC<SkillManagerModalProps> = ({
                 value={draftDescription}
                 onChange={(e) => setDraftDescription(e.target.value)}
                 disabled={saving}
-                className="w-full px-2.5 py-1.5 rounded bg-[#0B1120] border border-slate-700 text-xs font-mono text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 resize-none disabled:opacity-50"
+                className="w-full px-2.5 py-1.5 rounded bg-[#0B1120] border border-slate-700 text-xs font-mono text-slate-100 placeholder-slate-500 focus:outline-none focus:border-violet-500 resize-none disabled:opacity-50"
               />
               <input
                 ref={fileInputRef}
@@ -239,7 +239,7 @@ export const SkillManagerModal: React.FC<SkillManagerModalProps> = ({
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
                   disabled={saving}
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-[#0B1120] border border-slate-700 hover:border-cyan-600 text-slate-300 hover:text-cyan-300 font-mono text-[11px] font-semibold cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-[#0B1120] border border-slate-700 hover:border-yellow-600 text-slate-300 hover:text-yellow-300 font-mono text-[11px] font-semibold cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <Upload className="w-3.5 h-3.5" />
                   Attach file (.txt/.md/.json/.yaml)
@@ -265,7 +265,7 @@ export const SkillManagerModal: React.FC<SkillManagerModalProps> = ({
                   id="btn-confirm-add-custom-skill"
                   onClick={() => void handleCreate()}
                   disabled={!draftName.trim() || saving}
-                  className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-mono text-xs font-bold cursor-pointer"
+                  className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-md bg-violet-600 hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-mono text-xs font-bold cursor-pointer"
                 >
                   {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
                   {saving ? 'Saving…' : 'Save Skill'}
@@ -291,7 +291,7 @@ export const SkillManagerModal: React.FC<SkillManagerModalProps> = ({
                 setShowCreateForm(true);
                 setJustAddedId(null);
               }}
-              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-md bg-[#0B1120] border border-slate-700 hover:border-indigo-600 text-slate-300 hover:text-indigo-300 font-mono text-xs font-semibold cursor-pointer transition-colors"
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-md bg-[#0B1120] border border-slate-700 hover:border-violet-600 text-slate-300 hover:text-violet-300 font-mono text-xs font-semibold cursor-pointer transition-colors"
             >
               <Plus className="w-3.5 h-3.5" />
               <span>Create Custom Skill</span>

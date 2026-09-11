@@ -222,7 +222,7 @@ export const CustomTestingPage: React.FC = () => {
             <div className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm space-y-3">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-mono text-slate-400">Project Context</span>
-                <span id="custom-testing-active-project" className="text-xs font-mono font-semibold text-cyan-300">
+                <span id="custom-testing-active-project" className="text-xs font-mono font-semibold text-yellow-300">
                   {selectedProject?.name ?? realProjectId}
                 </span>
               </div>
@@ -238,7 +238,7 @@ export const CustomTestingPage: React.FC = () => {
                   onChange={(e) => setScope(e.target.value)}
                   placeholder="e.g. Authentication, Payments, User Management (optional)"
                   disabled={isAnalyzing}
-                  className="w-full px-3 py-2 rounded-md bg-[#020617] border border-slate-700 text-sm font-mono text-slate-100 placeholder-slate-600 focus:outline-none focus:border-indigo-500 disabled:opacity-60"
+                  className="w-full px-3 py-2 rounded-md bg-[#020617] border border-slate-700 text-sm font-mono text-slate-100 placeholder-slate-600 focus:outline-none focus:border-violet-500 disabled:opacity-60"
                 />
               </div>
 
@@ -253,7 +253,7 @@ export const CustomTestingPage: React.FC = () => {
                   placeholder='e.g. "Test whether users can bypass role restrictions by changing API requests." or "Check login behavior after five invalid attempts."'
                   disabled={isAnalyzing}
                   rows={5}
-                  className="w-full px-3 py-2 rounded-md bg-[#020617] border border-slate-700 text-sm font-mono text-slate-100 placeholder-slate-600 focus:outline-none focus:border-indigo-500 disabled:opacity-60 resize-y"
+                  className="w-full px-3 py-2 rounded-md bg-[#020617] border border-slate-700 text-sm font-mono text-slate-100 placeholder-slate-600 focus:outline-none focus:border-violet-500 disabled:opacity-60 resize-y"
                 />
               </div>
 
@@ -264,7 +264,7 @@ export const CustomTestingPage: React.FC = () => {
                   id="btn-analyze-and-generate"
                   onClick={handleAnalyzeAndGenerate}
                   disabled={isAnalyzing}
-                  className="flex items-center gap-1.5 px-5 py-2 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white font-mono text-xs font-bold cursor-pointer transition-colors shadow-md disabled:opacity-60 disabled:cursor-not-allowed"
+                  className="flex items-center gap-1.5 px-5 py-2 rounded-md bg-violet-600 hover:bg-violet-500 text-white font-mono text-xs font-bold cursor-pointer transition-colors shadow-md disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   <Sparkles className="w-4 h-4" />
                   <span>{isAnalyzing ? 'Analyzing…' : 'Analyze & Generate'}</span>
@@ -281,7 +281,7 @@ export const CustomTestingPage: React.FC = () => {
             {analysis && (
               <div id="custom-testing-strategy" className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm space-y-4">
                 <div className="flex items-center gap-2 pb-2 border-b border-slate-800/80">
-                  <ClipboardList className="w-4 h-4 text-indigo-400" />
+                  <ClipboardList className="w-4 h-4 text-violet-400" />
                   <span className="text-sm font-mono font-bold text-slate-200">Generated Strategy</span>
                 </div>
 
@@ -308,7 +308,7 @@ export const CustomTestingPage: React.FC = () => {
                             className={`px-2.5 py-1 rounded text-[11px] font-mono border transition-colors ${
                               alreadySelected
                                 ? 'bg-emerald-950/60 border-emerald-700 text-emerald-300 cursor-default'
-                                : 'bg-slate-900 border-slate-700 text-slate-300 hover:border-indigo-500 hover:text-indigo-300 cursor-pointer'
+                                : 'bg-slate-900 border-slate-700 text-slate-300 hover:border-violet-500 hover:text-violet-300 cursor-pointer'
                             }`}
                           >
                             {alreadySelected ? `✓ ${name}` : `+ ${name}`}
@@ -435,8 +435,8 @@ function getAnalysisStatusBadge(status: AnalysisStatus) {
     case 'IDLE':
     default:
       return (
-        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-mono font-semibold bg-slate-900 border border-slate-700 text-cyan-400">
-          <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
+        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-mono font-semibold bg-slate-900 border border-slate-700 text-yellow-400">
+          <span className="w-2 h-2 rounded-full bg-yellow-400 animate-pulse" />
           Ready
         </span>
       );

@@ -321,22 +321,22 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
         );
       case 'EXPORTED_TO_EXECUTION':
         return (
-          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-mono font-bold bg-indigo-950/90 border border-indigo-600 text-indigo-300 shadow-sm">
-            <Play className="w-3.5 h-3.5 text-indigo-400 fill-current" />
+          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-mono font-bold bg-violet-950/90 border border-violet-600 text-violet-300 shadow-sm">
+            <Play className="w-3.5 h-3.5 text-violet-400 fill-current" />
             <span>Dispatched to Runner</span>
           </span>
         );
       case 'EXECUTED':
         return (
-          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-mono font-bold bg-indigo-950/90 border border-indigo-600 text-indigo-300 shadow-sm">
-            <Play className="w-3.5 h-3.5 text-indigo-400 fill-current" />
+          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-mono font-bold bg-violet-950/90 border border-violet-600 text-violet-300 shadow-sm">
+            <Play className="w-3.5 h-3.5 text-violet-400 fill-current" />
             <span>Executed</span>
           </span>
         );
       case 'VALIDATED':
         return (
-          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-mono font-bold bg-cyan-950/90 border border-cyan-600 text-cyan-300 shadow-sm">
-            <CheckSquare className="w-3.5 h-3.5 text-cyan-400" />
+          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-mono font-bold bg-yellow-950/90 border border-yellow-600 text-yellow-300 shadow-sm">
+            <CheckSquare className="w-3.5 h-3.5 text-yellow-400" />
             <span>Validated</span>
           </span>
         );
@@ -357,7 +357,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
   if (casesLoading) {
     return (
       <div id="generated-test-cases-loading" className="p-12 rounded-lg bg-[#0B1120] border border-slate-800 text-center flex flex-col items-center justify-center space-y-3 min-h-[440px]">
-        <RefreshCw className="w-8 h-8 text-indigo-400 animate-spin" />
+        <RefreshCw className="w-8 h-8 text-violet-400 animate-spin" />
         <p className="text-xs font-mono text-slate-400">Loading saved test cases…</p>
       </div>
     );
@@ -378,7 +378,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
         id="generated-test-cases-empty-workspace"
         className="p-12 rounded-lg bg-[#0B1120] border border-slate-800 text-center flex flex-col items-center justify-center space-y-4 min-h-[440px]"
       >
-        <div className="w-16 h-16 rounded-full bg-indigo-950/60 border border-indigo-700/60 flex items-center justify-center text-indigo-400 shadow-lg">
+        <div className="w-16 h-16 rounded-full bg-violet-950/60 border border-violet-700/60 flex items-center justify-center text-violet-400 shadow-lg">
           <Sparkles className="w-8 h-8" />
         </div>
         <div className="space-y-1.5 max-w-md">
@@ -392,7 +392,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
         <button
           type="button"
           onClick={onNavigateToSources}
-          className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs font-mono shadow-md cursor-pointer transition-all mt-2"
+          className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white font-bold text-xs font-mono shadow-md cursor-pointer transition-all mt-2"
         >
           <span>Configure Sources & Strategies</span>
           <ArrowRight className="w-4 h-4" />
@@ -407,7 +407,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
       <div className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-sm">
         <div className="flex items-center gap-3.5 flex-wrap">
           <div className="flex items-center gap-2.5">
-            <div className="p-2 rounded bg-indigo-950/80 border border-indigo-700/60 text-indigo-400">
+            <div className="p-2 rounded bg-violet-950/80 border border-violet-700/60 text-violet-400">
               <Sparkles className="w-4 h-4" />
             </div>
             <div>
@@ -443,7 +443,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
               id="btn-save-to-project"
               onClick={onSaveToProject}
               disabled={saveState === 'SAVING'}
-              className="flex items-center gap-1.5 px-3.5 py-2 rounded-md bg-cyan-600 hover:bg-cyan-500 disabled:opacity-60 disabled:cursor-not-allowed text-white font-mono text-xs font-bold cursor-pointer transition-colors shadow-sm"
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-md bg-yellow-600 hover:bg-yellow-500 disabled:opacity-60 disabled:cursor-not-allowed text-white font-mono text-xs font-bold cursor-pointer transition-colors shadow-sm"
             >
               {saveState === 'SAVING' ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <CheckSquare className="w-3.5 h-3.5" />}
               <span>{saveState === 'SAVING' ? 'Saving…' : 'Save to Project'}</span>
@@ -466,7 +466,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
             id="btn-open-execution-hub"
             onClick={onOpenExecutionHub}
             title="Opens the real Execution Hub."
-            className="flex items-center gap-2 px-4 py-2 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white font-mono text-xs font-bold cursor-pointer transition-all shadow-md"
+            className="flex items-center gap-2 px-4 py-2 rounded-md bg-violet-600 hover:bg-violet-500 text-white font-mono text-xs font-bold cursor-pointer transition-all shadow-md"
           >
             <Play className="w-3.5 h-3.5 fill-current" />
             <span>Open Execution Hub</span>
@@ -493,7 +493,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
       <div className="p-3 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm space-y-2">
         <div className="flex items-center justify-between text-xs font-mono font-bold text-slate-300 px-1">
           <div className="flex items-center gap-2">
-            <Layers className="w-3.5 h-3.5 text-cyan-400" />
+            <Layers className="w-3.5 h-3.5 text-yellow-400" />
             <span>Filter by Test Category</span>
           </div>
           <span className="text-[11px] text-slate-500 font-normal">
@@ -509,14 +509,14 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
             onClick={() => setSelectedCategory('ALL')}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-mono whitespace-nowrap transition-all cursor-pointer shrink-0 ${
               selectedCategory === 'ALL'
-                ? 'bg-indigo-600 text-white font-bold shadow-sm'
+                ? 'bg-violet-600 text-white font-bold shadow-sm'
                 : 'bg-[#020617] hover:bg-slate-900 border border-slate-800 text-slate-300'
             }`}
           >
             <span>All Categories</span>
             <span
               className={`text-[10px] px-1.5 py-0.2 rounded font-bold ${
-                selectedCategory === 'ALL' ? 'bg-indigo-900 text-indigo-100' : 'bg-slate-800 text-slate-300'
+                selectedCategory === 'ALL' ? 'bg-violet-900 text-violet-100' : 'bg-slate-800 text-slate-300'
               }`}
             >
               {testCases.length}
@@ -536,7 +536,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                 onClick={() => setSelectedCategory(cat.id)}
                 className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-mono whitespace-nowrap transition-all cursor-pointer shrink-0 ${
                   isSelected
-                    ? 'bg-indigo-600 text-white font-bold shadow-sm'
+                    ? 'bg-violet-600 text-white font-bold shadow-sm'
                     : 'bg-[#020617] hover:bg-slate-900 border border-slate-800/80 text-slate-400 hover:text-slate-200'
                 }`}
               >
@@ -545,9 +545,9 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                 <span
                   className={`text-[10px] px-1.5 py-0.2 rounded font-mono font-bold ${
                     isSelected
-                      ? 'bg-indigo-900 text-indigo-100'
+                      ? 'bg-violet-900 text-violet-100'
                       : count > 0
-                      ? 'bg-indigo-950/80 text-indigo-300 border border-indigo-800/80'
+                      ? 'bg-violet-950/80 text-violet-300 border border-violet-800/80'
                       : 'bg-slate-900 text-slate-600'
                   }`}
                 >
@@ -572,7 +572,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                 placeholder="Search by ID, title, objective..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-9 pr-3 py-2 rounded-md bg-[#020617] border border-slate-700/80 text-xs font-mono text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition-colors"
+                className="w-full pl-9 pr-3 py-2 rounded-md bg-[#020617] border border-slate-700/80 text-xs font-mono text-slate-100 placeholder-slate-500 focus:outline-none focus:border-violet-500 transition-colors"
               />
             </div>
 
@@ -582,7 +582,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                 <select
                   value={statusFilter}
                   onChange={(e) => setStatusFilter(e.target.value)}
-                  className="w-full px-2 py-1.5 rounded bg-[#020617] border border-slate-700/80 text-xs font-mono text-slate-200 focus:outline-none focus:border-indigo-500 cursor-pointer"
+                  className="w-full px-2 py-1.5 rounded bg-[#020617] border border-slate-700/80 text-xs font-mono text-slate-200 focus:outline-none focus:border-violet-500 cursor-pointer"
                 >
                   <option value="ALL">All Statuses</option>
                   <option value="PENDING_REVIEW">Pending Review</option>
@@ -596,7 +596,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                 <select
                   value={priorityFilter}
                   onChange={(e) => setPriorityFilter(e.target.value)}
-                  className="w-full px-2 py-1.5 rounded bg-[#020617] border border-slate-700/80 text-xs font-mono text-slate-200 focus:outline-none focus:border-indigo-500 cursor-pointer"
+                  className="w-full px-2 py-1.5 rounded bg-[#020617] border border-slate-700/80 text-xs font-mono text-slate-200 focus:outline-none focus:border-violet-500 cursor-pointer"
                 >
                   <option value="ALL">All Priorities</option>
                   <option value="CRITICAL">P0 • Critical</option>
@@ -624,16 +624,16 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                     onClick={() => setSelectedTestCaseId(tc.id)}
                     className={`p-3.5 rounded-lg border text-left cursor-pointer transition-all ${
                       isSelected
-                        ? 'bg-gradient-to-r from-indigo-950/70 to-[#020617] border-indigo-500 shadow-md ring-1 ring-indigo-500/30'
+                        ? 'bg-gradient-to-r from-violet-950/70 to-[#020617] border-violet-500 shadow-md ring-1 ring-violet-500/30'
                         : 'bg-[#020617] border-slate-800/90 hover:border-slate-700 hover:bg-[#03091e]'
                     }`}
                   >
                     <div className="flex items-center justify-between gap-1.5 mb-1.5">
                       <div className="flex items-center gap-2">
-                        <span className="text-xs font-mono font-bold text-cyan-400 tracking-wide">
+                        <span className="text-xs font-mono font-bold text-yellow-400 tracking-wide">
                           {getDisplayId(tc)}
                         </span>
-                        <span className="text-[10px] font-mono text-indigo-300 bg-indigo-950/60 px-1.5 py-0.2 rounded border border-indigo-800/60 truncate max-w-[110px]">
+                        <span className="text-[10px] font-mono text-violet-300 bg-violet-950/60 px-1.5 py-0.2 rounded border border-violet-800/60 truncate max-w-[110px]">
                           {tc.category}
                         </span>
                       </div>
@@ -678,11 +678,11 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                 <div className="flex items-center justify-between gap-3 flex-wrap">
                   {/* First-Class Test Case ID Banner */}
                   <div className="flex items-center gap-3">
-                    <div className="px-3.5 py-1.5 rounded-lg bg-indigo-950/90 border border-indigo-500/80 shadow-md">
-                      <span className="text-[9px] font-mono uppercase tracking-widest text-indigo-300 block font-semibold">
+                    <div className="px-3.5 py-1.5 rounded-lg bg-violet-950/90 border border-violet-500/80 shadow-md">
+                      <span className="text-[9px] font-mono uppercase tracking-widest text-violet-300 block font-semibold">
                         Test Case ID
                       </span>
-                      <span className="text-sm font-mono font-bold text-cyan-300 tracking-wide">
+                      <span className="text-sm font-mono font-bold text-yellow-300 tracking-wide">
                         {getDisplayId(activeTestCase)}
                       </span>
                     </div>
@@ -708,7 +708,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                         type="button"
                         id="btn-edit-test-case"
                         onClick={() => setEditingCase(activeTestCase)}
-                        className="flex items-center gap-1 px-2.5 py-1 rounded border border-slate-700 hover:border-indigo-600 text-slate-400 hover:text-indigo-300 font-mono text-[10px] font-semibold cursor-pointer transition-colors"
+                        className="flex items-center gap-1 px-2.5 py-1 rounded border border-slate-700 hover:border-violet-600 text-slate-400 hover:text-violet-300 font-mono text-[10px] font-semibold cursor-pointer transition-colors"
                       >
                         <Pencil className="w-3 h-3" />
                         <span>Edit</span>
@@ -727,7 +727,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                 {/* Objective */}
                 {activeTestCase.objective && (
                   <div className="p-3.5 rounded-lg bg-[#020617] border border-slate-800/90 text-xs font-sans text-slate-300">
-                    <span className="font-bold text-indigo-300 uppercase font-mono text-[10px] tracking-wider block mb-1">
+                    <span className="font-bold text-violet-300 uppercase font-mono text-[10px] tracking-wider block mb-1">
                       Test Objective
                     </span>
                     {activeTestCase.objective}
@@ -740,7 +740,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
               {/* ======================================================== */}
               <div id="test-case-source-traceability" className="xl:col-span-12 p-4 rounded-lg bg-[#040817] border border-slate-800 space-y-3">
                 <div className="flex items-center gap-2 text-xs font-mono font-bold text-slate-200">
-                  <Bookmark className="w-4 h-4 text-cyan-400" />
+                  <Bookmark className="w-4 h-4 text-yellow-400" />
                   <span className="tracking-wide">SOURCE SPECIFICATION & ACCEPTANCE CRITERIA</span>
                 </div>
 
@@ -749,7 +749,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                     <span className="text-[10px] text-slate-500 uppercase tracking-wider block mb-0.5 font-semibold">
                       Source Document
                     </span>
-                    <span className="text-indigo-300 font-semibold text-xs">
+                    <span className="text-violet-300 font-semibold text-xs">
                       {activeTestCase.sourceDocument || 'PRD / FRD / Specification'}
                     </span>
                   </div>
@@ -758,7 +758,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                     <span className="text-[10px] text-slate-500 uppercase tracking-wider block mb-0.5 font-semibold">
                       Requirement Reference
                     </span>
-                    <span className="text-cyan-300 font-semibold text-xs">
+                    <span className="text-yellow-300 font-semibold text-xs">
                       {activeTestCase.requirementReference || '§3.1 Spec'}
                     </span>
                   </div>
@@ -775,7 +775,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                       <span className="text-[10px] font-mono text-slate-400 font-semibold uppercase tracking-wider">
                         Document Excerpt
                       </span>
-                      <span className="text-[11px] font-mono text-indigo-400 hover:text-indigo-300 shrink-0">
+                      <span className="text-[11px] font-mono text-violet-400 hover:text-violet-300 shrink-0">
                         {showSourceExcerpt ? 'Collapse' : 'Expand'}
                       </span>
                     </button>
@@ -819,7 +819,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                     <ul className="space-y-2 text-slate-300 text-xs font-sans">
                       {activeTestCase.preconditions.map((p, idx) => (
                         <li key={idx} className="flex items-start gap-2.5">
-                          <CheckSquare className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
+                          <CheckSquare className="w-4 h-4 text-yellow-400 shrink-0 mt-0.5" />
                           <span className="leading-relaxed">{p}</span>
                         </li>
                       ))}
@@ -838,7 +838,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
               <div id="test-case-execution-steps-section" className="xl:col-span-12 space-y-3 pt-2">
                 {/* Clear Section Header with Spacing Separator */}
                 <div className="flex items-center gap-3 pb-2 border-b border-slate-800">
-                  <div className="p-1.5 rounded bg-indigo-950/60 border border-indigo-700/60 text-indigo-400">
+                  <div className="p-1.5 rounded bg-violet-950/60 border border-violet-700/60 text-violet-400">
                     <FileCode2 className="w-4 h-4" />
                   </div>
                   <div className="flex-1 flex items-center justify-between">
@@ -850,7 +850,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                         Step-by-step procedural actions and expected assertions
                       </p>
                     </div>
-                    <span className="text-[10px] font-mono text-indigo-300 bg-indigo-950/80 px-2.5 py-1 rounded border border-indigo-800">
+                    <span className="text-[10px] font-mono text-violet-300 bg-violet-950/80 px-2.5 py-1 rounded border border-violet-800">
                       {activeTestCase.steps.length} Steps
                     </span>
                   </div>
@@ -864,7 +864,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                       className="p-4 rounded-lg bg-[#020617] border border-slate-800 space-y-2.5 hover:border-slate-700 transition-colors shadow-sm"
                     >
                       <div className="flex items-center justify-between">
-                        <span className="px-2.5 py-0.5 rounded bg-indigo-950 border border-indigo-700 text-xs font-mono font-bold text-indigo-300">
+                        <span className="px-2.5 py-0.5 rounded bg-violet-950 border border-violet-700 text-xs font-mono font-bold text-violet-300">
                           Step #{step.stepNumber}
                         </span>
                         <span className="text-[10px] font-mono text-slate-500">
@@ -896,7 +896,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
               <div className="xl:col-span-6 p-4 rounded-lg bg-[#020617] border border-slate-800 space-y-2.5">
                 <div className="flex items-center justify-between pb-1.5 border-b border-slate-800/80">
                   <div className="flex items-center gap-2">
-                    <Cpu className="w-3.5 h-3.5 text-cyan-400" />
+                    <Cpu className="w-3.5 h-3.5 text-yellow-400" />
                     <span className="text-xs font-mono font-bold text-slate-200 uppercase tracking-wider">
                       Technical Target Interface
                     </span>
@@ -907,7 +907,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                 </div>
 
                 <div className="flex items-center gap-2 flex-wrap pt-0.5">
-                  <span className="px-2.5 py-1 rounded bg-[#040817] border border-slate-700 text-xs font-mono font-semibold text-cyan-300">
+                  <span className="px-2.5 py-1 rounded bg-[#040817] border border-slate-700 text-xs font-mono font-semibold text-yellow-300">
                     Layer: {technicalTargetInfo.layer}
                   </span>
 
@@ -919,9 +919,9 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                 </div>
 
                 <div className="p-2.5 rounded bg-[#040817] border border-slate-800/80 text-[11px] font-sans text-slate-400 flex items-start gap-2">
-                  <Info className="w-3.5 h-3.5 text-indigo-400 shrink-0 mt-0.5" />
+                  <Info className="w-3.5 h-3.5 text-violet-400 shrink-0 mt-0.5" />
                   <span>
-                    Classification: <strong className="text-indigo-300">{activeTestCase.category}</strong>. Endpoint represents the technical surface.
+                    Classification: <strong className="text-violet-300">{activeTestCase.category}</strong>. Endpoint represents the technical surface.
                   </span>
                 </div>
               </div>
@@ -929,18 +929,18 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
               <div className="xl:col-span-6 p-4 rounded-lg bg-[#020617] border border-slate-800 space-y-2.5">
                 <div className="flex items-center justify-between pb-1.5 border-b border-slate-800/80">
                   <div className="flex items-center gap-2">
-                    <Activity className="w-3.5 h-3.5 text-indigo-400" />
+                    <Activity className="w-3.5 h-3.5 text-violet-400" />
                     <span className="text-xs font-mono font-bold text-slate-200 uppercase tracking-wider">
                       Execution State
                     </span>
                   </div>
                   <div>
                     {activeTestCase.status === 'EXPORTED_TO_EXECUTION' ? (
-                      <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-indigo-950 text-indigo-300 border border-indigo-700">
+                      <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-violet-950 text-violet-300 border border-violet-700">
                         DISPATCHED / QUEUED
                       </span>
                     ) : activeTestCase.status === 'APPROVED' ? (
-                      <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-cyan-950 text-cyan-300 border border-cyan-700">
+                      <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-yellow-950 text-yellow-300 border border-yellow-700">
                         READY FOR DISPATCH
                       </span>
                     ) : (
@@ -1034,16 +1034,16 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                     className="w-full flex items-center justify-between text-xs font-mono font-bold text-slate-300 cursor-pointer"
                   >
                     <div className="flex items-center gap-1.5">
-                      <Terminal className="w-3.5 h-3.5 text-cyan-400" />
+                      <Terminal className="w-3.5 h-3.5 text-yellow-400" />
                       <span>Test Execution Payload & Context Parameters</span>
                     </div>
-                    <span className="text-[11px] text-indigo-400 hover:text-indigo-300">
+                    <span className="text-[11px] text-violet-400 hover:text-violet-300">
                       {showTestData ? 'Hide JSON' : 'View JSON'}
                     </span>
                   </button>
 
                   {showTestData && (
-                    <pre className="p-3 rounded bg-[#000000] border border-slate-800 text-[11px] font-mono text-cyan-300 overflow-x-auto">
+                    <pre className="p-3 rounded bg-[#000000] border border-slate-800 text-[11px] font-mono text-yellow-300 overflow-x-auto">
                       {activeTestCase.testData}
                     </pre>
                   )}
@@ -1098,7 +1098,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                           type="button"
                           id="btn-validate-test-case"
                           onClick={() => onValidateTestCase?.(activeTestCase.id)}
-                          className="flex items-center gap-1.5 px-5 py-2 rounded-md bg-cyan-600 hover:bg-cyan-500 text-white font-mono text-xs font-bold cursor-pointer transition-colors shadow-md"
+                          className="flex items-center gap-1.5 px-5 py-2 rounded-md bg-yellow-600 hover:bg-yellow-500 text-white font-mono text-xs font-bold cursor-pointer transition-colors shadow-md"
                         >
                           <ShieldCheck className="w-4 h-4" />
                           <span>Validate Test Case</span>
@@ -1193,7 +1193,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                                           : 'Run "Preview Compilation" first — this case must compile to READY before it can actually execute.'
                                         : `Dispatches a real ${handoffExecutor} run through the real Execution Hub — its own default reference check, not a bespoke script for this case's specific steps.`
                                   }
-                                  className="flex items-center gap-1.5 px-5 py-2 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white font-mono text-xs font-bold cursor-pointer transition-colors shadow-md disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-indigo-600"
+                                  className="flex items-center gap-1.5 px-5 py-2 rounded-md bg-violet-600 hover:bg-violet-500 text-white font-mono text-xs font-bold cursor-pointer transition-colors shadow-md disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-violet-600"
                                 >
                                   <Play className="w-4 h-4 fill-current" />
                                   <span>Hand Off to Execution</span>

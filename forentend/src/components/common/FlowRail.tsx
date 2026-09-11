@@ -17,21 +17,21 @@ export type FlowNodeState = 'idle' | 'active' | 'done' | 'failed';
 
 const nodeDot: Record<FlowNodeState, string> = {
   idle: 'bg-slate-700 border-slate-600',
-  active: 'bg-indigo-500 border-indigo-400 animate-pulse',
+  active: 'bg-violet-500 border-violet-400 animate-pulse',
   done: 'bg-emerald-500 border-emerald-400',
   failed: 'bg-rose-500 border-rose-400',
 };
 
 const nodeText: Record<FlowNodeState, string> = {
   idle: 'text-slate-500',
-  active: 'text-indigo-300',
+  active: 'text-violet-300',
   done: 'text-emerald-300',
   failed: 'text-rose-300',
 };
 
 export const FlowConnector: React.FC<{ animated: boolean }> = ({ animated }) => (
   <div className="flex justify-start pl-[9px]">
-    <div className={`w-px h-4 ${animated ? 'bg-gradient-to-b from-indigo-500 to-indigo-500/10 animate-pulse' : 'bg-slate-700'}`} />
+    <div className={`w-px h-4 ${animated ? 'bg-gradient-to-b from-violet-500 to-violet-500/10 animate-pulse' : 'bg-slate-700'}`} />
   </div>
 );
 

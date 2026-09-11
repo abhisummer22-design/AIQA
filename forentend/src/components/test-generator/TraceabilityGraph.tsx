@@ -46,9 +46,9 @@ export const TraceabilityGraph: React.FC<TraceabilityGraphProps> = ({
     : 'Not Started';
 
   const executionStateColor = isDispatched
-    ? 'text-indigo-400 border-indigo-700/60 bg-indigo-950/40'
+    ? 'text-violet-400 border-violet-700/60 bg-violet-950/40'
     : isApproved
-    ? 'text-cyan-400 border-cyan-700/60 bg-cyan-950/40'
+    ? 'text-yellow-400 border-yellow-700/60 bg-yellow-950/40'
     : 'text-slate-400 border-slate-700/60 bg-slate-900/60';
 
   const evidenceStateLabel = hasEvidence
@@ -87,8 +87,8 @@ export const TraceabilityGraph: React.FC<TraceabilityGraphProps> = ({
       badge: 'INPUT',
       status: 'AVAILABLE',
       stateCategory: 'COMPLETED',
-      color: 'border-cyan-500/40 bg-cyan-950/30 text-cyan-200',
-      iconColor: 'text-cyan-400',
+      color: 'border-yellow-500/40 bg-yellow-950/30 text-yellow-200',
+      iconColor: 'text-yellow-400',
     },
     {
       id: 'req',
@@ -99,8 +99,8 @@ export const TraceabilityGraph: React.FC<TraceabilityGraphProps> = ({
       badge: 'SPEC',
       status: 'LINKED',
       stateCategory: 'COMPLETED',
-      color: 'border-indigo-500/40 bg-indigo-950/30 text-indigo-200',
-      iconColor: 'text-indigo-400',
+      color: 'border-violet-500/40 bg-violet-950/30 text-violet-200',
+      iconColor: 'text-violet-400',
     },
     {
       id: 'ai',
@@ -156,7 +156,7 @@ export const TraceabilityGraph: React.FC<TraceabilityGraphProps> = ({
       status: executionStateLabel,
       stateCategory: isDispatched ? 'IN_PROGRESS' : 'PENDING',
       color: executionStateColor,
-      iconColor: isDispatched ? 'text-indigo-400' : 'text-slate-400',
+      iconColor: isDispatched ? 'text-violet-400' : 'text-slate-400',
     },
     {
       id: 'evid',
@@ -191,7 +191,7 @@ export const TraceabilityGraph: React.FC<TraceabilityGraphProps> = ({
     >
       <div className="flex items-center justify-between flex-wrap gap-2 pb-2 border-b border-slate-800/80">
         <div className="flex items-center gap-2">
-          <div className="p-1 rounded bg-cyan-950/60 border border-cyan-700/60 text-cyan-400">
+          <div className="p-1 rounded bg-yellow-950/60 border border-yellow-700/60 text-yellow-400">
             <GitBranch className="w-4 h-4" />
           </div>
           <div>

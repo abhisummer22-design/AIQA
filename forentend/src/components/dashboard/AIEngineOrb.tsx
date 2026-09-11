@@ -31,7 +31,7 @@
  *     actually changes (a different `activeProviderId` or `routingScore`
  *     between polls) — a genuine "the engine just decided something new"
  *     event, not a fixed metronome.
- *   - **`accent`** (output node + anything with no per-node colour) — cyan
+ *   - **`accent`** (output node + anything with no per-node colour) — gold
  *     while a real route exists, muted slate when not.
  *   - **Column labels** ("INPUT" / "PROVIDERS" / "OUTPUT") and the real
  *     `provider / model · score` (or honest "NO ROUTE") text below the
@@ -67,7 +67,7 @@ const LEVEL_ACTIVATION: Record<keyof typeof CAPABILITY_LEVEL_COLOR, number> = {
   idle: 0,
 };
 
-const LIVE_ACCENT = '#22d3ee';
+const LIVE_ACCENT = '#facc15';
 const IDLE_ACCENT = '#475569';
 
 /** Canvas space is tightest in the provider column (it sits between two
@@ -214,7 +214,7 @@ export const AIEngineOrb: React.FC<AIEngineOrbProps> = ({ model, routingScore, p
       />
       <div
         className={`absolute bottom-1 inset-x-0 text-center text-[10px] font-mono font-bold tracking-wide truncate px-2 ${
-          live ? 'text-cyan-300' : 'text-slate-500'
+          live ? 'text-yellow-300' : 'text-slate-500'
         }`}
       >
         {label}

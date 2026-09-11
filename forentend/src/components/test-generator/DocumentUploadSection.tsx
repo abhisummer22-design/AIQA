@@ -72,7 +72,7 @@ const DOCUMENT_SLOTS: DocSlotConfig[] = [
     fullName: 'Product Requirements Document',
     description: 'Core product vision, user personas, success metrics, and scope boundaries.',
     roleInHierarchy: 'Product Vision, Derived from BRD',
-    badgeColor: 'border-cyan-700/60 bg-cyan-950/40 text-cyan-300',
+    badgeColor: 'border-yellow-700/60 bg-yellow-950/40 text-yellow-300',
   },
   {
     id: 'FRD',
@@ -80,7 +80,7 @@ const DOCUMENT_SLOTS: DocSlotConfig[] = [
     fullName: 'Functional Requirements Document',
     description: 'Detailed feature behavior, user stories, interaction flows, and acceptance criteria.',
     roleInHierarchy: 'Functional Mechanics & Rules',
-    badgeColor: 'border-indigo-700/60 bg-indigo-950/40 text-indigo-300',
+    badgeColor: 'border-violet-700/60 bg-violet-950/40 text-violet-300',
   },
   {
     id: 'SRD',
@@ -249,11 +249,11 @@ export const DocumentUploadSection: React.FC<DocumentUploadSectionProps> = ({
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-800/80">
         <div>
           <div className="flex items-center gap-2">
-            <Layers className="w-4 h-4 text-cyan-400" />
+            <Layers className="w-4 h-4 text-yellow-400" />
             <h2 className="text-sm font-bold text-slate-100 font-sans tracking-tight">
               Product Documentation
             </h2>
-            <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded bg-cyan-950/60 border border-cyan-800/60 text-cyan-300">
+            <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded bg-yellow-950/60 border border-yellow-800/60 text-yellow-300">
               5 SLOTS
             </span>
           </div>
@@ -264,15 +264,15 @@ export const DocumentUploadSection: React.FC<DocumentUploadSectionProps> = ({
 
         {/* Accepted Formats Tag */}
         <div className="flex items-center gap-1.5 text-[10px] font-mono text-slate-400 bg-[#020617] px-2.5 py-1 rounded border border-slate-800">
-          <FileCode className="w-3 h-3 text-indigo-400" />
+          <FileCode className="w-3 h-3 text-violet-400" />
           <span>Content analyzed: DOCX, MD, TXT, JSON, YAML. PDF/legacy .doc are attached but not yet content-analyzed.</span>
         </div>
       </div>
 
       {/* Visual Source-of-Truth Hierarchy Banner */}
-      <div className="p-3 rounded-lg bg-gradient-to-r from-[#020617] via-[#0B1120] to-[#020617] border border-indigo-900/40 text-xs">
-        <div className="flex items-center gap-2 text-indigo-300 font-mono font-semibold text-[11px] mb-2">
-          <Info className="w-3.5 h-3.5 text-indigo-400" />
+      <div className="p-3 rounded-lg bg-gradient-to-r from-[#020617] via-[#0B1120] to-[#020617] border border-violet-900/40 text-xs">
+        <div className="flex items-center gap-2 text-violet-300 font-mono font-semibold text-[11px] mb-2">
+          <Info className="w-3.5 h-3.5 text-violet-400" />
           <span>Source-of-Truth Context Flow</span>
         </div>
 
@@ -282,11 +282,11 @@ export const DocumentUploadSection: React.FC<DocumentUploadSectionProps> = ({
             BRD
           </span>
           <ArrowDown className="w-3 h-3 text-slate-500 rotate-[-90deg] shrink-0" />
-          <span className="px-2 py-0.5 rounded bg-cyan-950/80 border border-cyan-800 text-cyan-300 font-bold">
+          <span className="px-2 py-0.5 rounded bg-yellow-950/80 border border-yellow-800 text-yellow-300 font-bold">
             PRD
           </span>
           <ArrowDown className="w-3 h-3 text-slate-500 rotate-[-90deg] shrink-0" />
-          <span className="px-2 py-0.5 rounded bg-indigo-950/80 border border-indigo-800 text-indigo-300 font-bold">
+          <span className="px-2 py-0.5 rounded bg-violet-950/80 border border-violet-800 text-violet-300 font-bold">
             FRD
           </span>
           <ArrowDown className="w-3 h-3 text-slate-500 rotate-[-90deg] shrink-0" />
@@ -323,7 +323,7 @@ export const DocumentUploadSection: React.FC<DocumentUploadSectionProps> = ({
                 uploadedDoc
                   ? 'bg-[#0B1120] border-emerald-900/60 shadow-sm'
                   : isDragOver
-                  ? 'bg-indigo-950/30 border-indigo-500 border-dashed'
+                  ? 'bg-violet-950/30 border-violet-500 border-dashed'
                   : 'bg-[#0B1120] border-slate-800/90 hover:border-slate-700'
               }`}
             >
@@ -410,7 +410,7 @@ export const DocumentUploadSection: React.FC<DocumentUploadSectionProps> = ({
                         type="button"
                         onClick={() => triggerBrowse(slot.id)}
                         disabled={disabled}
-                        className="inline-flex items-center gap-1 text-[11px] font-mono text-indigo-400 hover:text-indigo-300 font-medium cursor-pointer transition-colors disabled:opacity-50"
+                        className="inline-flex items-center gap-1 text-[11px] font-mono text-violet-400 hover:text-violet-300 font-medium cursor-pointer transition-colors disabled:opacity-50"
                       >
                         <RefreshCw className="w-3 h-3" />
                         <span>Replace File</span>
@@ -432,9 +432,9 @@ export const DocumentUploadSection: React.FC<DocumentUploadSectionProps> = ({
                      since a single real request has no meaningful
                      percentage-complete signal to report (unlike the
                      fixed-duration fake ramp this replaced). */
-                  <div className="p-3 rounded bg-[#020617] border border-indigo-900/60">
-                    <div className="flex items-center gap-1.5 text-xs font-mono text-indigo-300">
-                      <RefreshCw className="w-3 h-3 animate-spin text-indigo-400" />
+                  <div className="p-3 rounded bg-[#020617] border border-violet-900/60">
+                    <div className="flex items-center gap-1.5 text-xs font-mono text-violet-300">
+                      <RefreshCw className="w-3 h-3 animate-spin text-violet-400" />
                       <span>Analyzing real document content...</span>
                     </div>
                   </div>
@@ -442,11 +442,11 @@ export const DocumentUploadSection: React.FC<DocumentUploadSectionProps> = ({
                   /* Empty Dropzone State */
                   <div
                     onClick={() => triggerBrowse(slot.id)}
-                    className="p-3 rounded border border-dashed border-slate-700/80 hover:border-indigo-500/80 bg-[#020617]/50 hover:bg-[#020617] transition-all cursor-pointer text-center flex flex-col items-center justify-center space-y-1.5"
+                    className="p-3 rounded border border-dashed border-slate-700/80 hover:border-violet-500/80 bg-[#020617]/50 hover:bg-[#020617] transition-all cursor-pointer text-center flex flex-col items-center justify-center space-y-1.5"
                   >
-                    <UploadCloud className="w-5 h-5 text-slate-500 group-hover:text-indigo-400" />
+                    <UploadCloud className="w-5 h-5 text-slate-500 group-hover:text-violet-400" />
                     <div className="text-[11px] font-mono font-semibold text-slate-300">
-                      Drag & drop or <span className="text-indigo-400 underline">browse</span>
+                      Drag & drop or <span className="text-violet-400 underline">browse</span>
                     </div>
                     <div className="text-[10px] font-mono text-slate-400">
                       No document uploaded

@@ -95,7 +95,7 @@ const providerStatusStyles: Record<string, string> = {
 
 const taskStatusStyles: Record<string, string> = {
   PASSED: 'text-emerald-400 bg-emerald-950/60 border-emerald-800',
-  RUNNING: 'text-indigo-300 bg-indigo-950/60 border-indigo-800',
+  RUNNING: 'text-violet-300 bg-violet-950/60 border-violet-800',
   QUEUED: 'text-slate-400 bg-slate-800/60 border-slate-700',
   BLOCKED: 'text-amber-400 bg-amber-950/60 border-amber-800',
   FAILED: 'text-rose-400 bg-rose-950/60 border-rose-800',
@@ -268,7 +268,7 @@ export const AIQAOrchestratorPage: React.FC = () => {
               type="button"
               id="btn-orchestrator-refresh"
               onClick={() => void load()}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#020617] border border-slate-700 hover:border-indigo-600 text-slate-300 hover:text-indigo-300 font-mono text-xs font-semibold cursor-pointer transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#020617] border border-slate-700 hover:border-violet-600 text-slate-300 hover:text-violet-300 font-mono text-xs font-semibold cursor-pointer transition-colors"
             >
               <RefreshCw className="w-3.5 h-3.5" />
               Refresh
@@ -276,7 +276,7 @@ export const AIQAOrchestratorPage: React.FC = () => {
             <button
               type="button"
               onClick={() => navigate('/execution')}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs cursor-pointer"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-violet-600 hover:bg-violet-500 text-white font-semibold text-xs cursor-pointer"
             >
               <PlayCircle className="w-3.5 h-3.5" />
               Execution Hub
@@ -287,7 +287,7 @@ export const AIQAOrchestratorPage: React.FC = () => {
 
       {loading && !aiStatus && !error && (
         <div className="rounded-lg border border-slate-800 bg-[#0B1120] p-6 flex items-center justify-center gap-2 text-slate-400 text-xs font-mono">
-          <Loader2 className="w-4 h-4 animate-spin text-indigo-400" />
+          <Loader2 className="w-4 h-4 animate-spin text-violet-400" />
           Loading real orchestrator state…
         </div>
       )}
@@ -317,7 +317,7 @@ export const AIQAOrchestratorPage: React.FC = () => {
             {/* ---------------------------------------- AI provider routing */}
             <PanelCard
               icon={Network}
-              iconClassName="text-cyan-400"
+              iconClassName="text-yellow-400"
               title="AI Provider Routing"
               subtitle="Which provider/model wins right now, and why"
               headerRight={
@@ -328,12 +328,12 @@ export const AIQAOrchestratorPage: React.FC = () => {
               }
             >
               {routing ? (
-                <div className="rounded-md bg-[#020617] border border-indigo-800/70 p-3 space-y-2">
+                <div className="rounded-md bg-[#020617] border border-violet-800/70 p-3 space-y-2">
                   <div className="flex items-center justify-between gap-2 flex-wrap">
-                    <span className="text-xs font-mono font-bold text-indigo-300">
+                    <span className="text-xs font-mono font-bold text-violet-300">
                       {routing.provider_id} / {routing.model_id}
                     </span>
-                    <Pill label={`${aiStatus.settings.mode} mode`} className="text-indigo-300 bg-indigo-950/60 border-indigo-800" />
+                    <Pill label={`${aiStatus.settings.mode} mode`} className="text-violet-300 bg-violet-950/60 border-violet-800" />
                   </div>
                   <p className="text-[11px] text-slate-400">{routing.reason}</p>
                   <div className="flex items-center gap-2 flex-wrap">
@@ -389,7 +389,7 @@ export const AIQAOrchestratorPage: React.FC = () => {
             {/* ------------------------------ executor routing + policy gates */}
             <PanelCard
               icon={Cpu}
-              iconClassName="text-indigo-400"
+              iconClassName="text-violet-400"
               title="Executor Capability Routing"
               subtitle={`Policy-enforced max concurrency: ${orchState.max_concurrency}`}
             >

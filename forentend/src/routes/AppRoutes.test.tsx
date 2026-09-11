@@ -121,15 +121,15 @@ describe('navigation + active state (items 4-5)', () => {
 
     const dashboardBtn = document.getElementById('nav-item-dashboard')!;
     const generatorBtn = document.getElementById('nav-item-generator')!;
-    expect(dashboardBtn.className).toContain('bg-indigo-600'); // active styling
-    expect(generatorBtn.className).not.toContain('bg-indigo-600');
+    expect(dashboardBtn.className).toContain('bg-violet-600'); // active styling
+    expect(generatorBtn.className).not.toContain('bg-violet-600');
 
     await act(async () => {
       generatorBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
-    expect(document.getElementById('nav-item-generator')!.className).toContain('bg-indigo-600');
-    expect(document.getElementById('nav-item-dashboard')!.className).not.toContain('bg-indigo-600');
+    expect(document.getElementById('nav-item-generator')!.className).toContain('bg-violet-600');
+    expect(document.getElementById('nav-item-dashboard')!.className).not.toContain('bg-violet-600');
   });
 });
 

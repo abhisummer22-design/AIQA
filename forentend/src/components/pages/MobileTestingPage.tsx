@@ -224,7 +224,7 @@ export const MobileTestingPage: React.FC = () => {
               id="btn-mobile-refresh"
               onClick={() => void load()}
               disabled={loading}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#020617] border border-slate-700 hover:border-indigo-600 text-slate-300 hover:text-indigo-300 font-mono text-xs font-semibold cursor-pointer transition-colors disabled:opacity-50"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#020617] border border-slate-700 hover:border-violet-600 text-slate-300 hover:text-violet-300 font-mono text-xs font-semibold cursor-pointer transition-colors disabled:opacity-50"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
               Refresh
@@ -244,7 +244,7 @@ export const MobileTestingPage: React.FC = () => {
             })
           ) : !fleet ? (
             <div className="rounded-lg border border-slate-800 bg-[#0B1120] p-6 flex items-center justify-center gap-2 text-slate-400 text-xs font-mono">
-              <Loader2 className="w-4 h-4 animate-spin text-indigo-400" />
+              <Loader2 className="w-4 h-4 animate-spin text-violet-400" />
               Asking the host for real devices…
             </div>
           ) : (
@@ -305,7 +305,7 @@ export const MobileTestingPage: React.FC = () => {
               <div className="rounded-lg border border-slate-800 bg-[#0B1120] p-4 space-y-3">
                 <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-800/80">
                   <div className="flex items-center gap-2 min-w-0">
-                    <Smartphone className="w-4 h-4 text-indigo-400 shrink-0" />
+                    <Smartphone className="w-4 h-4 text-violet-400 shrink-0" />
                     <div className="min-w-0">
                       <h2 className="text-sm font-bold text-slate-100 tracking-tight">Available Emulators</h2>
                       <p className="text-[11px] text-slate-500">Real AVDs on this machine — booting one is real</p>
@@ -338,7 +338,7 @@ export const MobileTestingPage: React.FC = () => {
                             id={`btn-boot-avd-${a.name}`}
                             onClick={() => void bootEmulator(a.name)}
                             disabled={bootingAvd !== null || !fleet.emulator_tool.available}
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-mono text-[11px] font-semibold cursor-pointer"
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-violet-600 hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-mono text-[11px] font-semibold cursor-pointer"
                           >
                             {bootingAvd === a.name ? (
                               <Loader2 className="w-3 h-3 animate-spin" />
@@ -354,7 +354,7 @@ export const MobileTestingPage: React.FC = () => {
                 )}
 
                 {bootMessage && (
-                  <p className="text-[10px] font-mono text-cyan-300 flex items-start gap-1.5">
+                  <p className="text-[10px] font-mono text-yellow-300 flex items-start gap-1.5">
                     <Info className="w-3 h-3 shrink-0 mt-0.5" />
                     <span>
                       {bootMessage}. Boot takes a while — it will appear above as a real device once adb sees it.
@@ -373,7 +373,7 @@ export const MobileTestingPage: React.FC = () => {
               <div className="rounded-lg border border-slate-800 bg-[#0B1120] p-4 space-y-3">
                 <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-800/80">
                   <div className="flex items-center gap-2 min-w-0">
-                    <TabletSmartphone className="w-4 h-4 text-cyan-400 shrink-0" />
+                    <TabletSmartphone className="w-4 h-4 text-yellow-400 shrink-0" />
                     <div className="min-w-0">
                       <h2 className="text-sm font-bold text-slate-100 tracking-tight">iOS Devices</h2>
                       <p className="text-[11px] text-slate-500">
@@ -447,7 +447,7 @@ export const MobileTestingPage: React.FC = () => {
                               id={`btn-boot-sim-${d.udid}`}
                               onClick={() => void bootSimulator(d.udid)}
                               disabled={bootingUdid !== null}
-                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-mono text-[11px] font-semibold cursor-pointer"
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-violet-600 hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-mono text-[11px] font-semibold cursor-pointer"
                             >
                               {bootingUdid === d.udid ? (
                                 <Loader2 className="w-3 h-3 animate-spin" />
@@ -467,7 +467,7 @@ export const MobileTestingPage: React.FC = () => {
               {/* -------------------------------------------- toolchain */}
               <div className="rounded-lg border border-slate-800 bg-[#0B1120] p-4 space-y-3">
                 <div className="flex items-center gap-2 pb-2 border-b border-slate-800/80">
-                  <TerminalSquare className="w-4 h-4 text-cyan-400 shrink-0" />
+                  <TerminalSquare className="w-4 h-4 text-yellow-400 shrink-0" />
                   <div className="min-w-0">
                     <h2 className="text-sm font-bold text-slate-100 tracking-tight">Host Toolchain</h2>
                     <p className="text-[11px] text-slate-500">Real binaries this host resolved, with real versions</p>
@@ -514,7 +514,7 @@ export const MobileTestingPage: React.FC = () => {
                   id="btn-mobile-open-execution-hub"
                   onClick={() => navigate('/execution')}
                   disabled={!canDispatch}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-xs cursor-pointer"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-violet-600 hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-xs cursor-pointer"
                 >
                   <PlayCircle className="w-3.5 h-3.5" />
                   Open Execution Hub

@@ -45,7 +45,7 @@ export const Sidebar: React.FC = () => {
       <div className="p-3 border-b border-slate-800/80 flex items-center justify-between">
         {!isSidebarCollapsed ? (
           <div className="flex items-center gap-2.5 overflow-hidden">
-            <div className="w-6 h-6 rounded bg-slate-800 border border-slate-700 flex items-center justify-center text-indigo-400 font-mono text-[11px] font-bold">
+            <div className="w-6 h-6 rounded bg-slate-800 border border-slate-700 flex items-center justify-center text-violet-400 font-mono text-[11px] font-bold">
               QE
             </div>
             <div className="truncate">
@@ -59,7 +59,7 @@ export const Sidebar: React.FC = () => {
           </div>
         ) : (
           <div className="w-full flex justify-center">
-            <div className="w-7 h-7 rounded bg-slate-800 border border-slate-700 flex items-center justify-center text-indigo-400 font-mono text-xs font-bold">
+            <div className="w-7 h-7 rounded bg-slate-800 border border-slate-700 flex items-center justify-center text-violet-400 font-mono text-xs font-bold">
               QE
             </div>
           </div>
@@ -96,14 +96,14 @@ export const Sidebar: React.FC = () => {
               onClick={() => navigate(item.path)}
               className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-xs font-medium transition-all group relative cursor-pointer ${
                 isActive
-                  ? 'bg-indigo-600 text-white font-semibold shadow-sm shadow-indigo-950/60'
+                  ? 'bg-violet-600 text-white font-semibold shadow-sm shadow-violet-950/60'
                   : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent'
               }`}
               title={isSidebarCollapsed ? item.label : undefined}
             >
               {/* Active neon accent pill */}
               {isActive && (
-                <div className="absolute left-0 top-1.5 bottom-1.5 w-1 rounded-r bg-indigo-300 shadow-[0_0_8px_rgba(165,180,252,0.8)]" />
+                <div className="absolute left-0 top-1.5 bottom-1.5 w-1 rounded-r bg-violet-300 shadow-[0_0_8px_rgba(196,181,253,0.8)]" />
               )}
 
               <Icon
@@ -124,7 +124,7 @@ export const Sidebar: React.FC = () => {
                 <span
                   className={`text-[10px] font-mono px-1.5 py-0.2 rounded font-semibold uppercase tracking-wider shrink-0 ${
                     isActive
-                      ? 'bg-indigo-700/80 text-white'
+                      ? 'bg-violet-700/80 text-white'
                       : 'bg-slate-800 text-slate-400 border border-slate-700'
                   }`}
                 >

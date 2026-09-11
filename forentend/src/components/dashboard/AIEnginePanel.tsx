@@ -45,7 +45,7 @@ export interface AIEnginePanelProps {
 
 const levelStyles: Record<AiCapabilityLevel, string> = {
   STRONG: 'text-emerald-300 bg-emerald-950/70 border-emerald-800',
-  BASIC: 'text-cyan-300 bg-cyan-950/70 border-cyan-800',
+  BASIC: 'text-yellow-300 bg-yellow-950/70 border-yellow-800',
   UNKNOWN: 'text-slate-400 bg-slate-800/70 border-slate-700',
   NONE: 'text-slate-500 bg-slate-900 border-slate-800',
 };
@@ -87,13 +87,13 @@ export const AIEnginePanel: React.FC<AIEnginePanelProps> = ({ status, loading, e
     >
       <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-800/80">
         <div className="flex items-center gap-2 min-w-0">
-          <BrainCircuit className="w-4 h-4 text-cyan-400 shrink-0" />
+          <BrainCircuit className="w-4 h-4 text-yellow-400 shrink-0" />
           <div className="min-w-0">
             <h3 className="text-xs font-bold text-slate-100 font-mono uppercase tracking-wider">AI Engine</h3>
             <p className="text-[10px] text-slate-500">Real model routing and capabilities</p>
           </div>
         </div>
-        {loading && <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400 shrink-0" />}
+        {loading && <Loader2 className="w-3.5 h-3.5 animate-spin text-violet-400 shrink-0" />}
       </div>
 
       {error ? (
@@ -104,14 +104,14 @@ export const AIEnginePanel: React.FC<AIEnginePanelProps> = ({ status, loading, e
             type="button"
             id="btn-ai-engine-retry"
             onClick={onRetry}
-            className="px-2.5 py-1 rounded bg-[#020617] border border-slate-700 hover:border-indigo-600 text-slate-300 hover:text-indigo-300 font-mono text-[11px] cursor-pointer"
+            className="px-2.5 py-1 rounded bg-[#020617] border border-slate-700 hover:border-violet-600 text-slate-300 hover:text-violet-300 font-mono text-[11px] cursor-pointer"
           >
             Retry
           </button>
         </div>
       ) : !status ? (
         <div className="flex-1 flex items-center justify-center gap-2 text-xs font-mono text-slate-400">
-          <Loader2 className="w-4 h-4 animate-spin text-indigo-400" /> Loading real engine state…
+          <Loader2 className="w-4 h-4 animate-spin text-violet-400" /> Loading real engine state…
         </div>
       ) : (
         <>
@@ -129,12 +129,12 @@ export const AIEnginePanel: React.FC<AIEnginePanelProps> = ({ status, loading, e
 
           {/* Active route — the real decision, or an honest absence. */}
           {routing ? (
-            <div className="rounded-md bg-[#020617] border border-indigo-800/70 p-3 space-y-1.5">
+            <div className="rounded-md bg-[#020617] border border-violet-800/70 p-3 space-y-1.5">
               <div className="flex items-center justify-between gap-2 flex-wrap">
-                <span className="text-xs font-mono font-bold text-indigo-300 truncate">
+                <span className="text-xs font-mono font-bold text-violet-300 truncate">
                   {routing.provider_id} / {routing.model_id}
                 </span>
-                <Pill label={`${status.settings.mode} mode`} className="text-indigo-300 bg-indigo-950/60 border-indigo-800" />
+                <Pill label={`${status.settings.mode} mode`} className="text-violet-300 bg-violet-950/60 border-violet-800" />
               </div>
               <p className="text-[10px] text-slate-400 leading-snug">{routing.reason}</p>
               <div className="flex items-center gap-2 flex-wrap">

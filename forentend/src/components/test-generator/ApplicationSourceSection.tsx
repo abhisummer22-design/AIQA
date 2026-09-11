@@ -69,8 +69,8 @@ const SOURCES_META: SourceCardMeta[] = [
     roleDescription: 'Active branch builds, ephemeral features, and pre-release validation.',
     placeholder: 'https://staging.example.com',
     icon: Server,
-    accentColor: 'text-cyan-400',
-    envBadge: 'bg-cyan-950/80 border-cyan-700/80 text-cyan-300',
+    accentColor: 'text-yellow-400',
+    envBadge: 'bg-yellow-950/80 border-yellow-700/80 text-yellow-300',
   },
   {
     type: 'DEMO',
@@ -79,8 +79,8 @@ const SOURCES_META: SourceCardMeta[] = [
     roleDescription: 'Seeded staging environment with synthetic customer test datasets.',
     placeholder: 'https://demo.example.com',
     icon: Globe,
-    accentColor: 'text-indigo-400',
-    envBadge: 'bg-indigo-950/80 border-indigo-700/80 text-indigo-300',
+    accentColor: 'text-violet-400',
+    envBadge: 'bg-violet-950/80 border-violet-700/80 text-violet-300',
   },
   {
     type: 'LIVE',
@@ -135,8 +135,8 @@ export const ApplicationSourceSection: React.FC<ApplicationSourceSectionProps> =
         );
       case 'CHECKING':
         return (
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-cyan-950/80 border border-cyan-700 text-cyan-300">
-            <RefreshCw className="w-3 h-3 text-cyan-400 animate-spin" />
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-yellow-950/80 border border-yellow-700 text-yellow-300">
+            <RefreshCw className="w-3 h-3 text-yellow-400 animate-spin" />
             <span>Checking</span>
           </span>
         );
@@ -289,11 +289,11 @@ export const ApplicationSourceSection: React.FC<ApplicationSourceSectionProps> =
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-800/80">
         <div>
           <div className="flex items-center gap-2">
-            <Globe className="w-4 h-4 text-indigo-400" />
+            <Globe className="w-4 h-4 text-violet-400" />
             <h2 className="text-sm font-bold text-slate-100 font-sans tracking-tight">
               Application Sources
             </h2>
-            <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded bg-indigo-950/60 border border-indigo-800/60 text-indigo-300">
+            <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded bg-violet-950/60 border border-violet-800/60 text-violet-300">
               4 CHANNELS
             </span>
           </div>
@@ -304,9 +304,9 @@ export const ApplicationSourceSection: React.FC<ApplicationSourceSectionProps> =
 
         {/* Environment Map Overview */}
         <div className="flex items-center gap-2 text-[10px] font-mono text-slate-400">
-          <span className="text-cyan-400 font-semibold">STAGING</span>
+          <span className="text-yellow-400 font-semibold">STAGING</span>
           <span>→</span>
-          <span className="text-indigo-400 font-semibold">DEMO</span>
+          <span className="text-violet-400 font-semibold">DEMO</span>
           <span>→</span>
           <span className="text-emerald-400 font-semibold">LIVE</span>
         </div>
@@ -418,13 +418,13 @@ export const ApplicationSourceSection: React.FC<ApplicationSourceSectionProps> =
                           setValidationErrors((prev) => ({ ...prev, [meta.type]: null }));
                         }}
                         disabled={disabled || isChecking}
-                        className="flex-1 px-2.5 py-1.5 rounded bg-[#020617] border border-slate-700 hover:border-slate-600 focus:border-indigo-500 text-xs font-mono text-slate-100 placeholder-slate-500 focus:outline-none"
+                        className="flex-1 px-2.5 py-1.5 rounded bg-[#020617] border border-slate-700 hover:border-slate-600 focus:border-violet-500 text-xs font-mono text-slate-100 placeholder-slate-500 focus:outline-none"
                       />
                       <button
                         type="button"
                         onClick={() => handleConnect(meta.type)}
                         disabled={disabled || isChecking || !projectId || !inputUrls[meta.type]?.trim()}
-                        className="px-3 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 text-white disabled:text-slate-500 text-xs font-mono font-medium cursor-pointer transition-colors flex items-center gap-1 shrink-0"
+                        className="px-3 py-1.5 rounded bg-violet-600 hover:bg-violet-500 disabled:bg-slate-800 text-white disabled:text-slate-500 text-xs font-mono font-medium cursor-pointer transition-colors flex items-center gap-1 shrink-0"
                       >
                         {isChecking ? (
                           <>

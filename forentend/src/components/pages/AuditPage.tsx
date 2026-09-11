@@ -279,10 +279,10 @@ export const AuditPage: React.FC = () => {
       return (
         <StateCard
           icon={ScrollText}
-          iconClassName="text-indigo-400"
+          iconClassName="text-violet-400"
           spin
           statusLabel="LOADING…"
-          statusClassName="text-indigo-300 bg-indigo-950/60 border-indigo-800"
+          statusClassName="text-violet-300 bg-violet-950/60 border-violet-800"
           title="Loading audit trail"
           description={`Fetching recorded actions for ${selectedProject?.name ?? 'this project'}…`}
         />
@@ -337,7 +337,7 @@ export const AuditPage: React.FC = () => {
                   {formatTimestamp(row.occurred_at)}
                 </td>
                 <td className="py-2.5 pr-3 text-slate-200 font-medium">{redactOwnKey(row.actor) ?? '—'}</td>
-                <td className="py-2.5 pr-3 font-mono text-[10px] text-indigo-400">{row.role ?? '—'}</td>
+                <td className="py-2.5 pr-3 font-mono text-[10px] text-violet-400">{row.role ?? '—'}</td>
                 <td className="py-2.5 pr-3 font-mono text-xs font-semibold text-slate-100">{row.action}</td>
                 <td className="py-2.5 pr-3 font-mono text-[10px] text-slate-400 max-w-[180px] truncate" title={redactOwnKey(row.target) ?? undefined}>
                   {redactOwnKey(row.target) ?? '—'}
@@ -366,11 +366,11 @@ export const AuditPage: React.FC = () => {
       >
         <div className="space-y-1">
           <div className="flex items-center gap-2">
-            <span className="p-1.5 rounded bg-indigo-950/80 border border-indigo-700/60 text-indigo-400">
+            <span className="p-1.5 rounded bg-violet-950/80 border border-violet-700/60 text-violet-400">
               <ScrollText className="w-4 h-4" />
             </span>
             <h1 className="text-base font-bold text-slate-100 font-sans tracking-tight">Audit Trail</h1>
-            <span className="px-2 py-0.5 rounded bg-indigo-950/60 border border-indigo-800/60 text-[10px] font-mono text-indigo-300 uppercase">
+            <span className="px-2 py-0.5 rounded bg-violet-950/60 border border-violet-800/60 text-[10px] font-mono text-violet-300 uppercase">
               AUDIT
             </span>
           </div>
@@ -390,7 +390,7 @@ export const AuditPage: React.FC = () => {
             value={limit}
             onChange={(e) => setLimit(Number(e.target.value))}
             disabled={!selectedProjectId}
-            className="rounded-md border border-slate-800 bg-[#020617] hover:bg-slate-900 px-2.5 py-1.5 text-xs text-slate-300 outline-none focus:ring-1 focus:ring-indigo-500 font-mono cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            className="rounded-md border border-slate-800 bg-[#020617] hover:bg-slate-900 px-2.5 py-1.5 text-xs text-slate-300 outline-none focus:ring-1 focus:ring-violet-500 font-mono cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {LIMIT_OPTIONS.map((n) => (
               <option key={n} value={n}>
@@ -403,7 +403,7 @@ export const AuditPage: React.FC = () => {
             id="audit-refresh-button"
             onClick={handleRefresh}
             disabled={!selectedProjectId || loading || refreshing}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#020617] hover:bg-slate-800 text-slate-200 font-medium text-xs border border-slate-700 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#020617] hover:bg-slate-800 text-slate-200 font-medium text-xs border border-slate-700 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
           >
             <RotateCcw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
             <span>Refresh</span>
@@ -424,7 +424,7 @@ export const AuditPage: React.FC = () => {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search actors, actions, targets…"
-              className="w-full pl-8 pr-3 py-1.5 rounded-md border border-slate-800 bg-[#020617] text-xs text-slate-200 outline-none focus:ring-1 focus:ring-indigo-500 font-sans"
+              className="w-full pl-8 pr-3 py-1.5 rounded-md border border-slate-800 bg-[#020617] text-xs text-slate-200 outline-none focus:ring-1 focus:ring-violet-500 font-sans"
             />
           </div>
           {/* Real, disclosed scope limit — the backend has no server-side
@@ -454,7 +454,7 @@ export const AuditPage: React.FC = () => {
               id="audit-prev-page"
               onClick={handlePrevPage}
               disabled={!hasPrevPage || loading || refreshing}
-              className="px-2.5 py-1 rounded border border-slate-700 hover:border-indigo-600 hover:text-indigo-300 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-slate-700 disabled:hover:text-slate-400 cursor-pointer transition-colors"
+              className="px-2.5 py-1 rounded border border-slate-700 hover:border-violet-600 hover:text-violet-300 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-slate-700 disabled:hover:text-slate-400 cursor-pointer transition-colors"
             >
               Previous
             </button>
@@ -463,7 +463,7 @@ export const AuditPage: React.FC = () => {
               id="audit-next-page"
               onClick={handleNextPage}
               disabled={!hasNextPage || loading || refreshing}
-              className="px-2.5 py-1 rounded border border-slate-700 hover:border-indigo-600 hover:text-indigo-300 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-slate-700 disabled:hover:text-slate-400 cursor-pointer transition-colors"
+              className="px-2.5 py-1 rounded border border-slate-700 hover:border-violet-600 hover:text-violet-300 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-slate-700 disabled:hover:text-slate-400 cursor-pointer transition-colors"
             >
               Next
             </button>

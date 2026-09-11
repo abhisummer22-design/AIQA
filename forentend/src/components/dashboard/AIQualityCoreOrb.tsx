@@ -57,21 +57,21 @@ export const AIQualityCoreOrb: React.FC<AIQualityCoreOrbProps> = ({
     }
     if (hasActiveRun || status === 'Running') {
       return {
-        coreGlow: 'from-cyan-500/30 via-indigo-600/25 to-transparent',
-        innerCore: 'from-cyan-300 via-indigo-400 to-purple-600',
-        ringBorder1: 'border-cyan-400/50',
-        ringBorder2: 'border-indigo-400/40',
-        ringBorder3: 'border-cyan-500/30',
-        accentText: 'text-cyan-400',
-        badgeBg: 'bg-cyan-950/80 border-cyan-700/80 text-cyan-300',
+        coreGlow: 'from-yellow-500/30 via-violet-600/25 to-transparent',
+        innerCore: 'from-yellow-300 via-violet-400 to-purple-600',
+        ringBorder1: 'border-yellow-400/50',
+        ringBorder2: 'border-violet-400/40',
+        ringBorder3: 'border-yellow-500/30',
+        accentText: 'text-yellow-400',
+        badgeBg: 'bg-yellow-950/80 border-yellow-700/80 text-yellow-300',
         statusLabel: 'ACTIVE INFERENCE',
         icon: Activity,
       };
     }
     // Healthy default
     return {
-      coreGlow: 'from-emerald-500/25 via-cyan-600/20 to-transparent',
-      innerCore: 'from-emerald-300 via-teal-400 to-cyan-600',
+      coreGlow: 'from-emerald-500/25 via-yellow-600/20 to-transparent',
+      innerCore: 'from-emerald-300 via-teal-400 to-yellow-600',
       ringBorder1: 'border-emerald-400/40',
       ringBorder2: 'border-teal-400/30',
       ringBorder3: 'border-emerald-600/30',
@@ -95,7 +95,7 @@ export const AIQualityCoreOrb: React.FC<AIQualityCoreOrbProps> = ({
         className="absolute inset-0 opacity-[0.07] pointer-events-none"
         style={{
           backgroundImage:
-            'radial-gradient(circle at center, #6366f1 1px, transparent 1px), linear-gradient(to right, #1e293b 1px, transparent 1px), linear-gradient(to bottom, #1e293b 1px, transparent 1px)',
+            'radial-gradient(circle at center, #8b5cf6 1px, transparent 1px), linear-gradient(to right, #1e293b 1px, transparent 1px), linear-gradient(to bottom, #1e293b 1px, transparent 1px)',
           backgroundSize: '24px 24px, 48px 48px, 48px 48px',
         }}
       />
@@ -115,7 +115,7 @@ export const AIQualityCoreOrb: React.FC<AIQualityCoreOrbProps> = ({
           style={{ transformStyle: 'preserve-3d', transform: 'rotateX(68deg)' }}
         >
           {/* Orbital Satellite Bead 1 */}
-          <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2.5 h-2.5 rounded-full bg-cyan-300 shadow-[0_0_8px_#22d3ee]" />
+          <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2.5 h-2.5 rounded-full bg-yellow-300 shadow-[0_0_8px_#facc15]" />
         </motion.div>
 
         {/* Outer Elliptical Orbital Ring 2 (Counter-Rotating) */}
@@ -126,7 +126,7 @@ export const AIQualityCoreOrb: React.FC<AIQualityCoreOrbProps> = ({
           style={{ transformStyle: 'preserve-3d', transform: 'rotateX(65deg) rotateY(35deg)' }}
         >
           {/* Orbital Satellite Bead 2 */}
-          <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 rounded-full bg-indigo-300 shadow-[0_0_8px_#818cf8]" />
+          <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 rounded-full bg-violet-300 shadow-[0_0_8px_#a78bfa]" />
         </motion.div>
 
         {/* Equatorial Energy Horizon Ring */}
@@ -138,12 +138,12 @@ export const AIQualityCoreOrb: React.FC<AIQualityCoreOrbProps> = ({
         />
 
         {/* Layered Transparent Sphere Glass Shell */}
-        <div className="relative w-28 h-28 rounded-full bg-gradient-to-br from-white/10 via-slate-900/80 to-black/90 backdrop-blur-md border border-white/20 shadow-[0_0_30px_rgba(99,102,241,0.25)] flex items-center justify-center overflow-hidden">
+        <div className="relative w-28 h-28 rounded-full bg-gradient-to-br from-white/10 via-slate-900/80 to-black/90 backdrop-blur-md border border-white/20 shadow-[0_0_30px_rgba(139,92,246,0.25)] flex items-center justify-center overflow-hidden">
           {/* Top-Left Specular Glass Highlight */}
           <div className="absolute top-1.5 left-2 w-12 h-6 rounded-full bg-gradient-to-b from-white/40 to-transparent rotate-[-30deg] pointer-events-none blur-[0.5px]" />
           
           {/* Bottom Rim Ambient Reflection */}
-          <div className="absolute bottom-1 right-2 w-10 h-4 rounded-full bg-cyan-400/20 blur-sm pointer-events-none" />
+          <div className="absolute bottom-1 right-2 w-10 h-4 rounded-full bg-yellow-400/20 blur-sm pointer-events-none" />
 
           {/* Internal Glowing Quantum Core */}
           <motion.div
@@ -169,8 +169,8 @@ export const AIQualityCoreOrb: React.FC<AIQualityCoreOrbProps> = ({
         </div>
 
         {/* Ambient Particle Sparks */}
-        <div className="absolute top-2 left-6 w-1 h-1 rounded-full bg-cyan-400 animate-ping opacity-60" />
-        <div className="absolute bottom-4 right-6 w-1 h-1 rounded-full bg-indigo-400 animate-pulse opacity-70" />
+        <div className="absolute top-2 left-6 w-1 h-1 rounded-full bg-yellow-400 animate-ping opacity-60" />
+        <div className="absolute bottom-4 right-6 w-1 h-1 rounded-full bg-violet-400 animate-pulse opacity-70" />
       </div>
 
       {/* Center Labels & Telemetry Subtitle */}
@@ -179,7 +179,7 @@ export const AIQualityCoreOrb: React.FC<AIQualityCoreOrbProps> = ({
           <span className="text-xs font-bold tracking-wider text-slate-100 uppercase font-sans">
             AIQA Quality Core
           </span>
-          <Sparkles className="w-3 h-3 text-cyan-400" />
+          <Sparkles className="w-3 h-3 text-yellow-400" />
         </div>
         <div className="text-[10px] font-mono text-slate-400">
           Autonomous Verification Engine • <span className="text-slate-300">{projectName}</span>

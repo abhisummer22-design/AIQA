@@ -113,7 +113,7 @@ export const EditTestCaseModal: React.FC<EditTestCaseModalProps> = ({ testCase, 
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800 bg-[#020617]">
           <div className="flex items-center gap-2">
-            <Pencil className="w-4 h-4 text-indigo-400" />
+            <Pencil className="w-4 h-4 text-violet-400" />
             <div>
               <h2 className="text-sm font-bold text-slate-100 font-sans">Edit Test Case</h2>
               <p className="text-[11px] text-slate-500 font-sans">
@@ -144,7 +144,7 @@ export const EditTestCaseModal: React.FC<EditTestCaseModalProps> = ({ testCase, 
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               disabled={saving}
-              className="w-full px-2.5 py-1.5 rounded bg-[#020617] border border-slate-700 text-xs font-sans text-slate-100 focus:outline-none focus:border-indigo-500 disabled:opacity-50"
+              className="w-full px-2.5 py-1.5 rounded bg-[#020617] border border-slate-700 text-xs font-sans text-slate-100 focus:outline-none focus:border-violet-500 disabled:opacity-50"
             />
           </div>
 
@@ -159,7 +159,7 @@ export const EditTestCaseModal: React.FC<EditTestCaseModalProps> = ({ testCase, 
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
                 disabled={saving}
-                className="w-full px-2.5 py-1.5 rounded bg-[#020617] border border-slate-700 text-xs font-sans text-slate-100 focus:outline-none focus:border-indigo-500 resize-none disabled:opacity-50"
+                className="w-full px-2.5 py-1.5 rounded bg-[#020617] border border-slate-700 text-xs font-sans text-slate-100 focus:outline-none focus:border-violet-500 resize-none disabled:opacity-50"
               />
             </div>
             <div className="space-y-1.5">
@@ -171,7 +171,7 @@ export const EditTestCaseModal: React.FC<EditTestCaseModalProps> = ({ testCase, 
                 value={priority}
                 onChange={(e) => setPriority(e.target.value as GeneratedTestCase['priority'])}
                 disabled={saving}
-                className="w-full px-2.5 py-1.5 rounded bg-[#020617] border border-slate-700 text-xs font-mono text-slate-100 focus:outline-none focus:border-indigo-500 cursor-pointer disabled:opacity-50"
+                className="w-full px-2.5 py-1.5 rounded bg-[#020617] border border-slate-700 text-xs font-mono text-slate-100 focus:outline-none focus:border-violet-500 cursor-pointer disabled:opacity-50"
               >
                 {PRIORITIES.map((p) => (
                   <option key={p} value={p}>
@@ -189,7 +189,7 @@ export const EditTestCaseModal: React.FC<EditTestCaseModalProps> = ({ testCase, 
                 type="button"
                 onClick={addPrecondition}
                 disabled={saving}
-                className="flex items-center gap-1 text-[10px] font-mono text-indigo-400 hover:text-indigo-300 disabled:opacity-50 cursor-pointer"
+                className="flex items-center gap-1 text-[10px] font-mono text-violet-400 hover:text-violet-300 disabled:opacity-50 cursor-pointer"
               >
                 <Plus className="w-3 h-3" />
                 Add
@@ -206,7 +206,7 @@ export const EditTestCaseModal: React.FC<EditTestCaseModalProps> = ({ testCase, 
                       value={p}
                       onChange={(e) => updatePrecondition(idx, e.target.value)}
                       disabled={saving}
-                      className="flex-1 px-2.5 py-1.5 rounded bg-[#020617] border border-slate-700 text-xs font-sans text-slate-100 focus:outline-none focus:border-indigo-500 disabled:opacity-50"
+                      className="flex-1 px-2.5 py-1.5 rounded bg-[#020617] border border-slate-700 text-xs font-sans text-slate-100 focus:outline-none focus:border-violet-500 disabled:opacity-50"
                     />
                     <button
                       type="button"
@@ -232,7 +232,7 @@ export const EditTestCaseModal: React.FC<EditTestCaseModalProps> = ({ testCase, 
                 type="button"
                 onClick={addStep}
                 disabled={saving}
-                className="flex items-center gap-1 text-[10px] font-mono text-indigo-400 hover:text-indigo-300 disabled:opacity-50 cursor-pointer"
+                className="flex items-center gap-1 text-[10px] font-mono text-violet-400 hover:text-violet-300 disabled:opacity-50 cursor-pointer"
               >
                 <Plus className="w-3 h-3" />
                 Add step
@@ -259,7 +259,7 @@ export const EditTestCaseModal: React.FC<EditTestCaseModalProps> = ({ testCase, 
                     value={step.action}
                     onChange={(e) => updateStep(idx, { action: e.target.value })}
                     disabled={saving}
-                    className="w-full px-2.5 py-1.5 rounded bg-[#0B1120] border border-slate-700 text-xs font-sans text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 disabled:opacity-50"
+                    className="w-full px-2.5 py-1.5 rounded bg-[#0B1120] border border-slate-700 text-xs font-sans text-slate-100 placeholder-slate-500 focus:outline-none focus:border-violet-500 disabled:opacity-50"
                   />
                   <input
                     type="text"
@@ -289,7 +289,7 @@ export const EditTestCaseModal: React.FC<EditTestCaseModalProps> = ({ testCase, 
               value={expectedResult}
               onChange={(e) => setExpectedResult(e.target.value)}
               disabled={saving}
-              className="w-full px-2.5 py-1.5 rounded bg-[#020617] border border-slate-700 text-xs font-sans text-slate-100 focus:outline-none focus:border-indigo-500 resize-none disabled:opacity-50"
+              className="w-full px-2.5 py-1.5 rounded bg-[#020617] border border-slate-700 text-xs font-sans text-slate-100 focus:outline-none focus:border-violet-500 resize-none disabled:opacity-50"
             />
           </div>
 
@@ -308,7 +308,7 @@ export const EditTestCaseModal: React.FC<EditTestCaseModalProps> = ({ testCase, 
             id="btn-save-test-case-edit"
             onClick={() => void handleSave()}
             disabled={!canSave}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-mono text-xs font-bold cursor-pointer"
+            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-md bg-violet-600 hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-mono text-xs font-bold cursor-pointer"
           >
             {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
             {saving ? 'Saving…' : 'Save Changes'}

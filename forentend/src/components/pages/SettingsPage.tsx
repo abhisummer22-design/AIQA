@@ -67,7 +67,7 @@ const OrchestratorAuthPanel: React.FC = () => {
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-1.5 text-slate-200 font-semibold text-xs">
-        <Key className="w-3.5 h-3.5 text-indigo-400" />
+        <Key className="w-3.5 h-3.5 text-violet-400" />
         AIQA Orchestrator API Key
       </div>
       <div className="text-slate-400 text-[11px] -mt-2">
@@ -92,13 +92,13 @@ const OrchestratorAuthPanel: React.FC = () => {
               }
             }}
             placeholder="aiqa_..."
-            className="flex-1 px-2.5 py-1.5 rounded-md bg-[#0B1120] border border-slate-700 text-slate-200 focus:border-indigo-500 focus:outline-none font-mono text-xs"
+            className="flex-1 px-2.5 py-1.5 rounded-md bg-[#0B1120] border border-slate-700 text-slate-200 focus:border-violet-500 focus:outline-none font-mono text-xs"
           />
           <button
             type="button"
             onClick={() => void handleSave()}
             disabled={!inputValue.trim() || saving}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs shadow-sm shadow-indigo-950/60 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-violet-600 hover:bg-violet-500 text-white font-semibold text-xs shadow-sm shadow-violet-950/60 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Key className="w-3.5 h-3.5" />}
             {hasKey ? 'Replace Key' : 'Save Key'}
@@ -108,7 +108,7 @@ const OrchestratorAuthPanel: React.FC = () => {
         <button
           type="button"
           onClick={() => setShowInput(true)}
-          className="text-[11px] font-medium text-indigo-400 hover:text-indigo-300 cursor-pointer"
+          className="text-[11px] font-medium text-violet-400 hover:text-violet-300 cursor-pointer"
         >
           Enter a different key…
         </button>
@@ -123,8 +123,8 @@ const OrchestratorAuthPanel: React.FC = () => {
 function providerStatusBadge(status: AiProviderInfo['status']) {
   const map: Record<AiProviderInfo['status'], { label: string; cls: string }> = {
     HEALTHY: { label: 'Healthy', cls: 'bg-emerald-950/80 border-emerald-700 text-emerald-300' },
-    AVAILABLE: { label: 'Available', cls: 'bg-cyan-950/80 border-cyan-700 text-cyan-300' },
-    DISCOVERING: { label: 'Discovering…', cls: 'bg-indigo-950/80 border-indigo-700 text-indigo-300' },
+    AVAILABLE: { label: 'Available', cls: 'bg-yellow-950/80 border-yellow-700 text-yellow-300' },
+    DISCOVERING: { label: 'Discovering…', cls: 'bg-violet-950/80 border-violet-700 text-violet-300' },
     DEGRADED: { label: 'Degraded', cls: 'bg-amber-950/80 border-amber-700 text-amber-300' },
     UNAVAILABLE: { label: 'Unavailable', cls: 'bg-slate-900 border-slate-700 text-slate-400' },
     ERROR: { label: 'Error', cls: 'bg-rose-950/80 border-rose-700 text-rose-300' },
@@ -320,7 +320,7 @@ const AiIntelligencePanel: React.FC = () => {
             id="btn-refresh-ai-providers"
             onClick={() => void handleRefresh()}
             disabled={refreshing}
-            className="flex items-center gap-1 px-2 py-1 rounded bg-[#0B1120] border border-slate-700 hover:border-indigo-600 text-slate-300 hover:text-indigo-300 cursor-pointer disabled:opacity-50"
+            className="flex items-center gap-1 px-2 py-1 rounded bg-[#0B1120] border border-slate-700 hover:border-violet-600 text-slate-300 hover:text-violet-300 cursor-pointer disabled:opacity-50"
           >
             <RefreshCw className={`w-3 h-3 ${refreshing ? 'animate-spin' : ''}`} />
             <span>Scan Providers</span>
@@ -426,7 +426,7 @@ const AiIntelligencePanel: React.FC = () => {
             value={newProviderName}
             onChange={(e) => setNewProviderName(e.target.value)}
             placeholder="Name (e.g. My Provider)"
-            className="px-2.5 py-1.5 rounded bg-[#0B1120] border border-slate-700 text-xs font-mono text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-indigo-500"
+            className="px-2.5 py-1.5 rounded bg-[#0B1120] border border-slate-700 text-xs font-mono text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-violet-500"
           />
           <input
             type="text"
@@ -434,7 +434,7 @@ const AiIntelligencePanel: React.FC = () => {
             value={newProviderBaseUrl}
             onChange={(e) => setNewProviderBaseUrl(e.target.value)}
             placeholder="Base URL (https://...)"
-            className="px-2.5 py-1.5 rounded bg-[#0B1120] border border-slate-700 text-xs font-mono text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-indigo-500"
+            className="px-2.5 py-1.5 rounded bg-[#0B1120] border border-slate-700 text-xs font-mono text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-violet-500"
           />
           <input
             type="password"
@@ -442,7 +442,7 @@ const AiIntelligencePanel: React.FC = () => {
             value={newProviderApiKey}
             onChange={(e) => setNewProviderApiKey(e.target.value)}
             placeholder="API key"
-            className="px-2.5 py-1.5 rounded bg-[#0B1120] border border-slate-700 text-xs font-mono text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-indigo-500"
+            className="px-2.5 py-1.5 rounded bg-[#0B1120] border border-slate-700 text-xs font-mono text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-violet-500"
           />
         </div>
         <p className="text-[10px] font-mono text-slate-500">
@@ -460,7 +460,7 @@ const AiIntelligencePanel: React.FC = () => {
           id="btn-add-custom-ai-provider"
           onClick={() => void handleAddCustomProvider()}
           disabled={addingProvider || !newProviderName.trim() || !newProviderBaseUrl.trim() || !newProviderApiKey.trim()}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white font-mono text-xs font-semibold cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-violet-600 hover:bg-violet-500 text-white font-mono text-xs font-semibold cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {addingProvider ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
           <span>Add Custom Provider</span>
@@ -474,7 +474,7 @@ const AiIntelligencePanel: React.FC = () => {
           <select
             value={draftMode}
             onChange={(e) => setDraftMode(e.target.value as AiSettings['mode'])}
-            className="w-full px-2.5 py-1.5 rounded bg-[#0B1120] border border-slate-700 text-xs font-mono text-slate-200 focus:outline-none focus:border-indigo-500 cursor-pointer"
+            className="w-full px-2.5 py-1.5 rounded bg-[#0B1120] border border-slate-700 text-xs font-mono text-slate-200 focus:outline-none focus:border-violet-500 cursor-pointer"
           >
             <option value="AUTO">AUTO — best available model is selected automatically</option>
             <option value="MANUAL">MANUAL — choose a specific provider/model</option>
@@ -491,7 +491,7 @@ const AiIntelligencePanel: React.FC = () => {
                   setDraftProvider(e.target.value);
                   setDraftModel('');
                 }}
-                className="w-full px-2.5 py-1.5 rounded bg-[#0B1120] border border-slate-700 text-xs font-mono text-slate-200 focus:outline-none focus:border-indigo-500 cursor-pointer"
+                className="w-full px-2.5 py-1.5 rounded bg-[#0B1120] border border-slate-700 text-xs font-mono text-slate-200 focus:outline-none focus:border-violet-500 cursor-pointer"
               >
                 <option value="">Select a provider…</option>
                 {status.providers.map((p) => (
@@ -507,7 +507,7 @@ const AiIntelligencePanel: React.FC = () => {
                 value={draftModel}
                 onChange={(e) => setDraftModel(e.target.value)}
                 disabled={!selectedProvider}
-                className="w-full px-2.5 py-1.5 rounded bg-[#0B1120] border border-slate-700 text-xs font-mono text-slate-200 focus:outline-none focus:border-indigo-500 cursor-pointer disabled:opacity-50"
+                className="w-full px-2.5 py-1.5 rounded bg-[#0B1120] border border-slate-700 text-xs font-mono text-slate-200 focus:outline-none focus:border-violet-500 cursor-pointer disabled:opacity-50"
               >
                 <option value="">Select a model…</option>
                 {selectedProvider?.models.map((m) => (
@@ -521,7 +521,7 @@ const AiIntelligencePanel: React.FC = () => {
         )}
 
         <label className="flex items-center gap-2 text-[11px] font-mono text-slate-300 cursor-pointer">
-          <input type="checkbox" checked={draftFallback} onChange={(e) => setDraftFallback(e.target.checked)} className="accent-indigo-500" />
+          <input type="checkbox" checked={draftFallback} onChange={(e) => setDraftFallback(e.target.checked)} className="accent-violet-500" />
           <span>Fall back to another available model if the selected one fails</span>
         </label>
 
@@ -532,7 +532,7 @@ const AiIntelligencePanel: React.FC = () => {
           id="btn-save-ai-settings"
           onClick={() => void handleSaveSettings()}
           disabled={saving || (draftMode === 'MANUAL' && (!draftProvider || !draftModel))}
-          className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-mono text-xs font-bold cursor-pointer"
+          className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-md bg-violet-600 hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-mono text-xs font-bold cursor-pointer"
         >
           {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
           <span>Save AI Settings</span>
@@ -582,11 +582,11 @@ export const SettingsPage: React.FC = () => {
                 onClick={() => setActiveTab(tab.id)}
                 className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-xs font-medium transition-all text-left cursor-pointer ${
                   isActive
-                    ? 'bg-indigo-950/60 border border-indigo-800/80 text-indigo-300 font-semibold shadow-sm'
+                    ? 'bg-violet-950/60 border border-violet-800/80 text-violet-300 font-semibold shadow-sm'
                     : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40 border border-transparent'
                 }`}
               >
-                <Icon className={`w-3.5 h-3.5 shrink-0 ${isActive ? 'text-indigo-400' : 'text-slate-500'}`} />
+                <Icon className={`w-3.5 h-3.5 shrink-0 ${isActive ? 'text-violet-400' : 'text-slate-500'}`} />
                 <span className="truncate">{tab.label}</span>
               </button>
             );

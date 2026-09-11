@@ -93,7 +93,7 @@ export const CommandPalette: React.FC = () => {
       >
         {/* Search Input Bar */}
         <div className="flex items-center gap-3 px-4 py-2.5 border-b border-slate-800 bg-[#020617]">
-          <Search className="w-4 h-4 text-indigo-400 shrink-0" />
+          <Search className="w-4 h-4 text-violet-400 shrink-0" />
           <input
             autoFocus
             type="text"
@@ -128,7 +128,7 @@ export const CommandPalette: React.FC = () => {
                     <button
                       key={item.id}
                       onClick={() => handleSelect(item.action)}
-                      className="w-full flex items-center justify-between px-3 py-1.5 rounded-md text-xs text-slate-300 hover:text-white hover:bg-indigo-600 transition-colors group cursor-pointer"
+                      className="w-full flex items-center justify-between px-3 py-1.5 rounded-md text-xs text-slate-300 hover:text-white hover:bg-violet-600 transition-colors group cursor-pointer"
                     >
                       <div className="flex items-center gap-2.5">
                         <Icon className="w-3.5 h-3.5 text-slate-400 group-hover:text-white" />

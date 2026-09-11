@@ -99,14 +99,14 @@ const BAR_COLORS: Record<string, string> = {
   COMPLETED: 'bg-emerald-500', PASSED: 'bg-emerald-500',
   FAILED: 'bg-rose-500', REJECTED: 'bg-rose-500',
   TIMEOUT: 'bg-amber-500', INFRA_ERROR: 'bg-amber-500',
-  RUNNING: 'bg-cyan-500', SCHEDULED: 'bg-cyan-500', QUEUED: 'bg-cyan-500',
+  RUNNING: 'bg-yellow-500', SCHEDULED: 'bg-yellow-500', QUEUED: 'bg-yellow-500',
   CANCELLED: 'bg-slate-500', SKIPPED: 'bg-slate-500', BLOCKED: 'bg-slate-500',
-  PENDING_APPROVAL: 'bg-indigo-500', NEEDS_REVIEW: 'bg-indigo-500', CREATED: 'bg-indigo-500', PARTIAL: 'bg-indigo-500',
+  PENDING_APPROVAL: 'bg-violet-500', NEEDS_REVIEW: 'bg-violet-500', CREATED: 'bg-violet-500', PARTIAL: 'bg-violet-500',
 };
 
 function barRow(label: string, value: number, max: number): React.ReactElement {
   const pct = max > 0 ? Math.max((value / max) * 100, value > 0 ? 3 : 0) : 0;
-  const color = BAR_COLORS[label] ?? 'bg-indigo-500';
+  const color = BAR_COLORS[label] ?? 'bg-violet-500';
   return (
     <div key={label} className="flex items-center gap-2.5 text-xs font-mono">
       <span className="w-32 shrink-0 truncate text-slate-400" title={label}>{label}</span>
@@ -186,10 +186,10 @@ export const TelemetryPage: React.FC = () => {
       return (
         <StateCard
           icon={Gauge}
-          iconClassName="text-indigo-400"
+          iconClassName="text-violet-400"
           spin
           statusLabel="LOADING…"
-          statusClassName="text-indigo-300 bg-indigo-950/60 border-indigo-800"
+          statusClassName="text-violet-300 bg-violet-950/60 border-violet-800"
           title="Loading telemetry"
           description="Fetching the real orchestrator /metrics snapshot…"
         />
@@ -250,7 +250,7 @@ export const TelemetryPage: React.FC = () => {
             <strong className="text-slate-300">What this does not show:</strong> latency, response time, p95, or p99 — the real{' '}
             <code>/metrics</code> endpoint has no timing data of any kind today, only state/status counts. Real
             average run/task duration exists on the{' '}
-            <button type="button" onClick={() => navigate('/dashboard')} className="underline text-indigo-400 hover:text-indigo-300 cursor-pointer">
+            <button type="button" onClick={() => navigate('/dashboard')} className="underline text-violet-400 hover:text-violet-300 cursor-pointer">
               Dashboard
             </button>{' '}
             (project-scoped, a different real endpoint) — not repeated here.

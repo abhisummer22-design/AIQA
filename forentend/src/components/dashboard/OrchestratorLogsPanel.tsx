@@ -309,7 +309,7 @@ export const OrchestratorLogsPanel: React.FC<OrchestratorLogsPanelProps> = ({ pr
       case 'INFO':
       default:
         return (
-          <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-cyan-950/70 border border-cyan-800/80 text-cyan-300">
+          <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-yellow-950/70 border border-yellow-800/80 text-yellow-300">
             INFO
           </span>
         );
@@ -324,7 +324,7 @@ export const OrchestratorLogsPanel: React.FC<OrchestratorLogsPanelProps> = ({ pr
       {/* 1. Header with Title and Connection Status */}
       <div className="px-3.5 py-2.5 border-b border-slate-800 bg-[#020617] flex items-center justify-between gap-2 shrink-0">
         <div className="flex items-center gap-2">
-          <div className="p-1 rounded bg-indigo-950/80 border border-indigo-700/60 text-indigo-400">
+          <div className="p-1 rounded bg-violet-950/80 border border-violet-700/60 text-violet-400">
             <Terminal className="w-3.5 h-3.5" />
           </div>
           <div>
@@ -334,7 +334,7 @@ export const OrchestratorLogsPanel: React.FC<OrchestratorLogsPanelProps> = ({ pr
               {projectId && (
                 <>
                   <span>•</span>
-                  <span className="text-indigo-400 truncate max-w-[110px]" title={`Filtered for project ${projectId}`}>
+                  <span className="text-violet-400 truncate max-w-[110px]" title={`Filtered for project ${projectId}`}>
                     Scoped
                   </span>
                 </>
@@ -402,7 +402,7 @@ export const OrchestratorLogsPanel: React.FC<OrchestratorLogsPanelProps> = ({ pr
               onClick={() => setLevelFilter(lvl)}
               className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold transition-colors cursor-pointer ${
                 levelFilter === lvl
-                  ? 'bg-indigo-600 text-white shadow-sm'
+                  ? 'bg-violet-600 text-white shadow-sm'
                   : 'bg-slate-900/80 text-slate-400 hover:text-slate-200 hover:bg-slate-800'
               }`}
             >
@@ -416,7 +416,7 @@ export const OrchestratorLogsPanel: React.FC<OrchestratorLogsPanelProps> = ({ pr
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           placeholder="Filter logs…"
-          className="w-28 sm:w-36 px-2 py-0.5 rounded bg-[#020617] border border-slate-800 text-[11px] font-mono text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-indigo-600"
+          className="w-28 sm:w-36 px-2 py-0.5 rounded bg-[#020617] border border-slate-800 text-[11px] font-mono text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-violet-600"
         />
       </div>
 
@@ -429,7 +429,7 @@ export const OrchestratorLogsPanel: React.FC<OrchestratorLogsPanelProps> = ({ pr
       >
         {loadingInitial && logs.length === 0 && (
           <div className="h-full flex flex-col items-center justify-center text-slate-500 gap-2">
-            <Loader2 className="w-5 h-5 animate-spin text-indigo-400" />
+            <Loader2 className="w-5 h-5 animate-spin text-violet-400" />
             <span className="text-xs">Connecting to orchestrator stream…</span>
           </div>
         )}
@@ -444,7 +444,7 @@ export const OrchestratorLogsPanel: React.FC<OrchestratorLogsPanelProps> = ({ pr
                 void fetchRecentLogs();
                 connectWs();
               }}
-              className="mt-1 px-2.5 py-1 rounded bg-indigo-950 hover:bg-indigo-900 border border-indigo-700/60 text-indigo-300 text-xs font-mono font-medium cursor-pointer"
+              className="mt-1 px-2.5 py-1 rounded bg-violet-950 hover:bg-violet-900 border border-violet-700/60 text-violet-300 text-xs font-mono font-medium cursor-pointer"
             >
               Retry Connection
             </button>
@@ -478,7 +478,7 @@ export const OrchestratorLogsPanel: React.FC<OrchestratorLogsPanelProps> = ({ pr
             </span>
             {log.run_id && (
               <span
-                className="text-[9px] text-indigo-400/80 bg-indigo-950/40 px-1 py-0.2 rounded shrink-0 opacity-80 group-hover:opacity-100 truncate max-w-[70px]"
+                className="text-[9px] text-violet-400/80 bg-violet-950/40 px-1 py-0.2 rounded shrink-0 opacity-80 group-hover:opacity-100 truncate max-w-[70px]"
                 title={`Run ID: ${log.run_id}`}
               >
                 run:{log.run_id.slice(0, 6)}
@@ -500,7 +500,7 @@ export const OrchestratorLogsPanel: React.FC<OrchestratorLogsPanelProps> = ({ pr
         {hasUnread && (
           <button
             onClick={scrollToBottom}
-            className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-600 hover:bg-indigo-500 text-white font-sans text-[10px] font-semibold cursor-pointer animate-bounce shadow-md"
+            className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-violet-600 hover:bg-violet-500 text-white font-sans text-[10px] font-semibold cursor-pointer animate-bounce shadow-md"
           >
             <span>New logs available</span>
             <ArrowDown className="w-2.5 h-2.5" />

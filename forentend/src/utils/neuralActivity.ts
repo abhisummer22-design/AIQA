@@ -7,7 +7,7 @@
  * given.
  *
  * Usage:
- *   const nn = new NeuralActivity(canvasEl, { accent: '#22d3ee' });
+ *   const nn = new NeuralActivity(canvasEl, { accent: '#facc15' });
  *   nn.setLevel(0.7);              // overall activity 0..1 (drives speed + glow)
  *   nn.pulse();                    // one-shot burst (e.g. on every real event)
  *   nn.setInputs([0.2, 0.9, 0.4, 0.6, ...]); // realtime values for the first layer
@@ -55,7 +55,7 @@ interface Signal {
 
 const DEFAULT_OPTIONS: NeuralActivityOptions = {
   layers: [4, 6, 6, 3],
-  accent: '#35d6ff',
+  accent: '#facc15',
   idleSpeed: 0.02,
   activeSpeed: 0.14,
   minRadius: 4,

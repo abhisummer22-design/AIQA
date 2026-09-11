@@ -59,14 +59,14 @@ export const TEST_CATEGORIES: CategoryMeta[] = [
     title: 'Functional',
     description: 'Functional behavior and requirements.',
     icon: CheckCircle2,
-    accentColor: 'text-cyan-400',
+    accentColor: 'text-yellow-400',
   },
   {
     id: 'Non-Functional',
     title: 'Non-Functional',
     description: 'Quality attributes beyond core functionality.',
     icon: Layers,
-    accentColor: 'text-indigo-400',
+    accentColor: 'text-violet-400',
   },
   {
     id: 'Positive',
@@ -187,11 +187,11 @@ export const GenerationConfigSection: React.FC<GenerationConfigSectionProps> = (
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-800/80">
         <div>
           <div className="flex items-center gap-2">
-            <Sliders className="w-4 h-4 text-cyan-400" />
+            <Sliders className="w-4 h-4 text-yellow-400" />
             <h2 className="text-sm font-bold text-slate-100 font-sans tracking-tight">
               Test Generation Configuration
             </h2>
-            <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded bg-cyan-950/60 border border-cyan-800/60 text-cyan-300">
+            <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded bg-yellow-950/60 border border-yellow-800/60 text-yellow-300">
               {selectedCategories.length} / {TEST_CATEGORIES.length} SELECTED
             </span>
           </div>
@@ -216,7 +216,7 @@ export const GenerationConfigSection: React.FC<GenerationConfigSectionProps> = (
               type="button"
               onClick={onSelectAllCategories}
               disabled={isGenerating}
-              className="text-xs font-mono text-indigo-400 hover:text-indigo-300 px-2.5 py-1 rounded bg-indigo-950/60 border border-indigo-800/80 cursor-pointer disabled:opacity-50"
+              className="text-xs font-mono text-violet-400 hover:text-violet-300 px-2.5 py-1 rounded bg-violet-950/60 border border-violet-800/80 cursor-pointer disabled:opacity-50"
             >
               Select All (14)
             </button>
@@ -237,14 +237,14 @@ export const GenerationConfigSection: React.FC<GenerationConfigSectionProps> = (
               onClick={() => !isGenerating && onToggleCategory(cat.id)}
               className={`p-2.5 rounded-lg border text-left cursor-pointer transition-all duration-150 flex flex-col justify-between select-none ${
                 isSelected
-                  ? 'bg-gradient-to-b from-indigo-950/60 to-[#0B1120] border-indigo-500/80 shadow-[0_0_12px_rgba(99,102,241,0.2)]'
+                  ? 'bg-gradient-to-b from-violet-950/60 to-[#0B1120] border-violet-500/80 shadow-[0_0_12px_rgba(139,92,246,0.2)]'
                   : 'bg-[#0B1120] border-slate-800/90 hover:border-slate-700 opacity-70 hover:opacity-100'
               } ${isGenerating ? 'cursor-not-allowed opacity-50' : ''}`}
             >
               <div className="flex items-center justify-between">
                 <Icon className={`w-3.5 h-3.5 ${cat.accentColor}`} />
                 {isSelected ? (
-                  <CheckSquare className="w-3.5 h-3.5 text-indigo-400" />
+                  <CheckSquare className="w-3.5 h-3.5 text-violet-400" />
                 ) : (
                   <Square className="w-3.5 h-3.5 text-slate-600" />
                 )}
@@ -273,7 +273,7 @@ export const GenerationConfigSection: React.FC<GenerationConfigSectionProps> = (
             value={depth}
             onChange={(e) => onDepthChange(e.target.value as any)}
             disabled={isGenerating}
-            className="w-full px-2.5 py-1.5 rounded bg-[#020617] border border-slate-700 text-xs font-mono text-slate-200 focus:outline-none focus:border-indigo-500 cursor-pointer"
+            className="w-full px-2.5 py-1.5 rounded bg-[#020617] border border-slate-700 text-xs font-mono text-slate-200 focus:outline-none focus:border-violet-500 cursor-pointer"
           >
             <option value="SMOKE">Smoke (Critical P0 Scenarios)</option>
             <option value="STANDARD">Standard (Core Acceptance & Edge)</option>
@@ -292,19 +292,19 @@ export const GenerationConfigSection: React.FC<GenerationConfigSectionProps> = (
       )}
 
       {/* Primary CTA Area with Visual Pipeline Communication */}
-      <div className="p-4 rounded-lg bg-gradient-to-r from-[#020617] via-[#0B1120] to-[#020617] border border-indigo-900/60 shadow-lg flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div className="p-4 rounded-lg bg-gradient-to-r from-[#020617] via-[#0B1120] to-[#020617] border border-violet-900/60 shadow-lg flex flex-col md:flex-row md:items-center justify-between gap-4">
         {/* Pipeline Flow Visualization: Configuration+Skills -> AI Model Router -> Validated Test Cases */}
         <div className="flex items-center gap-2 text-xs font-mono text-slate-300">
           <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#020617] border border-slate-800">
-            <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
-            <span className="font-semibold text-cyan-300">Configuration + Skills</span>
+            <span className="w-1.5 h-1.5 rounded-full bg-yellow-400" />
+            <span className="font-semibold text-yellow-300">Configuration + Skills</span>
           </div>
-          <ArrowRight className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+          <ArrowRight className="w-3.5 h-3.5 text-violet-400 shrink-0" />
           <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#020617] border border-slate-800">
             <span className="w-1.5 h-1.5 rounded-full bg-purple-400" />
             <span className="font-semibold text-purple-300">AI Model Router</span>
           </div>
-          <ArrowRight className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+          <ArrowRight className="w-3.5 h-3.5 text-violet-400 shrink-0" />
           <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#020617] border border-slate-800">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
             <span className="font-semibold text-emerald-300">Validated Test Cases</span>
@@ -317,16 +317,16 @@ export const GenerationConfigSection: React.FC<GenerationConfigSectionProps> = (
           id="btn-generate-test-cases-primary"
           onClick={handleGenerateClick}
           disabled={isGenerating}
-          className="flex items-center justify-center gap-2 px-6 py-2.5 rounded-md bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-900/60 text-white font-bold text-xs font-mono shadow-md shadow-indigo-950/80 cursor-pointer disabled:cursor-not-allowed transition-all shrink-0"
+          className="flex items-center justify-center gap-2 px-6 py-2.5 rounded-md bg-violet-600 hover:bg-violet-500 disabled:bg-violet-900/60 text-white font-bold text-xs font-mono shadow-md shadow-violet-950/80 cursor-pointer disabled:cursor-not-allowed transition-all shrink-0"
         >
           {isGenerating ? (
             <>
-              <RefreshCw className="w-4 h-4 animate-spin text-cyan-300" />
+              <RefreshCw className="w-4 h-4 animate-spin text-yellow-300" />
               <span>Generating ({generationState})...</span>
             </>
           ) : (
             <>
-              <Sparkles className="w-4 h-4 fill-current text-cyan-300" />
+              <Sparkles className="w-4 h-4 fill-current text-yellow-300" />
               <span>Generate Test Cases</span>
             </>
           )}

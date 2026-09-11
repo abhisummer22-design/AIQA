@@ -225,7 +225,7 @@ export const RBACTestingPage: React.FC = () => {
             id="btn-rbac-refresh"
             onClick={() => void load()}
             disabled={loading}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#020617] border border-slate-700 hover:border-indigo-600 text-slate-300 hover:text-indigo-300 font-mono text-xs font-semibold cursor-pointer transition-colors disabled:opacity-50"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#020617] border border-slate-700 hover:border-violet-600 text-slate-300 hover:text-violet-300 font-mono text-xs font-semibold cursor-pointer transition-colors disabled:opacity-50"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
             Refresh
@@ -251,7 +251,7 @@ export const RBACTestingPage: React.FC = () => {
               })
             ) : !me ? (
               <div className="flex items-center gap-2 text-xs font-mono text-slate-400 py-2">
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" /> Loading real identity…
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-violet-400" /> Loading real identity…
               </div>
             ) : (
               <div className="space-y-3">
@@ -304,7 +304,7 @@ export const RBACTestingPage: React.FC = () => {
           {/* --------------------------------------------- key inventory */}
           <PanelCard
             icon={KeyRound}
-            iconClassName="text-indigo-400"
+            iconClassName="text-violet-400"
             title="API Key Inventory"
             subtitle="Every real key, with its real role and project scope"
             headerRight={keys ? <Pill label={`${keys.length} keys`} /> : undefined}
@@ -332,7 +332,7 @@ export const RBACTestingPage: React.FC = () => {
               )
             ) : !keys ? (
               <div className="flex items-center gap-2 text-xs font-mono text-slate-400 py-2">
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" /> Loading real keys…
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-violet-400" /> Loading real keys…
               </div>
             ) : keys.length === 0 ? (
               <p className="text-[11px] text-slate-400">No API keys exist.</p>
@@ -388,7 +388,7 @@ export const RBACTestingPage: React.FC = () => {
               })
             ) : !denials ? (
               <div className="flex items-center gap-2 text-xs font-mono text-slate-400 py-2">
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" /> Loading real audit records…
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-violet-400" /> Loading real audit records…
               </div>
             ) : denials.length === 0 ? (
               <p className="text-[11px] text-slate-400">
@@ -415,7 +415,7 @@ export const RBACTestingPage: React.FC = () => {
             <button
               type="button"
               onClick={() => navigate('/audit')}
-              className="text-[10px] font-mono text-indigo-400 hover:text-indigo-300 cursor-pointer"
+              className="text-[10px] font-mono text-violet-400 hover:text-violet-300 cursor-pointer"
             >
               Open full Audit Trail →
             </button>

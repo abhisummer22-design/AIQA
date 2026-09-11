@@ -30,7 +30,7 @@ export const ProjectExecutionGraph: React.FC<ProjectExecutionGraphProps> = ({
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-800/80">
         <div className="flex items-center gap-2">
-          <Activity className="w-3.5 h-3.5 text-cyan-400" />
+          <Activity className="w-3.5 h-3.5 text-yellow-400" />
           <h3 className="text-xs font-bold text-slate-100 font-mono uppercase tracking-wider">
             Execution Activity
           </h3>
@@ -41,8 +41,8 @@ export const ProjectExecutionGraph: React.FC<ProjectExecutionGraphProps> = ({
             data this panel has no way to obtain. */}
         {hasData && (
         <div className="flex items-center gap-3 text-[10px] font-mono">
-          <div className="flex items-center gap-1 text-cyan-400">
-            <span className="w-2 h-0.5 bg-cyan-400" />
+          <div className="flex items-center gap-1 text-yellow-400">
+            <span className="w-2 h-0.5 bg-yellow-400" />
             <span>Total Executed</span>
           </div>
           <div className="flex items-center gap-1 text-emerald-400">
@@ -69,8 +69,8 @@ export const ProjectExecutionGraph: React.FC<ProjectExecutionGraphProps> = ({
               <AreaChart data={timelineData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                 <defs>
                   <linearGradient id="colorExecuted" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#06b6d4" stopOpacity={0.25} />
-                    <stop offset="95%" stopColor="#06b6d4" stopOpacity={0.0} />
+                    <stop offset="5%" stopColor="#eab308" stopOpacity={0.25} />
+                    <stop offset="95%" stopColor="#eab308" stopOpacity={0.0} />
                   </linearGradient>
                   <linearGradient id="colorPassed" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="#10b981" stopOpacity={0.2} />
@@ -105,7 +105,7 @@ export const ProjectExecutionGraph: React.FC<ProjectExecutionGraphProps> = ({
                           <div className="text-[10px] text-slate-400 pb-1 border-b border-slate-800">
                             Time Window: <strong className="text-slate-200">{label}</strong>
                           </div>
-                          <div className="flex justify-between gap-4 text-cyan-300">
+                          <div className="flex justify-between gap-4 text-yellow-300">
                             <span>Executed:</span>
                             <span className="font-bold">{data.testsExecuted}</span>
                           </div>
@@ -130,7 +130,7 @@ export const ProjectExecutionGraph: React.FC<ProjectExecutionGraphProps> = ({
                 <Area
                   type="monotone"
                   dataKey="testsExecuted"
-                  stroke="#06b6d4"
+                  stroke="#eab308"
                   strokeWidth={2}
                   fillOpacity={1}
                   fill="url(#colorExecuted)"
