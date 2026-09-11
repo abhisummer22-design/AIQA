@@ -8,7 +8,7 @@
 //! broadcaster was called directly the way production code never does.
 
 use crate::ai_router::test_support::{
-    healthy_model, healthy_provider, FakeDiscovery, FakeExecutor,
+    healthy_model, healthy_provider, FakeDiscovery, FakeEmbedder, FakeExecutor,
 };
 use crate::ai_router::{AiExecutor, AiInfrastructure, CapabilityLevel};
 use crate::domain::RunEvent;
@@ -52,7 +52,14 @@ async fn test_state() -> (AppState, tempfile::TempDir) {
         executors,
     ));
     (
-        AppState::new(Arc::new(registry), store, policy, evidence, ai_infra),
+        AppState::new(
+            Arc::new(registry),
+            store,
+            policy,
+            evidence,
+            ai_infra,
+            Arc::new(FakeEmbedder::unconfigured()),
+        ),
         dir,
     )
 }

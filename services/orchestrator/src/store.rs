@@ -106,6 +106,18 @@ fn test_case_from_row(r: sqlx::sqlite::SqliteRow) -> Result<TestCaseRow> {
     })
 }
 
+/// Vector Store v1. `test_case_id` here is trusted to be well-formed (this
+/// process is the only writer, via `upsert_test_case_embedding`'s own
+/// `Uuid::to_string()`) — a real parse failure is a genuine data-integrity
+/// problem worth surfacing as an error, unlike `test_case_from_row`'s own
+/// looser `.unwrap_or_default()` on `id` above.
+fn test_case_embedding_from_row(r: sqlx::sqlite::SqliteRow) -> Result<TestCaseEmbeddingRow> {
+    Ok(TestCaseEmbeddingRow {
+        test_case_id: Uuid::parse_str(&r.get::<String, _>("test_case_id"))?,
+        embedding: serde_json::from_str(&r.get::<String, _>("embedding"))?,
+    })
+}
+
 fn test_plan_from_row(r: sqlx::sqlite::SqliteRow) -> Result<TestPlanRow> {
     Ok(TestPlanRow {
         id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap_or_default(),
@@ -1303,12 +1315,93 @@ impl Store {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Transactional (Vector Store v1 added a second real row this must
+    /// also clean up — same `self.pool.begin()` pattern `delete_project`
+    /// already uses for its own multi-table delete, not a bare
+    /// single-statement `DELETE` anymore): a test case's own
+    /// `test_case_embeddings` row (if any — most cases never reach
+    /// APPROVED and so never had one) is deleted first, then the case
+    /// itself. No FK/`ON DELETE CASCADE` exists between the two tables
+    /// (see `0014_test_case_embeddings.sql`'s own comment for why), so
+    /// this explicit two-step delete is the one place that would
+    /// otherwise silently orphan an embedding row forever.
     pub async fn delete_test_case(&self, id: Uuid) -> Result<bool> {
-        let result = sqlx::query("DELETE FROM test_cases WHERE id = ?")
-            .bind(id.to_string())
-            .execute(&self.pool)
+        let mut tx = self.pool.begin().await?;
+        let id_str = id.to_string();
+        sqlx::query("DELETE FROM test_case_embeddings WHERE test_case_id = ?")
+            .bind(&id_str)
+            .execute(&mut *tx)
             .await?;
+        let result = sqlx::query("DELETE FROM test_cases WHERE id = ?")
+            .bind(&id_str)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
         Ok(result.rows_affected() > 0)
+    }
+
+    // ------------------------------------------- test case embeddings (RAG v1)
+
+    /// Real `(re)INSERT OR REPLACE` — a case embedded once on approval and
+    /// then edited while still approved gets a fresh row here each time
+    /// (`api.rs::embed_approved_test_case`'s own doc comment), never a
+    /// second stale one under the same `test_case_id` (the real `PRIMARY
+    /// KEY`).
+    pub async fn upsert_test_case_embedding(
+        &self,
+        test_case_id: Uuid,
+        project_id: &str,
+        model: &str,
+        dimensions: u32,
+        embedding: &[f32],
+    ) -> Result<()> {
+        let now = now_rfc3339();
+        sqlx::query(
+            "INSERT INTO test_case_embeddings (test_case_id, project_id, model, dimensions, embedding, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(test_case_id) DO UPDATE SET
+                project_id = excluded.project_id,
+                model = excluded.model,
+                dimensions = excluded.dimensions,
+                embedding = excluded.embedding,
+                updated_at = excluded.updated_at",
+        )
+        .bind(test_case_id.to_string())
+        .bind(project_id)
+        .bind(model)
+        .bind(dimensions as i64)
+        .bind(serde_json::to_string(embedding)?)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Every real embedded case in one project — the real candidate pool
+    /// `ai_generation::rank_similar_test_cases` brute-force-scores against
+    /// a generation request's own query embedding. Unordered (ranking is
+    /// the caller's job, not this read's).
+    pub async fn list_test_case_embeddings(&self, project_id: &str) -> Result<Vec<TestCaseEmbeddingRow>> {
+        let rows = sqlx::query(
+            "SELECT test_case_id, embedding FROM test_case_embeddings WHERE project_id = ?",
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(test_case_embedding_from_row).collect()
+    }
+
+    /// Real count for `get_neural_pipeline`'s "Vector Store" stage metric —
+    /// how many of this project's test cases genuinely have a real
+    /// embedding right now, not a claim about the project's total case
+    /// count.
+    pub async fn count_test_case_embeddings(&self, project_id: &str) -> Result<i64> {
+        let row = sqlx::query("SELECT COUNT(*) as c FROM test_case_embeddings WHERE project_id = ?")
+            .bind(project_id)
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(row.get::<i64, _>("c"))
     }
 
     /// Phase 5 (Output maturity) — the one place a case's suite membership
@@ -2726,6 +2819,18 @@ pub struct TestCaseRow {
     /// Phase 5 (Output maturity) — `None` for every case that predates this
     /// column, and for any case deliberately left outside a suite.
     pub suite_id: Option<Uuid>,
+}
+
+/// Vector Store v1 (`0014_test_case_embeddings.sql`'s own comment). Just
+/// the two fields `ai_generation::rank_similar_test_cases`'s brute-force
+/// cosine-similarity scoring actually needs — `model`/`dimensions`/
+/// timestamps live in the table but have no real reader yet, so they are
+/// not carried into this struct (same "no field beyond what a real reader
+/// needs" discipline `TestCaseRow`'s own doc comment states).
+#[derive(Debug, Clone)]
+pub struct TestCaseEmbeddingRow {
+    pub test_case_id: Uuid,
+    pub embedding: Vec<f32>,
 }
 
 /// Phase 5 (Output maturity). `suite_count` is real, computed at query

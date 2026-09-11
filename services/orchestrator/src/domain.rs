@@ -345,7 +345,7 @@ impl TestCaseStatus {
 /// real contract type in this codebase (`RunSummary`, `TestIntelRow`, ...) —
 /// not the legacy local-only frontend `GeneratedTestCase` type's camelCase,
 /// which this real entity is not a serialization mirror of.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TestStep {
     pub step_number: i64,
     pub action: String,

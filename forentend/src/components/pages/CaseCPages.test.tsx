@@ -319,8 +319,10 @@ const ORCH_STATE = {
 };
 
 /** Real-shaped `GET /api/v1/projects/:id/pipeline` body, matching
- *  `api.rs::NeuralPipelineResponse` — including the genuinely unavailable
- *  stages the backend reports with their real reasons. */
+ *  `api.rs::NeuralPipelineResponse`. Re-planning/Vector Store/RAG Retrieval
+ *  are real as of this feature (`api.rs::get_neural_pipeline`'s own
+ *  `replanning`/`vector`/`rag` stages) — `available: true` with the real
+ *  backend backing text, not the earlier "Not implemented" placeholders. */
 const PIPELINE = {
   stages: [
     { id: 'brain', label: 'Model Router', backing: 'ai_router.rs', available: true, metric: null, metric_label: null },
@@ -330,9 +332,9 @@ const PIPELINE = {
     { id: 'observation', label: 'Observation', backing: 'log_bus.rs', available: true, metric: null, metric_label: null },
     { id: 'memory', label: 'Quality Graph', backing: 'quality_nodes + quality_relations', available: true, metric: 6, metric_label: 'nodes' },
     { id: 'goal', label: 'Goal State', backing: 'engine.rs terminal state', available: true, metric: 2, metric_label: 'completed runs' },
-    { id: 'replanning', label: 'Re-planning', backing: 'Not implemented. Nothing re-plans a failed run.', available: false, metric: null, metric_label: null },
-    { id: 'vector', label: 'Vector Store', backing: 'Not implemented. No embedding endpoint and no vector database exist.', available: false, metric: null, metric_label: null },
-    { id: 'rag', label: 'RAG Retrieval', backing: 'Not implemented. Nothing is retrieved.', available: false, metric: null, metric_label: null },
+    { id: 'replanning', label: 'Re-planning', backing: "retry-failed — retries a finished run's real INFRA_ERROR/TIMEOUT tasks only, never a genuine FAILED test. A human triggers it, not an autonomous re-planner.", available: true, metric: null, metric_label: null },
+    { id: 'vector', label: 'Vector Store', backing: 'test_case_embeddings — one real Gemini embedding per APPROVED test case, brute-force cosine similarity at retrieval time.', available: true, metric: 3, metric_label: 'cases embedded' },
+    { id: 'rag', label: 'RAG Retrieval', backing: "Every generation request embeds its own requirement text and retrieves this project's most similar already-APPROVED test cases as grounding examples.", available: true, metric: null, metric_label: null },
   ],
   graph_nodes: 6,
   graph_relations: 0,
@@ -532,23 +534,40 @@ describe('AIQA Orchestrator — Neural Pipeline', () => {
     expect(within(goal).getByText('2')).toBeTruthy();
   });
 
-  it("reports vector store and RAG as NOT IMPLEMENTED with the backend's real reason", async () => {
+  it('reports vector store and RAG as real, working supporting capabilities — never "not implemented"', async () => {
     await openWithProject();
 
     const vector = document.getElementById('pipeline-stage-vector')!;
     const rag = document.getElementById('pipeline-stage-rag')!;
-    expect(within(vector).getByText('not implemented')).toBeTruthy();
-    expect(within(rag).getByText('not implemented')).toBeTruthy();
-    // The real reason is surfaced, not just a generic label.
-    expect(screen.getByText(/No embedding endpoint and no vector database exist/)).toBeTruthy();
-    expect(screen.getByText(/Nothing is retrieved/)).toBeTruthy();
+    expect(within(vector).queryByText('not implemented')).toBeNull();
+    expect(within(rag).queryByText('not implemented')).toBeNull();
+    // They render in the "Supporting capabilities" section (real, working,
+    // just not a step of the strict sequential loop), never in "Not part
+    // of this pipeline".
+    expect(screen.getByText('Supporting capabilities')).toBeTruthy();
+    expect(screen.queryByText('Not part of this pipeline')).toBeNull();
+    // The real backend backing text is still disclosed, via the node's
+    // own tooltip.
+    expect(vector.getAttribute('title')).toContain('test_case_embeddings');
+    expect(rag.getAttribute('title')).toContain('retrieves');
+    // Vector Store's real metric (how many cases are actually embedded).
+    expect(within(vector).getByText('3')).toBeTruthy();
+    expect(within(vector).getByText('cases embedded')).toBeTruthy();
   });
 
-  it('reports re-planning as not implemented rather than drawing a closed agent loop', async () => {
+  it('reports re-planning as a real, working supporting capability rather than a closed agent loop', async () => {
     await openWithProject();
 
-    expect(within(document.getElementById('pipeline-stage-replanning')!).getByText('not implemented')).toBeTruthy();
-    expect(screen.getByText(/Nothing re-plans a failed run/)).toBeTruthy();
+    const replanning = document.getElementById('pipeline-stage-replanning')!;
+    expect(within(replanning).queryByText('not implemented')).toBeNull();
+    expect(replanning.getAttribute('title')).toContain('retry-failed');
+  });
+
+  it('omits "Not part of this pipeline" entirely once nothing genuinely remains unavailable', async () => {
+    await openWithProject();
+    // Every real stage in this fixture is `available: true` — the section
+    // that discloses gaps must not render an empty, pointless heading.
+    expect(screen.queryByText('Not part of this pipeline')).toBeNull();
   });
 
   it('shows IDLE when no task is executing — the animation never implies activity that is not happening', async () => {

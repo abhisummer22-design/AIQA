@@ -843,6 +843,131 @@ async fn set_test_case_suite_reassigns_and_clears() {
     );
 }
 
+// --------------------------------------- Vector Store v1 (test_case_embeddings)
+
+#[tokio::test]
+async fn test_case_embedding_upsert_and_list_round_trip() {
+    let (store, _dir) = temp_store().await;
+    let case_id = store
+        .insert_test_case("proj-1", &minimal_case("Login case", None), None)
+        .await
+        .expect("insert case");
+
+    store
+        .upsert_test_case_embedding(case_id, "proj-1", "gemini-embedding-001", 3, &[0.1, 0.2, 0.3])
+        .await
+        .expect("upsert embedding");
+
+    let rows = store
+        .list_test_case_embeddings("proj-1")
+        .await
+        .expect("list embeddings");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].test_case_id, case_id);
+    assert_eq!(rows[0].embedding, vec![0.1, 0.2, 0.3]);
+}
+
+#[tokio::test]
+async fn upsert_test_case_embedding_replaces_not_duplicates() {
+    let (store, _dir) = temp_store().await;
+    let case_id = store
+        .insert_test_case("proj-1", &minimal_case("Login case", None), None)
+        .await
+        .expect("insert case");
+
+    store
+        .upsert_test_case_embedding(case_id, "proj-1", "gemini-embedding-001", 3, &[0.1, 0.2, 0.3])
+        .await
+        .expect("first upsert");
+    // Real re-embed after an edit (`api.rs::embed_approved_test_case`'s own
+    // trigger) — same `test_case_id`, a genuinely different real vector.
+    store
+        .upsert_test_case_embedding(case_id, "proj-1", "gemini-embedding-001", 3, &[0.9, 0.8, 0.7])
+        .await
+        .expect("second upsert");
+
+    let rows = store
+        .list_test_case_embeddings("proj-1")
+        .await
+        .expect("list embeddings");
+    assert_eq!(
+        rows.len(),
+        1,
+        "a second upsert for the same test case must replace, never add a second row"
+    );
+    assert_eq!(
+        rows[0].embedding,
+        vec![0.9, 0.8, 0.7],
+        "the stored vector must be the latest real one, not the stale first one"
+    );
+}
+
+#[tokio::test]
+async fn delete_test_case_also_deletes_its_embedding() {
+    let (store, _dir) = temp_store().await;
+    let case_id = store
+        .insert_test_case("proj-1", &minimal_case("Login case", None), None)
+        .await
+        .expect("insert case");
+    store
+        .upsert_test_case_embedding(case_id, "proj-1", "gemini-embedding-001", 3, &[0.1, 0.2, 0.3])
+        .await
+        .expect("upsert embedding");
+    assert_eq!(store.count_test_case_embeddings("proj-1").await.unwrap(), 1);
+
+    let deleted = store.delete_test_case(case_id).await.expect("delete");
+    assert!(deleted);
+
+    assert_eq!(
+        store.count_test_case_embeddings("proj-1").await.unwrap(),
+        0,
+        "deleting the test case must also delete its embedding row, never leave it orphaned"
+    );
+    assert!(store
+        .list_test_case_embeddings("proj-1")
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn count_test_case_embeddings_is_scoped_per_real_project() {
+    let (store, _dir) = temp_store().await;
+    let case_a = store
+        .insert_test_case("proj-a", &minimal_case("Case A", None), None)
+        .await
+        .expect("insert case a");
+    let case_b1 = store
+        .insert_test_case("proj-b", &minimal_case("Case B1", None), None)
+        .await
+        .expect("insert case b1");
+    let case_b2 = store
+        .insert_test_case("proj-b", &minimal_case("Case B2", None), None)
+        .await
+        .expect("insert case b2");
+
+    store
+        .upsert_test_case_embedding(case_a, "proj-a", "gemini-embedding-001", 3, &[0.1, 0.0, 0.0])
+        .await
+        .expect("embed a");
+    store
+        .upsert_test_case_embedding(case_b1, "proj-b", "gemini-embedding-001", 3, &[0.2, 0.0, 0.0])
+        .await
+        .expect("embed b1");
+    store
+        .upsert_test_case_embedding(case_b2, "proj-b", "gemini-embedding-001", 3, &[0.3, 0.0, 0.0])
+        .await
+        .expect("embed b2");
+
+    assert_eq!(store.count_test_case_embeddings("proj-a").await.unwrap(), 1);
+    assert_eq!(store.count_test_case_embeddings("proj-b").await.unwrap(), 2);
+    assert_eq!(
+        store.count_test_case_embeddings("proj-c").await.unwrap(),
+        0,
+        "a project with no embedded cases at all must honestly report 0, not error"
+    );
+}
+
 #[tokio::test]
 async fn test_plan_update_is_a_genuine_partial_update_including_status() {
     let (store, _dir) = temp_store().await;

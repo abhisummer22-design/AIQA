@@ -250,6 +250,23 @@ pub struct RiskHighlight {
     pub flakiness_score: f64,
 }
 
+/// Vector Store + RAG Retrieval v1 — one real, previously-**APPROVED** test
+/// case from this same project, offered to the model as a style/structure
+/// grounding example. Selected by real cosine similarity between a real
+/// Gemini embedding of this generation request's own requirement text and
+/// this project's own stored embeddings (see [`rank_similar_test_cases`] and
+/// `store.rs::TestCaseEmbeddingRow`) — never a fabricated "similar" example,
+/// and never a case that was merely GENERATED/VALIDATED/REJECTED (only an
+/// APPROVED case is ever embedded in the first place — see
+/// `api.rs::embed_approved_test_case`'s own doc comment).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SimilarCaseExample {
+    pub title: String,
+    pub category: String,
+    pub steps: Vec<crate::domain::TestStep>,
+    pub expected_result: String,
+}
+
 /// The "self-learning" input the module doc comment above now has a real
 /// step for (`intelligence::Intelligence::load_feedback_context`): a small,
 /// bounded, real summary of this project's own past execution history,
@@ -274,6 +291,19 @@ pub struct FeedbackContext {
     /// linkage "the most valuable" feedback signal; this is that signal,
     /// reused exactly as a human already judged it, not reinterpreted here.
     pub confirmed_defect_patterns: Vec<String>,
+    /// Vector Store + RAG Retrieval v1 — this project's own most similar
+    /// already-APPROVED test cases (see [`SimilarCaseExample`]), highest
+    /// similarity first, already capped at [`MAX_SIMILAR_CASES`]. Unlike
+    /// `risky_areas`/`confirmed_defect_patterns` (populated by
+    /// `build_feedback_context` below, called from `intelligence.rs`), this
+    /// field is populated separately by `api.rs::
+    /// find_similar_approved_test_cases` — it needs this request's own real
+    /// requirement text to embed, which `build_feedback_context`'s pure,
+    /// history-only inputs (`TestIntelRow`/`BugDraftRow`) do not carry.
+    /// `Default` (empty) is the correct, honest value for a project with no
+    /// embedded cases yet, or when no embedding provider is configured —
+    /// generation proceeds exactly as it did before this field existed.
+    pub similar_cases: Vec<SimilarCaseExample>,
 }
 
 /// A risk/flakiness score below this (both are already `[0,1]` composites —
@@ -286,6 +316,17 @@ const RISK_HIGHLIGHT_THRESHOLD: f64 = 0.5;
 /// a large project's full history must never make this prompt unbounded.
 const MAX_RISK_HIGHLIGHTS: usize = 5;
 const MAX_DEFECT_PATTERNS: usize = 5;
+/// Vector Store + RAG Retrieval v1 — how many of this project's most
+/// similar already-APPROVED test cases `rank_similar_test_cases` returns,
+/// and so how many `build_feedback_block` ever renders. Same "a large real
+/// project must never make the prompt unbounded" reasoning as
+/// `MAX_RISK_HIGHLIGHTS` above; not tuned against any labeled dataset
+/// (matching that same honest disclosure).
+pub const MAX_SIMILAR_CASES: usize = 5;
+/// Caps how many of a similar case's own steps are shown — enough to
+/// convey real structure/detail level without spending unbounded prompt
+/// budget on one example's full step list.
+const MAX_SIMILAR_CASE_STEPS_SHOWN: usize = 2;
 
 /// Pure, DB-free reshaping of two already-real, already-tested `Store` reads
 /// (`list_test_intelligence`, `list_bug_drafts` — see
@@ -343,7 +384,63 @@ pub fn build_feedback_context(
     FeedbackContext {
         risky_areas,
         confirmed_defect_patterns,
+        // Populated separately by `api.rs::find_similar_approved_test_cases`
+        // — see `FeedbackContext::similar_cases`'s own doc comment for why
+        // this pure, history-only function cannot populate it itself.
+        similar_cases: Vec::new(),
     }
+}
+
+/// Real cosine similarity between two equal-length embedding vectors,
+/// `[-1.0, 1.0]` (in practice `[0.0, 1.0]` for real Gemini embeddings,
+/// which are not sign-mixed the way some other models' are). A length
+/// mismatch (only possible if `GEMINI_EMBEDDING_DIMENSIONS` changed
+/// between when two real rows were embedded — see `0014_test_case_embeddings
+/// .sql`'s own comment on why `dimensions` is stored per row) or either
+/// vector being all-zero returns `0.0` — the honest "no real basis to
+/// compare" answer, never a panic on a real, if unusual, stored row.
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return 0.0;
+    }
+    dot / (norm_a * norm_b)
+}
+
+/// Pure ranking: given a real query embedding (this generation request's
+/// own requirement text, embedded once — `api.rs::
+/// find_similar_approved_test_cases`) and a project's already-fetched
+/// embedding rows (one per real APPROVED test case — `store.rs::
+/// list_test_case_embeddings`), returns the [`MAX_SIMILAR_CASES`] most
+/// similar test case ids, highest cosine similarity first. Brute-force
+/// only — no ANN index: this codebase has no vector-search crate or SQLite
+/// extension in its dependency tree (verified before writing this feature),
+/// and a per-project candidate pool realistically never exceeds a few
+/// hundred rows, well within what a plain `O(n)` scan handles in
+/// milliseconds. Pure and DB-free so it is unit-testable without a
+/// database — same "real logic lives in a pure function, the DB read stays
+/// a thin caller" split `build_feedback_context` above already established.
+pub fn rank_similar_test_cases(
+    query_embedding: &[f32],
+    candidates: &[crate::store::TestCaseEmbeddingRow],
+) -> Vec<uuid::Uuid> {
+    let mut scored: Vec<(uuid::Uuid, f32)> = candidates
+        .iter()
+        .map(|c| {
+            (
+                c.test_case_id,
+                cosine_similarity(query_embedding, &c.embedding),
+            )
+        })
+        .collect();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(MAX_SIMILAR_CASES);
+    scored.into_iter().map(|(id, _)| id).collect()
 }
 
 // ------------------------------------------------------------ wave partitioning
@@ -429,7 +526,10 @@ pub fn partition_skills_into_waves(
 /// EVIDENCE RULES in `build_prompt` below — this section deliberately never
 /// introduces a second, looser evidence path.
 fn build_feedback_block(feedback: &FeedbackContext) -> String {
-    if feedback.risky_areas.is_empty() && feedback.confirmed_defect_patterns.is_empty() {
+    if feedback.risky_areas.is_empty()
+        && feedback.confirmed_defect_patterns.is_empty()
+        && feedback.similar_cases.is_empty()
+    {
         return String::new();
     }
     let mut block = String::from(
@@ -457,6 +557,30 @@ fn build_feedback_block(feedback: &FeedbackContext) -> String {
         block.push_str("- Human-confirmed recurring defect patterns from real past runs: ");
         block.push_str(&feedback.confirmed_defect_patterns.join("; "));
         block.push('\n');
+    }
+    if !feedback.similar_cases.is_empty() {
+        block.push_str(
+            "- This project's own similar, already-APPROVED past test cases (style/structure \
+             reference only — do NOT repeat one of these as a new case; still generate genuinely \
+             new coverage for the requirement below):\n",
+        );
+        for c in &feedback.similar_cases {
+            let steps_preview: Vec<String> = c
+                .steps
+                .iter()
+                .take(MAX_SIMILAR_CASE_STEPS_SHOWN)
+                .map(|s| format!("{} -> {}", s.action, s.expected_result))
+                .collect();
+            let steps_text = if steps_preview.is_empty() {
+                "(no steps)".to_string()
+            } else {
+                steps_preview.join("; ")
+            };
+            block.push_str(&format!(
+                "  - \"{}\" ({}): {steps_text}\n",
+                c.title, c.category
+            ));
+        }
     }
     block.push('\n');
     block
@@ -1660,6 +1784,7 @@ mod tests {
                 flakiness_score: 0.1,
             }],
             confirmed_defect_patterns: vec!["Recurring checkout crash".to_string()],
+            ..Default::default()
         };
         let block = build_feedback_block(&ctx);
         assert!(block.contains("Checkout Flow"));
@@ -1670,6 +1795,123 @@ mod tests {
             "the block must point back at the evidence rules, never introduce a looser path: {block}"
         );
         assert!(block.to_lowercase().contains("context only"));
+    }
+
+    // ------------------------------------------- Vector Store + RAG v1
+
+    fn embedding_row(id: uuid::Uuid, vector: Vec<f32>) -> crate::store::TestCaseEmbeddingRow {
+        crate::store::TestCaseEmbeddingRow {
+            test_case_id: id,
+            embedding: vector,
+        }
+    }
+
+    #[test]
+    fn rank_similar_test_cases_orders_by_real_cosine_similarity_highest_first() {
+        let query = vec![1.0, 0.0, 0.0];
+        let identical_id = uuid::Uuid::new_v4();
+        let orthogonal_id = uuid::Uuid::new_v4();
+        let opposite_id = uuid::Uuid::new_v4();
+        let candidates = vec![
+            // Deliberately NOT inserted in similarity order, so a pass here
+            // proves real sorting, not incidental input order.
+            embedding_row(opposite_id, vec![-1.0, 0.0, 0.0]),
+            embedding_row(orthogonal_id, vec![0.0, 1.0, 0.0]),
+            embedding_row(identical_id, vec![1.0, 0.0, 0.0]),
+        ];
+        let ranked = rank_similar_test_cases(&query, &candidates);
+        assert_eq!(
+            ranked,
+            vec![identical_id, orthogonal_id, opposite_id],
+            "identical direction must rank highest, orthogonal next, opposite direction last"
+        );
+    }
+
+    #[test]
+    fn rank_similar_test_cases_truncates_to_max_similar_cases() {
+        let query = vec![1.0, 0.0];
+        // MAX_SIMILAR_CASES + 3 real, genuinely distinct candidates, all
+        // with positive similarity to the query.
+        let candidates: Vec<crate::store::TestCaseEmbeddingRow> = (0..MAX_SIMILAR_CASES + 3)
+            .map(|i| embedding_row(uuid::Uuid::new_v4(), vec![1.0, i as f32]))
+            .collect();
+        let ranked = rank_similar_test_cases(&query, &candidates);
+        assert_eq!(ranked.len(), MAX_SIMILAR_CASES);
+    }
+
+    #[test]
+    fn rank_similar_test_cases_treats_a_dimension_mismatch_as_zero_similarity_not_a_panic() {
+        let query = vec![1.0, 0.0, 0.0];
+        let mismatched_id = uuid::Uuid::new_v4();
+        let real_match_id = uuid::Uuid::new_v4();
+        let candidates = vec![
+            // A real, if unusual, row from before a `GEMINI_EMBEDDING_DIMENSIONS`
+            // change (see `0014_test_case_embeddings.sql`'s own comment) —
+            // must never panic, and must never outrank a real same-length match.
+            embedding_row(mismatched_id, vec![1.0, 0.0]),
+            embedding_row(real_match_id, vec![0.5, 0.0, 0.0]),
+        ];
+        let ranked = rank_similar_test_cases(&query, &candidates);
+        assert_eq!(ranked, vec![real_match_id, mismatched_id]);
+    }
+
+    #[test]
+    fn feedback_block_renders_similar_cases_with_style_reference_framing_and_preserves_evidence_rules(
+    ) {
+        let ctx = FeedbackContext {
+            similar_cases: vec![SimilarCaseExample {
+                title: "Login with valid credentials".to_string(),
+                category: "Functional".to_string(),
+                steps: vec![crate::domain::TestStep {
+                    step_number: 1,
+                    action: "Enter valid username and password".to_string(),
+                    expected_result: "User is redirected to the dashboard".to_string(),
+                }],
+                expected_result: "User is logged in".to_string(),
+            }],
+            ..Default::default()
+        };
+        let block = build_feedback_block(&ctx);
+        assert!(block.contains("Login with valid credentials"));
+        assert!(block.contains("Enter valid username and password"));
+        assert!(
+            block.to_lowercase().contains("do not repeat"),
+            "must instruct the model not to repeat a similar case as a new one: {block}"
+        );
+        assert!(
+            block.to_lowercase().contains("evidence rules"),
+            "must still point back at the evidence rules, never introduce a looser path: {block}"
+        );
+    }
+
+    #[test]
+    fn feedback_block_caps_how_many_steps_of_a_similar_case_it_shows() {
+        let many_steps: Vec<crate::domain::TestStep> = (1..=(MAX_SIMILAR_CASE_STEPS_SHOWN + 3))
+            .map(|n| crate::domain::TestStep {
+                step_number: n as i64,
+                action: format!("Step action {n}"),
+                expected_result: format!("Step result {n}"),
+            })
+            .collect();
+        let ctx = FeedbackContext {
+            similar_cases: vec![SimilarCaseExample {
+                title: "Many-step case".to_string(),
+                category: "Functional".to_string(),
+                steps: many_steps,
+                expected_result: "Done".to_string(),
+            }],
+            ..Default::default()
+        };
+        let block = build_feedback_block(&ctx);
+        for n in 1..=MAX_SIMILAR_CASE_STEPS_SHOWN {
+            assert!(block.contains(&format!("Step action {n}")));
+        }
+        for n in (MAX_SIMILAR_CASE_STEPS_SHOWN + 1)..=(MAX_SIMILAR_CASE_STEPS_SHOWN + 3) {
+            assert!(
+                !block.contains(&format!("Step action {n}")),
+                "step {n} is beyond the real cap and must not appear: {block}"
+            );
+        }
     }
 
     #[test]
@@ -1693,6 +1935,7 @@ mod tests {
                 flakiness_score: 0.1,
             }],
             confirmed_defect_patterns: vec!["Recurring checkout crash".to_string()],
+            ..Default::default()
         };
         let with_feedback = build_prompt("Users can log in.", &[], &ctx, &[], None);
         let without_feedback = build_prompt(
