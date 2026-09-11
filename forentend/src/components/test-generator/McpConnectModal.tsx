@@ -88,7 +88,7 @@ export const McpConnectModal: React.FC<McpConnectModalProps> = ({ onClose }) => 
           <button
             type="button"
             onClick={onClose}
-            className="px-4 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white font-mono text-xs font-bold cursor-pointer"
+            className="px-4 py-1.5 rounded-md bg-violet-600 hover:bg-violet-500 text-white font-mono text-xs font-bold cursor-pointer"
           >
             Got it
           </button>

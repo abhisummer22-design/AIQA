@@ -20,7 +20,7 @@ export const ProjectStatusDonut: React.FC<ProjectStatusDonutProps> = ({ metrics,
   const rawData: ChartDataItem[] = [
     { name: 'Passed', value: metrics.passed, color: '#10b981' },
     { name: 'Failed', value: metrics.failed, color: '#f43f5e' },
-    { name: 'Running', value: metrics.running, color: '#06b6d4' },
+    { name: 'Running', value: metrics.running, color: '#eab308' },
     { name: 'Blocked', value: metrics.blocked, color: '#a855f7' },
     { name: 'Needs Review', value: metrics.needsReview, color: '#f59e0b' },
     { name: 'Skipped', value: metrics.skipped, color: '#64748b' },
@@ -39,7 +39,7 @@ export const ProjectStatusDonut: React.FC<ProjectStatusDonutProps> = ({ metrics,
       {/* Header */}
       <div className="flex items-center justify-between pb-2 border-b border-slate-800/80">
         <div className="flex items-center gap-2">
-          <Layers className="w-3.5 h-3.5 text-indigo-400" />
+          <Layers className="w-3.5 h-3.5 text-violet-400" />
           <h3 className="text-xs font-bold text-slate-100 font-mono uppercase tracking-wider">
             Test Status Distribution
           </h3>
@@ -107,7 +107,7 @@ export const ProjectStatusDonut: React.FC<ProjectStatusDonutProps> = ({ metrics,
               <span className="text-[9px] uppercase font-mono font-semibold text-slate-400 tracking-wider">
                 Executed Tasks
               </span>
-              <span className="text-[8px] font-sans text-indigo-400 font-medium truncate max-w-[90px]">
+              <span className="text-[8px] font-sans text-violet-400 font-medium truncate max-w-[90px]">
                 {projectName}
               </span>
             </div>

@@ -155,7 +155,7 @@ export const ProjectSelector: React.FC = () => {
         className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#020617] hover:bg-slate-900 border border-slate-800 text-xs text-slate-200 transition-colors cursor-pointer max-w-[220px]"
       >
         {loading ? (
-          <Loader2 className="w-3.5 h-3.5 text-indigo-400 animate-spin shrink-0" />
+          <Loader2 className="w-3.5 h-3.5 text-violet-400 animate-spin shrink-0" />
         ) : error ? (
           <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
         ) : (
@@ -218,7 +218,7 @@ export const ProjectSelector: React.FC = () => {
                   }}
                   disabled={createSubmitting}
                   placeholder="Project name"
-                  className="w-full px-2 py-1.5 rounded-md bg-[#020617] border border-slate-700 text-slate-200 text-xs placeholder:text-slate-600 focus:outline-none focus:border-indigo-600 disabled:opacity-60"
+                  className="w-full px-2 py-1.5 rounded-md bg-[#020617] border border-slate-700 text-slate-200 text-xs placeholder:text-slate-600 focus:outline-none focus:border-violet-600 disabled:opacity-60"
                 />
                 {createNameError && <p className="mt-1 text-[11px] text-rose-400">{createNameError}</p>}
               </div>
@@ -234,7 +234,7 @@ export const ProjectSelector: React.FC = () => {
                   disabled={createSubmitting}
                   rows={2}
                   placeholder="What is this project for?"
-                  className="w-full px-2 py-1.5 rounded-md bg-[#020617] border border-slate-700 text-slate-200 text-xs placeholder:text-slate-600 resize-none focus:outline-none focus:border-indigo-600 disabled:opacity-60"
+                  className="w-full px-2 py-1.5 rounded-md bg-[#020617] border border-slate-700 text-slate-200 text-xs placeholder:text-slate-600 resize-none focus:outline-none focus:border-violet-600 disabled:opacity-60"
                 />
               </div>
 
@@ -257,7 +257,7 @@ export const ProjectSelector: React.FC = () => {
                   id="create-project-submit-button"
                   type="submit"
                   disabled={createSubmitting}
-                  className="flex items-center gap-1.5 px-3 py-1 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-semibold transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+                  className="flex items-center gap-1.5 px-3 py-1 rounded-md bg-violet-600 hover:bg-violet-500 text-white text-[11px] font-semibold transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   {createSubmitting && <Loader2 className="w-3 h-3 animate-spin" />}
                   {createSubmitting ? 'Creating…' : 'Create Project'}
@@ -335,7 +335,7 @@ export const ProjectSelector: React.FC = () => {
                     className="flex-1 flex items-center justify-between gap-2 text-left truncate cursor-pointer bg-transparent border-0 p-0 text-inherit font-inherit"
                   >
                     <span className="truncate">{p.name}</span>
-                    {isSelected && <Check className="w-3.5 h-3.5 text-indigo-400 shrink-0 mr-1" />}
+                    {isSelected && <Check className="w-3.5 h-3.5 text-violet-400 shrink-0 mr-1" />}
                   </button>
 
                   {auth.status === 'authenticated' && (
@@ -365,7 +365,7 @@ export const ProjectSelector: React.FC = () => {
             <button
               type="button"
               onClick={openCreateForm}
-              className="w-full flex items-center gap-2 px-2.5 py-1.5 mt-1 pt-2 border-t border-slate-800/80 rounded-md text-left text-indigo-400 hover:text-indigo-300 hover:bg-slate-800/50 transition-colors cursor-pointer"
+              className="w-full flex items-center gap-2 px-2.5 py-1.5 mt-1 pt-2 border-t border-slate-800/80 rounded-md text-left text-violet-400 hover:text-violet-300 hover:bg-slate-800/50 transition-colors cursor-pointer"
             >
               <Plus className="w-3.5 h-3.5" />
               <span className="font-medium">Create Project</span>

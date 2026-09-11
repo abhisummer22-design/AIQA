@@ -57,14 +57,14 @@ export const ApiTestingFlowRail: React.FC<ApiTestingFlowRailProps> = ({ method, 
         <div
           className={`relative w-8 h-8 rounded-full border flex items-center justify-center shrink-0 transition-all ${
             isExecuting
-              ? 'border-cyan-400 bg-cyan-950/60 shadow-[0_0_14px_2px_rgba(34,211,238,0.55)]'
+              ? 'border-yellow-400 bg-yellow-950/60 shadow-[0_0_14px_2px_rgba(250,204,21,0.55)]'
               : hasRun
-                ? 'border-cyan-700 bg-cyan-950/30 shadow-[0_0_8px_0px_rgba(34,211,238,0.25)]'
+                ? 'border-yellow-700 bg-yellow-950/30 shadow-[0_0_8px_0px_rgba(250,204,21,0.25)]'
                 : 'border-slate-700 bg-slate-900'
           }`}
         >
-          {isExecuting && <span className="absolute inset-0 rounded-full border border-cyan-400 animate-ping" />}
-          <Send className={`w-3.5 h-3.5 relative ${isExecuting ? 'text-cyan-300' : hasRun ? 'text-cyan-500' : 'text-slate-500'}`} />
+          {isExecuting && <span className="absolute inset-0 rounded-full border border-yellow-400 animate-ping" />}
+          <Send className={`w-3.5 h-3.5 relative ${isExecuting ? 'text-yellow-300' : hasRun ? 'text-yellow-500' : 'text-slate-500'}`} />
         </div>
         <h3 className="text-[10px] font-bold text-slate-100 font-mono uppercase tracking-wider">API Agent</h3>
       </div>

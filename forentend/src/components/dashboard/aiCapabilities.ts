@@ -24,7 +24,7 @@ export const CAPABILITY_ORDER: Array<{ key: keyof AiModelDefinition['capabilitie
  *  own `levelStyles` Tailwind classes already use. */
 export const CAPABILITY_LEVEL_COLOR: Record<AiCapabilityLevel | 'idle', string> = {
   STRONG: '#34d399',
-  BASIC: '#22d3ee',
+  BASIC: '#facc15',
   UNKNOWN: '#64748b',
   NONE: '#334155',
   idle: '#334155',
@@ -37,7 +37,7 @@ export const PROVIDER_STATUS_COLOR: Record<AiProviderStatus, string> = {
   AVAILABLE: '#34d399',
   DEGRADED: '#fbbf24',
   NOT_CONFIGURED: '#64748b',
-  DISCOVERING: '#818cf8',
+  DISCOVERING: '#a78bfa',
   UNAVAILABLE: '#fb7185',
   ERROR: '#fb7185',
 };

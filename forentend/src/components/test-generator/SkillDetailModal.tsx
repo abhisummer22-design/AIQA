@@ -86,8 +86,8 @@ export const SkillDetailModal: React.FC<SkillDetailModalProps> = ({ skill, onClo
   const badgeClass = isFile
     ? 'bg-amber-950/80 border-amber-700 text-amber-300'
     : isCustom
-      ? 'bg-cyan-950/80 border-cyan-700 text-cyan-300'
-      : 'bg-indigo-950/80 border-indigo-700 text-indigo-300';
+      ? 'bg-yellow-950/80 border-yellow-700 text-yellow-300'
+      : 'bg-violet-950/80 border-violet-700 text-violet-300';
   const metadataEntries = Object.entries(skill.fileSource?.metadata ?? {}).filter(([, v]) => v !== null && v !== undefined);
 
   return (
@@ -144,7 +144,7 @@ export const SkillDetailModal: React.FC<SkillDetailModalProps> = ({ skill, onClo
           )}
 
           <div className="flex items-center gap-1.5">
-            <FileText className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+            <FileText className="w-3.5 h-3.5 text-violet-400 shrink-0" />
             <h3 className="text-[11px] font-mono font-semibold text-slate-300 uppercase tracking-wider">
               Instruction sent to the model
             </h3>
@@ -152,7 +152,7 @@ export const SkillDetailModal: React.FC<SkillDetailModalProps> = ({ skill, onClo
 
           {loading ? (
             <div className="flex items-center gap-2 text-xs font-mono text-slate-400 py-4">
-              <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />
+              <Loader2 className="w-3.5 h-3.5 animate-spin text-violet-400" />
               Reading this skill from the orchestrator…
             </div>
           ) : error ? (
@@ -165,7 +165,7 @@ export const SkillDetailModal: React.FC<SkillDetailModalProps> = ({ skill, onClo
                 type="button"
                 id="btn-skill-detail-retry"
                 onClick={() => void load()}
-                className="px-2.5 py-1 rounded bg-[#020617] border border-slate-700 hover:border-indigo-600 text-slate-300 hover:text-indigo-300 font-mono text-[11px] cursor-pointer"
+                className="px-2.5 py-1 rounded bg-[#020617] border border-slate-700 hover:border-violet-600 text-slate-300 hover:text-violet-300 font-mono text-[11px] cursor-pointer"
               >
                 Retry
               </button>

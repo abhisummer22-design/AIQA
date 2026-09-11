@@ -165,8 +165,8 @@ const RUN_STATE_STYLE: Record<RunState, string> = {
   CREATED: 'text-slate-300 bg-slate-800/60 border-slate-700',
   PENDING_APPROVAL: 'text-amber-300 bg-amber-950/60 border-amber-800',
   REJECTED: 'text-rose-300 bg-rose-950/60 border-rose-800',
-  SCHEDULED: 'text-indigo-300 bg-indigo-950/60 border-indigo-800',
-  RUNNING: 'text-cyan-300 bg-cyan-950/60 border-cyan-800',
+  SCHEDULED: 'text-violet-300 bg-violet-950/60 border-violet-800',
+  RUNNING: 'text-yellow-300 bg-yellow-950/60 border-yellow-800',
   PARTIAL: 'text-amber-300 bg-amber-950/60 border-amber-800',
   COMPLETED: 'text-emerald-300 bg-emerald-950/60 border-emerald-800',
   CANCELLED: 'text-slate-300 bg-slate-800/60 border-slate-700',
@@ -179,7 +179,7 @@ const RUN_STATE_STYLE: Record<RunState, string> = {
  *  `RUN_STATE_STYLE`/`TASK_STATUS_STYLE` above, not a new visual system. */
 const REALTIME_STATE_STYLE: Record<RealtimeConnectionState, string> = {
   disconnected: 'text-slate-400 bg-slate-800/60 border-slate-700',
-  connecting: 'text-indigo-300 bg-indigo-950/60 border-indigo-800',
+  connecting: 'text-violet-300 bg-violet-950/60 border-violet-800',
   connected: 'text-emerald-300 bg-emerald-950/60 border-emerald-800',
   reconnecting: 'text-amber-300 bg-amber-950/60 border-amber-800',
   error: 'text-rose-300 bg-rose-950/60 border-rose-800',
@@ -194,7 +194,7 @@ const REALTIME_STATE_LABEL: Record<RealtimeConnectionState, string> = {
 
 const TASK_STATUS_STYLE: Record<TaskStatus, string> = {
   QUEUED: 'text-slate-300 bg-slate-800/60 border-slate-700',
-  RUNNING: 'text-cyan-300 bg-cyan-950/60 border-cyan-800',
+  RUNNING: 'text-yellow-300 bg-yellow-950/60 border-yellow-800',
   PASSED: 'text-emerald-300 bg-emerald-950/60 border-emerald-800',
   FAILED: 'text-rose-300 bg-rose-950/60 border-rose-800',
   BLOCKED: 'text-purple-300 bg-purple-950/60 border-purple-800',
@@ -658,10 +658,10 @@ export const ExecutionHubPage: React.FC = () => {
       return (
         <StateCard
           icon={Layers}
-          iconClassName="text-indigo-400"
+          iconClassName="text-violet-400"
           spin
           statusLabel="LOADING…"
-          statusClassName="text-indigo-300 bg-indigo-950/60 border-indigo-800"
+          statusClassName="text-violet-300 bg-violet-950/60 border-violet-800"
           title="Loading executions"
           description={`Fetching executions for ${selectedProject?.name ?? 'this project'}…`}
         />
@@ -684,7 +684,7 @@ export const ExecutionHubPage: React.FC = () => {
             <button
               type="button"
               onClick={() => setSelectedRunId(r.run_id)}
-              className={`w-full flex items-center gap-3 py-2.5 px-1 text-left hover:bg-slate-900/40 transition-colors cursor-pointer rounded focus:outline-none focus-visible:ring-1 focus-visible:ring-indigo-400 ${
+              className={`w-full flex items-center gap-3 py-2.5 px-1 text-left hover:bg-slate-900/40 transition-colors cursor-pointer rounded focus:outline-none focus-visible:ring-1 focus-visible:ring-violet-400 ${
                 r.run_id === selectedRunId ? 'bg-slate-800/60' : ''
               }`}
             >
@@ -710,10 +710,10 @@ export const ExecutionHubPage: React.FC = () => {
       return (
         <StateCard
           icon={Layers}
-          iconClassName="text-indigo-400"
+          iconClassName="text-violet-400"
           spin
           statusLabel="LOADING…"
-          statusClassName="text-indigo-300 bg-indigo-950/60 border-indigo-800"
+          statusClassName="text-violet-300 bg-violet-950/60 border-violet-800"
           title="Loading execution"
           description="Fetching the real execution detail…"
         />
@@ -788,7 +788,7 @@ export const ExecutionHubPage: React.FC = () => {
           </div>
           <div className="p-1.5 rounded bg-[#020617] border border-slate-800 text-center">
             <div className="text-slate-500">{formatStatusLabel('RUNNING')}</div>
-            <div className="text-cyan-400 font-bold">{detail.running}</div>
+            <div className="text-yellow-400 font-bold">{detail.running}</div>
           </div>
           <div className="p-1.5 rounded bg-[#020617] border border-slate-800 text-center">
             <div className="text-slate-500">{formatStatusLabel('PASSED')}</div>
@@ -892,7 +892,7 @@ export const ExecutionHubPage: React.FC = () => {
           value={runName}
           onChange={(e) => setRunName(e.target.value)}
           placeholder="e.g. Regression Suite — Checkout"
-          className="mt-1 w-full px-2.5 py-1.5 rounded-md bg-[#020617] border border-slate-800 text-xs text-slate-200 outline-none focus:ring-1 focus:ring-indigo-500 font-sans"
+          className="mt-1 w-full px-2.5 py-1.5 rounded-md bg-[#020617] border border-slate-800 text-xs text-slate-200 outline-none focus:ring-1 focus:ring-violet-500 font-sans"
         />
       </div>
 
@@ -902,7 +902,7 @@ export const ExecutionHubPage: React.FC = () => {
           <button
             type="button"
             onClick={addDraftTask}
-            className="flex items-center gap-1 text-[11px] text-indigo-400 hover:text-indigo-300 cursor-pointer"
+            className="flex items-center gap-1 text-[11px] text-violet-400 hover:text-violet-300 cursor-pointer"
           >
             <Plus className="w-3.5 h-3.5" />
             Add task
@@ -916,19 +916,19 @@ export const ExecutionHubPage: React.FC = () => {
               value={t.id}
               onChange={(e) => updateDraftTask(t.key, { id: e.target.value })}
               placeholder="task id"
-              className="w-28 px-2 py-1 rounded bg-[#0B1120] border border-slate-800 text-[11px] font-mono text-slate-200 outline-none focus:ring-1 focus:ring-indigo-500"
+              className="w-28 px-2 py-1 rounded bg-[#0B1120] border border-slate-800 text-[11px] font-mono text-slate-200 outline-none focus:ring-1 focus:ring-violet-500"
             />
             <input
               type="text"
               value={t.name}
               onChange={(e) => updateDraftTask(t.key, { name: e.target.value })}
               placeholder="task name"
-              className="flex-1 min-w-[120px] px-2 py-1 rounded bg-[#0B1120] border border-slate-800 text-[11px] text-slate-200 outline-none focus:ring-1 focus:ring-indigo-500"
+              className="flex-1 min-w-[120px] px-2 py-1 rounded bg-[#0B1120] border border-slate-800 text-[11px] text-slate-200 outline-none focus:ring-1 focus:ring-violet-500"
             />
             <select
               value={t.executor}
               onChange={(e) => updateDraftTask(t.key, { executor: e.target.value })}
-              className="px-2 py-1 rounded bg-[#0B1120] border border-slate-800 text-[11px] text-slate-200 outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
+              className="px-2 py-1 rounded bg-[#0B1120] border border-slate-800 text-[11px] text-slate-200 outline-none focus:ring-1 focus:ring-violet-500 cursor-pointer"
             >
               {EXECUTOR_OPTIONS.map((o) => (
                 <option key={o.value} value={o.value}>
@@ -940,7 +940,7 @@ export const ExecutionHubPage: React.FC = () => {
               <select
                 value={t.simulateOutcome}
                 onChange={(e) => updateDraftTask(t.key, { simulateOutcome: e.target.value as DraftTask['simulateOutcome'] })}
-                className="px-2 py-1 rounded bg-[#0B1120] border border-slate-800 text-[11px] text-slate-200 outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
+                className="px-2 py-1 rounded bg-[#0B1120] border border-slate-800 text-[11px] text-slate-200 outline-none focus:ring-1 focus:ring-violet-500 cursor-pointer"
               >
                 {SIMULATE_OUTCOMES.map((o) => (
                   <option key={o.value} value={o.value}>
@@ -977,7 +977,7 @@ export const ExecutionHubPage: React.FC = () => {
                       aria-pressed={selected}
                       className={`px-2 py-0.5 rounded text-[10px] font-mono cursor-pointer border transition-colors ${
                         selected
-                          ? 'bg-indigo-950/80 border-indigo-600 text-indigo-200'
+                          ? 'bg-violet-950/80 border-violet-600 text-violet-200'
                           : 'bg-[#0B1120] border-slate-800 text-slate-400 hover:border-slate-700 hover:text-slate-200'
                       }`}
                     >
@@ -1009,7 +1009,7 @@ export const ExecutionHubPage: React.FC = () => {
           min={1}
           value={concurrency}
           onChange={(e) => setConcurrency(e.target.value)}
-          className="mt-1 w-32 px-2.5 py-1.5 rounded-md bg-[#020617] border border-slate-800 text-xs text-slate-200 outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
+          className="mt-1 w-32 px-2.5 py-1.5 rounded-md bg-[#020617] border border-slate-800 text-xs text-slate-200 outline-none focus:ring-1 focus:ring-violet-500 font-mono"
         />
       </div>
 
@@ -1030,11 +1030,11 @@ export const ExecutionHubPage: React.FC = () => {
       >
         <div className="space-y-1">
           <div className="flex items-center gap-2">
-            <span className="p-1.5 rounded bg-indigo-950/80 border border-indigo-700/60 text-indigo-400">
+            <span className="p-1.5 rounded bg-violet-950/80 border border-violet-700/60 text-violet-400">
               <Play className="w-4 h-4" />
             </span>
             <h1 className="text-base font-bold text-slate-100 font-sans tracking-tight">Execution Hub</h1>
-            <span className="px-2 py-0.5 rounded bg-indigo-950/60 border border-indigo-800/60 text-[10px] font-mono text-indigo-300 uppercase">
+            <span className="px-2 py-0.5 rounded bg-violet-950/60 border border-violet-800/60 text-[10px] font-mono text-violet-300 uppercase">
               EXECUTION
             </span>
           </div>
@@ -1056,7 +1056,7 @@ export const ExecutionHubPage: React.FC = () => {
                   type="button"
                   id="execution-realtime-reconnect-button"
                   onClick={() => realtime.reconnect()}
-                  className="text-[10px] font-mono uppercase text-indigo-300 hover:text-indigo-200 underline cursor-pointer"
+                  className="text-[10px] font-mono uppercase text-violet-300 hover:text-violet-200 underline cursor-pointer"
                 >
                   Reconnect
                 </button>
@@ -1078,7 +1078,7 @@ export const ExecutionHubPage: React.FC = () => {
             id="execution-new-button"
             onClick={() => setShowCreate((v) => !v)}
             disabled={!selectedProjectId}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs shadow-sm shadow-indigo-950/60 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-violet-600 hover:bg-violet-500 text-white font-semibold text-xs shadow-sm shadow-violet-950/60 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Play className="w-3.5 h-3.5 fill-current" />
             <span>New Execution</span>

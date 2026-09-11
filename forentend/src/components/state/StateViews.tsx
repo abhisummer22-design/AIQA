@@ -126,9 +126,9 @@ export const StateCard: React.FC<StateCardProps> = ({
 // ------------------------------------------------------------- CTA button
 
 const ctaClassName =
-  'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs shadow-sm shadow-indigo-950/60 cursor-pointer transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 disabled:opacity-50 disabled:cursor-not-allowed';
+  'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-violet-600 hover:bg-violet-500 text-white font-semibold text-xs shadow-sm shadow-violet-950/60 cursor-pointer transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 disabled:opacity-50 disabled:cursor-not-allowed';
 const secondaryClassName =
-  'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#020617] hover:bg-slate-800 text-slate-200 font-medium text-xs border border-slate-700 cursor-pointer transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400';
+  'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#020617] hover:bg-slate-800 text-slate-200 font-medium text-xs border border-slate-700 cursor-pointer transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400';
 
 /** Every button rendered by this module is a real `<button type="button">`
  *  — native keyboard accessibility (Tab focus, Enter/Space activation)
@@ -197,10 +197,10 @@ const KeyPresentState: React.FC<{ maskedKey: string | null; onVerify: () => void
 const CheckingState: React.FC<{ maskedKey: string | null }> = ({ maskedKey }) => (
   <StateCard
     icon={Loader2}
-    iconClassName="text-indigo-400"
+    iconClassName="text-violet-400"
     spin
     statusLabel="VERIFYING…"
-    statusClassName="text-indigo-300 bg-indigo-950/60 border-indigo-800"
+    statusClassName="text-violet-300 bg-violet-950/60 border-violet-800"
     title="Verifying connection"
     description="Checking the configured API key with the AIQA Orchestrator…"
     maskedKey={maskedKey}

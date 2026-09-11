@@ -82,7 +82,7 @@ export const SkillsAndMcpPanel: React.FC<SkillsAndMcpPanelProps> = ({
     <div id="skills-and-mcp-panel" className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm space-y-3 h-full flex flex-col">
       <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-800/80">
         <div className="flex items-center gap-2">
-          <Sparkles className="w-4 h-4 text-cyan-400" />
+          <Sparkles className="w-4 h-4 text-yellow-400" />
           <h2 className="text-sm font-bold text-slate-100 font-sans tracking-tight">Skills & MCP</h2>
         </div>
         {allSelected ? (
@@ -101,7 +101,7 @@ export const SkillsAndMcpPanel: React.FC<SkillsAndMcpPanelProps> = ({
             id="btn-select-all-skills"
             onClick={onSelectAll}
             disabled={disabled}
-            className="text-[11px] font-mono text-indigo-400 hover:text-indigo-300 px-2.5 py-1 rounded bg-indigo-950/60 border border-indigo-800/80 cursor-pointer disabled:opacity-50 shrink-0"
+            className="text-[11px] font-mono text-violet-400 hover:text-violet-300 px-2.5 py-1 rounded bg-violet-950/60 border border-violet-800/80 cursor-pointer disabled:opacity-50 shrink-0"
           >
             Select All ({eligibleSkills.length})
           </button>
@@ -140,9 +140,9 @@ export const SkillsAndMcpPanel: React.FC<SkillsAndMcpPanelProps> = ({
                   data-active-now={isActiveNow}
                   className={`flex items-center gap-1 rounded-md transition-all duration-300 ${
                     isActiveNow
-                      ? 'bg-cyan-950/60 border border-cyan-400 shadow-[0_0_14px_2px_rgba(34,211,238,0.45)]'
+                      ? 'bg-yellow-950/60 border border-yellow-400 shadow-[0_0_14px_2px_rgba(250,204,21,0.45)]'
                       : selected
-                        ? 'bg-indigo-950/50 border border-indigo-700/70'
+                        ? 'bg-violet-950/50 border border-violet-700/70'
                         : 'bg-[#020617] border border-slate-800 hover:border-slate-700'
                   }`}
                 >
@@ -162,22 +162,22 @@ export const SkillsAndMcpPanel: React.FC<SkillsAndMcpPanelProps> = ({
                     }`}
                   >
                     {selected ? (
-                      <CheckSquare className={`w-3.5 h-3.5 shrink-0 ${isActiveNow ? 'text-cyan-300' : 'text-indigo-400'}`} />
+                      <CheckSquare className={`w-3.5 h-3.5 shrink-0 ${isActiveNow ? 'text-yellow-300' : 'text-violet-400'}`} />
                     ) : (
                       <Square className="w-3.5 h-3.5 text-slate-600 shrink-0" />
                     )}
-                    <span className={`text-xs font-sans truncate flex-1 ${isActiveNow ? 'text-cyan-100 font-semibold' : 'text-slate-200'}`}>
+                    <span className={`text-xs font-sans truncate flex-1 ${isActiveNow ? 'text-yellow-100 font-semibold' : 'text-slate-200'}`}>
                       {skill.name}
                     </span>
                     {isActiveNow && (
                       <span
                         id={`skill-active-badge-${skill.id}`}
                         title="This skill's wave is running right now"
-                        className="flex items-center gap-1 text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-cyan-950/80 border border-cyan-500 text-cyan-300 shrink-0"
+                        className="flex items-center gap-1 text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-yellow-950/80 border border-yellow-500 text-yellow-300 shrink-0"
                       >
                         <span className="relative flex h-1.5 w-1.5">
-                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
-                          <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-cyan-400"></span>
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-yellow-400 opacity-75"></span>
+                          <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-yellow-400"></span>
                         </span>
                         LIVE
                       </span>
@@ -188,7 +188,7 @@ export const SkillsAndMcpPanel: React.FC<SkillsAndMcpPanelProps> = ({
                       </span>
                     )}
                     {skill.type === 'CUSTOM' && (
-                      <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-cyan-950/80 border border-cyan-700 text-cyan-300 shrink-0">
+                      <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-yellow-950/80 border border-yellow-700 text-yellow-300 shrink-0">
                         Custom
                       </span>
                     )}
@@ -207,7 +207,7 @@ export const SkillsAndMcpPanel: React.FC<SkillsAndMcpPanelProps> = ({
                     aria-label={`View what ${skill.name} instructs`}
                     title="View this skill's real instruction"
                     onClick={() => setDetailSkill(skill)}
-                    className="p-1.5 mr-1 rounded text-slate-500 hover:text-indigo-300 hover:bg-slate-800/60 cursor-pointer shrink-0"
+                    className="p-1.5 mr-1 rounded text-slate-500 hover:text-violet-300 hover:bg-slate-800/60 cursor-pointer shrink-0"
                   >
                     <Eye className="w-3.5 h-3.5" />
                   </button>
@@ -252,7 +252,7 @@ export const SkillsAndMcpPanel: React.FC<SkillsAndMcpPanelProps> = ({
           id="btn-add-skill"
           onClick={() => setManagerOpen(true)}
           disabled={disabled}
-          className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-md bg-[#020617] hover:bg-slate-900 border border-slate-700 hover:border-indigo-600 text-slate-300 hover:text-indigo-300 font-mono text-xs font-semibold cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-md bg-[#020617] hover:bg-slate-900 border border-slate-700 hover:border-violet-600 text-slate-300 hover:text-violet-300 font-mono text-xs font-semibold cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           <Plus className="w-3.5 h-3.5" />
           <span>Add Skill</span>
@@ -262,7 +262,7 @@ export const SkillsAndMcpPanel: React.FC<SkillsAndMcpPanelProps> = ({
           id="btn-connect-mcp"
           onClick={() => setMcpOpen(true)}
           disabled={disabled}
-          className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-md bg-[#020617] hover:bg-slate-900 border border-slate-700 hover:border-cyan-600 text-slate-300 hover:text-cyan-300 font-mono text-xs font-semibold cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-md bg-[#020617] hover:bg-slate-900 border border-slate-700 hover:border-yellow-600 text-slate-300 hover:text-yellow-300 font-mono text-xs font-semibold cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           <Network className="w-3.5 h-3.5" />
           <span>Connect MCP</span>

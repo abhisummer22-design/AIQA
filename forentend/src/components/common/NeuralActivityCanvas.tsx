@@ -3,7 +3,7 @@
  * engine — a general-purpose visual primitive (`components/common/`,
  * matching `SectionHeader`/`EmptyState`), not tied to any one consumer.
  *
- * <NeuralActivityCanvas level={0.6} inputs={[...]} pulseKey={n} accent="#22d3ee" />
+ * <NeuralActivityCanvas level={0.6} inputs={[...]} pulseKey={n} accent="#facc15" />
  *
  * - level    : 0..1 overall activity
  * - inputs   : optional array of 0..1 values for the first layer (realtime)
@@ -49,7 +49,7 @@ export const NeuralActivityCanvas: React.FC<NeuralActivityCanvasProps> = ({
   level,
   inputs = null,
   pulseKey,
-  accent = '#22d3ee',
+  accent = '#facc15',
   layers,
   nodeColors = null,
   nodeLabels = null,

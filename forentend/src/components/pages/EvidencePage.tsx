@@ -383,7 +383,7 @@ export const EvidencePage: React.FC = () => {
 
   const kindIcon = (contentType: string | null): React.ReactNode => {
     const kind = previewKindFor(contentType);
-    if (kind === 'image') return <ImageIcon className="w-3.5 h-3.5 text-cyan-400" />;
+    if (kind === 'image') return <ImageIcon className="w-3.5 h-3.5 text-yellow-400" />;
     if (kind === 'json') return <FileJson className="w-3.5 h-3.5 text-amber-400" />;
     if (kind === 'text') return <FileText className="w-3.5 h-3.5 text-slate-400" />;
     return <FileQuestion className="w-3.5 h-3.5 text-slate-500" />;
@@ -450,10 +450,10 @@ export const EvidencePage: React.FC = () => {
       return (
         <StateCard
           icon={Layers}
-          iconClassName="text-indigo-400"
+          iconClassName="text-violet-400"
           spin
           statusLabel="LOADING…"
-          statusClassName="text-indigo-300 bg-indigo-950/60 border-indigo-800"
+          statusClassName="text-violet-300 bg-violet-950/60 border-violet-800"
           title="Loading executions"
           description={`Fetching executions for ${selectedProject?.name ?? 'this project'}…`}
         />
@@ -488,10 +488,10 @@ export const EvidencePage: React.FC = () => {
       return (
         <StateCard
           icon={Layers}
-          iconClassName="text-indigo-400"
+          iconClassName="text-violet-400"
           spin
           statusLabel="LOADING…"
-          statusClassName="text-indigo-300 bg-indigo-950/60 border-indigo-800"
+          statusClassName="text-violet-300 bg-violet-950/60 border-violet-800"
           title="Loading evidence"
           description={`Fetching evidence for ${selectedRun?.name ?? 'this execution'}…`}
         />
@@ -522,7 +522,7 @@ export const EvidencePage: React.FC = () => {
                 type="button"
                 onClick={() => void togglePreview(row)}
                 aria-expanded={isOpen}
-                className="w-full flex items-center gap-3 py-2.5 text-left hover:bg-slate-900/40 transition-colors cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-indigo-400 rounded"
+                className="w-full flex items-center gap-3 py-2.5 text-left hover:bg-slate-900/40 transition-colors cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-violet-400 rounded"
               >
                 {isOpen ? (
                   <ChevronDown className="w-3.5 h-3.5 text-slate-500 shrink-0" />
@@ -532,7 +532,7 @@ export const EvidencePage: React.FC = () => {
                 {kindIcon(row.content_type)}
                 <span className="font-mono text-xs font-semibold text-slate-100 shrink-0">{row.kind}</span>
                 {row.task_id && (
-                  <span className="font-mono text-[10px] text-indigo-400 truncate" title={row.task_id}>
+                  <span className="font-mono text-[10px] text-violet-400 truncate" title={row.task_id}>
                     task: {row.task_id}
                   </span>
                 )}
@@ -557,11 +557,11 @@ export const EvidencePage: React.FC = () => {
       >
         <div className="space-y-1">
           <div className="flex items-center gap-2">
-            <span className="p-1.5 rounded bg-indigo-950/80 border border-indigo-700/60 text-indigo-400">
+            <span className="p-1.5 rounded bg-violet-950/80 border border-violet-700/60 text-violet-400">
               <FileText className="w-4 h-4" />
             </span>
             <h1 className="text-base font-bold text-slate-100 font-sans tracking-tight">Evidence Viewer</h1>
-            <span className="px-2 py-0.5 rounded bg-indigo-950/60 border border-indigo-800/60 text-[10px] font-mono text-indigo-300 uppercase">
+            <span className="px-2 py-0.5 rounded bg-violet-950/60 border border-violet-800/60 text-[10px] font-mono text-violet-300 uppercase">
               EVIDENCE
             </span>
           </div>
@@ -581,7 +581,7 @@ export const EvidencePage: React.FC = () => {
             value={selectedRunId ?? ''}
             onChange={(e) => setSelectedRunId(e.target.value || null)}
             disabled={!selectedProjectId || !runs || runs.length === 0}
-            className="rounded-md border border-slate-800 bg-[#020617] hover:bg-slate-900 px-2.5 py-1.5 text-xs text-slate-300 outline-none focus:ring-1 focus:ring-indigo-500 font-mono cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed max-w-[220px]"
+            className="rounded-md border border-slate-800 bg-[#020617] hover:bg-slate-900 px-2.5 py-1.5 text-xs text-slate-300 outline-none focus:ring-1 focus:ring-violet-500 font-mono cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed max-w-[220px]"
           >
             <option value="">Select an execution…</option>
             {runs?.map((r) => (
@@ -595,7 +595,7 @@ export const EvidencePage: React.FC = () => {
             id="evidence-refresh-button"
             onClick={handleRefreshEvidence}
             disabled={!selectedProjectId || !selectedRunId || loading || refreshing}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#020617] hover:bg-slate-800 text-slate-200 font-medium text-xs border border-slate-700 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#020617] hover:bg-slate-800 text-slate-200 font-medium text-xs border border-slate-700 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
           >
             <RotateCcw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
             <span>Refresh</span>

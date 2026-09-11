@@ -109,7 +109,7 @@ export const Header: React.FC = () => {
 
   const envOptions: Array<{ id: Environment; label: string; badge: string; color: string }> = [
     { id: 'demo', label: 'DEMO', badge: 'Active', color: 'text-amber-400 border-amber-800/60 bg-amber-950/40' },
-    { id: 'uat', label: 'UAT', badge: 'v4.18', color: 'text-cyan-400 border-cyan-800/60 bg-cyan-950/40' },
+    { id: 'uat', label: 'UAT', badge: 'v4.18', color: 'text-yellow-400 border-yellow-800/60 bg-yellow-950/40' },
     { id: 'live', label: 'LIVE', badge: 'US-East', color: 'text-emerald-400 border-emerald-800/60 bg-emerald-950/40' },
   ];
 
@@ -129,9 +129,9 @@ export const Header: React.FC = () => {
         </button>
 
         <div className="flex items-center gap-2">
-          <div className="w-7 h-7 rounded-md bg-gradient-to-br from-indigo-500 to-cyan-500 p-[1px] shadow-sm shadow-indigo-950">
+          <div className="w-7 h-7 rounded-md bg-gradient-to-br from-violet-500 to-yellow-500 p-[1px] shadow-sm shadow-violet-950">
             <div className="w-full h-full bg-[#020617] rounded-[5px] flex items-center justify-center">
-              <span className="font-mono font-black text-xs text-indigo-400 tracking-tighter">AI</span>
+              <span className="font-mono font-black text-xs text-violet-400 tracking-tighter">AI</span>
             </div>
           </div>
           <div className="flex flex-col">
@@ -139,7 +139,7 @@ export const Header: React.FC = () => {
               <span className="font-bold text-xs tracking-tight text-slate-100 font-sans">
                 AIQA
               </span>
-              <span className="text-[9px] font-mono uppercase px-1.5 py-0.2 rounded bg-indigo-950/80 text-indigo-300 border border-indigo-800/60 font-semibold tracking-wider">
+              <span className="text-[9px] font-mono uppercase px-1.5 py-0.2 rounded bg-violet-950/80 text-violet-300 border border-violet-800/60 font-semibold tracking-wider">
                 Control Plane
               </span>
             </div>
@@ -188,7 +188,7 @@ export const Header: React.FC = () => {
                   <div className="flex items-center gap-2">
                     <div
                       className={`w-1.5 h-1.5 rounded-full ${
-                        currentEnvironment === env.id ? 'bg-indigo-400' : 'bg-slate-600'
+                        currentEnvironment === env.id ? 'bg-violet-400' : 'bg-slate-600'
                       }`}
                     />
                     <span>{env.label}</span>
@@ -302,7 +302,7 @@ export const Header: React.FC = () => {
         <button
           id="launch-run-header-button"
           onClick={() => navigate('/execution')}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs transition-all shadow-sm shadow-indigo-950 cursor-pointer"
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-violet-600 hover:bg-violet-500 text-white font-semibold text-xs transition-all shadow-sm shadow-violet-950 cursor-pointer"
         >
           <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
           <span className="hidden sm:inline font-sans">Launch Run</span>
@@ -319,7 +319,7 @@ export const Header: React.FC = () => {
           >
             <Bell className="w-4 h-4" />
             {recentActivity.length > 0 && (
-              <span id="notification-badge-dot" className="absolute top-1 right-1 w-2 h-2 rounded-full bg-indigo-400 ring-2 ring-[#0B1120]" />
+              <span id="notification-badge-dot" className="absolute top-1 right-1 w-2 h-2 rounded-full bg-violet-400 ring-2 ring-[#0B1120]" />
             )}
           </button>
 
@@ -345,7 +345,7 @@ export const Header: React.FC = () => {
                   {recentActivity.map((event) => (
                     <div key={event.event_id} className="p-2 rounded-md bg-[#020617] border border-slate-800">
                       <div className="flex items-center justify-between gap-2">
-                        <span className="font-mono font-medium text-[10px] uppercase text-indigo-300">
+                        <span className="font-mono font-medium text-[10px] uppercase text-violet-300">
                           {formatStatusLabel(event.type)}
                         </span>
                         <span className="text-[9px] text-slate-500 font-mono shrink-0">{formatEventTimestamp(event.timestamp)}</span>
@@ -365,7 +365,7 @@ export const Header: React.FC = () => {
 
         {/* User Identity Context */}
         <div className="flex items-center gap-1.5 pl-1 border-l border-slate-800">
-          <div className="w-6 h-6 rounded-md bg-slate-800 border border-slate-700 flex items-center justify-center text-[10px] font-semibold text-indigo-300 font-mono">
+          <div className="w-6 h-6 rounded-md bg-slate-800 border border-slate-700 flex items-center justify-center text-[10px] font-semibold text-violet-300 font-mono">
             QA
           </div>
         </div>

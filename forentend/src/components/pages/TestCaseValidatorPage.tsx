@@ -62,10 +62,10 @@ import type { TestCaseRow, TestCaseStatus } from '../../types/contract';
 
 const statusStyles: Record<TestCaseStatus, string> = {
   GENERATED: 'text-slate-300 bg-slate-800/70 border-slate-700',
-  VALIDATED: 'text-cyan-300 bg-cyan-950/70 border-cyan-800',
+  VALIDATED: 'text-yellow-300 bg-yellow-950/70 border-yellow-800',
   APPROVED: 'text-emerald-300 bg-emerald-950/70 border-emerald-800',
   REJECTED: 'text-rose-300 bg-rose-950/70 border-rose-800',
-  EXECUTED: 'text-indigo-300 bg-indigo-950/70 border-indigo-800',
+  EXECUTED: 'text-violet-300 bg-violet-950/70 border-violet-800',
 };
 
 const Pill: React.FC<{ label: string; className?: string }> = ({ label, className }) => (
@@ -88,7 +88,7 @@ const ActionButton: React.FC<{
   id?: string;
 }> = ({ label, icon: Icon, onClick, busy, disabled, tone = 'neutral', id }) => {
   const tones = {
-    primary: 'bg-indigo-600 hover:bg-indigo-500 text-white border-transparent',
+    primary: 'bg-violet-600 hover:bg-violet-500 text-white border-transparent',
     danger: 'bg-[#020617] hover:bg-rose-950/60 text-rose-300 border-rose-800/70',
     neutral: 'bg-[#020617] hover:bg-slate-800 text-slate-300 border-slate-700',
   } as const;
@@ -239,7 +239,7 @@ export const TestCaseValidatorPage: React.FC = () => {
     if (!cases) {
       return (
         <div className="rounded-lg border border-slate-800 bg-[#0B1120] p-6 flex items-center justify-center gap-2 text-slate-400 text-xs font-mono">
-          <Loader2 className="w-4 h-4 animate-spin text-indigo-400" />
+          <Loader2 className="w-4 h-4 animate-spin text-violet-400" />
           Loading real test cases…
         </div>
       );
@@ -365,7 +365,7 @@ export const TestCaseValidatorPage: React.FC = () => {
               id="btn-validator-refresh"
               onClick={() => selectedProjectId && void load(selectedProjectId)}
               disabled={!selectedProjectId || loading}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#020617] border border-slate-700 hover:border-indigo-600 text-slate-300 hover:text-indigo-300 font-mono text-xs font-semibold cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#020617] border border-slate-700 hover:border-violet-600 text-slate-300 hover:text-violet-300 font-mono text-xs font-semibold cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
               Refresh

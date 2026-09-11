@@ -83,7 +83,7 @@ const StageNode: React.FC<{
         unavailable
           ? 'border-slate-800 bg-[#020617]/60 border-dashed'
           : active
-            ? 'border-cyan-600/80 bg-cyan-950/30 shadow-[0_0_18px_-4px] shadow-cyan-500/50'
+            ? 'border-yellow-600/80 bg-yellow-950/30 shadow-[0_0_18px_-4px] shadow-yellow-500/50'
             : 'border-slate-800 bg-[#020617]'
       }`}
       style={active ? { animation: `pipelinePulse 1.6s ease-in-out ${index * 0.12}s infinite` } : undefined}
@@ -91,7 +91,7 @@ const StageNode: React.FC<{
       <div className="flex items-center gap-2 min-w-0">
         <Icon
           className={`w-4 h-4 shrink-0 ${
-            unavailable ? 'text-slate-600' : active ? 'text-cyan-300' : 'text-indigo-400'
+            unavailable ? 'text-slate-600' : active ? 'text-yellow-300' : 'text-violet-400'
           }`}
         />
         <span
@@ -105,7 +105,7 @@ const StageNode: React.FC<{
 
       {stage.metric !== null && stage.metric_label && (
         <div className="mt-1 text-[10px] font-mono text-slate-400">
-          <span className={active ? 'text-cyan-300 font-bold' : 'text-slate-300 font-bold'}>{stage.metric}</span>{' '}
+          <span className={active ? 'text-yellow-300 font-bold' : 'text-slate-300 font-bold'}>{stage.metric}</span>{' '}
           {stage.metric_label}
         </div>
       )}
@@ -202,22 +202,22 @@ export const NeuralPipeline: React.FC<NeuralPipelineProps> = ({ projectId }) => 
 
       <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-800/80">
         <div className="flex items-center gap-2 min-w-0">
-          <BrainCircuit className="w-4 h-4 text-cyan-400 shrink-0" />
+          <BrainCircuit className="w-4 h-4 text-yellow-400 shrink-0" />
           <div className="min-w-0">
             <h2 className="text-sm font-bold text-slate-100 tracking-tight">Neural Pipeline</h2>
             <p className="text-[11px] text-slate-500">Real execution loop — each stage backed by a real module</p>
           </div>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
-          {loading && <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />}
+          {loading && <Loader2 className="w-3.5 h-3.5 animate-spin text-violet-400" />}
           <span
             className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[10px] font-mono font-bold ${
               isLive
-                ? 'text-cyan-300 bg-cyan-950/60 border-cyan-800'
+                ? 'text-yellow-300 bg-yellow-950/60 border-yellow-800'
                 : 'text-slate-400 bg-slate-800/60 border-slate-700'
             }`}
           >
-            {isLive && <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping" />}
+            {isLive && <span className="w-1.5 h-1.5 rounded-full bg-yellow-400 animate-ping" />}
             {isLive ? 'EXECUTING' : 'IDLE'}
           </span>
         </div>
@@ -233,7 +233,7 @@ export const NeuralPipeline: React.FC<NeuralPipelineProps> = ({ projectId }) => 
             <button
               type="button"
               onClick={() => void load(projectId)}
-              className="mt-1 text-[10px] font-mono text-indigo-400 hover:text-indigo-300 cursor-pointer"
+              className="mt-1 text-[10px] font-mono text-violet-400 hover:text-violet-300 cursor-pointer"
             >
               Retry
             </button>
@@ -241,7 +241,7 @@ export const NeuralPipeline: React.FC<NeuralPipelineProps> = ({ projectId }) => 
         </div>
       ) : !data ? (
         <div className="flex items-center gap-2 text-xs font-mono text-slate-400 py-2">
-          <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" /> Loading real pipeline…
+          <Loader2 className="w-3.5 h-3.5 animate-spin text-violet-400" /> Loading real pipeline…
         </div>
       ) : (
         <>
@@ -260,7 +260,7 @@ export const NeuralPipeline: React.FC<NeuralPipelineProps> = ({ projectId }) => 
             className="h-0.5 rounded-full"
             style={{
               backgroundImage: isLive
-                ? 'repeating-linear-gradient(90deg, rgb(34 211 238) 0 8px, transparent 8px 24px)'
+                ? 'repeating-linear-gradient(90deg, rgb(250 204 21) 0 8px, transparent 8px 24px)'
                 : 'repeating-linear-gradient(90deg, rgb(51 65 85) 0 8px, transparent 8px 24px)',
               backgroundSize: '24px 100%',
               animation: isLive ? 'pipelineFlow 0.8s linear infinite' : undefined,
@@ -274,7 +274,7 @@ export const NeuralPipeline: React.FC<NeuralPipelineProps> = ({ projectId }) => 
             return (
               <div className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-md bg-[#020617] border border-slate-800">
                 <div className="flex items-center gap-2 min-w-0">
-                  <Network className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                  <Network className="w-3.5 h-3.5 text-violet-400 shrink-0" />
                   <span className="text-[11px] font-mono text-slate-200">Quality Graph</span>
                 </div>
                 <div className="text-[10px] font-mono text-slate-400 shrink-0">
