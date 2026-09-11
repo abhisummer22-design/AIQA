@@ -20,13 +20,20 @@
  *     (`STRONG` / `BASIC` / `UNKNOWN` / `NONE`) — `UNKNOWN` is rendered as
  *     unknown, never upgraded to a guess
  *
- * On embeddings specifically: the capability is part of the real routing
- * model (`AiTask::Embedding`, `RequiredCapability::Embedding` are real code
- * paths), but there is no embedding endpoint and no vector store in this
- * backend — `ai_router.rs` says so itself ("embeddings are a future
- * endpoint"), and the discovered model reports `embedding: NONE`. This
- * panel therefore shows embedding capability truthfully as unavailable
- * rather than presenting a vector-search engine that does not exist.
+ * On embeddings specifically: this panel's capability grid reflects the
+ * currently-routed CHAT/generation model's own real capabilities — none of
+ * the 4 chat providers (Ollama/MJ Gateway/Groq/Gemini) expose a real
+ * embeddings capability through their own model, so `embedding: NONE` here
+ * is genuinely correct for whichever model is shown; it is not a stale
+ * claim to update just because embeddings exist elsewhere now. A real,
+ * separate embedding capability *does* exist in this backend
+ * (`ai_router.rs::GeminiEmbedder` — a dedicated Gemini embedding call, on
+ * its own endpoint, never routed through this per-model profile), powering
+ * the real Vector Store + RAG Retrieval stages visible on the Neural
+ * Pipeline page. This panel deliberately keeps showing the per-model
+ * grid's own honest `NONE` rather than blurring the two into one
+ * "embeddings: yes" claim that would overstate what the routed chat model
+ * itself can do.
  */
 
 import React from 'react';
@@ -189,8 +196,9 @@ export const AIEnginePanel: React.FC<AIEnginePanelProps> = ({ status, loading, e
                 <Info className="w-3 h-3 shrink-0 mt-0.5" />
                 <span>
                   Levels come from real discovery. <span className="font-mono">UNKNOWN</span> means the source
-                  gave no signal — it is never upgraded to a guess. Embeddings/vector search have no endpoint in
-                  this backend yet.
+                  gave no signal — it is never upgraded to a guess. This model's own embedding capability is
+                  genuinely NONE; a separate, dedicated embedding call powers Vector Store + RAG Retrieval (see
+                  the Neural Pipeline page).
                 </span>
               </p>
             </div>
