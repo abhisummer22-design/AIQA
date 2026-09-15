@@ -2532,7 +2532,11 @@ async fn be13_cancel_running_execution_succeeds_and_is_auditable() {
     );
 
     // Required audit behavior (Contract §12.3 "auditable").
-    let audit = state.store.list_audit(None, 50, 0).await.expect("list_audit");
+    let audit = state
+        .store
+        .list_audit(None, 50, 0)
+        .await
+        .expect("list_audit");
     assert!(
         audit.iter().any(|a| a.action == "run.cancel"
             && a.target.as_deref() == Some(run_id.as_str())
@@ -2962,7 +2966,11 @@ async fn be15_finding_analysis_correlates_real_failure_cluster_and_is_audited() 
         "analysis={analysis}"
     );
 
-    let audit = state.store.list_audit(None, 50, 0).await.expect("list_audit");
+    let audit = state
+        .store
+        .list_audit(None, 50, 0)
+        .await
+        .expect("list_audit");
     assert!(
         audit.iter().any(|a| a.action == "finding.analysis"
             && a.target.as_deref() == Some(finding_id.to_string().as_str())),
@@ -3032,7 +3040,11 @@ async fn be15_finding_review_scoped_confirms_and_dismisses() {
     .await;
     assert_eq!(detail["review_state"], "DISMISSED", "detail={detail}");
 
-    let audit = state.store.list_audit(None, 50, 0).await.expect("list_audit");
+    let audit = state
+        .store
+        .list_audit(None, 50, 0)
+        .await
+        .expect("list_audit");
     assert!(audit
         .iter()
         .any(|a| a.action == "finding.review" && a.detail.as_deref() == Some("CONFIRMED")));
@@ -3430,7 +3442,10 @@ async fn be15_audit_log_offset_pages_through_real_rows_and_total_is_the_real_ful
     let mut paged_rows = page1["rows"].as_array().unwrap().clone();
     paged_rows.extend(page2["rows"].as_array().unwrap().clone());
     paged_rows.extend(page3["rows"].as_array().unwrap().clone());
-    assert_eq!(paged_rows, all_rows, "paged reconstruction must match the real unpaged order exactly");
+    assert_eq!(
+        paged_rows, all_rows,
+        "paged reconstruction must match the real unpaged order exactly"
+    );
 }
 
 /// Category: admin-route regression — the platform-wide, Admin-only
@@ -5042,8 +5057,7 @@ async fn generate_ai_retrieves_and_honestly_reports_a_real_similar_approved_case
 #[tokio::test]
 async fn pipeline_reports_replanning_vector_and_rag_as_genuinely_available_with_real_backing() {
     let embedder = Arc::new(FakeEmbedder::configured(vec![1.0, 0.0, 0.0]));
-    let (state, _dir) =
-        test_state_with_ai_router_and_embedder(inert_ai_router(), embedder).await;
+    let (state, _dir) = test_state_with_ai_router_and_embedder(inert_ai_router(), embedder).await;
     let project = make_project(&state, "Pipeline Stages").await;
     let owner = mint_key(&state, "viewer", Some(&project.to_string())).await;
 
@@ -6047,7 +6061,12 @@ async fn phase2_generate_ai_succeeds_with_real_seeded_risk_and_confirmed_defect_
 
     let risky_node = state
         .store
-        .upsert_quality_node(&project.to_string(), "test", "Checkout Flow", "Checkout Flow")
+        .upsert_quality_node(
+            &project.to_string(),
+            "test",
+            "Checkout Flow",
+            "Checkout Flow",
+        )
         .await
         .expect("upsert risky node");
     state
@@ -7244,7 +7263,10 @@ async fn extract_document_text_reads_the_real_content_of_a_real_docx() {
     let (state, _dir) = test_state_with_compiled_api().await;
     let project = make_project(&state, "Doc Extract - Real Docx").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-    let docx = build_test_docx_bytes(&["Agents must self-register.", "Admin approval is required before login."]);
+    let docx = build_test_docx_bytes(&[
+        "Agents must self-register.",
+        "Admin approval is required before login.",
+    ]);
 
     let (status, body) = send(
         &state,
@@ -7258,8 +7280,7 @@ async fn extract_document_text_reads_the_real_content_of_a_real_docx() {
     .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(
-        body["text"],
-        "Agents must self-register.\nAdmin approval is required before login.",
+        body["text"], "Agents must self-register.\nAdmin approval is required before login.",
         "body={body}"
     );
     assert_eq!(body["truncated"], false, "body={body}");
@@ -7283,7 +7304,10 @@ async fn extract_document_text_reads_plain_text_formats_verbatim() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
-    assert_eq!(body["text"], "# Real Spec\n\nDo the real thing.", "body={body}");
+    assert_eq!(
+        body["text"], "# Real Spec\n\nDo the real thing.",
+        "body={body}"
+    );
 }
 
 #[tokio::test]
@@ -7302,9 +7326,16 @@ async fn extract_document_text_reports_a_real_specific_error_for_legacy_doc_not_
         ),
     )
     .await;
-    assert_ne!(status, StatusCode::OK, "a legacy .doc must never report a fake success; body={body}");
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "a legacy .doc must never report a fake success; body={body}"
+    );
     let message = body["error"]["message"].as_str().unwrap_or_default();
-    assert!(message.contains(".doc"), "expected the real error to name the .doc limitation; body={body}");
+    assert!(
+        message.contains(".doc"),
+        "expected the real error to name the .doc limitation; body={body}"
+    );
 }
 
 #[tokio::test]
@@ -7807,7 +7838,11 @@ async fn be18_finding_ai_hypothesis_returns_real_outcome_and_never_overwrites_de
         "body={after}"
     );
 
-    let audit = state.store.list_audit(None, 50, 0).await.expect("list_audit");
+    let audit = state
+        .store
+        .list_audit(None, 50, 0)
+        .await
+        .expect("list_audit");
     assert!(
         audit.iter().any(|a| a.action == "finding.ai_hypothesis"
             && a.target.as_deref() == Some(finding_id.to_string().as_str())
@@ -7879,7 +7914,11 @@ async fn be18_finding_ai_hypothesis_reports_truthful_fallback_on_provider_timeou
         "the real deterministic hypothesis must still be present; body={body}"
     );
 
-    let audit = state.store.list_audit(None, 50, 0).await.expect("list_audit");
+    let audit = state
+        .store
+        .list_audit(None, 50, 0)
+        .await
+        .expect("list_audit");
     assert!(
         audit
             .iter()
@@ -8193,12 +8232,7 @@ async fn custom_ai_provider_list_never_includes_the_raw_api_key() {
 
     let (status, body) = send(
         &state,
-        req(
-            "GET",
-            "/api/v1/ai/providers/custom",
-            Some(&operator),
-            None,
-        ),
+        req("GET", "/api/v1/ai/providers/custom", Some(&operator), None),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
@@ -8240,10 +8274,7 @@ async fn custom_ai_providers_survive_a_fresh_store_reload_real_durable_persisten
     let reloaded = crate::store::Store::connect(&dir.path().join("api.sqlite3"))
         .await
         .expect("reconnect");
-    let rows = reloaded
-        .list_custom_ai_providers()
-        .await
-        .expect("query");
+    let rows = reloaded.list_custom_ai_providers().await.expect("query");
     assert_eq!(rows.len(), 1, "rows={rows:?}");
     assert_eq!(rows[0].name, "My Custom Provider");
     assert_eq!(rows[0].base_url, "http://127.0.0.1:1");
@@ -8332,15 +8363,14 @@ async fn custom_ai_provider_rbac_viewer_can_list_but_cannot_create_or_delete() {
 
     let (status, _) = send(
         &state,
-        req(
-            "GET",
-            "/api/v1/ai/providers/custom",
-            Some(&viewer),
-            None,
-        ),
+        req("GET", "/api/v1/ai/providers/custom", Some(&viewer), None),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "reading configured providers is not a privileged action");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "reading configured providers is not a privileged action"
+    );
 
     let (_, created) = send(
         &state,
@@ -8725,7 +8755,12 @@ async fn delete_project_admin_success_with_cascading_cleanup() {
     // Verify project exists
     let (status, got) = send(
         &state,
-        req("GET", &format!("/api/v1/projects/{project}"), Some(&admin), None),
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}"),
+            Some(&admin),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -8734,7 +8769,12 @@ async fn delete_project_admin_success_with_cascading_cleanup() {
     // DELETE project
     let (status, _) = send(
         &state,
-        req("DELETE", &format!("/api/v1/projects/{project}"), Some(&admin), None),
+        req(
+            "DELETE",
+            &format!("/api/v1/projects/{project}"),
+            Some(&admin),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
@@ -8742,7 +8782,12 @@ async fn delete_project_admin_success_with_cascading_cleanup() {
     // Verify GET now returns 404
     let (status, _) = send(
         &state,
-        req("GET", &format!("/api/v1/projects/{project}"), Some(&admin), None),
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}"),
+            Some(&admin),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -8753,10 +8798,13 @@ async fn delete_project_admin_success_with_cascading_cleanup() {
         .list_audit(None, 100, 0)
         .await
         .expect("audit log");
-    let delete_entry = audit_rows
-        .iter()
-        .find(|a| a.action == "project.delete" && a.target.as_deref() == Some(&project.to_string()));
-    assert!(delete_entry.is_some(), "audit log must record project.delete");
+    let delete_entry = audit_rows.iter().find(|a| {
+        a.action == "project.delete" && a.target.as_deref() == Some(&project.to_string())
+    });
+    assert!(
+        delete_entry.is_some(),
+        "audit log must record project.delete"
+    );
 }
 
 #[tokio::test]
@@ -8768,14 +8816,24 @@ async fn delete_project_forbidden_for_non_admin_roles() {
 
     let (status, _) = send(
         &state,
-        req("DELETE", &format!("/api/v1/projects/{project}"), Some(&operator), None),
+        req(
+            "DELETE",
+            &format!("/api/v1/projects/{project}"),
+            Some(&operator),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 
     let (status, _) = send(
         &state,
-        req("DELETE", &format!("/api/v1/projects/{project}"), Some(&viewer), None),
+        req(
+            "DELETE",
+            &format!("/api/v1/projects/{project}"),
+            Some(&viewer),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
@@ -8789,7 +8847,12 @@ async fn delete_project_returns_404_for_unknown_project() {
 
     let (status, _) = send(
         &state,
-        req("DELETE", &format!("/api/v1/projects/{random_id}"), Some(&admin), None),
+        req(
+            "DELETE",
+            &format!("/api/v1/projects/{random_id}"),
+            Some(&admin),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -8805,7 +8868,12 @@ async fn delete_project_scoped_admin_cannot_delete_different_project() {
 
     let (status, _) = send(
         &state,
-        req("DELETE", &format!("/api/v1/projects/{proj_b}"), Some(&scoped_admin_a), None),
+        req(
+            "DELETE",
+            &format!("/api/v1/projects/{proj_b}"),
+            Some(&scoped_admin_a),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
@@ -8821,30 +8889,55 @@ async fn list_logs_returns_recent_history_and_respects_project_scoping() {
     let operator_a = mint_key(&state, "operator", Some(&proj_a.to_string())).await;
 
     // Emit logs
-    state.log_bus.emit("INFO", "ai_router", "Global discovery started", None, None, None).await;
-    state.log_bus.emit("INFO", "generation", "Generating for A", None, Some(&proj_a.to_string()), None).await;
-    state.log_bus.emit("INFO", "execution", "Running B", None, Some(&proj_b.to_string()), None).await;
+    state
+        .log_bus
+        .emit(
+            "INFO",
+            "ai_router",
+            "Global discovery started",
+            None,
+            None,
+            None,
+        )
+        .await;
+    state
+        .log_bus
+        .emit(
+            "INFO",
+            "generation",
+            "Generating for A",
+            None,
+            Some(&proj_a.to_string()),
+            None,
+        )
+        .await;
+    state
+        .log_bus
+        .emit(
+            "INFO",
+            "execution",
+            "Running B",
+            None,
+            Some(&proj_b.to_string()),
+            None,
+        )
+        .await;
 
     // Admin sees all logs
-    let (status, logs) = send(
-        &state,
-        req("GET", "/api/v1/logs", Some(&admin), None),
-    )
-    .await;
+    let (status, logs) = send(&state, req("GET", "/api/v1/logs", Some(&admin), None)).await;
     assert_eq!(status, StatusCode::OK);
     let arr = logs.as_array().expect("array");
     assert_eq!(arr.len(), 3);
 
     // Operator A sees global + Proj A logs, but not Proj B
-    let (status, logs_a) = send(
-        &state,
-        req("GET", "/api/v1/logs", Some(&operator_a), None),
-    )
-    .await;
+    let (status, logs_a) = send(&state, req("GET", "/api/v1/logs", Some(&operator_a), None)).await;
     assert_eq!(status, StatusCode::OK);
     let arr_a = logs_a.as_array().expect("array");
     assert_eq!(arr_a.len(), 2);
-    let msgs: Vec<&str> = arr_a.iter().map(|l| l["message"].as_str().unwrap()).collect();
+    let msgs: Vec<&str> = arr_a
+        .iter()
+        .map(|l| l["message"].as_str().unwrap())
+        .collect();
     assert!(msgs.contains(&"Global discovery started"));
     assert!(msgs.contains(&"Generating for A"));
     assert!(!msgs.contains(&"Running B"));
@@ -8852,7 +8945,12 @@ async fn list_logs_returns_recent_history_and_respects_project_scoping() {
     // Scoped route GET /api/v1/projects/:id/logs
     let (status, proj_logs) = send(
         &state,
-        req("GET", &format!("/api/v1/projects/{proj_a}/logs"), Some(&operator_a), None),
+        req(
+            "GET",
+            &format!("/api/v1/projects/{proj_a}/logs"),
+            Some(&operator_a),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);

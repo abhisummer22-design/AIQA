@@ -51,6 +51,7 @@ import {
   FileSearch,
   Activity,
   Gauge,
+  Brain,
   Settings,
 } from 'lucide-react';
 import { DashboardPage } from '../components/pages/DashboardPage';
@@ -68,6 +69,7 @@ import { ReportsPage } from '../components/pages/ReportsPage';
 import { AuditPage } from '../components/pages/AuditPage';
 import { EvidencePage } from '../components/pages/EvidencePage';
 import { TelemetryPage } from '../components/pages/TelemetryPage';
+import { QaIntelligenceDashboardPage } from '../components/pages/QaIntelligenceDashboardPage';
 import { SettingsPage } from '../components/pages/SettingsPage';
 import type { NavPage } from '../types';
 
@@ -305,6 +307,17 @@ export const routeDefs: RouteDef[] = [
     // pages), built directly onto the real `GET /metrics` route. Follows
     // Dashboard/Test Generator's visual language, same bucket as
     // Audit/Evidence/ExecutionHub/Reports.
+    designStatus: 'new-follows-approved-language',
+    protectedRoute: true,
+  },
+  {
+    id: 'intelligence',
+    path: '/intelligence',
+    label: 'QA Intelligence',
+    icon: Brain,
+    badge: 'NEW',
+    badgeType: 'info',
+    Component: QaIntelligenceDashboardPage,
     designStatus: 'new-follows-approved-language',
     protectedRoute: true,
   },

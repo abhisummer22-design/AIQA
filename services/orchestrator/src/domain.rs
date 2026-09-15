@@ -33,6 +33,10 @@ impl TaskStatus {
         matches!(self, TaskStatus::Passed)
     }
 
+    pub fn as_str(&self) -> &'static str {
+        self.as_db_str()
+    }
+
     /// SCREAMING_SNAKE_CASE string form, matching the serde representation —
     /// used by `store.rs` so the DB column and the wire format never drift.
     pub fn as_db_str(&self) -> &'static str {
@@ -203,6 +207,20 @@ pub struct TaskState {
     pub reason: Option<String>,
     pub started_at: Option<chrono::DateTime<chrono::Utc>>,
     pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl TaskState {
+    pub fn new(id: impl Into<TaskId>, name: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            prerequisites: Vec::new(),
+            status: TaskStatus::Queued,
+            reason: None,
+            started_at: None,
+            finished_at: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

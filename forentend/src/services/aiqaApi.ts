@@ -95,6 +95,12 @@ import type {
   UpdateTestCaseRequest,
   CreateTestCaseRequest,
   OrchestratorLogEntry,
+  ExecutionTelemetryRow,
+  FailureClusterRow,
+  FlakinessMetricsRow,
+  HealingStrategyMetricsRow,
+  TrendAnalysis,
+  QualityGraphResponse,
 } from '../types/contract';
 
 /** Base path for orchestrator calls. Dev: proxy this to the orchestrator
@@ -531,14 +537,22 @@ export const aiqaApi = {
       }),
   },
 
-  /** FE-22 — BE-10's project-scoped `TestIntelRow[]` route. The legacy,
-   *  unscoped `/intelligence/tests` (key-bound `ctx.project_id`, no URL
-   *  parameter) is deliberately never called from here — see BE-10's
-   *  report for why that endpoint is unsafe for this app's multi-project
-   *  key/project-switcher model. No fallback to it exists. */
+  /** FE-22 & Phase 6/7: Adaptive QA Intelligence & Observability endpoints */
   intelligence: {
     tests: (projectId: string, signal?: AbortSignal) =>
       requestJson<TestIntelRow[]>(`/projects/${projectId}/intelligence/tests`, { signal }),
+    telemetry: (projectId: string, signal?: AbortSignal) =>
+      requestJson<ExecutionTelemetryRow[]>(`/projects/${encodeURIComponent(projectId)}/intelligence/telemetry`, { signal }),
+    failures: (projectId: string, signal?: AbortSignal) =>
+      requestJson<FailureClusterRow[]>(`/projects/${encodeURIComponent(projectId)}/intelligence/failures`, { signal }),
+    flakiness: (projectId: string, signal?: AbortSignal) =>
+      requestJson<FlakinessMetricsRow[]>(`/projects/${encodeURIComponent(projectId)}/intelligence/flakiness`, { signal }),
+    strategies: (projectId: string, signal?: AbortSignal) =>
+      requestJson<HealingStrategyMetricsRow[]>(`/projects/${encodeURIComponent(projectId)}/intelligence/strategies`, { signal }),
+    trends: (projectId: string, signal?: AbortSignal) =>
+      requestJson<TrendAnalysis>(`/projects/${encodeURIComponent(projectId)}/intelligence/trends`, { signal }),
+    qualityGraph: (projectId: string, signal?: AbortSignal) =>
+      requestJson<QualityGraphResponse>(`/projects/${encodeURIComponent(projectId)}/intelligence/quality-graph`, { signal }),
   },
 
   /** AUD-005 — real, persisted, project-isolated Test Case CRUD + lifecycle
@@ -754,4 +768,5 @@ export const aiqaApi = {
       });
     },
   },
+
 };

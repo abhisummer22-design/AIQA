@@ -236,16 +236,90 @@ impl RunRecord {
         }
         if let Some(lb) = &self.log_bus {
             let (lvl, src, msg) = match &ev.event_type {
-                EventType::RunScheduled => ("INFO", "execution", format!("Execution run '{}' scheduled with {} task(s)", self.name, self.plan.tasks.len())),
-                EventType::TaskStarted => ("INFO", "execution", format!("Task '{}' started on executor", ev.task_id.as_deref().unwrap_or("unknown"))),
-                EventType::TaskPassed => ("SUCCESS", "execution", format!("Task '{}' passed successfully", ev.task_id.as_deref().unwrap_or("unknown"))),
-                EventType::TaskFailed => ("ERROR", "execution", format!("Task '{}' failed: {}", ev.task_id.as_deref().unwrap_or("unknown"), ev.summary.as_deref().unwrap_or("task failed"))),
-                EventType::TaskBlocked => ("WARN", "execution", format!("Task '{}' blocked by dependency", ev.task_id.as_deref().unwrap_or("unknown"))),
-                EventType::TaskSkipped => ("INFO", "execution", format!("Task '{}' skipped", ev.task_id.as_deref().unwrap_or("unknown"))),
-                EventType::TaskCancelled => ("WARN", "execution", format!("Task '{}' cancelled", ev.task_id.as_deref().unwrap_or("unknown"))),
-                EventType::TaskTimeout => ("ERROR", "execution", format!("Task '{}' timed out", ev.task_id.as_deref().unwrap_or("unknown"))),
-                EventType::TaskInfraError => ("ERROR", "execution", format!("Task '{}' infrastructure error: {}", ev.task_id.as_deref().unwrap_or("unknown"), ev.summary.as_deref().unwrap_or("error"))),
-                EventType::TaskNeedsReview => ("WARN", "execution", format!("Task '{}' needs review: {}", ev.task_id.as_deref().unwrap_or("unknown"), ev.summary.as_deref().unwrap_or("review required"))),
+                EventType::RunScheduled => (
+                    "INFO",
+                    "execution",
+                    format!(
+                        "Execution run '{}' scheduled with {} task(s)",
+                        self.name,
+                        self.plan.tasks.len()
+                    ),
+                ),
+                EventType::TaskStarted => (
+                    "INFO",
+                    "execution",
+                    format!(
+                        "Task '{}' started on executor",
+                        ev.task_id.as_deref().unwrap_or("unknown")
+                    ),
+                ),
+                EventType::TaskPassed => (
+                    "SUCCESS",
+                    "execution",
+                    format!(
+                        "Task '{}' passed successfully",
+                        ev.task_id.as_deref().unwrap_or("unknown")
+                    ),
+                ),
+                EventType::TaskFailed => (
+                    "ERROR",
+                    "execution",
+                    format!(
+                        "Task '{}' failed: {}",
+                        ev.task_id.as_deref().unwrap_or("unknown"),
+                        ev.summary.as_deref().unwrap_or("task failed")
+                    ),
+                ),
+                EventType::TaskBlocked => (
+                    "WARN",
+                    "execution",
+                    format!(
+                        "Task '{}' blocked by dependency",
+                        ev.task_id.as_deref().unwrap_or("unknown")
+                    ),
+                ),
+                EventType::TaskSkipped => (
+                    "INFO",
+                    "execution",
+                    format!(
+                        "Task '{}' skipped",
+                        ev.task_id.as_deref().unwrap_or("unknown")
+                    ),
+                ),
+                EventType::TaskCancelled => (
+                    "WARN",
+                    "execution",
+                    format!(
+                        "Task '{}' cancelled",
+                        ev.task_id.as_deref().unwrap_or("unknown")
+                    ),
+                ),
+                EventType::TaskTimeout => (
+                    "ERROR",
+                    "execution",
+                    format!(
+                        "Task '{}' timed out",
+                        ev.task_id.as_deref().unwrap_or("unknown")
+                    ),
+                ),
+                EventType::TaskInfraError => (
+                    "ERROR",
+                    "execution",
+                    format!(
+                        "Task '{}' infrastructure error: {}",
+                        ev.task_id.as_deref().unwrap_or("unknown"),
+                        ev.summary.as_deref().unwrap_or("error")
+                    ),
+                ),
+                EventType::TaskNeedsReview => (
+                    "WARN",
+                    "execution",
+                    format!(
+                        "Task '{}' needs review: {}",
+                        ev.task_id.as_deref().unwrap_or("unknown"),
+                        ev.summary.as_deref().unwrap_or("review required")
+                    ),
+                ),
                 EventType::RunCompleted => {
                     let st = *self.state.read().await;
                     let (lvl, verdict) = match st {
@@ -255,13 +329,18 @@ impl RunRecord {
                         RunState::Partial => ("WARN", "completed with partial failures"),
                         _ => ("INFO", "completed"),
                     };
-                    (lvl, "execution", format!("Execution run '{}' {verdict}", self.name))
+                    (
+                        lvl,
+                        "execution",
+                        format!("Execution run '{}' {verdict}", self.name),
+                    )
                 }
             };
             let run_id_str = self.run_id.to_string();
             let proj_id_str = self.project_id.as_deref();
             let task_id_str = ev.task_id.as_deref();
-            lb.emit(lvl, src, &msg, Some(&run_id_str), proj_id_str, task_id_str).await;
+            lb.emit(lvl, src, &msg, Some(&run_id_str), proj_id_str, task_id_str)
+                .await;
         }
         if let Err(e) = store.insert_event(&ev).await {
             // B1 — a lost event leaves a permanent gap in a log SRD §5
@@ -881,7 +960,12 @@ pub fn spawn_run(
         // already exited and nothing is still in flight.
         let intel = Intelligence::new(&store);
         if let Err(e) = intel
-            .ingest_run(record.project_id.as_deref(), &record.plan, &tasks_snapshot)
+            .ingest_run(
+                Some(record.run_id),
+                record.project_id.as_deref(),
+                &record.plan,
+                &tasks_snapshot,
+            )
             .await
         {
             tracing::warn!("intelligence ingest failed for run {}: {e}", record.run_id);

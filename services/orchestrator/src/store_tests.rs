@@ -854,7 +854,13 @@ async fn test_case_embedding_upsert_and_list_round_trip() {
         .expect("insert case");
 
     store
-        .upsert_test_case_embedding(case_id, "proj-1", "gemini-embedding-001", 3, &[0.1, 0.2, 0.3])
+        .upsert_test_case_embedding(
+            case_id,
+            "proj-1",
+            "gemini-embedding-001",
+            3,
+            &[0.1, 0.2, 0.3],
+        )
         .await
         .expect("upsert embedding");
 
@@ -876,13 +882,25 @@ async fn upsert_test_case_embedding_replaces_not_duplicates() {
         .expect("insert case");
 
     store
-        .upsert_test_case_embedding(case_id, "proj-1", "gemini-embedding-001", 3, &[0.1, 0.2, 0.3])
+        .upsert_test_case_embedding(
+            case_id,
+            "proj-1",
+            "gemini-embedding-001",
+            3,
+            &[0.1, 0.2, 0.3],
+        )
         .await
         .expect("first upsert");
     // Real re-embed after an edit (`api.rs::embed_approved_test_case`'s own
     // trigger) — same `test_case_id`, a genuinely different real vector.
     store
-        .upsert_test_case_embedding(case_id, "proj-1", "gemini-embedding-001", 3, &[0.9, 0.8, 0.7])
+        .upsert_test_case_embedding(
+            case_id,
+            "proj-1",
+            "gemini-embedding-001",
+            3,
+            &[0.9, 0.8, 0.7],
+        )
         .await
         .expect("second upsert");
 
@@ -910,7 +928,13 @@ async fn delete_test_case_also_deletes_its_embedding() {
         .await
         .expect("insert case");
     store
-        .upsert_test_case_embedding(case_id, "proj-1", "gemini-embedding-001", 3, &[0.1, 0.2, 0.3])
+        .upsert_test_case_embedding(
+            case_id,
+            "proj-1",
+            "gemini-embedding-001",
+            3,
+            &[0.1, 0.2, 0.3],
+        )
         .await
         .expect("upsert embedding");
     assert_eq!(store.count_test_case_embeddings("proj-1").await.unwrap(), 1);
@@ -947,15 +971,33 @@ async fn count_test_case_embeddings_is_scoped_per_real_project() {
         .expect("insert case b2");
 
     store
-        .upsert_test_case_embedding(case_a, "proj-a", "gemini-embedding-001", 3, &[0.1, 0.0, 0.0])
+        .upsert_test_case_embedding(
+            case_a,
+            "proj-a",
+            "gemini-embedding-001",
+            3,
+            &[0.1, 0.0, 0.0],
+        )
         .await
         .expect("embed a");
     store
-        .upsert_test_case_embedding(case_b1, "proj-b", "gemini-embedding-001", 3, &[0.2, 0.0, 0.0])
+        .upsert_test_case_embedding(
+            case_b1,
+            "proj-b",
+            "gemini-embedding-001",
+            3,
+            &[0.2, 0.0, 0.0],
+        )
         .await
         .expect("embed b1");
     store
-        .upsert_test_case_embedding(case_b2, "proj-b", "gemini-embedding-001", 3, &[0.3, 0.0, 0.0])
+        .upsert_test_case_embedding(
+            case_b2,
+            "proj-b",
+            "gemini-embedding-001",
+            3,
+            &[0.3, 0.0, 0.0],
+        )
         .await
         .expect("embed b2");
 

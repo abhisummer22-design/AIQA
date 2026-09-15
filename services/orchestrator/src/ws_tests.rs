@@ -495,7 +495,9 @@ async fn orchestrator_logs_ws_receives_live_emitted_logs() {
     });
 
     let url = format!("ws://{addr}/api/v1/projects/{project}/logs/ws?key={key}");
-    let (mut ws, _res) = tokio_tungstenite::connect_async(&url).await.expect("connect");
+    let (mut ws, _res) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("connect");
 
     // Emit a log to log_bus
     state
@@ -521,7 +523,10 @@ async fn orchestrator_logs_ws_receives_live_emitted_logs() {
             let log: serde_json::Value = serde_json::from_str(&text).expect("json parse");
             assert_eq!(log["level"], "INFO");
             assert_eq!(log["source"], "ai_router");
-            assert_eq!(log["message"], "Provider discovery started: testing qwen3:14b");
+            assert_eq!(
+                log["message"],
+                "Provider discovery started: testing qwen3:14b"
+            );
             assert_eq!(log["project_id"], project.to_string());
         }
         other => panic!("expected WsMessage::Text, got {other:?}"),

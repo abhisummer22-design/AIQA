@@ -399,7 +399,8 @@ mod tests {
         // camelCase, matching what helpers/crawler.ts's own TypeScript side
         // actually parses — see `plan_to_camel_case_json`) must reproduce
         // the exact original value.
-        let start = source.find("const PLAN: CrawlPlan = ").unwrap() + "const PLAN: CrawlPlan = ".len();
+        let start =
+            source.find("const PLAN: CrawlPlan = ").unwrap() + "const PLAN: CrawlPlan = ".len();
         let end = source[start..].find(";\n").unwrap() + start;
         let parsed: serde_json::Value =
             serde_json::from_str(&source[start..end]).expect("re-parse PLAN");
