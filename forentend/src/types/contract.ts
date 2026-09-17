@@ -1190,6 +1190,23 @@ export interface ApiKeyListRow {
   revoked_at: string | null;
 }
 
+/** Phase 5 gap-closing — `api.rs::CreateApiKeyBody`, `POST /admin/api-keys`
+ *  (Admin only). `project_id` omitted/`undefined` means global scope, the
+ *  same real meaning `null` carries on `ApiKeyListRow`/`WhoAmIResponse`. */
+export interface CreateApiKeyRequest {
+  name: string;
+  role: Role;
+  project_id?: string;
+}
+
+/** `api.rs::CreateApiKeyResponse`. `key` is the real plaintext key —
+ *  returned exactly once, at creation time; only its SHA-256 hash is ever
+ *  persisted, so this value cannot be recovered again after this response. */
+export interface CreateApiKeyResponse {
+  id: string;
+  key: string;
+}
+
 // --------------------------------------------------------------- mobile
 
 /** `mobile.rs::MobileDevice` — a real device or emulator `adb` can see. */

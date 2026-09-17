@@ -45,6 +45,8 @@ import type {
   AdHocApiRequest,
   ApiTestExecutionResponse,
   ApiKeyListRow,
+  CreateApiKeyRequest,
+  CreateApiKeyResponse,
   CreateCustomAiProviderRequest,
   CreateCustomSkillRequest,
   CustomAiProviderView,
@@ -722,10 +724,20 @@ export const aiqaApi = {
    *  real role and project scope (`GET /admin/api-keys`, Admin only — a
    *  non-admin caller gets a real 403, which this app surfaces rather than
    *  hiding the control). `/admin/...` is a real flat route, not under
-   *  `/api/v1`, hence `skipBase`. */
+   *  `/api/v1`, hence `skipBase`.
+   *
+   *  Phase 5 gap-closing — `createApiKey`/`revokeApiKey` complete the same
+   *  real, already-shipped, Admin-only backend surface (`api.rs::
+   *  create_api_key`/`revoke_api_key_handler`) that `apiKeys` above only
+   *  ever read; this repo's own router comment named the missing UI
+   *  explicitly ("FE-2's scoped admin UI is not built"). */
   rbac: {
     whoami: (signal?: AbortSignal) => requestJson<WhoAmIResponse>('/auth/whoami', { signal }),
     apiKeys: (signal?: AbortSignal) => requestJson<ApiKeyListRow[]>('/admin/api-keys', { signal, skipBase: true }),
+    createApiKey: (body: CreateApiKeyRequest, signal?: AbortSignal) =>
+      requestJson<CreateApiKeyResponse>('/admin/api-keys', { method: 'POST', body, signal, skipBase: true }),
+    revokeApiKey: (id: string, signal?: AbortSignal) =>
+      requestVoid(`/admin/api-keys/${id}`, { method: 'DELETE', signal, skipBase: true }),
   },
 
   /** Real mobile device fleet (`mobile.rs`) — real `adb devices -l`, real
