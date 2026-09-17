@@ -199,6 +199,61 @@ fn builtin_instruction(name: &str) -> Option<&'static str> {
             "Identify end-to-end business-rule and workflow scenarios, decision paths, rule conflicts, \
              exceptions, and boundary business scenarios actually described by the requirement text.",
         ),
+        // Phase 1 gap-closing (5 real instructions for categories that
+        // previously had none — `forentend/src/services/skillRegistry.ts`'s
+        // own doc comment on `categoryMatchedSkillIds` explicitly names
+        // "no built-in skill named ... 'UI/UX Testing' exists today" as a
+        // real, deliberate gap; same was true for Positive/Negative/Spike/
+        // Load. Each instruction below earns its own entry rather than an
+        // alias onto an existing skill, per that same doc comment's rule
+        // against papering over a category with no real skill counterpart.
+        "ui/ux testing" => Some(
+            "Identify layout/rendering correctness, responsive behavior across any device/viewport target \
+             the requirement text actually describes, accessibility (keyboard navigation, screen-reader \
+             labelling, contrast), and interaction feedback (loading, error, empty, and success states) — \
+             only where the requirement text actually describes a user-facing interface or interaction, \
+             not a purely backend/API behavior.",
+        ),
+        // Negative and Positive are a deliberate, real QA-convention pair —
+        // each is a genuine narrowing of what Functional Testing already
+        // covers broadly, not a duplicate of it: Positive isolates only the
+        // valid/expected-outcome half, Negative isolates only the
+        // invalid/rejection half, so a caller can select either on its own
+        // for a genuinely different, narrower generation pass.
+        "negative testing" => Some(
+            "Identify scenarios that submit invalid, malformed, unauthorized, or out-of-contract input and \
+             verify the system correctly REJECTS it with the right error/failure behavior — the point is \
+             confirming rejection genuinely happens (distinct from Edge Case Analysis's boundary-value \
+             exploration), only for invalid inputs/actions the requirement text actually gives a basis for.",
+        ),
+        "positive testing" => Some(
+            "Identify only the valid-input, expected-outcome scenarios directly stated or clearly implied \
+             by the requirement text — the deliberate complement to Negative Testing: confirm the system \
+             succeeds exactly as described for well-formed, authorized input, without introducing invalid \
+             or edge-case variations here.",
+        ),
+        // Spike vs. Load below are grounded in this codebase's own real,
+        // already-implemented distinction (`performance_testing.rs`'s
+        // `WorkloadSchedule`): Load is a steady, constant worker pool;
+        // Spike is a real, IMMEDIATE jump from a baseline to a higher
+        // level, never a gradual ramp (that is Stress, a third, separate
+        // real shape). These two generation instructions describe the same
+        // real distinction the execution engine already enforces, not an
+        // invented one.
+        "spike testing" => Some(
+            "Identify a scenario describing a sudden, immediate jump in concurrent load or traffic to a \
+             much higher level — not a gradual ramp — and what the requirement text says (or implies) the \
+             system should do under that abrupt surge. Only where the requirement text gives a real basis \
+             for a load-sensitive surface; do not invent a specific concurrency number the text does not \
+             state.",
+        ),
+        "load testing" => Some(
+            "Identify a scenario describing a steady, sustained level of concurrent usage over time — the \
+             expected ongoing demand, not a sudden spike or a gradually increasing stress ramp — and \
+             whether the system is expected to maintain its described behavior under that constant load. \
+             Only where the requirement text gives a real basis for a load-sensitive surface; do not \
+             invent a specific concurrency number the text does not state.",
+        ),
         _ => None,
     }
 }
@@ -1574,6 +1629,46 @@ mod tests {
             .to_lowercase()
             .contains("authorization"));
         assert!(resolved[0].instruction.to_lowercase().contains("injection"));
+    }
+
+    /// Phase 1 gap-closing — 5 categories that previously had no matching
+    /// built-in skill (`skillRegistry.ts`'s own doc comment named this gap
+    /// explicitly) now each have a real, distinct instruction, not a reused
+    /// one borrowed from an unrelated skill.
+    #[test]
+    fn resolver_maps_each_of_the_five_newly_added_builtin_skills_to_its_own_real_instruction() {
+        let resolved = resolve_skill_instructions(&[
+            skill("s-ui", "UI/UX Testing", ""),
+            skill("s-neg", "Negative Testing", ""),
+            skill("s-pos", "Positive Testing", ""),
+            skill("s-spike", "Spike Testing", ""),
+            skill("s-load", "Load Testing", ""),
+        ]);
+        assert_eq!(resolved.len(), 5);
+
+        let ui = resolved[0].instruction.to_lowercase();
+        assert!(ui.contains("accessibility"));
+        assert!(ui.contains("responsive"));
+
+        let negative = resolved[1].instruction.to_lowercase();
+        assert!(negative.contains("reject"));
+        assert!(negative.contains("invalid"));
+
+        let positive = resolved[2].instruction.to_lowercase();
+        assert!(positive.contains("valid-input"));
+        assert!(positive.contains("complement to negative testing"));
+
+        let spike = resolved[3].instruction.to_lowercase();
+        assert!(spike.contains("sudden"));
+        assert!(spike.contains("not a gradual ramp"));
+
+        let load = resolved[4].instruction.to_lowercase();
+        assert!(load.contains("sustained"));
+        assert!(load.contains("not a sudden spike"));
+
+        // Real, distinct text — Spike and Load must never collapse into
+        // the same instruction despite both being load-sensitive scenarios.
+        assert_ne!(resolved[3].instruction, resolved[4].instruction);
     }
 
     #[test]

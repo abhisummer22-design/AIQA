@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { categoryMatchedSkillIds } from './skillRegistry';
+import { BUILT_IN_SKILLS, categoryMatchedSkillIds } from './skillRegistry';
 import type { SkillDefinition } from '../types/skills';
 
 function skill(id: string, name: string, type: SkillDefinition['type'] = 'BUILT_IN'): SkillDefinition {
@@ -57,5 +57,24 @@ describe('categoryMatchedSkillIds', () => {
     const skills = [skill('skill-api-testing', 'api testing')];
     const matched = categoryMatchedSkillIds(['API'], skills);
     expect(matched.has('skill-api-testing')).toBe(true);
+  });
+
+  /** Phase 1 gap-closing — these 5 categories previously had no real skill
+   *  counterpart at all (this file's own doc comment named the gap
+   *  explicitly). Uses the REAL `BUILT_IN_SKILLS` array, not a hand-built
+   *  fake skill list, so this proves the actual shipped registry — not
+   *  just the matching function in isolation. */
+  it('matches each of the 5 newly-added built-in skills to its own real category, using the real registry', () => {
+    const cases: Array<[string, string]> = [
+      ['UI/UX', 'skill-ui-ux-testing'],
+      ['Negative', 'skill-negative-testing'],
+      ['Positive', 'skill-positive-testing'],
+      ['Spike', 'skill-spike-testing'],
+      ['Load', 'skill-load-testing'],
+    ];
+    for (const [category, skillId] of cases) {
+      const matched = categoryMatchedSkillIds([category], BUILT_IN_SKILLS);
+      expect(matched.get(skillId), `category "${category}" should match ${skillId}`).toBe(category);
+    }
   });
 });

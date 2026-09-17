@@ -2471,9 +2471,10 @@ async fn generate_ai_test_cases_scoped(
     // Vector Store + RAG Retrieval v1 — additive, fails open (see the
     // function's own doc comment): a project with nothing embedded yet, or
     // no embedding provider configured, generates exactly as it did before
-    // this feature existed. Deliberately not wired into
-    // `generate_custom_testing_scoped` below for this v1 — same disclosed
-    // boundary that endpoint's crawl-grounding already has.
+    // this feature existed. Phase 1 gap-closing: `generate_custom_testing_
+    // scoped` below now gets this same real grounding too — see its own
+    // comment for the one boundary that's still separate (crawl-run
+    // grounding, not yet wired there).
     feedback.similar_cases =
         find_similar_approved_test_cases(&state, project_id, &body.requirement_text).await;
     let similar_cases_used = feedback.similar_cases.len();
@@ -2746,7 +2747,17 @@ async fn generate_custom_testing_scoped(
         })
         .collect();
 
-    let feedback = load_feedback_context_for_generation(&state, project_id).await;
+    let mut feedback = load_feedback_context_for_generation(&state, project_id).await;
+    // Vector Store + RAG Retrieval v1 (Phase 1 gap-closing) — this endpoint
+    // previously had a comment explicitly disclosing it did NOT get this
+    // grounding, unlike `generate_ai_test_cases_scoped`. Same real
+    // retrieval, same fails-open contract: no embedding provider
+    // configured, a network failure, or nothing embedded yet all mean
+    // "generate exactly as before." Crawl-run grounding remains a separate,
+    // not-yet-wired gap for this endpoint (`CustomTestingGenerateBody` has
+    // no `crawl_run_id` field at all yet) — not addressed by this change.
+    feedback.similar_cases =
+        find_similar_approved_test_cases(&state, project_id, &body.requirement_text).await;
 
     let outcome = crate::custom_testing::run(
         &state.ai_infra,

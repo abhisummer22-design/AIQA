@@ -8,6 +8,7 @@
 
 use crate::ai_router::test_support::{
     healthy_model, healthy_provider, FakeDiscovery, FakeEmbedder, FakeExecutor, RecordingEmbedder,
+    RecordingExecutor,
 };
 use crate::ai_router::{AiExecutor, AiInfrastructure, CapabilityLevel, Embedder};
 use crate::api::router;
@@ -78,6 +79,42 @@ fn custom_testing_ai_infra_two_calls(
         Arc::new(FakeExecutor::ok(analysis_response)),
     );
     executors.insert("cases-only", Arc::new(FakeExecutor::ok(cases_response)));
+
+    Arc::new(AiInfrastructure::new(
+        vec![
+            Arc::new(FakeDiscovery(healthy_provider(
+                "analysis-only",
+                vec![analysis_model],
+            ))),
+            Arc::new(FakeDiscovery(healthy_provider(
+                "cases-only",
+                vec![cases_model],
+            ))),
+        ],
+        executors,
+    ))
+}
+
+/// Like `custom_testing_ai_infra_two_calls` above, but the caller supplies
+/// the "cases" side's own real executor directly — used with a
+/// `RecordingExecutor` so a test can inspect the real prompt text
+/// `custom_testing::run` actually sent, e.g. to prove Vector Store/RAG
+/// grounding genuinely reached this endpoint's own prompt.
+fn custom_testing_ai_infra_with_cases_executor(
+    analysis_response: &str,
+    cases_executor: Arc<dyn AiExecutor>,
+) -> Arc<AiInfrastructure> {
+    let analysis_model = healthy_model("analysis-model", "analysis-only", CapabilityLevel::Basic);
+    let mut cases_model = healthy_model("cases-model", "cases-only", CapabilityLevel::Strong);
+    cases_model.capabilities.long_context = Some(CapabilityLevel::None);
+
+    let mut executors: std::collections::HashMap<&'static str, Arc<dyn AiExecutor>> =
+        std::collections::HashMap::new();
+    executors.insert(
+        "analysis-only",
+        Arc::new(FakeExecutor::ok(analysis_response)),
+    );
+    executors.insert("cases-only", cases_executor);
 
     Arc::new(AiInfrastructure::new(
         vec![
@@ -6713,6 +6750,98 @@ async fn phase3_custom_testing_generated_draft_can_be_saved_via_existing_test_ca
     .await;
     assert_eq!(status, StatusCode::OK, "body={validated}");
     assert_eq!(validated["status"], "VALIDATED", "body={validated}");
+}
+
+/// Phase 1 gap-closing — Custom Testing's own generation endpoint now gets
+/// the same real Vector Store + RAG Retrieval grounding the main
+/// `generate-ai` endpoint already has. Proven the same way `ai_generation
+/// .rs`'s own prompt-content tests prove grounding: capture the real prompt
+/// text `custom_testing::run` actually sent to the "cases" AI call (via
+/// `RecordingExecutor`) and assert it contains the real approved case's
+/// own title — not just a response-shape assertion, real prompt content.
+#[tokio::test]
+async fn phase1_custom_testing_generation_is_grounded_by_a_real_similar_approved_case() {
+    // Fixed vector for both the approved case's own embedding and this
+    // generation's query embedding — real, deterministic cosine similarity
+    // of 1.0, same technique as the main generator's own RAG test.
+    let embedder = Arc::new(FakeEmbedder::configured(vec![1.0, 0.0, 0.0]));
+    let cases_executor = Arc::new(RecordingExecutor::ok_sequence(vec![
+        valid_custom_testing_cases_response(),
+    ]));
+    let ai_infra = custom_testing_ai_infra_with_cases_executor(
+        valid_custom_testing_analysis_response(),
+        cases_executor.clone(),
+    );
+    let (state, _dir) = test_state_with_ai_router_and_embedder(ai_infra, embedder).await;
+    let project = make_project(&state, "Custom Testing RAG").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    // Approve one real case first — this project now has exactly one real
+    // embedded case (same approve flow already proven end-to-end for the
+    // main generator's own RAG test).
+    let (_, created) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(&owner),
+            Some(sample_test_case_body("Reject invalid password")),
+        ),
+    )
+    .await;
+    let id = created["id"].as_str().unwrap().to_string();
+    send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/validate"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    let (status, approved) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/approve"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={approved}");
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/custom-testing/generate"),
+            Some(&owner),
+            Some(serde_json::json!({
+                "requirement_text": "Test login lockout after repeated invalid password attempts.",
+                "scope": "Authentication",
+                "skills": [{"id": "skill-security-testing", "name": "Security Testing", "description": ""}]
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["generation_source"], "REAL_AI", "body={body}");
+
+    let prompts = cases_executor.prompts.lock().unwrap();
+    assert_eq!(prompts.len(), 1, "the cases call must have run exactly once");
+    assert!(
+        prompts[0].contains("Reject invalid password"),
+        "the real prompt sent to the cases call must include this project's own real approved \
+         case as a similar-case grounding example: {}",
+        prompts[0]
+    );
+    assert!(
+        prompts[0].to_lowercase().contains("already-approved"),
+        "the real similar-cases prompt section must be present: {}",
+        prompts[0]
+    );
 }
 
 // ============================================================ Phase 4 — API Testing
