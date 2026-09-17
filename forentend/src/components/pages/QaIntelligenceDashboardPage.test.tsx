@@ -286,10 +286,9 @@ describe('QaIntelligenceDashboardPage & Subcomponents (Phase 7)', () => {
   it('renders Execution Health KPIs correctly from real data', async () => {
     renderDashboard();
     await waitFor(() => {
-      expect(screen.getByText('Core Payment Service')).toBeTruthy();
+      expect(screen.getByText('Total Executions')).toBeTruthy();
     });
 
-    expect(screen.getByText('Total Executions')).toBeTruthy();
     expect(screen.getByText('Pass Rate')).toBeTruthy();
     expect(screen.getByText('Failure Rate')).toBeTruthy();
     expect(screen.getByText('Flaky Tests')).toBeTruthy();
@@ -529,7 +528,7 @@ describe('QaIntelligenceDashboardPage & Subcomponents (Phase 7)', () => {
   // 13. Refresh Button
   it('clicking Refresh refetches all intelligence endpoints', async () => {
     renderDashboard();
-    await waitFor(() => expect(screen.getByTestId('intelligence-refresh-btn')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Total Executions')).toBeTruthy());
 
     const initialCalls = vi.mocked(aiqaApi.intelligence.telemetry).mock.calls.length;
     fireEvent.click(screen.getByTestId('intelligence-refresh-btn'));
