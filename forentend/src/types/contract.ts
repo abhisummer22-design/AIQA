@@ -915,6 +915,12 @@ export interface GenerateAiTestCasesResponse {
    *  none embedded yet, or when no embedding provider is configured —
    *  never a claim of grounding that did not really happen). */
   similar_cases_used: number;
+  /** Phase 2 gap-closing (document-level RAG) — how many of this project's
+   *  own previously-uploaded requirement documents were genuinely retrieved
+   *  and folded into the prompt as background/source material (0 for a
+   *  project with none embedded yet, or when no embedding provider is
+   *  configured — never a claim of grounding that did not really happen). */
+  similar_documents_used: number;
   /** Real, summed token/cost/latency across every wave that actually ran
    *  (`ai_generation::aggregate_wave_usage`). The token/cost totals are
    *  `null` only when at least one wave that ran has a genuinely unknown

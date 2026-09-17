@@ -89,6 +89,7 @@ function aiGenerateResponse(overrides: Partial<GenerateAiTestCasesResponse> = {}
     fallback_reason: null,
     crawl_pages_used: 0,
     similar_cases_used: 0,
+    similar_documents_used: 0,
     total_prompt_tokens: 120,
     total_completion_tokens: 340,
     total_estimated_cost_usd: 0,

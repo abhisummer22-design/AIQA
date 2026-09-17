@@ -322,6 +322,24 @@ pub struct SimilarCaseExample {
     pub expected_result: String,
 }
 
+/// Phase 2 (document-level RAG) — a real excerpt from one of this project's
+/// own previously-uploaded requirement documents (BRD/PRD/FRD/etc —
+/// `doc_extract.rs`'s real text extraction, persisted by `store.rs`'s
+/// `documents` table), offered to the model as background/source material.
+/// Selected the same way as [`SimilarCaseExample`]: real cosine similarity
+/// between a real Gemini embedding of this generation request's own
+/// requirement text and this project's own stored document embeddings (see
+/// [`rank_similar_documents`]) — never a fabricated "relevant" excerpt.
+/// Unlike a similar test case (a style/structure reference the model must
+/// NOT repeat), a document excerpt is closer to source material — see
+/// `build_feedback_block`'s own rendering for the distinct framing this
+/// gets.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SimilarDocumentExample {
+    pub file_name: String,
+    pub excerpt: String,
+}
+
 /// The "self-learning" input the module doc comment above now has a real
 /// step for (`intelligence::Intelligence::load_feedback_context`): a small,
 /// bounded, real summary of this project's own past execution history,
@@ -359,6 +377,17 @@ pub struct FeedbackContext {
     /// embedded cases yet, or when no embedding provider is configured —
     /// generation proceeds exactly as it did before this field existed.
     pub similar_cases: Vec<SimilarCaseExample>,
+    /// Phase 2 (document-level RAG) — this project's own most relevant
+    /// previously-uploaded requirement document excerpts (see
+    /// [`SimilarDocumentExample`]), highest similarity first, already capped
+    /// at [`MAX_SIMILAR_DOCUMENTS`]. Populated the same way `similar_cases`
+    /// is — separately, by `api.rs::find_similar_documents` — for the same
+    /// reason: it needs this request's own real requirement text embedded,
+    /// which `build_feedback_context`'s pure, history-only inputs do not
+    /// carry. `Default` (empty) is the correct, honest value for a project
+    /// with no embedded documents yet, or when no embedding provider is
+    /// configured.
+    pub similar_documents: Vec<SimilarDocumentExample>,
 }
 
 /// A risk/flakiness score below this (both are already `[0,1]` composites —
@@ -382,6 +411,19 @@ pub const MAX_SIMILAR_CASES: usize = 5;
 /// convey real structure/detail level without spending unbounded prompt
 /// budget on one example's full step list.
 const MAX_SIMILAR_CASE_STEPS_SHOWN: usize = 2;
+/// Phase 2 (document-level RAG) — how many of this project's most relevant
+/// previously-uploaded documents `rank_similar_documents` returns. Lower
+/// than [`MAX_SIMILAR_CASES`] because each document excerpt below is itself
+/// far larger than a test case's few fields — same "a large real project
+/// must never make the prompt unbounded" reasoning as `MAX_RISK_HIGHLIGHTS`,
+/// just budgeted per-item rather than per-count.
+pub const MAX_SIMILAR_DOCUMENTS: usize = 3;
+/// Caps how many characters of a similar document's real extracted text are
+/// shown — enough to give the model genuine source material without one
+/// large document consuming the entire prompt budget by itself. Not tuned
+/// against any labeled dataset, same honest limitation `MAX_RISK_HIGHLIGHTS`
+/// already discloses.
+const MAX_DOCUMENT_EXCERPT_CHARS: usize = 1200;
 
 /// Pure, DB-free reshaping of two already-real, already-tested `Store` reads
 /// (`list_test_intelligence`, `list_bug_drafts` — see
@@ -443,6 +485,10 @@ pub fn build_feedback_context(
         // — see `FeedbackContext::similar_cases`'s own doc comment for why
         // this pure, history-only function cannot populate it itself.
         similar_cases: Vec::new(),
+        // Same reasoning, populated separately by `api.rs::
+        // find_similar_documents` — see `FeedbackContext::similar_documents`'s
+        // own doc comment.
+        similar_documents: Vec::new(),
     }
 }
 
@@ -495,6 +541,26 @@ pub fn rank_similar_test_cases(
         .collect();
     scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     scored.truncate(MAX_SIMILAR_CASES);
+    scored.into_iter().map(|(id, _)| id).collect()
+}
+
+/// Phase 2 (document-level RAG) — the exact same brute-force ranking as
+/// [`rank_similar_test_cases`] above (same real `cosine_similarity`, same
+/// "no ANN index needed at this scale" reasoning), just against this
+/// project's own document embeddings instead of test-case embeddings.
+/// Returns the [`MAX_SIMILAR_DOCUMENTS`] most similar document ids, highest
+/// cosine similarity first. Pure and DB-free, same testability reasoning as
+/// `rank_similar_test_cases`.
+pub fn rank_similar_documents(
+    query_embedding: &[f32],
+    candidates: &[crate::store::DocumentEmbeddingRow],
+) -> Vec<uuid::Uuid> {
+    let mut scored: Vec<(uuid::Uuid, f32)> = candidates
+        .iter()
+        .map(|c| (c.id, cosine_similarity(query_embedding, &c.embedding)))
+        .collect();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(MAX_SIMILAR_DOCUMENTS);
     scored.into_iter().map(|(id, _)| id).collect()
 }
 
@@ -584,6 +650,7 @@ fn build_feedback_block(feedback: &FeedbackContext) -> String {
     if feedback.risky_areas.is_empty()
         && feedback.confirmed_defect_patterns.is_empty()
         && feedback.similar_cases.is_empty()
+        && feedback.similar_documents.is_empty()
     {
         return String::new();
     }
@@ -635,6 +702,24 @@ fn build_feedback_block(feedback: &FeedbackContext) -> String {
                 "  - \"{}\" ({}): {steps_text}\n",
                 c.title, c.category
             ));
+        }
+    }
+    if !feedback.similar_documents.is_empty() {
+        block.push_str(
+            "- Relevant excerpts from this project's own previously-uploaded requirement \
+             documents (background/source material, NOT a case to imitate — a test case this \
+             inspires still must be directly supported by the requirement text below, per the \
+             EVIDENCE RULES above):\n",
+        );
+        for d in &feedback.similar_documents {
+            let char_count = d.excerpt.chars().count();
+            let excerpt = if char_count > MAX_DOCUMENT_EXCERPT_CHARS {
+                let head: String = d.excerpt.chars().take(MAX_DOCUMENT_EXCERPT_CHARS).collect();
+                format!("{head}...")
+            } else {
+                d.excerpt.clone()
+            };
+            block.push_str(&format!("  - \"{}\": {excerpt}\n", d.file_name));
         }
     }
     block.push('\n');
@@ -1948,6 +2033,87 @@ mod tests {
         ];
         let ranked = rank_similar_test_cases(&query, &candidates);
         assert_eq!(ranked, vec![real_match_id, mismatched_id]);
+    }
+
+    // ------------------------------------------- Phase 2 — document-level RAG
+
+    fn document_embedding_row(
+        id: uuid::Uuid,
+        vector: Vec<f32>,
+    ) -> crate::store::DocumentEmbeddingRow {
+        crate::store::DocumentEmbeddingRow {
+            id,
+            embedding: vector,
+        }
+    }
+
+    #[test]
+    fn rank_similar_documents_orders_by_real_cosine_similarity_highest_first() {
+        let query = vec![1.0, 0.0, 0.0];
+        let identical_id = uuid::Uuid::new_v4();
+        let orthogonal_id = uuid::Uuid::new_v4();
+        let opposite_id = uuid::Uuid::new_v4();
+        let candidates = vec![
+            document_embedding_row(opposite_id, vec![-1.0, 0.0, 0.0]),
+            document_embedding_row(orthogonal_id, vec![0.0, 1.0, 0.0]),
+            document_embedding_row(identical_id, vec![1.0, 0.0, 0.0]),
+        ];
+        let ranked = rank_similar_documents(&query, &candidates);
+        assert_eq!(
+            ranked,
+            vec![identical_id, orthogonal_id, opposite_id],
+            "identical direction must rank highest, orthogonal next, opposite direction last"
+        );
+    }
+
+    #[test]
+    fn rank_similar_documents_truncates_to_max_similar_documents() {
+        let query = vec![1.0, 0.0];
+        let candidates: Vec<crate::store::DocumentEmbeddingRow> = (0..MAX_SIMILAR_DOCUMENTS + 3)
+            .map(|i| document_embedding_row(uuid::Uuid::new_v4(), vec![1.0, i as f32]))
+            .collect();
+        let ranked = rank_similar_documents(&query, &candidates);
+        assert_eq!(ranked.len(), MAX_SIMILAR_DOCUMENTS);
+    }
+
+    #[test]
+    fn feedback_block_renders_similar_documents_as_source_material_not_a_case_to_imitate() {
+        let ctx = FeedbackContext {
+            similar_documents: vec![SimilarDocumentExample {
+                file_name: "Payments-BRD.docx".to_string(),
+                excerpt: "Refunds must be issued within 5 business days.".to_string(),
+            }],
+            ..Default::default()
+        };
+        let block = build_feedback_block(&ctx);
+        assert!(block.contains("Payments-BRD.docx"));
+        assert!(block.contains("Refunds must be issued within 5 business days."));
+        assert!(
+            block.to_lowercase().contains("not a case to imitate"),
+            "must be framed as source material, distinct from the similar-case framing: {block}"
+        );
+        assert!(block.to_lowercase().contains("evidence rules"));
+    }
+
+    #[test]
+    fn feedback_block_caps_how_many_characters_of_a_similar_document_it_shows() {
+        let long_text = "x".repeat(MAX_DOCUMENT_EXCERPT_CHARS + 500);
+        let ctx = FeedbackContext {
+            similar_documents: vec![SimilarDocumentExample {
+                file_name: "Huge-Spec.docx".to_string(),
+                excerpt: long_text,
+            }],
+            ..Default::default()
+        };
+        let block = build_feedback_block(&ctx);
+        assert!(
+            !block.contains(&"x".repeat(MAX_DOCUMENT_EXCERPT_CHARS + 1)),
+            "must not exceed the real per-document excerpt cap"
+        );
+        assert!(
+            block.contains(&"x".repeat(MAX_DOCUMENT_EXCERPT_CHARS)),
+            "must still show real content up to the cap"
+        );
     }
 
     #[test]
