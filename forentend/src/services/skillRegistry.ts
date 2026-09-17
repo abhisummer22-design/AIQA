@@ -14,11 +14,14 @@
  */
 import type { SkillDefinition } from '../types/skills';
 
-/** The 8 initial built-in skills (brief §5). Two are pre-selected by
- *  default in `useSkillSelection` (Functional Testing, Edge Case Analysis)
- *  — the same pair the brief's own layout mock shows checked; the rest
- *  start deselected, not because they are unavailable, but because a
- *  narrower default is easier for a user to deliberately widen than to
+/** The 8 initial built-in skills (brief §5), plus 5 more added in Phase 1
+ *  gap-closing for categories that previously had no real skill counterpart
+ *  at all (UI/UX, Negative, Positive, Spike, Load — see
+ *  `categoryMatchedSkillIds`'s own doc comment for that gap). Two are
+ *  pre-selected by default in `useSkillSelection` (Functional Testing, Edge
+ *  Case Analysis) — the same pair the brief's own layout mock shows checked;
+ *  the rest start deselected, not because they are unavailable, but because
+ *  a narrower default is easier for a user to deliberately widen than to
  *  narrow. */
 export const BUILT_IN_SKILLS: SkillDefinition[] = [
   {
@@ -81,6 +84,52 @@ export const BUILT_IN_SKILLS: SkillDefinition[] = [
     id: 'skill-business-case-testing',
     name: 'Business Case Testing',
     description: 'End-to-end business-rule and workflow scenario coverage.',
+    type: 'BUILT_IN',
+    availability: 'AVAILABLE',
+    configurable: true,
+  },
+  // Phase 1 gap-closing — 5 real skills for categories that previously had
+  // no matching built-in skill at all (this file's own `categoryMatchedSkillIds`
+  // doc comment explicitly named "UI/UX Testing" as a real, deliberate gap;
+  // same was true for Negative/Positive/Spike/Load). Each name is an exact
+  // stem match for its real category id (`GenerationConfigSection.tsx`'s
+  // `TEST_CATEGORIES`) — no new alias needed in `CATEGORY_STEM_ALIASES`.
+  {
+    id: 'skill-ui-ux-testing',
+    name: 'UI/UX Testing',
+    description: 'Layout, responsiveness, accessibility, and interaction-feedback coverage.',
+    type: 'BUILT_IN',
+    availability: 'AVAILABLE',
+    configurable: true,
+  },
+  {
+    id: 'skill-negative-testing',
+    name: 'Negative Testing',
+    description: 'Invalid/unauthorized input correctly rejected, not just explored.',
+    type: 'BUILT_IN',
+    availability: 'AVAILABLE',
+    configurable: true,
+  },
+  {
+    id: 'skill-positive-testing',
+    name: 'Positive Testing',
+    description: 'Valid-input, expected-outcome coverage only — the complement to Negative.',
+    type: 'BUILT_IN',
+    availability: 'AVAILABLE',
+    configurable: true,
+  },
+  {
+    id: 'skill-spike-testing',
+    name: 'Spike Testing',
+    description: 'A sudden, immediate jump in concurrent load — not a gradual ramp.',
+    type: 'BUILT_IN',
+    availability: 'AVAILABLE',
+    configurable: true,
+  },
+  {
+    id: 'skill-load-testing',
+    name: 'Load Testing',
+    description: 'Steady, sustained concurrent usage over time.',
     type: 'BUILT_IN',
     availability: 'AVAILABLE',
     configurable: true,

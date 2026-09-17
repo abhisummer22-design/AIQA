@@ -924,7 +924,7 @@ describe('DashboardPage — real AI Engine panel', () => {
     expect(screen.getByText('AUTO mode')).toBeTruthy();
   });
 
-  it('reports embedding capability truthfully as NONE — no vector engine is claimed', async () => {
+  it("reports the routed model's own embedding capability truthfully as NONE — Vector Store + RAG Retrieval are a separate, real capability, not claimed as this model's own", async () => {
     setApiKey(RAW_KEY);
     mockWithAiStatus();
     renderApp();
@@ -934,7 +934,8 @@ describe('DashboardPage — real AI Engine panel', () => {
     await waitFor(() => expect(screen.getByText('embedding')).toBeTruthy());
     const panel = document.getElementById('ai-engine-panel')!;
     expect(within(panel).getAllByText('NONE').length).toBeGreaterThan(0);
-    expect(within(panel).getByText(/Embeddings\/vector search have no endpoint/)).toBeTruthy();
+    expect(within(panel).getByText(/This model's own embedding capability is genuinely NONE/)).toBeTruthy();
+    expect(within(panel).getByText(/Vector Store \+ RAG Retrieval/)).toBeTruthy();
   });
 
   it('renders UNKNOWN capability as unknown — never upgraded to a guess', async () => {
