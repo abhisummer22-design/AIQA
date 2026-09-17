@@ -46,6 +46,85 @@ fn parse_ts_opt(s: Option<String>) -> Option<chrono::DateTime<chrono::Utc>> {
     s.map(|s| parse_ts(&s))
 }
 
+fn healing_proposal_from_row(r: sqlx::sqlite::SqliteRow) -> Result<HealingProposalRow> {
+    Ok(HealingProposalRow {
+        id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap_or_default(),
+        project_id: r.get("project_id"),
+        run_id: Uuid::parse_str(&r.get::<String, _>("run_id")).unwrap_or_default(),
+        task_id: r.get("task_id"),
+        failure_fingerprint: r.get("failure_fingerprint"),
+        diagnosis_category: r.get("diagnosis_category"),
+        confidence: r.get("confidence"),
+        risk_level: r.get("risk_level"),
+        requires_approval: r.get::<i64, _>("requires_approval") != 0,
+        original_actions: r.get("original_actions"),
+        proposed_actions: r.get("proposed_actions"),
+        ast_diff: r.get("ast_diff"),
+        rationale: r.get("rationale"),
+        evidence_refs: r.get("evidence_refs"),
+        state: r.get("state"),
+        idempotency_key: r.get("idempotency_key"),
+        healing_run_id: r
+            .get::<Option<String>, _>("healing_run_id")
+            .and_then(|s| Uuid::parse_str(&s).ok()),
+        verification_result: r.get("verification_result"),
+        approved_by: r.get("approved_by"),
+        approved_at: parse_ts_opt(r.get("approved_at")),
+        rejection_reason: r.get("rejection_reason"),
+        created_at: parse_ts(&r.get::<String, _>("created_at")),
+        expires_at: parse_ts(&r.get::<String, _>("expires_at")),
+        updated_at: parse_ts(&r.get::<String, _>("updated_at")),
+    })
+}
+
+fn healing_strategy_metrics_from_row(
+    r: sqlx::sqlite::SqliteRow,
+) -> Result<HealingStrategyMetricsRow> {
+    Ok(HealingStrategyMetricsRow {
+        id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap_or_default(),
+        project_id: r.get("project_id"),
+        strategy: r.get("strategy"),
+        failure_category: r.get("failure_category"),
+        attempts_count: r.get("attempts_count"),
+        verified_count: r.get("verified_count"),
+        not_verified_count: r.get("not_verified_count"),
+        regression_count: r.get("regression_count"),
+        calibrated_confidence: r.get("calibrated_confidence"),
+        updated_at: parse_ts(&r.get::<String, _>("updated_at")),
+    })
+}
+
+fn execution_telemetry_from_row(r: sqlx::sqlite::SqliteRow) -> Result<ExecutionTelemetryRow> {
+    Ok(ExecutionTelemetryRow {
+        id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap_or_default(),
+        project_id: r.get("project_id"),
+        run_id: Uuid::parse_str(&r.get::<String, _>("run_id")).unwrap_or_default(),
+        task_id: r.get("task_id"),
+        task_name: r.get("task_name"),
+        test_case_id: r
+            .get::<Option<String>, _>("test_case_id")
+            .and_then(|s| Uuid::parse_str(&s).ok()),
+        execution_id: r.get("execution_id"),
+        executor: r.get("executor"),
+        environment: r.get("environment"),
+        start_time: parse_ts(&r.get::<String, _>("start_time")),
+        end_time: parse_ts_opt(r.get("end_time")),
+        duration_ms: r.get("duration_ms"),
+        status: r.get("status"),
+        retry_count: r.get("retry_count"),
+        healing_attempt_count: r.get("healing_attempt_count"),
+        failure_category: r.get("failure_category"),
+        failure_fingerprint: r.get("failure_fingerprint"),
+        error_message: r.get("error_message"),
+        evidence_refs: r.get("evidence_refs"),
+        assertion_result: r.get("assertion_result"),
+        http_status: r.get("http_status"),
+        selector: r.get("selector"),
+        verification_outcome: r.get("verification_outcome"),
+        created_at: parse_ts(&r.get::<String, _>("created_at")),
+    })
+}
+
 fn performance_run_from_row(r: sqlx::sqlite::SqliteRow) -> Result<PerformanceRunRow> {
     Ok(PerformanceRunRow {
         id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap_or_default(),
@@ -1382,7 +1461,10 @@ impl Store {
     /// `ai_generation::rank_similar_test_cases` brute-force-scores against
     /// a generation request's own query embedding. Unordered (ranking is
     /// the caller's job, not this read's).
-    pub async fn list_test_case_embeddings(&self, project_id: &str) -> Result<Vec<TestCaseEmbeddingRow>> {
+    pub async fn list_test_case_embeddings(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<TestCaseEmbeddingRow>> {
         let rows = sqlx::query(
             "SELECT test_case_id, embedding FROM test_case_embeddings WHERE project_id = ?",
         )
@@ -1397,10 +1479,11 @@ impl Store {
     /// embedding right now, not a claim about the project's total case
     /// count.
     pub async fn count_test_case_embeddings(&self, project_id: &str) -> Result<i64> {
-        let row = sqlx::query("SELECT COUNT(*) as c FROM test_case_embeddings WHERE project_id = ?")
-            .bind(project_id)
-            .fetch_one(&self.pool)
-            .await?;
+        let row =
+            sqlx::query("SELECT COUNT(*) as c FROM test_case_embeddings WHERE project_id = ?")
+                .bind(project_id)
+                .fetch_one(&self.pool)
+                .await?;
         Ok(row.get::<i64, _>("c"))
     }
 
@@ -2421,6 +2504,37 @@ impl Store {
         }))
     }
 
+    pub async fn get_failure_cluster_by_id_scoped(
+        &self,
+        project_id: &str,
+        id: Uuid,
+    ) -> Result<Option<FailureClusterRow>> {
+        let row = sqlx::query(
+            "SELECT id, signature, first_seen_at, last_seen_at, occurrence_count, root_cause_hypothesis, confidence, reproducibility, review_state,
+                    ai_hypothesis, ai_hypothesis_provider, ai_hypothesis_model, ai_hypothesis_generated_at
+             FROM failure_clusters WHERE id = ? AND project_id = ?",
+        )
+        .bind(id.to_string())
+        .bind(project_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| FailureClusterRow {
+            id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap_or_default(),
+            signature: r.get("signature"),
+            first_seen_at: parse_ts(&r.get::<String, _>("first_seen_at")),
+            last_seen_at: parse_ts(&r.get::<String, _>("last_seen_at")),
+            occurrence_count: r.get("occurrence_count"),
+            root_cause_hypothesis: r.get("root_cause_hypothesis"),
+            confidence: r.get("confidence"),
+            reproducibility: r.get("reproducibility"),
+            review_state: r.get("review_state"),
+            ai_hypothesis: r.get("ai_hypothesis"),
+            ai_hypothesis_provider: r.get("ai_hypothesis_provider"),
+            ai_hypothesis_model: r.get("ai_hypothesis_model"),
+            ai_hypothesis_generated_at: parse_ts_opt(r.get("ai_hypothesis_generated_at")),
+        }))
+    }
+
     /// Build order item 4 — persists an on-demand AI-assisted hypothesis
     /// onto an existing failure cluster. Additive only: never touches
     /// `root_cause_hypothesis`/`confidence`/`occurrence_count`/any
@@ -2704,15 +2818,640 @@ impl Store {
     /// not one batch-length short or long.
     pub async fn count_audit(&self, project_filter: Option<&str>) -> Result<i64> {
         let count: i64 = match project_filter {
-            Some(pid) => sqlx::query_scalar("SELECT COUNT(*) FROM audit_log WHERE project_id = ?")
-                .bind(pid)
-                .fetch_one(&self.pool)
-                .await?,
-            None => sqlx::query_scalar("SELECT COUNT(*) FROM audit_log")
-                .fetch_one(&self.pool)
-                .await?,
+            Some(pid) => {
+                sqlx::query_scalar("SELECT COUNT(*) FROM audit_log WHERE project_id = ?")
+                    .bind(pid)
+                    .fetch_one(&self.pool)
+                    .await?
+            }
+            None => {
+                sqlx::query_scalar("SELECT COUNT(*) FROM audit_log")
+                    .fetch_one(&self.pool)
+                    .await?
+            }
         };
         Ok(count)
+    }
+
+    // ---------------------------------------------------------------- healing
+
+    pub async fn insert_healing_proposal(&self, p: &HealingProposalRow) -> Result<()> {
+        let req_appr = if p.requires_approval { 1i64 } else { 0i64 };
+        let app_at_s = p.approved_at.map(|t| t.to_rfc3339());
+        sqlx::query(
+            r#"INSERT INTO healing_proposals (
+                id, project_id, run_id, task_id, failure_fingerprint, diagnosis_category,
+                confidence, risk_level, requires_approval, original_actions, proposed_actions,
+                ast_diff, rationale, evidence_refs, state, idempotency_key, healing_run_id,
+                verification_result, approved_by, approved_at, rejection_reason, created_at,
+                expires_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+        )
+        .bind(p.id.to_string())
+        .bind(&p.project_id)
+        .bind(p.run_id.to_string())
+        .bind(&p.task_id)
+        .bind(&p.failure_fingerprint)
+        .bind(&p.diagnosis_category)
+        .bind(p.confidence)
+        .bind(&p.risk_level)
+        .bind(req_appr)
+        .bind(&p.original_actions)
+        .bind(&p.proposed_actions)
+        .bind(&p.ast_diff)
+        .bind(&p.rationale)
+        .bind(&p.evidence_refs)
+        .bind(&p.state)
+        .bind(&p.idempotency_key)
+        .bind(p.healing_run_id.map(|u| u.to_string()))
+        .bind(&p.verification_result)
+        .bind(&p.approved_by)
+        .bind(app_at_s)
+        .bind(&p.rejection_reason)
+        .bind(p.created_at.to_rfc3339())
+        .bind(p.expires_at.to_rfc3339())
+        .bind(p.updated_at.to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_healing_proposal(&self, id: Uuid) -> Result<Option<HealingProposalRow>> {
+        let row = sqlx::query("SELECT * FROM healing_proposals WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(healing_proposal_from_row).transpose()
+    }
+
+    pub async fn get_healing_proposal_by_idempotency(
+        &self,
+        project_id: &str,
+        idempotency_key: &str,
+    ) -> Result<Option<HealingProposalRow>> {
+        let row = sqlx::query(
+            "SELECT * FROM healing_proposals WHERE project_id = ? AND idempotency_key = ?",
+        )
+        .bind(project_id)
+        .bind(idempotency_key)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(healing_proposal_from_row).transpose()
+    }
+
+    pub async fn list_healing_proposals(
+        &self,
+        project_id: &str,
+        state: Option<&str>,
+    ) -> Result<Vec<HealingProposalRow>> {
+        let rows = if let Some(s) = state {
+            sqlx::query(
+                "SELECT * FROM healing_proposals WHERE project_id = ? AND state = ? ORDER BY created_at DESC",
+            )
+            .bind(project_id)
+            .bind(s)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT * FROM healing_proposals WHERE project_id = ? ORDER BY created_at DESC",
+            )
+            .bind(project_id)
+            .fetch_all(&self.pool)
+            .await?
+        };
+        rows.into_iter().map(healing_proposal_from_row).collect()
+    }
+
+    pub async fn count_healing_attempts(
+        &self,
+        project_id: &str,
+        run_id: &str,
+        task_id: &str,
+    ) -> Result<i64> {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM healing_proposals WHERE project_id = ? AND run_id = ? AND task_id = ?",
+        )
+        .bind(project_id)
+        .bind(run_id)
+        .bind(task_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(count)
+    }
+
+    pub async fn update_healing_proposal_state(
+        &self,
+        id: Uuid,
+        state: &str,
+        approved_by: Option<&str>,
+        approved_at: Option<chrono::DateTime<chrono::Utc>>,
+        rejection_reason: Option<&str>,
+        healing_run_id: Option<Uuid>,
+        verification_result: Option<&str>,
+    ) -> Result<()> {
+        let now = now_rfc3339();
+        let app_at_s = approved_at.map(|t| t.to_rfc3339());
+        let heal_run_s = healing_run_id.map(|u| u.to_string());
+        sqlx::query(
+            r#"UPDATE healing_proposals SET
+                state = ?,
+                approved_by = COALESCE(?, approved_by),
+                approved_at = COALESCE(?, approved_at),
+                rejection_reason = COALESCE(?, rejection_reason),
+                healing_run_id = COALESCE(?, healing_run_id),
+                verification_result = COALESCE(?, verification_result),
+                updated_at = ?
+            WHERE id = ?"#,
+        )
+        .bind(state)
+        .bind(approved_by)
+        .bind(app_at_s)
+        .bind(rejection_reason)
+        .bind(heal_run_s)
+        .bind(verification_result)
+        .bind(now)
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn record_healing_verification_metric(
+        &self,
+        project_id: &str,
+        strategy: &str,
+        failure_category: &str,
+        outcome: &str,
+    ) -> Result<HealingStrategyMetricsRow> {
+        let existing = sqlx::query(
+            "SELECT * FROM healing_strategy_metrics WHERE project_id = ? AND strategy = ? AND failure_category = ?",
+        )
+        .bind(project_id)
+        .bind(strategy)
+        .bind(failure_category)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        let now = chrono::Utc::now();
+        let is_verified = outcome == "VERIFIED";
+        let is_not_verified = outcome == "NOT_VERIFIED";
+        let is_regression = outcome == "REGRESSION_INTRODUCED";
+
+        if let Some(r) = existing {
+            let mut row = healing_strategy_metrics_from_row(r)?;
+            row.attempts_count += 1;
+            if is_verified {
+                row.verified_count += 1;
+            }
+            if is_not_verified {
+                row.not_verified_count += 1;
+            }
+            if is_regression {
+                row.regression_count += 1;
+            }
+            let base = if row.attempts_count > 0 {
+                row.verified_count as f64 / row.attempts_count as f64
+            } else {
+                0.5
+            };
+            let penalty = if row.attempts_count > 0 {
+                (row.regression_count as f64 / row.attempts_count as f64) * 0.5
+            } else {
+                0.0
+            };
+            row.calibrated_confidence = (base - penalty).clamp(0.05, 0.99);
+            row.updated_at = now;
+
+            sqlx::query(
+                r#"UPDATE healing_strategy_metrics SET
+                    attempts_count = ?,
+                    verified_count = ?,
+                    not_verified_count = ?,
+                    regression_count = ?,
+                    calibrated_confidence = ?,
+                    updated_at = ?
+                WHERE id = ?"#,
+            )
+            .bind(row.attempts_count)
+            .bind(row.verified_count)
+            .bind(row.not_verified_count)
+            .bind(row.regression_count)
+            .bind(row.calibrated_confidence)
+            .bind(row.updated_at.to_rfc3339())
+            .bind(row.id.to_string())
+            .execute(&self.pool)
+            .await?;
+
+            Ok(row)
+        } else {
+            let id = Uuid::new_v4();
+            let attempts_count = 1i64;
+            let verified_count = if is_verified { 1i64 } else { 0i64 };
+            let not_verified_count = if is_not_verified { 1i64 } else { 0i64 };
+            let regression_count = if is_regression { 1i64 } else { 0i64 };
+            let base: f64 = if is_verified { 0.90 } else { 0.30 };
+            let penalty: f64 = if is_regression { 0.25 } else { 0.0 };
+            let calibrated_confidence = (base - penalty).clamp(0.05, 0.99);
+
+            let row = HealingStrategyMetricsRow {
+                id,
+                project_id: project_id.to_string(),
+                strategy: strategy.to_string(),
+                failure_category: failure_category.to_string(),
+                attempts_count,
+                verified_count,
+                not_verified_count,
+                regression_count,
+                calibrated_confidence,
+                updated_at: now,
+            };
+
+            sqlx::query(
+                r#"INSERT INTO healing_strategy_metrics (
+                    id, project_id, strategy, failure_category, attempts_count,
+                    verified_count, not_verified_count, regression_count, calibrated_confidence,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+            )
+            .bind(row.id.to_string())
+            .bind(&row.project_id)
+            .bind(&row.strategy)
+            .bind(&row.failure_category)
+            .bind(row.attempts_count)
+            .bind(row.verified_count)
+            .bind(row.not_verified_count)
+            .bind(row.regression_count)
+            .bind(row.calibrated_confidence)
+            .bind(row.updated_at.to_rfc3339())
+            .execute(&self.pool)
+            .await?;
+
+            Ok(row)
+        }
+    }
+
+    pub async fn get_healing_strategy_metrics(
+        &self,
+        project_id: &str,
+        strategy: &str,
+        failure_category: &str,
+    ) -> Result<Option<HealingStrategyMetricsRow>> {
+        let row = sqlx::query(
+            "SELECT * FROM healing_strategy_metrics WHERE project_id = ? AND strategy = ? AND failure_category = ?",
+        )
+        .bind(project_id)
+        .bind(strategy)
+        .bind(failure_category)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(healing_strategy_metrics_from_row).transpose()
+    }
+
+    pub async fn list_healing_strategy_metrics(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<HealingStrategyMetricsRow>> {
+        let rows = sqlx::query(
+            "SELECT * FROM healing_strategy_metrics WHERE project_id = ? ORDER BY strategy ASC",
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(healing_strategy_metrics_from_row)
+            .collect()
+    }
+
+    // ------------------------------------------------------------- execution_telemetry (Phase 6)
+
+    pub async fn insert_execution_telemetry(
+        &self,
+        t: &crate::adaptive_intelligence::ExecutionTelemetry,
+    ) -> Result<()> {
+        let evidence_json =
+            serde_json::to_string(&t.evidence_refs).unwrap_or_else(|_| "[]".to_string());
+        sqlx::query(
+            r#"INSERT INTO execution_telemetry (
+                id, project_id, run_id, task_id, task_name, test_case_id, execution_id,
+                executor, environment, start_time, end_time, duration_ms, status,
+                retry_count, healing_attempt_count, failure_category, failure_fingerprint,
+                error_message, evidence_refs, assertion_result, http_status, selector,
+                verification_outcome, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+        )
+        .bind(t.id.to_string())
+        .bind(&t.project_id)
+        .bind(t.run_id.to_string())
+        .bind(&t.task_id)
+        .bind(&t.task_name)
+        .bind(t.test_case_id.map(|u| u.to_string()))
+        .bind(&t.execution_id)
+        .bind(&t.executor)
+        .bind(&t.environment)
+        .bind(t.start_time.to_rfc3339())
+        .bind(t.end_time.map(|ts| ts.to_rfc3339()))
+        .bind(t.duration_ms as i64)
+        .bind(t.status.as_str())
+        .bind(t.retry_count as i64)
+        .bind(t.healing_attempt_count as i64)
+        .bind(t.failure_category.map(|c| c.as_str().to_string()))
+        .bind(&t.failure_fingerprint)
+        .bind(&t.error_message)
+        .bind(evidence_json)
+        .bind(&t.assertion_result)
+        .bind(t.http_status.map(|s| s as i64))
+        .bind(&t.selector)
+        .bind(&t.verification_outcome)
+        .bind(t.created_at.to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn list_execution_telemetry(
+        &self,
+        project_id: &str,
+        limit: i64,
+    ) -> Result<Vec<ExecutionTelemetryRow>> {
+        let rows = sqlx::query(
+            "SELECT * FROM execution_telemetry WHERE project_id = ? ORDER BY created_at DESC LIMIT ?",
+        )
+        .bind(project_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter().map(execution_telemetry_from_row).collect()
+    }
+
+    pub async fn count_execution_telemetry(&self, project_id: Option<&str>) -> Result<i64> {
+        let count: i64 = match project_id {
+            Some(pid) => {
+                sqlx::query_scalar("SELECT COUNT(*) FROM execution_telemetry WHERE project_id = ?")
+                    .bind(pid)
+                    .fetch_one(&self.pool)
+                    .await?
+            }
+            None => {
+                sqlx::query_scalar("SELECT COUNT(*) FROM execution_telemetry")
+                    .fetch_one(&self.pool)
+                    .await?
+            }
+        };
+        Ok(count)
+    }
+
+    pub async fn list_flakiness_metrics(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<FlakinessMetricsRow>> {
+        let rows = sqlx::query(
+            "SELECT fm.* FROM flakiness_metrics fm JOIN quality_nodes qn ON fm.node_id = qn.id WHERE qn.project_id = ?",
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(FlakinessMetricsRow {
+                id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap_or_default(),
+                node_id: Uuid::parse_str(&r.get::<String, _>("node_id")).unwrap_or_default(),
+                flakiness_score: r.get("flakiness_score"),
+                window_runs: r.get("window_runs"),
+                window_failures: r.get("window_failures"),
+                environment_correlation: r.get("environment_correlation"),
+                computed_at: chrono::DateTime::parse_from_rfc3339(
+                    &r.get::<String, _>("computed_at"),
+                )
+                .unwrap_or_default()
+                .with_timezone(&chrono::Utc),
+            });
+        }
+        Ok(out)
+    }
+
+    pub async fn list_quality_nodes(&self, project_id: &str) -> Result<Vec<QualityNodeRow>> {
+        let rows = sqlx::query("SELECT * FROM quality_nodes WHERE project_id = ?")
+            .bind(project_id)
+            .fetch_all(&self.pool)
+            .await?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(QualityNodeRow {
+                id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap_or_default(),
+                project_id: r.get("project_id"),
+                node_type: r.get("node_type"),
+                external_ref: r.get("external_ref"),
+                name: r.get("name"),
+                metadata: r.get("metadata"),
+                created_at: chrono::DateTime::parse_from_rfc3339(&r.get::<String, _>("created_at"))
+                    .unwrap_or_default()
+                    .with_timezone(&chrono::Utc),
+            });
+        }
+        Ok(out)
+    }
+
+    pub async fn list_quality_relations_for_project(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<QualityRelationRow>> {
+        let rows = sqlx::query(
+            "SELECT qr.* FROM quality_relations qr JOIN quality_nodes qn ON qr.from_node_id = qn.id WHERE qn.project_id = ?",
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(QualityRelationRow {
+                id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap_or_default(),
+                from_node_id: Uuid::parse_str(&r.get::<String, _>("from_node_id"))
+                    .unwrap_or_default(),
+                to_node_id: Uuid::parse_str(&r.get::<String, _>("to_node_id")).unwrap_or_default(),
+                relation_type: r.get("relation_type"),
+                metadata: r.get("metadata"),
+                created_at: chrono::DateTime::parse_from_rfc3339(&r.get::<String, _>("created_at"))
+                    .unwrap_or_default()
+                    .with_timezone(&chrono::Utc),
+            });
+        }
+        Ok(out)
+    }
+
+    pub async fn get_task_telemetry_history(
+        &self,
+        project_id: &str,
+        task_name: &str,
+        environment: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<ExecutionTelemetryRow>> {
+        let rows = match environment {
+            Some(env) => {
+                sqlx::query(
+                    "SELECT * FROM execution_telemetry WHERE project_id = ? AND task_name = ? AND environment = ? ORDER BY created_at ASC LIMIT ?",
+                )
+                .bind(project_id)
+                .bind(task_name)
+                .bind(env)
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await?
+            }
+            None => {
+                sqlx::query(
+                    "SELECT * FROM execution_telemetry WHERE project_id = ? AND task_name = ? ORDER BY created_at ASC LIMIT ?",
+                )
+                .bind(project_id)
+                .bind(task_name)
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await?
+            }
+        };
+
+        rows.into_iter().map(execution_telemetry_from_row).collect()
+    }
+
+    // ------------------------------------------------------------- operations & cross-env correlation (Phase 8)
+
+    pub async fn get_failure_cluster_by_signature(
+        &self,
+        project_id: &str,
+        signature: &str,
+    ) -> Result<Option<FailureClusterRow>> {
+        let row = sqlx::query(
+            "SELECT id, signature, first_seen_at, last_seen_at, occurrence_count, root_cause_hypothesis, confidence, reproducibility, review_state,
+                    ai_hypothesis, ai_hypothesis_provider, ai_hypothesis_model, ai_hypothesis_generated_at
+             FROM failure_clusters WHERE project_id = ? AND signature = ?",
+        )
+        .bind(project_id)
+        .bind(signature)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| FailureClusterRow {
+            id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap_or_default(),
+            signature: r.get("signature"),
+            first_seen_at: parse_ts(&r.get::<String, _>("first_seen_at")),
+            last_seen_at: parse_ts(&r.get::<String, _>("last_seen_at")),
+            occurrence_count: r.get("occurrence_count"),
+            root_cause_hypothesis: r.get("root_cause_hypothesis"),
+            confidence: r.get("confidence"),
+            reproducibility: r.get("reproducibility"),
+            review_state: r.get("review_state"),
+            ai_hypothesis: r.get("ai_hypothesis"),
+            ai_hypothesis_provider: r.get("ai_hypothesis_provider"),
+            ai_hypothesis_model: r.get("ai_hypothesis_model"),
+            ai_hypothesis_generated_at: parse_ts_opt(r.get("ai_hypothesis_generated_at")),
+        }))
+    }
+
+    pub async fn list_telemetry_for_cluster(
+        &self,
+        project_id: &str,
+        signature: &str,
+        fingerprint: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<ExecutionTelemetryRow>> {
+        let rows = if let Some(fp) = fingerprint {
+            sqlx::query(
+                "SELECT * FROM execution_telemetry
+                 WHERE project_id = ?
+                   AND (failure_fingerprint = ? OR failure_fingerprint = ? OR error_message LIKE ? OR task_name = ?)
+                 ORDER BY created_at ASC LIMIT ?",
+            )
+            .bind(project_id)
+            .bind(signature)
+            .bind(fp)
+            .bind(format!("%{signature}%"))
+            .bind(signature)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT * FROM execution_telemetry
+                 WHERE project_id = ?
+                   AND (failure_fingerprint = ? OR error_message LIKE ? OR task_name = ?)
+                 ORDER BY created_at ASC LIMIT ?",
+            )
+            .bind(project_id)
+            .bind(signature)
+            .bind(format!("%{signature}%"))
+            .bind(signature)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+        };
+
+        rows.into_iter().map(execution_telemetry_from_row).collect()
+    }
+
+    pub async fn list_healing_proposals_for_cluster(
+        &self,
+        project_id: &str,
+        fingerprint: Option<&str>,
+        task_ids: &[String],
+    ) -> Result<Vec<HealingProposalRow>> {
+        let all = self.list_healing_proposals(project_id, None).await?;
+        let filtered = all
+            .into_iter()
+            .filter(|p| {
+                if let Some(fp) = fingerprint {
+                    if p.failure_fingerprint == fp {
+                        return true;
+                    }
+                }
+                task_ids.iter().any(|tid| tid == &p.task_id)
+            })
+            .collect();
+        Ok(filtered)
+    }
+
+    pub async fn prune_execution_telemetry(
+        &self,
+        project_id: &str,
+        older_than: chrono::DateTime<chrono::Utc>,
+        dry_run: bool,
+    ) -> Result<u64> {
+        let older_str = older_than.to_rfc3339();
+
+        let eligible_count: i64 = sqlx::query_scalar(
+            r#"SELECT COUNT(*) FROM execution_telemetry
+               WHERE project_id = ?
+                 AND created_at < ?
+                 AND run_id NOT IN (SELECT id FROM runs WHERE project_id = ? AND state IN ('PENDING', 'RUNNING'))
+                 AND task_id NOT IN (SELECT task_id FROM healing_proposals WHERE project_id = ? AND state IN ('PENDING_APPROVAL', 'APPROVED'))"#
+        )
+        .bind(project_id)
+        .bind(&older_str)
+        .bind(project_id)
+        .bind(project_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        if dry_run {
+            return Ok(eligible_count.max(0) as u64);
+        }
+
+        let res = sqlx::query(
+            r#"DELETE FROM execution_telemetry
+               WHERE project_id = ?
+                 AND created_at < ?
+                 AND run_id NOT IN (SELECT id FROM runs WHERE project_id = ? AND state IN ('PENDING', 'RUNNING'))
+                 AND task_id NOT IN (SELECT task_id FROM healing_proposals WHERE project_id = ? AND state IN ('PENDING_APPROVAL', 'APPROVED'))"#
+        )
+        .bind(project_id)
+        .bind(&older_str)
+        .bind(project_id)
+        .bind(project_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(res.rows_affected())
     }
 }
 
@@ -2958,4 +3697,106 @@ pub struct AuditRow {
     pub target: Option<String>,
     pub detail: Option<String>,
     pub outcome: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct HealingProposalRow {
+    pub id: Uuid,
+    pub project_id: String,
+    pub run_id: Uuid,
+    pub task_id: String,
+    pub failure_fingerprint: String,
+    pub diagnosis_category: String,
+    pub confidence: f64,
+    pub risk_level: String,
+    pub requires_approval: bool,
+    pub original_actions: String,
+    pub proposed_actions: String,
+    pub ast_diff: String,
+    pub rationale: String,
+    pub evidence_refs: String,
+    pub state: String,
+    pub idempotency_key: String,
+    pub healing_run_id: Option<Uuid>,
+    pub verification_result: Option<String>,
+    pub approved_by: Option<String>,
+    pub approved_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub rejection_reason: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct HealingStrategyMetricsRow {
+    pub id: Uuid,
+    pub project_id: String,
+    pub strategy: String,
+    pub failure_category: String,
+    pub attempts_count: i64,
+    pub verified_count: i64,
+    pub not_verified_count: i64,
+    pub regression_count: i64,
+    pub calibrated_confidence: f64,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ExecutionTelemetryRow {
+    pub id: Uuid,
+    pub project_id: String,
+    pub run_id: Uuid,
+    pub task_id: String,
+    pub task_name: String,
+    pub test_case_id: Option<Uuid>,
+    pub execution_id: Option<String>,
+    pub executor: String,
+    pub environment: String,
+    pub start_time: chrono::DateTime<chrono::Utc>,
+    pub end_time: Option<chrono::DateTime<chrono::Utc>>,
+    pub duration_ms: i64,
+    pub status: String,
+    pub retry_count: i64,
+    pub healing_attempt_count: i64,
+    pub failure_category: Option<String>,
+    pub failure_fingerprint: Option<String>,
+    pub error_message: Option<String>,
+    pub evidence_refs: String,
+    pub assertion_result: Option<String>,
+    pub http_status: Option<i64>,
+    pub selector: Option<String>,
+    pub verification_outcome: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FlakinessMetricsRow {
+    pub id: Uuid,
+    pub node_id: Uuid,
+    pub flakiness_score: f64,
+    pub window_runs: i64,
+    pub window_failures: i64,
+    pub environment_correlation: Option<String>,
+    pub computed_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct QualityNodeRow {
+    pub id: Uuid,
+    pub project_id: Option<String>,
+    pub node_type: String,
+    pub external_ref: Option<String>,
+    pub name: String,
+    pub metadata: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct QualityRelationRow {
+    pub id: Uuid,
+    pub from_node_id: Uuid,
+    pub to_node_id: Uuid,
+    pub relation_type: String,
+    pub metadata: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
 }

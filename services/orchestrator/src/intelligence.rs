@@ -222,6 +222,7 @@ impl<'a> Intelligence<'a> {
     /// this codebase already keeps everywhere else).
     pub async fn ingest_run(
         &self,
+        run_id: Option<Uuid>,
         project_id: Option<&str>,
         plan: &RunPlan,
         tasks: &[TaskState],
@@ -232,6 +233,12 @@ impl<'a> Intelligence<'a> {
             .iter()
             .map(|t| (t.id.as_str(), t.prerequisites.len()))
             .collect();
+        let task_defs: std::collections::HashMap<&str, &crate::domain::TaskDef> =
+            plan.tasks.iter().map(|t| (t.id.as_str(), t)).collect();
+
+        let effective_run_id = run_id.unwrap_or_else(Uuid::new_v4);
+        let service =
+            crate::adaptive_intelligence::AdaptiveIntelligenceService::new(self.store.clone());
 
         for t in tasks {
             if !t.status.is_terminal() {
@@ -247,6 +254,31 @@ impl<'a> Intelligence<'a> {
             if matches!(t.status, TaskStatus::Failed | TaskStatus::Timeout) {
                 self.record_failure(pid, t).await?;
             }
+
+            // Phase 6: Ingest normalized execution telemetry
+            let executor_name = task_defs
+                .get(t.id.as_str())
+                .and_then(|def| def.executor.as_deref())
+                .unwrap_or("simulated");
+            let selector = task_defs.get(t.id.as_str()).and_then(|def| {
+                def.params
+                    .get("selector")
+                    .and_then(|v| v.as_str())
+                    .map(ToString::to_string)
+            });
+            let telemetry = crate::adaptive_intelligence::ExecutionTelemetry::from_task_state(
+                pid,
+                effective_run_id,
+                t,
+                executor_name,
+                "test",
+                None,
+                Vec::new(),
+                selector,
+                None,
+                None,
+            );
+            let _ = service.record_execution_telemetry(telemetry).await;
         }
         Ok(())
     }

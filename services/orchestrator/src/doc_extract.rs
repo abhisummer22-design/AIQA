@@ -61,9 +61,15 @@ pub fn extract_text(file_name: &str, bytes: &[u8]) -> Result<ExtractedDocument, 
             )
         }
         "pdf" => {
-            return Err("PDF content extraction is not yet supported for AI generation.".to_string())
+            return Err(
+                "PDF content extraction is not yet supported for AI generation.".to_string(),
+            )
         }
-        other => return Err(format!("unsupported file extension for content extraction: .{other}")),
+        other => {
+            return Err(format!(
+                "unsupported file extension for content extraction: .{other}"
+            ))
+        }
     };
 
     let trimmed = raw.trim();
@@ -171,8 +177,8 @@ mod tests {
         {
             let cursor = Cursor::new(&mut buf);
             let mut zip = zip::ZipWriter::new(cursor);
-            let options: zip::write::FileOptions<'_, ()> =
-                zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
             zip.start_file("word/document.xml", options).unwrap();
             zip.write_all(document_xml.as_bytes()).unwrap();
             zip.finish().unwrap();
@@ -182,9 +188,15 @@ mod tests {
 
     #[test]
     fn extracts_real_paragraph_text_from_a_real_docx_zip_archive() {
-        let bytes = build_test_docx(&["First requirement paragraph.", "Second requirement paragraph."]);
+        let bytes = build_test_docx(&[
+            "First requirement paragraph.",
+            "Second requirement paragraph.",
+        ]);
         let extracted = extract_text("BRD_Test.docx", &bytes).expect("real docx must extract");
-        assert_eq!(extracted.text, "First requirement paragraph.\nSecond requirement paragraph.");
+        assert_eq!(
+            extracted.text,
+            "First requirement paragraph.\nSecond requirement paragraph."
+        );
         assert!(!extracted.truncated);
         assert_eq!(extracted.char_count, extracted.text.chars().count());
     }
@@ -212,10 +224,19 @@ mod tests {
             "<w:tr><w:tc><w:p><w:r><w:t>Real cell text.</w:t></w:r></w:p></w:tc></w:tr></w:tbl>",
         );
         let out = paragraphs_from_document_xml(xml);
-        assert!(!out.contains("<w:tbl"), "raw table XML leaked into extracted text: {out}");
-        assert!(!out.contains("dxa"), "raw table attributes leaked into extracted text: {out}");
+        assert!(
+            !out.contains("<w:tbl"),
+            "raw table XML leaked into extracted text: {out}"
+        );
+        assert!(
+            !out.contains("dxa"),
+            "raw table attributes leaked into extracted text: {out}"
+        );
         assert!(out.contains("Before table."), "real text was lost: {out}");
-        assert!(out.contains("Real cell text."), "real table-cell text was lost: {out}");
+        assert!(
+            out.contains("Real cell text."),
+            "real table-cell text was lost: {out}"
+        );
     }
 
     #[test]
@@ -227,7 +248,10 @@ mod tests {
     #[test]
     fn xml_entities_inside_real_text_are_decoded() {
         let xml = "<w:p><w:r><w:t>Rates &amp; commissions &lt;= 20%</w:t></w:r></w:p>";
-        assert_eq!(paragraphs_from_document_xml(xml), "Rates & commissions <= 20%");
+        assert_eq!(
+            paragraphs_from_document_xml(xml),
+            "Rates & commissions <= 20%"
+        );
     }
 
     #[test]
@@ -239,19 +263,28 @@ mod tests {
     #[test]
     fn a_legacy_doc_file_is_reported_as_unsupported_not_guessed_at() {
         let err = extract_text("Requirements.doc", b"anything").unwrap_err();
-        assert!(err.contains(".doc"), "expected the error to explain the .doc limitation, got: {err}");
+        assert!(
+            err.contains(".doc"),
+            "expected the error to explain the .doc limitation, got: {err}"
+        );
     }
 
     #[test]
     fn a_pdf_is_reported_as_unsupported_not_guessed_at() {
         let err = extract_text("spec.pdf", b"%PDF-1.4").unwrap_err();
-        assert!(err.contains("PDF"), "expected the error to name PDF, got: {err}");
+        assert!(
+            err.contains("PDF"),
+            "expected the error to name PDF, got: {err}"
+        );
     }
 
     #[test]
     fn an_unknown_extension_is_a_real_specific_error() {
         let err = extract_text("file.xyz", b"data").unwrap_err();
-        assert!(err.contains(".xyz"), "expected the error to name the real extension, got: {err}");
+        assert!(
+            err.contains(".xyz"),
+            "expected the error to name the real extension, got: {err}"
+        );
     }
 
     #[test]

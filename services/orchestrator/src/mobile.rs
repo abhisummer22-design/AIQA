@@ -137,7 +137,11 @@ fn sdk_candidates(tool: &str) -> Vec<PathBuf> {
     // shell script. Trying every real form is what makes discovery work
     // without hardcoding one tool's packaging.
     let names: Vec<String> = if cfg!(windows) {
-        vec![format!("{tool}.exe"), format!("{tool}.bat"), format!("{tool}.cmd")]
+        vec![
+            format!("{tool}.exe"),
+            format!("{tool}.bat"),
+            format!("{tool}.cmd"),
+        ]
     } else {
         vec![tool.to_string()]
     };
@@ -157,14 +161,27 @@ fn sdk_candidates(tool: &str) -> Vec<PathBuf> {
         }
     }
 
-    let subdirs = ["platform-tools", "emulator", "cmdline-tools/latest/bin", "tools"];
+    let subdirs = [
+        "platform-tools",
+        "emulator",
+        "cmdline-tools/latest/bin",
+        "tools",
+    ];
     let roots: Vec<PathBuf> = ["ANDROID_HOME", "ANDROID_SDK_ROOT"]
         .iter()
         .filter_map(|k| std::env::var(k).ok())
         .map(PathBuf::from)
-        .chain(std::env::var("LOCALAPPDATA").ok().map(|l| PathBuf::from(l).join("Android/Sdk")))
+        .chain(
+            std::env::var("LOCALAPPDATA")
+                .ok()
+                .map(|l| PathBuf::from(l).join("Android/Sdk")),
+        )
         .chain(home_roots.iter().map(|h| h.join("Android/Sdk")))
-        .chain(home_roots.iter().map(|h| h.join("AppData/Local/Android/Sdk")))
+        .chain(
+            home_roots
+                .iter()
+                .map(|h| h.join("AppData/Local/Android/Sdk")),
+        )
         .collect();
     for root in roots {
         for sub in subdirs {
@@ -276,7 +293,11 @@ fn classify_maestro(text: &str) -> (bool, String) {
             "'maestro --version' returned a usage/help block, not a version string".to_string(),
         );
     }
-    let version = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+    let version = text
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
     if version.is_empty() {
         return (false, "'maestro --version' produced no output".to_string());
     }
@@ -306,7 +327,12 @@ async fn discover_ios_simulators() -> (Vec<IosDevice>, MobileToolStatus) {
     }
 
     let xcrun = PathBuf::from("xcrun");
-    let out = match run_tool(&xcrun, &["simctl", "list", "devices", "available", "--json"]).await {
+    let out = match run_tool(
+        &xcrun,
+        &["simctl", "list", "devices", "available", "--json"],
+    )
+    .await
+    {
         Ok(o) => o,
         Err(e) => {
             return (
@@ -356,7 +382,11 @@ fn parse_simctl_devices(parsed: &serde_json::Value) -> Vec<IosDevice> {
             // simctl keys runtimes as
             // `com.apple.CoreSimulator.SimRuntime.iOS-17-5`; the trailing
             // segment is the real human-meaningful version.
-            let runtime_label = runtime.rsplit('.').next().unwrap_or(runtime).replace('-', " ");
+            let runtime_label = runtime
+                .rsplit('.')
+                .next()
+                .unwrap_or(runtime)
+                .replace('-', " ");
             for d in list.as_array().into_iter().flatten() {
                 let state = d
                     .get("state")
@@ -586,7 +616,11 @@ pub async fn discover_fleet() -> MobileFleet {
     if let Some(p) = &adb_path {
         for d in devices.iter().filter(|d| d.emulator && d.ready) {
             if let Ok(out) = run_tool(p, &["-s", &d.serial, "emu", "avd", "name"]).await {
-                if let Some(name) = combined(&out).lines().map(str::trim).find(|l| !l.is_empty()) {
+                if let Some(name) = combined(&out)
+                    .lines()
+                    .map(str::trim)
+                    .find(|l| !l.is_empty())
+                {
                     running_avds.push(name.to_string());
                 }
             }
@@ -764,7 +798,10 @@ mod tests {
         // The runtime key is turned into the real human-readable version.
         assert_eq!(booted.runtime.as_deref(), Some("iOS 17 5"));
 
-        let shutdown = devices.iter().find(|d| d.name == "iPad Air 11-inch").unwrap();
+        let shutdown = devices
+            .iter()
+            .find(|d| d.name == "iPad Air 11-inch")
+            .unwrap();
         assert_eq!(shutdown.state, "Shutdown");
         assert!(
             !shutdown.ready,

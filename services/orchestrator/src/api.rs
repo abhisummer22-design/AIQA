@@ -42,7 +42,10 @@ pub fn router(state: AppState) -> Router {
         // Real mobile fleet: real adb devices, real AVDs, real Maestro CLI.
         .route("/api/v1/mobile/fleet", get(get_mobile_fleet))
         .route("/api/v1/mobile/emulators/boot", post(boot_mobile_emulator))
-        .route("/api/v1/mobile/simulators/boot", post(boot_ios_simulator_handler))
+        .route(
+            "/api/v1/mobile/simulators/boot",
+            post(boot_ios_simulator_handler),
+        )
         // Real stage-by-stage pipeline state, including honestly-reported
         // unavailable stages (vector store / RAG / re-planning).
         .route(
@@ -195,6 +198,60 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/projects/:project_id/requirement-impact",
             get(get_requirement_impact_scoped),
         )
+        // Phase 6: Adaptive QA Intelligence & Observability endpoints
+        .route(
+            "/api/v1/projects/:project_id/intelligence/telemetry",
+            get(get_project_telemetry_handler),
+        )
+        .route(
+            "/api/v1/projects/:project_id/intelligence/failures",
+            get(get_project_failure_clusters_handler),
+        )
+        .route(
+            "/api/v1/projects/:project_id/intelligence/flakiness",
+            get(get_project_flakiness_handler),
+        )
+        .route(
+            "/api/v1/projects/:project_id/intelligence/risk",
+            get(get_project_risk_handler),
+        )
+        .route(
+            "/api/v1/projects/:project_id/intelligence/strategies",
+            get(get_project_strategies_handler),
+        )
+        .route(
+            "/api/v1/projects/:project_id/intelligence/trends",
+            get(get_project_trends_handler),
+        )
+        .route(
+            "/api/v1/projects/:project_id/intelligence/quality-graph",
+            get(get_project_quality_graph_handler),
+        )
+        // Phase 8: Intelligent QA Operations & Cross-Environment Observability
+        .route(
+            "/api/v1/projects/:project_id/intelligence/investigations",
+            get(list_failure_investigations_handler),
+        )
+        .route(
+            "/api/v1/projects/:project_id/intelligence/failures/:cluster_id/investigation",
+            get(get_failure_investigation_handler),
+        )
+        .route(
+            "/api/v1/projects/:project_id/intelligence/failures/:cluster_id/environments",
+            get(get_cluster_environments_handler),
+        )
+        .route(
+            "/api/v1/projects/:project_id/intelligence/failures/:cluster_id/timeline",
+            get(get_cluster_timeline_handler),
+        )
+        .route(
+            "/api/v1/projects/:project_id/intelligence/retention/dry-run",
+            post(retention_dry_run_handler),
+        )
+        .route(
+            "/api/v1/projects/:project_id/intelligence/retention/prune",
+            post(retention_prune_handler),
+        )
         // Phase 6 (crawler) — see `start_crawl_scoped`'s doc comment.
         .route(
             "/api/v1/projects/:project_id/crawl",
@@ -292,6 +349,39 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/projects/:project_id/api-testing/execute",
             post(execute_api_test_scoped),
+        )
+        // Phase 5 — Governed Self-Healing & Quality Feedback
+        .route(
+            "/api/v1/projects/:project_id/healing/proposals",
+            post(create_healing_proposal_scoped).get(list_healing_proposals_scoped),
+        )
+        .route(
+            "/api/v1/projects/:project_id/healing/proposals/:proposal_id",
+            get(get_healing_proposal_scoped),
+        )
+        .route(
+            "/api/v1/projects/:project_id/healing/proposals/:proposal_id/diff",
+            get(get_healing_proposal_diff_scoped),
+        )
+        .route(
+            "/api/v1/projects/:project_id/healing/proposals/:proposal_id/approve",
+            post(approve_healing_proposal_scoped),
+        )
+        .route(
+            "/api/v1/projects/:project_id/healing/proposals/:proposal_id/reject",
+            post(reject_healing_proposal_scoped),
+        )
+        .route(
+            "/api/v1/projects/:project_id/healing/proposals/:proposal_id/execute",
+            post(execute_healing_proposal_scoped),
+        )
+        .route(
+            "/api/v1/projects/:project_id/healing/proposals/:proposal_id/verification",
+            get(get_healing_verification_scoped),
+        )
+        .route(
+            "/api/v1/projects/:project_id/healing/feedback",
+            get(get_healing_feedback_scoped),
         )
         // Truthfulness Cleanup Step 1 — real Application Source connectivity
         // verification (`app_source.rs`). Replaces the Test Case Generator's
@@ -568,7 +658,15 @@ async fn boot_ios_simulator_handler(
         .log_bus
         .emit("INFO", "mobile", &message, None, None, None)
         .await;
-    audit(&state, &ctx, "mobile.simulator.boot", Some(&body.udid), None, "ok").await;
+    audit(
+        &state,
+        &ctx,
+        "mobile.simulator.boot",
+        Some(&body.udid),
+        None,
+        "ok",
+    )
+    .await;
     Ok(Json(BootAvdResponse { message }))
 }
 
@@ -601,7 +699,15 @@ async fn boot_mobile_emulator(
         .log_bus
         .emit("INFO", "mobile", &message, None, None, None)
         .await;
-    audit(&state, &ctx, "mobile.emulator.boot", Some(&body.avd), None, "ok").await;
+    audit(
+        &state,
+        &ctx,
+        "mobile.emulator.boot",
+        Some(&body.avd),
+        None,
+        "ok",
+    )
+    .await;
     Ok(Json(BootAvdResponse { message }))
 }
 
@@ -658,7 +764,11 @@ async fn get_neural_pipeline(
     let (graph_nodes, graph_relations) =
         state.store.quality_graph_size(&pid).await.map_err(to_500)?;
 
-    let run_counts = state.store.dashboard_run_counts(&pid).await.map_err(to_500)?;
+    let run_counts = state
+        .store
+        .dashboard_run_counts(&pid)
+        .await
+        .map_err(to_500)?;
     let completed_runs: i64 = run_counts
         .iter()
         .filter(|(k, _)| k == "COMPLETED")
@@ -815,7 +925,11 @@ async fn whoami(Extension(ctx): Extension<AuthContext>) -> Json<WhoAmIResponse> 
         name: ctx.name.clone(),
         role: ctx.role.as_str(),
         project_id: ctx.project_id.clone(),
-        role_hierarchy: [Role::Viewer.as_str(), Role::Operator.as_str(), Role::Admin.as_str()],
+        role_hierarchy: [
+            Role::Viewer.as_str(),
+            Role::Operator.as_str(),
+            Role::Admin.as_str(),
+        ],
     })
 }
 
@@ -882,7 +996,10 @@ async fn get_orchestrator_state(
             } else {
                 "AUTO"
             };
-            ExecutorRoute { kind, gate: gate.to_string() }
+            ExecutorRoute {
+                kind,
+                gate: gate.to_string(),
+            }
         })
         .collect();
 
@@ -897,7 +1014,8 @@ async fn get_orchestrator_state(
                 continue;
             }
         }
-        let mut tasks: Vec<TaskState> = record.engine.read().await.tasks.values().cloned().collect();
+        let mut tasks: Vec<TaskState> =
+            record.engine.read().await.tasks.values().cloned().collect();
         tasks.sort_by(|a, b| a.id.cmp(&b.id));
         active_runs.push(ActiveRunView {
             run_id: record.run_id.to_string(),
@@ -1003,7 +1121,9 @@ struct ResolveSkillsBody {
 async fn resolve_skills(
     ApiJson(body): ApiJson<ResolveSkillsBody>,
 ) -> Json<Vec<crate::ai_generation::ResolvedSkillInstruction>> {
-    Json(crate::ai_generation::resolve_skill_instructions(&body.skills))
+    Json(crate::ai_generation::resolve_skill_instructions(
+        &body.skills,
+    ))
 }
 
 /// GET /api/v1/skills — any authenticated key (Viewer+) may list; selecting
@@ -1376,11 +1496,7 @@ async fn delete_project_handler(
         .ok_or_else(|| ApiError::not_found("project not found"))?;
     auth::require_project_access(&ctx, Some(existing.id.to_string().as_str()))?;
 
-    let deleted = state
-        .store
-        .delete_project(id)
-        .await
-        .map_err(to_500)?;
+    let deleted = state.store.delete_project(id).await.map_err(to_500)?;
     if !deleted {
         return Err(ApiError::not_found("project not found"));
     }
@@ -1766,7 +1882,11 @@ async fn validate_test_case_scoped(
             .emit(
                 "WARN",
                 "validation",
-                &format!("Validation failed for '{}': {}", row.title, problems.join("; ")),
+                &format!(
+                    "Validation failed for '{}': {}",
+                    row.title,
+                    problems.join("; ")
+                ),
                 None,
                 Some(&project_id.to_string()),
                 None,
@@ -2252,7 +2372,10 @@ async fn embed_approved_test_case(state: &AppState, row: &crate::store::TestCase
     if !state.embedder.is_configured() {
         return;
     }
-    let text = format!("{}\n{}\n{}", row.title, row.description, row.expected_result);
+    let text = format!(
+        "{}\n{}\n{}",
+        row.title, row.description, row.expected_result
+    );
     let vector = match state.embedder.embed(&text).await {
         Ok(v) => v,
         Err(e) => {
@@ -2486,7 +2609,10 @@ async fn generate_ai_test_cases_scoped(
                 .emit(
                     "SUCCESS",
                     "generation",
-                    &format!("Generated {} test case(s) via {provider} ({model})", cases.len()),
+                    &format!(
+                        "Generated {} test case(s) via {provider} ({model})",
+                        cases.len()
+                    ),
                     None,
                     Some(&project_id.to_string()),
                     None,
@@ -2814,7 +2940,12 @@ async fn execute_api_test_scoped(
         .emit(
             level,
             "api_testing",
-            &format!("Ad-hoc API test {} {} -> {:?}", body.method.trim().to_uppercase(), body.url, task_state.status),
+            &format!(
+                "Ad-hoc API test {} {} -> {:?}",
+                body.method.trim().to_uppercase(),
+                body.url,
+                task_state.status
+            ),
             Some(&created.run_id.to_string()),
             Some(&project_id.to_string()),
             Some(&task_id),
@@ -2951,13 +3082,15 @@ async fn extract_document_text_scoped(
         "document.extract_text",
         None,
         Some(&body.file_name),
-        if result.is_ok() { "ok" } else { "extraction_failed" },
+        if result.is_ok() {
+            "ok"
+        } else {
+            "extraction_failed"
+        },
     )
     .await;
 
-    result
-        .map(Json)
-        .map_err(ApiError::validation)
+    result.map(Json).map_err(ApiError::validation)
 }
 
 // ---------------------------------------------------- Phase 6 — Performance Testing
@@ -5726,7 +5859,9 @@ async fn list_logs_handler(
     let effective_project = match (&ctx.project_id, &q.project_id) {
         (Some(scoped), Some(requested)) => {
             if scoped != requested {
-                return Err(ApiError::forbidden("resource belongs to a different project"));
+                return Err(ApiError::forbidden(
+                    "resource belongs to a different project",
+                ));
             }
             Some(scoped.as_str())
         }
@@ -5780,7 +5915,11 @@ async fn logs_ws_handler(
     let effective_project = match (&ctx.project_id, &q.project_id) {
         (Some(scoped), Some(requested)) => {
             if scoped != requested {
-                return (StatusCode::FORBIDDEN, "resource belongs to a different project").into_response();
+                return (
+                    StatusCode::FORBIDDEN,
+                    "resource belongs to a different project",
+                )
+                    .into_response();
             }
             Some(scoped.clone())
         }
@@ -5865,4 +6004,507 @@ async fn drive_log_socket(
             }
         }
     }
+}
+
+// ------------------------------------------------ Phase 5: Governed Self-Healing
+
+#[derive(Debug, serde::Deserialize)]
+pub struct HealingListQuery {
+    pub state: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct HealingRejectRequest {
+    pub reason: String,
+}
+
+fn healing_err_to_api_err(e: crate::governed_healing::GovernedHealingError) -> ApiError {
+    match e {
+        crate::governed_healing::GovernedHealingError::ValidationError(errs) => {
+            ApiError::validation(format!("validation failed: {errs:?}"))
+        }
+        crate::governed_healing::GovernedHealingError::SecurityViolation(msg) => {
+            ApiError::validation(format!("security violation: {msg}"))
+        }
+        crate::governed_healing::GovernedHealingError::Unauthorized(msg) => {
+            ApiError::forbidden(msg)
+        }
+        crate::governed_healing::GovernedHealingError::CrossProjectForbidden(msg) => {
+            ApiError::forbidden(msg)
+        }
+        crate::governed_healing::GovernedHealingError::MaxHealingAttemptsExceeded(msg) => {
+            ApiError::conflict(msg)
+        }
+        crate::governed_healing::GovernedHealingError::InvalidStateTransition(msg) => {
+            ApiError::conflict(msg)
+        }
+        crate::governed_healing::GovernedHealingError::ProposalExpired(msg) => {
+            ApiError::conflict(msg)
+        }
+        crate::governed_healing::GovernedHealingError::NotFound(msg) => ApiError::not_found(msg),
+        crate::governed_healing::GovernedHealingError::Conflict(msg) => ApiError::conflict(msg),
+        crate::governed_healing::GovernedHealingError::ExecutionError(msg) => {
+            ApiError::internal(msg)
+        }
+        crate::governed_healing::GovernedHealingError::StorageError(msg) => ApiError::internal(msg),
+        crate::governed_healing::GovernedHealingError::Internal(msg) => ApiError::internal(msg),
+    }
+}
+
+fn make_healing_service(state: &AppState) -> crate::governed_healing::GovernedHealingService {
+    let dispatcher = crate::agent_execution::AgentExecutionDispatcher::new(
+        state.store.clone(),
+        (*state.policy).clone(),
+        state.registry.clone(),
+        state.evidence.clone(),
+        None,
+    );
+    crate::governed_healing::GovernedHealingService::new(
+        state.store.clone(),
+        dispatcher,
+        state.evidence.clone(),
+        state.policy.clone(),
+        None,
+    )
+}
+
+async fn create_healing_proposal_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiJson(mut req): ApiJson<crate::governed_healing::HealingProposalRequest>,
+) -> Result<(StatusCode, Json<crate::governed_healing::HealingProposal>), ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    req.project_id = project_id.to_string();
+    let service = make_healing_service(&state);
+    let proposal = service
+        .propose_healing(&ctx, req)
+        .await
+        .map_err(healing_err_to_api_err)?;
+    Ok((StatusCode::CREATED, Json(proposal)))
+}
+
+async fn list_healing_proposals_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiQuery(query): ApiQuery<HealingListQuery>,
+) -> Result<Json<Vec<crate::governed_healing::HealingProposal>>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let service = make_healing_service(&state);
+    let proposals = service
+        .list_proposals(&project_id.to_string(), query.state.as_deref())
+        .await
+        .map_err(healing_err_to_api_err)?;
+    Ok(Json(proposals))
+}
+
+async fn get_healing_proposal_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, proposal_id)): ApiPath<(Uuid, Uuid)>,
+) -> Result<Json<crate::governed_healing::HealingProposal>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let service = make_healing_service(&state);
+    let proposal = service
+        .get_proposal(proposal_id)
+        .await
+        .map_err(healing_err_to_api_err)?;
+    require_resource_in_project(Some(&proposal.project_id), project_id)?;
+    Ok(Json(proposal))
+}
+
+async fn get_healing_proposal_diff_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, proposal_id)): ApiPath<(Uuid, Uuid)>,
+) -> Result<Json<crate::governed_healing::AstDiff>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let service = make_healing_service(&state);
+    let proposal = service
+        .get_proposal(proposal_id)
+        .await
+        .map_err(healing_err_to_api_err)?;
+    require_resource_in_project(Some(&proposal.project_id), project_id)?;
+    Ok(Json(proposal.ast_diff))
+}
+
+async fn approve_healing_proposal_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, proposal_id)): ApiPath<(Uuid, Uuid)>,
+) -> Result<Json<crate::governed_healing::HealingProposal>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let service = make_healing_service(&state);
+    let proposal = service
+        .approve_proposal(&ctx, proposal_id)
+        .await
+        .map_err(healing_err_to_api_err)?;
+    Ok(Json(proposal))
+}
+
+async fn reject_healing_proposal_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, proposal_id)): ApiPath<(Uuid, Uuid)>,
+    ApiJson(req): ApiJson<HealingRejectRequest>,
+) -> Result<Json<crate::governed_healing::HealingProposal>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let service = make_healing_service(&state);
+    let proposal = service
+        .reject_proposal(&ctx, proposal_id, &req.reason)
+        .await
+        .map_err(healing_err_to_api_err)?;
+    Ok(Json(proposal))
+}
+
+async fn execute_healing_proposal_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, proposal_id)): ApiPath<(Uuid, Uuid)>,
+) -> Result<Json<crate::governed_healing::HealingProposal>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let service = make_healing_service(&state);
+    let proposal = service
+        .execute_approved(&ctx, proposal_id)
+        .await
+        .map_err(healing_err_to_api_err)?;
+    Ok(Json(proposal))
+}
+
+async fn get_healing_verification_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, proposal_id)): ApiPath<(Uuid, Uuid)>,
+) -> Result<Json<crate::governed_healing::HealingVerification>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let service = make_healing_service(&state);
+    let verification = service
+        .verify_healing(&ctx, proposal_id)
+        .await
+        .map_err(healing_err_to_api_err)?;
+    Ok(Json(verification))
+}
+
+async fn get_healing_feedback_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+) -> Result<Json<Vec<crate::governed_healing::HealingFeedback>>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let service = make_healing_service(&state);
+    let feedback = service
+        .get_feedback_for_planning(&project_id.to_string())
+        .await
+        .map_err(healing_err_to_api_err)?;
+    Ok(Json(feedback))
+}
+
+// ============================================================================
+// Phase 6: Adaptive QA Intelligence Read-Only Endpoints
+// ============================================================================
+
+async fn get_project_telemetry_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+) -> Result<Json<Vec<crate::store::ExecutionTelemetryRow>>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let list = state
+        .store
+        .list_execution_telemetry(&project_id.to_string(), 100)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(list))
+}
+
+async fn get_project_failure_clusters_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+) -> Result<Json<Vec<crate::store::FailureClusterRow>>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let pid = project_id.to_string();
+    let clusters = state
+        .store
+        .list_failure_clusters(Some(&pid))
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(clusters))
+}
+
+async fn get_project_flakiness_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+) -> Result<Json<Vec<crate::store::FlakinessMetricsRow>>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let metrics = state
+        .store
+        .list_flakiness_metrics(&project_id.to_string())
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(metrics))
+}
+
+async fn get_project_risk_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+) -> Result<Json<crate::adaptive_intelligence::RiskCalibration>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let pid = project_id.to_string();
+    let telemetry = state
+        .store
+        .list_execution_telemetry(&pid, 100)
+        .await
+        .map_err(ApiError::internal)?;
+    let flakiness = state
+        .store
+        .list_flakiness_metrics(&pid)
+        .await
+        .map_err(ApiError::internal)?;
+    let strategies = state
+        .store
+        .list_healing_strategy_metrics(&pid)
+        .await
+        .map_err(ApiError::internal)?;
+
+    let total_runs = telemetry.len();
+    let failed_runs = telemetry
+        .iter()
+        .filter(|t| matches!(t.status.as_str(), "FAILED" | "TIMEOUT" | "INFRA_ERROR"))
+        .count();
+    let failure_rate = if total_runs > 0 {
+        failed_runs as f64 / total_runs as f64
+    } else {
+        0.0
+    };
+
+    let flakiness_score = if !flakiness.is_empty() {
+        let sum: f64 = flakiness.iter().map(|f| f.flakiness_score).sum();
+        sum / flakiness.len() as f64
+    } else {
+        0.0
+    };
+
+    let failure_severity = if failed_runs > 0 {
+        let infra_fails = telemetry
+            .iter()
+            .filter(|t| matches!(t.status.as_str(), "INFRA_ERROR" | "TIMEOUT"))
+            .count();
+        if infra_fails > 0 {
+            0.8
+        } else {
+            0.4
+        }
+    } else {
+        0.0
+    };
+
+    let relations = state
+        .store
+        .list_quality_relations_for_project(&pid)
+        .await
+        .unwrap_or_default();
+    let dependency_count = relations.len();
+
+    let total_attempts: i64 = strategies.iter().map(|s| s.attempts_count).sum();
+    let total_regressions: i64 = strategies.iter().map(|s| s.regression_count).sum();
+    let healing_regression_rate = if total_attempts > 0 {
+        total_regressions as f64 / total_attempts as f64
+    } else {
+        0.0
+    };
+
+    let security_sensitivity = 0.0;
+
+    let factors = crate::adaptive_intelligence::RiskFactors {
+        failure_rate,
+        flakiness_score,
+        failure_severity,
+        dependency_count,
+        healing_regression_rate,
+        security_sensitivity,
+    };
+
+    if total_runs == 0 && flakiness.is_empty() && strategies.is_empty() {
+        Ok(Json(crate::adaptive_intelligence::RiskCalibration {
+            task_name: pid,
+            risk_score: 0.0,
+            risk_level: "INSUFFICIENT_DATA".to_string(),
+            factors,
+            explanation: "Insufficient execution telemetry or metrics to calibrate quality risk"
+                .to_string(),
+        }))
+    } else {
+        let cal = crate::adaptive_intelligence::calibrate_risk(&pid, factors);
+        Ok(Json(cal))
+    }
+}
+
+async fn get_project_strategies_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+) -> Result<Json<Vec<crate::store::HealingStrategyMetricsRow>>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let metrics = state
+        .store
+        .list_healing_strategy_metrics(&project_id.to_string())
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(metrics))
+}
+
+async fn get_project_trends_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+) -> Result<Json<crate::adaptive_intelligence::TrendAnalysis>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let telemetry = state
+        .store
+        .list_execution_telemetry(&project_id.to_string(), 100)
+        .await
+        .map_err(ApiError::internal)?;
+    let durations: Vec<f64> = telemetry.iter().map(|t| t.duration_ms as f64).collect();
+    let trend = crate::adaptive_intelligence::calculate_trend("execution_duration", &durations);
+    Ok(Json(trend))
+}
+
+async fn get_project_quality_graph_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let nodes = state
+        .store
+        .list_quality_nodes(&project_id.to_string())
+        .await
+        .map_err(ApiError::internal)?;
+    let relations = state
+        .store
+        .list_quality_relations_for_project(&project_id.to_string())
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(serde_json::json!({
+        "nodes": nodes,
+        "relations": relations,
+    })))
+}
+
+// ============================================================================
+// Phase 8: Intelligent QA Operations & Cross-Environment Handlers
+// ============================================================================
+
+async fn list_failure_investigations_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+) -> Result<Json<Vec<crate::operations::FailureInvestigation>>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let ops = crate::operations::OperationsService::new(state.store.clone());
+    let list = ops
+        .list_investigations(&project_id.to_string())
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(list))
+}
+
+async fn get_failure_investigation_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, cluster_id)): ApiPath<(Uuid, String)>,
+) -> Result<Json<crate::operations::FailureInvestigation>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let ops = crate::operations::OperationsService::new(state.store.clone());
+    let inv = ops
+        .get_investigation(&project_id.to_string(), &cluster_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::not_found("failure investigation not found"))?;
+    Ok(Json(inv))
+}
+
+async fn get_cluster_environments_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, cluster_id)): ApiPath<(Uuid, String)>,
+) -> Result<Json<crate::operations::EnvironmentCorrelationMatrix>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let ops = crate::operations::OperationsService::new(state.store.clone());
+    let matrix = ops
+        .get_environment_matrix(&project_id.to_string(), &cluster_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::not_found("environment correlation matrix not found"))?;
+    Ok(Json(matrix))
+}
+
+async fn get_cluster_timeline_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, cluster_id)): ApiPath<(Uuid, String)>,
+) -> Result<Json<Vec<crate::operations::InvestigationTimelineEvent>>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let ops = crate::operations::OperationsService::new(state.store.clone());
+    let timeline = ops
+        .get_investigation_timeline(&project_id.to_string(), &cluster_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::not_found("investigation timeline not found"))?;
+    Ok(Json(timeline))
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct RetentionRequestPayload {
+    pub retention_days: Option<u32>,
+}
+
+async fn retention_dry_run_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiJson(payload): ApiJson<RetentionRequestPayload>,
+) -> Result<Json<crate::operations::RetentionReport>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    auth::require_role(&ctx, Role::Admin)?;
+
+    let retention_days = payload.retention_days.unwrap_or(30);
+    let policy = crate::operations::RetentionPolicy {
+        retention_days,
+        dry_run: true,
+    };
+
+    let ops = crate::operations::OperationsService::new(state.store.clone());
+    let report = ops
+        .execute_retention(&project_id.to_string(), &policy, &ctx.name)
+        .await
+        .map_err(ApiError::validation)?;
+    Ok(Json(report))
+}
+
+async fn retention_prune_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiJson(payload): ApiJson<RetentionRequestPayload>,
+) -> Result<Json<crate::operations::RetentionReport>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    auth::require_role(&ctx, Role::Admin)?;
+
+    let retention_days = payload.retention_days.unwrap_or(30);
+    let policy = crate::operations::RetentionPolicy {
+        retention_days,
+        dry_run: false,
+    };
+
+    let ops = crate::operations::OperationsService::new(state.store.clone());
+    let report = ops
+        .execute_retention(&project_id.to_string(), &policy, &ctx.name)
+        .await
+        .map_err(ApiError::validation)?;
+    Ok(Json(report))
 }

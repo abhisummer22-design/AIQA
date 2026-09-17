@@ -139,7 +139,10 @@ fn parse_frontmatter(block: &str) -> Result<Map<String, Value>, String> {
         let value = if value_raw.is_empty() {
             // A declared-but-empty value is a real, valid "declared but unset".
             Value::Null
-        } else if let Some(inner) = value_raw.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+        } else if let Some(inner) = value_raw
+            .strip_prefix('[')
+            .and_then(|s| s.strip_suffix(']'))
+        {
             let items: Vec<Value> = inner
                 .split(',')
                 .map(|v| v.trim())
@@ -297,7 +300,13 @@ fn scan_dir(dir: &std::path::Path) -> FileSkillScan {
 
     let mut entries: Vec<PathBuf> = match std::fs::read_dir(dir) {
         Ok(read_dir) => read_dir.filter_map(|e| e.ok().map(|e| e.path())).collect(),
-        Err(_) => return FileSkillScan { directory, skills: Vec::new(), errors: Vec::new() },
+        Err(_) => {
+            return FileSkillScan {
+                directory,
+                skills: Vec::new(),
+                errors: Vec::new(),
+            }
+        }
     };
     // Deterministic order so the UI list does not reshuffle between
     // otherwise-identical scans.
@@ -334,7 +343,11 @@ fn scan_dir(dir: &std::path::Path) -> FileSkillScan {
         }
     }
 
-    FileSkillScan { directory, skills, errors }
+    FileSkillScan {
+        directory,
+        skills,
+        errors,
+    }
 }
 
 /// Creates `skills_dir()` if it does not exist yet, and drops a real README
@@ -432,14 +445,23 @@ mod tests {
         assert_eq!(m.get("version").unwrap(), "1.0.0");
         assert_eq!(m.get("author").unwrap(), "thetestingacademy");
         assert_eq!(m.get("license").unwrap(), "MIT");
-        assert_eq!(m.get("frameworks").unwrap(), &Value::Array(vec![Value::String("playwright".into())]));
+        assert_eq!(
+            m.get("frameworks").unwrap(),
+            &Value::Array(vec![Value::String("playwright".into())])
+        );
         assert_eq!(
             m.get("testingTypes").unwrap(),
-            &Value::Array(vec![Value::String("e2e".into()), Value::String("visual".into())])
+            &Value::Array(vec![
+                Value::String("e2e".into()),
+                Value::String("visual".into())
+            ])
         );
         assert_eq!(
             m.get("languages").unwrap(),
-            &Value::Array(vec![Value::String("typescript".into()), Value::String("javascript".into())])
+            &Value::Array(vec![
+                Value::String("typescript".into()),
+                Value::String("javascript".into())
+            ])
         );
         assert!(!m.contains_key("name"));
         assert!(!m.contains_key("description"));
@@ -454,7 +476,11 @@ mod tests {
 
     #[test]
     fn accepts_a_plain_markdown_file_with_no_frontmatter() {
-        let p = parse_skill_file("my-notes.md", "# Rules\n\nAlways check currency rounding.\n").unwrap();
+        let p = parse_skill_file(
+            "my-notes.md",
+            "# Rules\n\nAlways check currency rounding.\n",
+        )
+        .unwrap();
         assert!(!p.had_frontmatter);
         assert_eq!(p.description, None);
         assert!(p.instruction.contains("Always check currency rounding."));
@@ -463,14 +489,19 @@ mod tests {
 
     #[test]
     fn falls_back_to_the_filename_only_when_the_file_genuinely_states_no_name() {
-        let p = parse_skill_file("rbac-rules.SKILL.md", "---\nversion: 2\n---\n\nCheck role boundaries.\n").unwrap();
+        let p = parse_skill_file(
+            "rbac-rules.SKILL.md",
+            "---\nversion: 2\n---\n\nCheck role boundaries.\n",
+        )
+        .unwrap();
         assert_eq!(p.name, "rbac rules");
         assert_eq!(p.metadata.as_object().unwrap().get("version").unwrap(), "2");
     }
 
     #[test]
     fn rejects_a_file_whose_body_is_empty() {
-        let err = parse_skill_file("empty.SKILL.md", "---\nname: Nothing\n---\n\n   \n").unwrap_err();
+        let err =
+            parse_skill_file("empty.SKILL.md", "---\nname: Nothing\n---\n\n   \n").unwrap_err();
         assert!(err.contains("no content"));
     }
 
@@ -484,12 +515,16 @@ mod tests {
     #[test]
     fn treats_a_declared_but_empty_frontmatter_value_as_null() {
         let p = parse_skill_file("x.SKILL.md", "---\nname: X\nauthor:\n---\n\nBody.\n").unwrap();
-        assert_eq!(p.metadata.as_object().unwrap().get("author").unwrap(), &Value::Null);
+        assert_eq!(
+            p.metadata.as_object().unwrap().get("author").unwrap(),
+            &Value::Null
+        );
     }
 
     #[test]
     fn scan_of_a_missing_directory_is_empty_not_an_error() {
-        let dir = std::env::temp_dir().join(format!("aiqa-skills-test-missing-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("aiqa-skills-test-missing-{}", uuid::Uuid::new_v4()));
         assert!(!dir.exists());
         let scan = scan_dir(&dir);
         assert!(scan.skills.is_empty());
@@ -504,7 +539,11 @@ mod tests {
         std::fs::write(dir.path().join("notes.txt"), "ignored, wrong extension").unwrap();
         std::fs::write(dir.path().join("b-skill.md"), "Body B.\n").unwrap();
         std::fs::write(dir.path().join("a-skill.md"), "Body A.\n").unwrap();
-        std::fs::write(dir.path().join("broken.md"), "---\nname: Bad\nlist:\n  - x\n---\n\nBody.\n").unwrap();
+        std::fs::write(
+            dir.path().join("broken.md"),
+            "---\nname: Bad\nlist:\n  - x\n---\n\nBody.\n",
+        )
+        .unwrap();
 
         let scan = scan_dir(dir.path());
 

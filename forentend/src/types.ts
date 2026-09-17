@@ -19,6 +19,7 @@ export type NavPage =
   | 'audit'
   | 'evidence'
   | 'telemetry'
+  | 'intelligence'
   | 'settings';
 
 export type AIQAStatus =

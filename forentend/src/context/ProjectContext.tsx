@@ -94,7 +94,7 @@ export interface ProjectContextValue {
   deleteProject: (projectId: string) => Promise<void>;
 }
 
-const ProjectContext = createContext<ProjectContextValue | undefined>(undefined);
+export const ProjectContext = createContext<ProjectContextValue | undefined>(undefined);
 
 export const ProjectProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const auth = useAuth();

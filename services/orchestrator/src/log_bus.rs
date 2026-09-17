@@ -10,7 +10,7 @@ use uuid::Uuid;
 pub struct OrchestratorLogEntry {
     pub id: Uuid,
     pub timestamp: DateTime<Utc>,
-    pub level: String, // "INFO", "WARN", "ERROR", "DEBUG", "SUCCESS"
+    pub level: String,  // "INFO", "WARN", "ERROR", "DEBUG", "SUCCESS"
     pub source: String, // "ai_router", "generation", "validation", "execution", "executor", "policy", "store", "engine", etc.
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -96,13 +96,19 @@ impl LogBus {
 
     /// Retrieves the most recent in-memory log history, optionally filtered by project.
     /// Global logs (where project_id is None) are included alongside project-specific logs.
-    pub async fn recent_logs(&self, project_id: Option<&str>, limit: usize) -> Vec<OrchestratorLogEntry> {
+    pub async fn recent_logs(
+        &self,
+        project_id: Option<&str>,
+        limit: usize,
+    ) -> Vec<OrchestratorLogEntry> {
         let buf = self.buffer.read().await;
-        let iter = buf.iter().filter(|entry| match (project_id, &entry.project_id) {
-            (Some(pid), Some(entry_pid)) => pid == entry_pid,
-            (Some(_), None) => true, // Global logs are visible to project streams
-            (None, _) => true,
-        });
+        let iter = buf
+            .iter()
+            .filter(|entry| match (project_id, &entry.project_id) {
+                (Some(pid), Some(entry_pid)) => pid == entry_pid,
+                (Some(_), None) => true, // Global logs are visible to project streams
+                (None, _) => true,
+            });
 
         let matched: Vec<OrchestratorLogEntry> = iter.cloned().collect();
         if matched.len() > limit {

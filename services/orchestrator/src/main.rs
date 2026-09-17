@@ -199,7 +199,14 @@ async fn main() {
         });
     }
     let embedder: Arc<dyn Embedder> = Arc::new(GeminiEmbedder::from_env());
-    let state = AppState::new(Arc::new(registry), store, policy, evidence, ai_infra, embedder);
+    let state = AppState::new(
+        Arc::new(registry),
+        store,
+        policy,
+        evidence,
+        ai_infra,
+        embedder,
+    );
     // B12 — explicit origin allow-list, not a wildcard. See
     // `api::cors_layer_from_env`'s doc comment for the default and the
     // `AIQA_CORS_ALLOWED_ORIGINS` override.

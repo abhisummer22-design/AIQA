@@ -1329,3 +1329,209 @@ export interface OrchestratorLogEntry {
   task_id?: string;
 }
 
+// ------------------------------------------------ Phase 6 & 7: Adaptive QA Intelligence
+
+export interface ExecutionTelemetryRow {
+  id: string;
+  project_id: string;
+  run_id: string;
+  task_id: string;
+  task_name: string;
+  test_case_id: string | null;
+  execution_id: string | null;
+  executor: string;
+  environment: string;
+  start_time: string;
+  end_time: string | null;
+  duration_ms: number;
+  status: string;
+  retry_count: number;
+  healing_attempt_count: number;
+  failure_category: string | null;
+  failure_fingerprint: string | null;
+  error_message: string | null;
+  evidence_refs: string;
+  assertion_result: string | null;
+  http_status: number | null;
+  selector: string | null;
+  verification_outcome: string | null;
+  created_at: string;
+}
+
+export interface FailureClusterRow {
+  id: string;
+  project_id: string | null;
+  signature: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  occurrence_count: number;
+  root_cause_hypothesis: string | null;
+  confidence: number | null;
+  reproducibility: number | null;
+  review_state: string;
+}
+
+export interface FlakinessMetricsRow {
+  id: string;
+  node_id: string;
+  flakiness_score: number;
+  window_runs: number;
+  window_failures: number;
+  environment_correlation: string | null;
+  computed_at: string;
+}
+
+export interface HealingStrategyMetricsRow {
+  id: string;
+  project_id: string;
+  strategy: string;
+  failure_category: string;
+  attempts_count: number;
+  verified_count: number;
+  not_verified_count: number;
+  regression_count: number;
+  calibrated_confidence: number;
+  updated_at: string;
+}
+
+export type TrendDirection = 'IMPROVING' | 'STABLE' | 'DEGRADING' | 'INSUFFICIENT_DATA';
+
+export interface TrendAnalysis {
+  metric_name: string;
+  direction: TrendDirection;
+  current_value: number;
+  previous_value: number;
+  sample_count: number;
+  notes: string;
+}
+
+export interface QualityNodeRow {
+  id: string;
+  project_id: string | null;
+  node_type: string;
+  external_ref: string | null;
+  name: string;
+  metadata: string;
+  created_at: string;
+}
+
+export interface QualityRelationRow {
+  id: string;
+  from_node_id: string;
+  to_node_id: string;
+  relation_type: string;
+  metadata: string;
+  created_at: string;
+}
+
+export interface QualityGraphResponse {
+  nodes: QualityNodeRow[];
+  relations: QualityRelationRow[];
+}
+
+export interface RiskFactors {
+  failure_rate: number;
+  flakiness_score: number;
+  failure_severity: number;
+  dependency_count: number;
+  healing_regression_rate: number;
+  security_sensitivity: number;
+}
+
+export interface RiskCalibration {
+  task_name: string;
+  risk_score: number;
+  risk_level: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'INSUFFICIENT_DATA' | string;
+  factors: RiskFactors;
+  explanation: string;
+}
+
+// ---------------------------------------------------------- Phase 8: Intelligent QA Operations & Cross-Environment Correlation
+
+export type RecurrenceState = 'NEW' | 'RECURRING' | 'PERSISTENT' | 'RESOLVED';
+
+export type TimelineEventType =
+  | 'FAILURE_OBSERVED'
+  | 'HEALING_PROPOSED'
+  | 'HEALING_APPROVED'
+  | 'HEALING_EXECUTED'
+  | 'HEALING_VERIFIED'
+  | 'REGRESSION_DETECTED';
+
+export interface EnvironmentOccurrence {
+  environment: string;
+  occurrences: number;
+  total_runs: number;
+  failure_rate: number;
+  first_seen: string;
+  last_seen: string;
+  affected_tests: string[];
+  affected_components: string[];
+  trend: string;
+}
+
+export interface EnvironmentCorrelationMatrix {
+  cluster_id: string;
+  signature: string;
+  environments: EnvironmentOccurrence[];
+  recurrence_state: RecurrenceState;
+  cross_environment: boolean;
+  total_occurrences: number;
+}
+
+export interface InvestigationTimelineEvent {
+  id: string;
+  timestamp: string;
+  event_type: TimelineEventType;
+  environment: string;
+  description: string;
+  evidence_refs: string[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface HealingHistoryCorrelation {
+  proposal_id: string;
+  task_id: string;
+  strategy: string;
+  risk_level: string;
+  state: string;
+  verification_result?: string | null;
+  regression_detected: boolean;
+  ast_diff?: string | null;
+  created_at: string;
+}
+
+export interface FailureInvestigation {
+  project_id: string;
+  cluster_id: string;
+  signature: string;
+  failure_category: string;
+  root_cause_hypothesis?: string | null;
+  confidence?: number | null;
+  reproducibility?: number | null;
+  environment_matrix: EnvironmentCorrelationMatrix;
+  timeline: InvestigationTimelineEvent[];
+  affected_tests: string[];
+  affected_tasks: string[];
+  affected_components: string[];
+  healing_history: HealingHistoryCorrelation[];
+  regression_status: string;
+  non_causal_changes: string[];
+  evidence_refs: string[];
+  recommendations: string[];
+}
+
+export interface RetentionPolicy {
+  retention_days: number;
+  dry_run: boolean;
+}
+
+export interface RetentionReport {
+  project_id: string;
+  eligible_count: number;
+  pruned_count: number;
+  dry_run: boolean;
+  executed_at: string;
+  retention_days: number;
+}
+

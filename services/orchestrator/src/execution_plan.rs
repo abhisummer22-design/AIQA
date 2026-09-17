@@ -70,7 +70,7 @@ pub enum ExecutionType {
 /// "run this shell command" or "eval this code" variant. Internally
 /// tagged (`type`), so an unrecognized action name is a real
 /// deserialization error, not silently ignored or executed.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum Action {
     // ---- Browser

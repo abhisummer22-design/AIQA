@@ -75,5 +75,93 @@ pub async fn render(pool: &SqlitePool) -> String {
         out.push_str(&format!("aiqa_audit_log_total {c}\n"));
     }
 
+    out.push_str("# HELP aiqa_execution_telemetry_total Number of normalized execution telemetry events\n# TYPE aiqa_execution_telemetry_total counter\n");
+    if let Ok(row) = sqlx::query("SELECT COUNT(*) as c FROM execution_telemetry")
+        .fetch_one(pool)
+        .await
+    {
+        let c: i64 = row.get("c");
+        out.push_str(&format!("aiqa_execution_telemetry_total {c}\n"));
+    }
+
+    out.push_str("# HELP aiqa_flaky_tests_total Number of tracked flakiness metrics\n# TYPE aiqa_flaky_tests_total gauge\n");
+    if let Ok(row) =
+        sqlx::query("SELECT COUNT(*) as c FROM flakiness_metrics WHERE flakiness_score >= 0.15")
+            .fetch_one(pool)
+            .await
+    {
+        let c: i64 = row.get("c");
+        out.push_str(&format!("aiqa_flaky_tests_total {c}\n"));
+    }
+
+    out.push_str("# HELP aiqa_healing_strategy_attempts_total Total strategy attempts\n# TYPE aiqa_healing_strategy_attempts_total counter\n");
+    if let Ok(row) =
+        sqlx::query("SELECT COALESCE(SUM(attempts_count), 0) as c FROM healing_strategy_metrics")
+            .fetch_one(pool)
+            .await
+    {
+        let c: i64 = row.get("c");
+        out.push_str(&format!("aiqa_healing_strategy_attempts_total {c}\n"));
+    }
+
+    out.push_str("# HELP aiqa_healing_strategy_successes_total Total verified strategy successes\n# TYPE aiqa_healing_strategy_successes_total counter\n");
+    if let Ok(row) =
+        sqlx::query("SELECT COALESCE(SUM(verified_count), 0) as c FROM healing_strategy_metrics")
+            .fetch_one(pool)
+            .await
+    {
+        let c: i64 = row.get("c");
+        out.push_str(&format!("aiqa_healing_strategy_successes_total {c}\n"));
+    }
+
+    // Phase 8: Intelligent QA Operations & Cross-Environment Observability
+    out.push_str("# HELP aiqa_investigations_total Number of distinct failure investigations\n# TYPE aiqa_investigations_total gauge\n");
+    if let Ok(row) = sqlx::query("SELECT COUNT(*) as c FROM failure_clusters")
+        .fetch_one(pool)
+        .await
+    {
+        let c: i64 = row.get("c");
+        out.push_str(&format!("aiqa_investigations_total {c}\n"));
+    }
+
+    out.push_str("# HELP aiqa_correlated_failures_total Number of correlated failure clusters with recurring occurrences\n# TYPE aiqa_correlated_failures_total gauge\n");
+    if let Ok(row) =
+        sqlx::query("SELECT COUNT(*) as c FROM failure_clusters WHERE occurrence_count >= 2")
+            .fetch_one(pool)
+            .await
+    {
+        let c: i64 = row.get("c");
+        out.push_str(&format!("aiqa_correlated_failures_total {c}\n"));
+    }
+
+    out.push_str("# HELP aiqa_cross_environment_correlations_total Number of failure clusters spanning multiple execution environments\n# TYPE aiqa_cross_environment_correlations_total gauge\n");
+    if let Ok(row) = sqlx::query("SELECT COUNT(*) as c FROM (SELECT failure_fingerprint FROM execution_telemetry WHERE failure_fingerprint IS NOT NULL GROUP BY failure_fingerprint HAVING COUNT(DISTINCT environment) > 1)")
+        .fetch_one(pool)
+        .await
+    {
+        let c: i64 = row.get("c");
+        out.push_str(&format!("aiqa_cross_environment_correlations_total {c}\n"));
+    }
+
+    out.push_str("# HELP aiqa_telemetry_pruned_total Number of telemetry retention prune operations\n# TYPE aiqa_telemetry_pruned_total counter\n");
+    if let Ok(row) =
+        sqlx::query("SELECT COUNT(*) as c FROM audit_log WHERE action = 'telemetry.retention'")
+            .fetch_one(pool)
+            .await
+    {
+        let c: i64 = row.get("c");
+        out.push_str(&format!("aiqa_telemetry_pruned_total {c}\n"));
+    }
+
+    out.push_str("# HELP aiqa_retention_runs_total Number of executed retention runs\n# TYPE aiqa_retention_runs_total counter\n");
+    if let Ok(row) =
+        sqlx::query("SELECT COUNT(*) as c FROM audit_log WHERE action = 'telemetry.retention'")
+            .fetch_one(pool)
+            .await
+    {
+        let c: i64 = row.get("c");
+        out.push_str(&format!("aiqa_retention_runs_total {c}\n"));
+    }
+
     out
 }
