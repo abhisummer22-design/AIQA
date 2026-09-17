@@ -20,6 +20,7 @@ use axum::{
     Router,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
@@ -871,7 +872,7 @@ async fn get_neural_pipeline(
         PipelineStage {
             id: "vector",
             label: "Vector Store",
-            backing: "test_case_embeddings — one real Gemini embedding (gemini-embedding-001) per APPROVED test case, brute-force cosine similarity at retrieval time (no ANN index at this scale). Gemini-only: no other configured provider exposes a real embeddings endpoint. Requires GEMINI_API_KEY; degrades to no grounding (not a failure) when unset.".to_string(),
+            backing: "test_case_embeddings + documents — one real Gemini embedding (gemini-embedding-001) per APPROVED test case and per uniquely-extracted uploaded requirement document (Phase 2 gap-closing), brute-force cosine similarity at retrieval time (no ANN index at this scale). Gemini-only: no other configured provider exposes a real embeddings endpoint. Requires GEMINI_API_KEY; degrades to no grounding (not a failure) when unset.".to_string(),
             available: true,
             metric: Some(embedded_case_count),
             metric_label: Some("cases embedded"),
@@ -879,7 +880,7 @@ async fn get_neural_pipeline(
         PipelineStage {
             id: "rag",
             label: "RAG Retrieval",
-            backing: "Every test-case generation request embeds its own requirement text and retrieves this project's most similar already-APPROVED test cases as grounding examples — additive only; a case it inspires still follows the same EVIDENCE RULES as the rest of the prompt.".to_string(),
+            backing: "Every test-case generation request embeds its own requirement text and retrieves this project's most similar already-APPROVED test cases AND most relevant previously-uploaded requirement documents (Phase 2 gap-closing) as grounding — additive only; a case it inspires still follows the same EVIDENCE RULES as the rest of the prompt.".to_string(),
             available: true,
             metric: None,
             metric_label: None,
@@ -2224,6 +2225,14 @@ struct GenerateAiTestCasesResponse {
     /// `ai_generation::rank_similar_test_cases`/`find_similar_approved_test_cases`
     /// below.
     similar_cases_used: usize,
+    /// Phase 2 gap-closing — how many of this project's own previously-
+    /// uploaded requirement documents were genuinely retrieved and folded
+    /// into the prompt as background/source material (0 for a project with
+    /// none embedded yet, or when no embedding provider is configured —
+    /// never a claim of grounding that did not really happen). See
+    /// `ai_generation::rank_similar_documents`/`find_similar_documents`
+    /// above for how this number is genuinely computed.
+    similar_documents_used: usize,
     /// Real, summed token/cost/latency across every wave that actually ran
     /// (`ai_generation::aggregate_wave_usage`, applied to `waves` above —
     /// `Vec::new()` on the fallback arm sums to the same honest zero/`None`
@@ -2422,6 +2431,196 @@ async fn embed_approved_test_case(state: &AppState, row: &crate::store::TestCase
     }
 }
 
+/// Phase 2 gap-closing — document-level RAG. Persists this document's real
+/// extracted text (`doc_extract::extract_text`, already computed by the
+/// caller) so a LATER, unrelated-looking generation request can still
+/// retrieve it (`find_similar_documents` below) — before this, an uploaded
+/// document's real content only ever reached the ONE generation request it
+/// happened to be attached to (`TestCaseGeneratorPage.tsx`'s own
+/// `buildRequirementText()` folds it directly into that request's
+/// `requirement_text`), then vanished from the system entirely the moment
+/// that request finished. Called after every successful
+/// `extract_document_text_scoped` call.
+///
+/// Fails open at every step, same contract `embed_approved_test_case` above
+/// already holds itself to, but with one real difference: the text itself
+/// is always stored (deduplicated by a real SHA-256 of its own content —
+/// `store::upsert_document`'s own `ON CONFLICT`), even when no embedding
+/// provider is configured, so it becomes retrievable retroactively the next
+/// time this same document is re-uploaded after a provider is configured. A
+/// real DB or embedding-provider failure here must never fail the
+/// extraction response itself — that response is the core feature this
+/// endpoint exists for; this persistence is genuinely supplementary.
+async fn persist_and_embed_document(
+    state: &AppState,
+    project_id: Uuid,
+    file_name: &str,
+    extracted: &crate::doc_extract::ExtractedDocument,
+) {
+    let mut hasher = Sha256::new();
+    hasher.update(extracted.text.as_bytes());
+    let content_hash = hex::encode(hasher.finalize());
+
+    let document_id = match state
+        .store
+        .upsert_document(
+            &project_id.to_string(),
+            file_name,
+            &content_hash,
+            &extracted.text,
+            extracted.char_count as i64,
+            extracted.truncated,
+        )
+        .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            state
+                .log_bus
+                .emit(
+                    "WARN",
+                    "generation",
+                    &format!(
+                        "Could not store this document's content, it will not be available as grounding for future generation requests: {e}"
+                    ),
+                    None,
+                    Some(&project_id.to_string()),
+                    None,
+                )
+                .await;
+            return;
+        }
+    };
+
+    if !state.embedder.is_configured() {
+        return;
+    }
+    let vector = match state.embedder.embed(&extracted.text).await {
+        Ok(v) => v,
+        Err(e) => {
+            state
+                .log_bus
+                .emit(
+                    "WARN",
+                    "generation",
+                    &format!(
+                        "Could not compute this document's embedding, it will not be available as similarity-based grounding yet: {e}"
+                    ),
+                    None,
+                    Some(&project_id.to_string()),
+                    None,
+                )
+                .await;
+            return;
+        }
+    };
+    if let Err(e) = state
+        .store
+        .set_document_embedding(
+            document_id,
+            &state.embedder.model_name(),
+            state.embedder.dimensions(),
+            &vector,
+        )
+        .await
+    {
+        state
+            .log_bus
+            .emit(
+                "WARN",
+                "generation",
+                &format!(
+                    "Could not store this document's embedding, it will not be available as similarity-based grounding yet: {e}"
+                ),
+                None,
+                Some(&project_id.to_string()),
+                None,
+            )
+            .await;
+    }
+}
+
+/// Phase 2 gap-closing — document-level RAG. Same real retrieval shape as
+/// `find_similar_approved_test_cases` above (embeds this request's own
+/// requirement text, ranks this project's own stored embeddings by real
+/// cosine similarity — `ai_generation::rank_similar_documents`), just
+/// against `documents` instead of `test_case_embeddings`. Fails open at
+/// every step, same disclosed contract: no embedding provider configured, a
+/// real network failure, a project with no documents embedded yet, or a
+/// genuinely corrupt/orphaned row all return an empty `Vec` — generation
+/// proceeds exactly as it did before this feature existed. Kept as its own
+/// independent embedding call rather than sharing one with
+/// `find_similar_approved_test_cases` — same "each real embedding call site
+/// stays self-contained" convention that function and `embed_approved_test_
+/// case` already both separately follow; a real embedding call is cheap
+/// enough that a v1 does not need to share one across two unrelated
+/// retrieval pools.
+async fn find_similar_documents(
+    state: &AppState,
+    project_id: Uuid,
+    requirement_text: &str,
+) -> Vec<crate::ai_generation::SimilarDocumentExample> {
+    if !state.embedder.is_configured() {
+        return Vec::new();
+    }
+    let query_embedding = match state.embedder.embed(requirement_text).await {
+        Ok(v) => v,
+        Err(e) => {
+            state
+                .log_bus
+                .emit(
+                    "WARN",
+                    "generation",
+                    &format!(
+                        "Could not compute a query embedding, generating without document-based grounding: {e}"
+                    ),
+                    None,
+                    Some(&project_id.to_string()),
+                    None,
+                )
+                .await;
+            return Vec::new();
+        }
+    };
+    let candidates = match state
+        .store
+        .list_document_embeddings(&project_id.to_string())
+        .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            state
+                .log_bus
+                .emit(
+                    "WARN",
+                    "generation",
+                    &format!(
+                        "Could not load this project's document embeddings, generating without document-based grounding: {e}"
+                    ),
+                    None,
+                    Some(&project_id.to_string()),
+                    None,
+                )
+                .await;
+            return Vec::new();
+        }
+    };
+    let ids = crate::ai_generation::rank_similar_documents(&query_embedding, &candidates);
+    let mut examples = Vec::with_capacity(ids.len());
+    for id in ids {
+        // A real, if unusual, orphaned embedding (deleted through a path
+        // other than a real `documents` row delete — none exists today) is
+        // simply skipped, not a hard failure for the rest of generation.
+        if let Ok(Some(row)) = state.store.get_document(id).await {
+            examples.push(crate::ai_generation::SimilarDocumentExample {
+                file_name: row.file_name,
+                excerpt: row.text,
+            });
+        }
+    }
+    examples
+}
+
 /// POST .../test-cases/generate-ai — Phase 2. Real, skill-aware AI
 /// generation (`ai_generation::AiModelRouter`). Produces drafts only, never
 /// persists them — the frontend uses the existing
@@ -2478,6 +2677,12 @@ async fn generate_ai_test_cases_scoped(
     feedback.similar_cases =
         find_similar_approved_test_cases(&state, project_id, &body.requirement_text).await;
     let similar_cases_used = feedback.similar_cases.len();
+    // Phase 2 gap-closing — document-level RAG, same fails-open contract:
+    // a project with nothing embedded yet, or no embedding provider
+    // configured, generates exactly as it did before this feature existed.
+    feedback.similar_documents =
+        find_similar_documents(&state, project_id, &body.requirement_text).await;
+    let similar_documents_used = feedback.similar_documents.len();
 
     // Real, optional crawl grounding — resolved with the exact same
     // ownership check + task lookup `get_crawl_result_scoped` already uses,
@@ -2637,6 +2842,7 @@ async fn generate_ai_test_cases_scoped(
                 waves,
                 crawl_pages_used,
                 similar_cases_used,
+                similar_documents_used,
                 total_prompt_tokens: usage.prompt_tokens,
                 total_completion_tokens: usage.completion_tokens,
                 total_estimated_cost_usd: usage.estimated_cost_usd,
@@ -2673,6 +2879,7 @@ async fn generate_ai_test_cases_scoped(
                 waves: Vec::new(),
                 crawl_pages_used,
                 similar_cases_used,
+                similar_documents_used,
                 total_prompt_tokens: None,
                 total_completion_tokens: None,
                 total_estimated_cost_usd: None,
@@ -2758,6 +2965,9 @@ async fn generate_custom_testing_scoped(
     // no `crawl_run_id` field at all yet) — not addressed by this change.
     feedback.similar_cases =
         find_similar_approved_test_cases(&state, project_id, &body.requirement_text).await;
+    // Phase 2 gap-closing — document-level RAG, same fails-open contract.
+    feedback.similar_documents =
+        find_similar_documents(&state, project_id, &body.requirement_text).await;
 
     let outcome = crate::custom_testing::run(
         &state.ai_infra,
@@ -3100,6 +3310,17 @@ async fn extract_document_text_scoped(
         },
     )
     .await;
+
+    // Phase 2 gap-closing — document-level RAG: a successful extraction is
+    // also persisted (and embedded, when a provider is configured) so this
+    // document's real content remains available as grounding for a LATER
+    // generation request, not just this one — see
+    // `persist_and_embed_document`'s own doc comment. Fails open, same as
+    // that function's own contract: this never turns a successful
+    // extraction into a failed response.
+    if let Ok(extracted) = &result {
+        persist_and_embed_document(&state, project_id, &body.file_name, extracted).await;
+    }
 
     result.map(Json).map_err(ApiError::validation)
 }

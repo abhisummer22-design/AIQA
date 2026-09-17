@@ -197,6 +197,28 @@ fn test_case_embedding_from_row(r: sqlx::sqlite::SqliteRow) -> Result<TestCaseEm
     })
 }
 
+/// Phase 2 (document-level RAG). `id` here is trusted to be well-formed —
+/// this process is the only writer, via `upsert_document`'s own
+/// `Uuid::to_string()` — same reasoning `test_case_embedding_from_row`
+/// above already documents for its own id.
+fn document_embedding_from_row(r: sqlx::sqlite::SqliteRow) -> Result<DocumentEmbeddingRow> {
+    Ok(DocumentEmbeddingRow {
+        id: Uuid::parse_str(&r.get::<String, _>("id"))?,
+        embedding: serde_json::from_str(&r.get::<String, _>("embedding"))?,
+    })
+}
+
+fn document_from_row(r: sqlx::sqlite::SqliteRow) -> Result<DocumentRow> {
+    Ok(DocumentRow {
+        id: Uuid::parse_str(&r.get::<String, _>("id"))?,
+        project_id: r.get("project_id"),
+        file_name: r.get("file_name"),
+        text: r.get("text"),
+        char_count: r.get::<i64, _>("char_count"),
+        truncated: r.get::<i64, _>("truncated") != 0,
+    })
+}
+
 fn test_plan_from_row(r: sqlx::sqlite::SqliteRow) -> Result<TestPlanRow> {
     Ok(TestPlanRow {
         id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap_or_default(),
@@ -1134,6 +1156,25 @@ impl Store {
             .execute(&mut *tx)
             .await?;
 
+        // 8b. Delete test_case_embeddings scoped to this project — a
+        // pre-existing gap this Phase 2 change also closes: no FK exists to
+        // cascade this (`0014_test_case_embeddings.sql`'s own comment), and
+        // `delete_test_case` only ever cleans up one case's row at a time,
+        // so a whole-project delete previously left every embedded case's
+        // row behind as a real orphan.
+        sqlx::query("DELETE FROM test_case_embeddings WHERE project_id = ?")
+            .bind(&pid_str)
+            .execute(&mut *tx)
+            .await?;
+
+        // 8c. Delete documents (Phase 2 — document-level RAG) scoped to this
+        // project. Same no-FK convention as every other project-scoped
+        // table here (`0004_projects.sql`'s own comment).
+        sqlx::query("DELETE FROM documents WHERE project_id = ?")
+            .bind(&pid_str)
+            .execute(&mut *tx)
+            .await?;
+
         // 9. Delete the project itself
         let result = sqlx::query("DELETE FROM projects WHERE id = ?")
             .bind(&pid_str)
@@ -1484,6 +1525,134 @@ impl Store {
                 .bind(project_id)
                 .fetch_one(&self.pool)
                 .await?;
+        Ok(row.get::<i64, _>("c"))
+    }
+
+    // ------------------------------------------------- documents (Phase 2 RAG)
+
+    /// Phase 2 (document-level RAG). Real `(re)INSERT OR UPDATE` keyed by
+    /// `(project_id, content_hash)` — see `0017_documents.sql`'s own comment
+    /// for why this specific key. A re-upload of the exact same extracted
+    /// content only refreshes `file_name`/`char_count`/`truncated`/
+    /// `updated_at` on the existing row (never touches its `id`, so any
+    /// embedding already stored under that id stays valid and does not need
+    /// recomputing for unchanged content) rather than creating a second,
+    /// duplicate row. Returns the row's real id — freshly generated for a
+    /// genuinely new document, or the pre-existing row's own id for a
+    /// re-upload — via a follow-up `SELECT` rather than SQLite's `RETURNING`
+    /// clause (not used anywhere else in this codebase yet, so this stays
+    /// consistent with every other upsert here).
+    pub async fn upsert_document(
+        &self,
+        project_id: &str,
+        file_name: &str,
+        content_hash: &str,
+        text: &str,
+        char_count: i64,
+        truncated: bool,
+    ) -> Result<Uuid> {
+        let now = now_rfc3339();
+        let new_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO documents (id, project_id, file_name, content_hash, text, char_count, truncated, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(project_id, content_hash) DO UPDATE SET
+                file_name = excluded.file_name,
+                char_count = excluded.char_count,
+                truncated = excluded.truncated,
+                updated_at = excluded.updated_at",
+        )
+        .bind(new_id.to_string())
+        .bind(project_id)
+        .bind(file_name)
+        .bind(content_hash)
+        .bind(text)
+        .bind(char_count)
+        .bind(truncated as i64)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+
+        let row = sqlx::query("SELECT id FROM documents WHERE project_id = ? AND content_hash = ?")
+            .bind(project_id)
+            .bind(content_hash)
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(Uuid::parse_str(&row.get::<String, _>("id"))?)
+    }
+
+    /// Phase 2 (document-level RAG). Sets/refreshes one document's real
+    /// embedding after a successful `state.embedder.embed` call
+    /// (`api.rs::persist_and_embed_document`) — kept separate from
+    /// `upsert_document` because a document's text is always stored
+    /// immediately, even before an embedding provider is configured or a
+    /// real embed call for it has succeeded (fail-open, same contract
+    /// `embed_approved_test_case` already holds itself to).
+    pub async fn set_document_embedding(
+        &self,
+        document_id: Uuid,
+        model: &str,
+        dimensions: u32,
+        embedding: &[f32],
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE documents SET embedding = ?, embedding_model = ?, embedding_dimensions = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(serde_json::to_string(embedding)?)
+        .bind(model)
+        .bind(dimensions as i64)
+        .bind(now_rfc3339())
+        .bind(document_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Every real embedded document in one project — the real candidate pool
+    /// `ai_generation::rank_similar_documents` brute-force-scores against a
+    /// generation request's own query embedding. Unordered (ranking is the
+    /// caller's job, not this read's) and excludes any document that has no
+    /// embedding yet (no provider configured, or not yet backfilled), same
+    /// "only what is genuinely retrievable" contract `list_test_case_
+    /// embeddings` already holds.
+    pub async fn list_document_embeddings(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<DocumentEmbeddingRow>> {
+        let rows = sqlx::query(
+            "SELECT id, embedding FROM documents WHERE project_id = ? AND embedding IS NOT NULL",
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(document_embedding_from_row).collect()
+    }
+
+    /// A single document's full real content, fetched after
+    /// `rank_similar_documents` has already picked its id — mirrors
+    /// `get_test_case`'s own "rank ids first, fetch full rows after" split.
+    pub async fn get_document(&self, id: Uuid) -> Result<Option<DocumentRow>> {
+        let row = sqlx::query(
+            "SELECT id, project_id, file_name, text, char_count, truncated FROM documents WHERE id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(document_from_row).transpose()
+    }
+
+    /// Real count for `get_neural_pipeline`'s "Vector Store" stage metric —
+    /// how many of this project's uploaded documents genuinely have a real
+    /// embedding right now, not a claim about how many documents were ever
+    /// uploaded.
+    pub async fn count_document_embeddings(&self, project_id: &str) -> Result<i64> {
+        let row = sqlx::query(
+            "SELECT COUNT(*) as c FROM documents WHERE project_id = ? AND embedding IS NOT NULL",
+        )
+        .bind(project_id)
+        .fetch_one(&self.pool)
+        .await?;
         Ok(row.get::<i64, _>("c"))
     }
 
@@ -3570,6 +3739,30 @@ pub struct TestCaseRow {
 pub struct TestCaseEmbeddingRow {
     pub test_case_id: Uuid,
     pub embedding: Vec<f32>,
+}
+
+/// Phase 2 (document-level RAG, `0017_documents.sql`'s own comment). Just
+/// the two fields `ai_generation::rank_similar_documents`'s brute-force
+/// cosine-similarity scoring actually needs — same "no field beyond what a
+/// real reader needs" discipline `TestCaseEmbeddingRow` above already
+/// established.
+#[derive(Debug, Clone)]
+pub struct DocumentEmbeddingRow {
+    pub id: Uuid,
+    pub embedding: Vec<f32>,
+}
+
+/// Phase 2 (document-level RAG). A project's own real, previously-extracted
+/// document — `api.rs::find_similar_documents` fetches this after ranking
+/// to build the real excerpt a generation prompt actually sees.
+#[derive(Debug, Clone)]
+pub struct DocumentRow {
+    pub id: Uuid,
+    pub project_id: String,
+    pub file_name: String,
+    pub text: String,
+    pub char_count: i64,
+    pub truncated: bool,
 }
 
 /// Phase 5 (Output maturity). `suite_count` is real, computed at query

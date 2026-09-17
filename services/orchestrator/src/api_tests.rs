@@ -5091,6 +5091,117 @@ async fn generate_ai_retrieves_and_honestly_reports_a_real_similar_approved_case
     );
 }
 
+/// Phase 2 gap-closing — document-level RAG. The other half of the real
+/// end-to-end loop, mirroring `generate_ai_retrieves_and_honestly_reports_a_
+/// real_similar_approved_case` above exactly, but for a document uploaded
+/// through `POST .../documents/extract-text` instead of an approved test
+/// case: a LATER, unrelated generation request must still be able to
+/// retrieve that document's real content and report it honestly via
+/// `similar_documents_used` — proving a document's content now survives
+/// beyond the single request that uploaded it.
+#[tokio::test]
+async fn generate_ai_retrieves_and_honestly_reports_a_real_similar_document() {
+    let embedder = Arc::new(FakeEmbedder::configured(vec![1.0, 0.0, 0.0]));
+    let (state, _dir) =
+        test_state_with_ai_router_and_embedder(ai_infra_with(Ok(valid_ai_response())), embedder)
+            .await;
+    let project = make_project(&state, "Document RAG Retrieval").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    // No document uploaded yet — the real, honest zero.
+    let (status, first) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/generate-ai"),
+            Some(&owner),
+            Some(serde_json::json!({"requirement_text": "Users can request a refund.", "skills": []})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={first}");
+    assert_eq!(first["similar_documents_used"], 0, "body={first}");
+
+    let (status, extracted) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/documents/extract-text"),
+            Some(&owner),
+            Some(serde_json::json!({
+                "file_name": "Refunds-BRD.txt",
+                "content_base64": b64(b"Refunds must be processed within 5 business days.")
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={extracted}");
+
+    let (status, second) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/generate-ai"),
+            Some(&owner),
+            Some(serde_json::json!({"requirement_text": "Users can request a refund.", "skills": []})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={second}");
+    assert_eq!(
+        second["similar_documents_used"], 1,
+        "the same project's own real, newly-uploaded document must now be retrieved: body={second}"
+    );
+}
+
+/// Re-uploading a document whose extracted text is byte-for-byte identical
+/// (a real, common case — the same file re-selected in the UI, or the same
+/// requirement text saved under a different file name) must not create a
+/// second, duplicate row that retrieval then double-counts —
+/// `store::upsert_document`'s own `ON CONFLICT(project_id, content_hash)`
+/// is what this proves, end-to-end through the real HTTP endpoints rather
+/// than at the SQL layer directly.
+#[tokio::test]
+async fn document_re_upload_with_identical_content_deduplicates_not_a_second_retrieved_document() {
+    let embedder = Arc::new(FakeEmbedder::configured(vec![1.0, 0.0, 0.0]));
+    let (state, _dir) =
+        test_state_with_ai_router_and_embedder(ai_infra_with(Ok(valid_ai_response())), embedder)
+            .await;
+    let project = make_project(&state, "Document RAG Dedup").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let content = b"Refunds must be processed within 5 business days.";
+
+    for file_name in ["Refunds-BRD.txt", "Refunds-BRD-copy.txt"] {
+        let (status, body) = send(
+            &state,
+            req(
+                "POST",
+                &format!("/api/v1/projects/{project}/documents/extract-text"),
+                Some(&owner),
+                Some(serde_json::json!({"file_name": file_name, "content_base64": b64(content)})),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "body={body}");
+    }
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/generate-ai"),
+            Some(&owner),
+            Some(serde_json::json!({"requirement_text": "Users can request a refund.", "skills": []})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(
+        body["similar_documents_used"], 1,
+        "identical content re-uploaded under a different file name must dedupe to one real document, not two: body={body}"
+    );
+}
+
 #[tokio::test]
 async fn pipeline_reports_replanning_vector_and_rag_as_genuinely_available_with_real_backing() {
     let embedder = Arc::new(FakeEmbedder::configured(vec![1.0, 0.0, 0.0]));
@@ -5131,6 +5242,23 @@ async fn pipeline_reports_replanning_vector_and_rag_as_genuinely_available_with_
     // Real, honest zero — nothing approved/embedded in this fresh project.
     let vector_stage = stages.iter().find(|s| s["id"] == "vector").unwrap();
     assert_eq!(vector_stage["metric"], 0, "body={body}");
+
+    // Phase 2 gap-closing — both stages' backing text must honestly
+    // disclose that document-level grounding exists now too, not just
+    // test-case grounding, otherwise this text would immediately go stale
+    // the moment document-level RAG shipped (the same kind of gap Phase 0
+    // fixed in `AIEnginePanel.tsx`).
+    let rag_stage = stages.iter().find(|s| s["id"] == "rag").unwrap();
+    for stage in [vector_stage, rag_stage] {
+        assert!(
+            stage["backing"]
+                .as_str()
+                .unwrap()
+                .to_lowercase()
+                .contains("document"),
+            "stage {stage}'s backing text must disclose document-level grounding too"
+        );
+    }
 }
 
 /// A structurally incomplete case (an empty step) fails real validation
@@ -6830,7 +6958,11 @@ async fn phase1_custom_testing_generation_is_grounded_by_a_real_similar_approved
     assert_eq!(body["generation_source"], "REAL_AI", "body={body}");
 
     let prompts = cases_executor.prompts.lock().unwrap();
-    assert_eq!(prompts.len(), 1, "the cases call must have run exactly once");
+    assert_eq!(
+        prompts.len(),
+        1,
+        "the cases call must have run exactly once"
+    );
     assert!(
         prompts[0].contains("Reject invalid password"),
         "the real prompt sent to the cases call must include this project's own real approved \
@@ -8933,6 +9065,118 @@ async fn delete_project_admin_success_with_cascading_cleanup() {
     assert!(
         delete_entry.is_some(),
         "audit log must record project.delete"
+    );
+}
+
+/// Phase 2 gap-closing. `delete_project_admin_success_with_cascading_
+/// cleanup` above never actually seeds a `test_case_embeddings`/`documents`
+/// row, so it could not have caught either table being left behind — this
+/// test seeds a real one of each (a real approved+embedded test case, a
+/// real extracted+embedded document) and proves both are genuinely gone
+/// after delete. `test_case_embeddings` cleanup was a real, pre-existing
+/// gap (no FK, and `delete_project` never touched it before this change) —
+/// this closes that alongside the new `documents` table's own cleanup.
+#[tokio::test]
+async fn delete_project_also_cleans_up_test_case_embeddings_and_documents() {
+    let embedder = Arc::new(FakeEmbedder::configured(vec![1.0, 0.0, 0.0]));
+    let (state, _dir) = test_state_with_ai_router_and_embedder(inert_ai_router(), embedder).await;
+    let admin = mint_key(&state, "admin", None).await;
+    let project = make_project(&state, "To Delete With Embeddings").await;
+    let operator = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (_, created) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(&operator),
+            Some(sample_test_case_body("Reject invalid password")),
+        ),
+    )
+    .await;
+    let case_id = created["id"].as_str().unwrap().to_string();
+    send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{case_id}/validate"),
+            Some(&operator),
+            None,
+        ),
+    )
+    .await;
+    send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{case_id}/approve"),
+            Some(&operator),
+            None,
+        ),
+    )
+    .await;
+    send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/documents/extract-text"),
+            Some(&operator),
+            Some(serde_json::json!({
+                "file_name": "notes.txt",
+                "content_base64": b64(b"Refunds must be processed within 5 business days.")
+            })),
+        ),
+    )
+    .await;
+
+    assert_eq!(
+        state
+            .store
+            .count_test_case_embeddings(&project.to_string())
+            .await
+            .unwrap(),
+        1,
+        "setup: a real embedded case must exist before delete"
+    );
+    assert_eq!(
+        state
+            .store
+            .count_document_embeddings(&project.to_string())
+            .await
+            .unwrap(),
+        1,
+        "setup: a real embedded document must exist before delete"
+    );
+
+    let (status, _) = send(
+        &state,
+        req(
+            "DELETE",
+            &format!("/api/v1/projects/{project}"),
+            Some(&admin),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    assert_eq!(
+        state
+            .store
+            .count_test_case_embeddings(&project.to_string())
+            .await
+            .unwrap(),
+        0,
+        "deleting a project must not leave an orphaned test_case_embeddings row behind"
+    );
+    assert_eq!(
+        state
+            .store
+            .count_document_embeddings(&project.to_string())
+            .await
+            .unwrap(),
+        0,
+        "deleting a project must not leave an orphaned documents row behind"
     );
 }
 
