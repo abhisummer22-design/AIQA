@@ -6958,7 +6958,11 @@ async fn phase1_custom_testing_generation_is_grounded_by_a_real_similar_approved
     assert_eq!(body["generation_source"], "REAL_AI", "body={body}");
 
     let prompts = cases_executor.prompts.lock().unwrap();
-    assert_eq!(prompts.len(), 1, "the cases call must have run exactly once");
+    assert_eq!(
+        prompts.len(),
+        1,
+        "the cases call must have run exactly once"
+    );
     assert!(
         prompts[0].contains("Reject invalid password"),
         "the real prompt sent to the cases call must include this project's own real approved \

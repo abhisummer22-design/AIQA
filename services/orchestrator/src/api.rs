@@ -2680,7 +2680,8 @@ async fn generate_ai_test_cases_scoped(
     // Phase 2 gap-closing — document-level RAG, same fails-open contract:
     // a project with nothing embedded yet, or no embedding provider
     // configured, generates exactly as it did before this feature existed.
-    feedback.similar_documents = find_similar_documents(&state, project_id, &body.requirement_text).await;
+    feedback.similar_documents =
+        find_similar_documents(&state, project_id, &body.requirement_text).await;
     let similar_documents_used = feedback.similar_documents.len();
 
     // Real, optional crawl grounding — resolved with the exact same
@@ -2965,7 +2966,8 @@ async fn generate_custom_testing_scoped(
     feedback.similar_cases =
         find_similar_approved_test_cases(&state, project_id, &body.requirement_text).await;
     // Phase 2 gap-closing — document-level RAG, same fails-open contract.
-    feedback.similar_documents = find_similar_documents(&state, project_id, &body.requirement_text).await;
+    feedback.similar_documents =
+        find_similar_documents(&state, project_id, &body.requirement_text).await;
 
     let outcome = crate::custom_testing::run(
         &state.ai_infra,
