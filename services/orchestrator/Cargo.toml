@@ -16,6 +16,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 async-trait = "0.1"
 sqlx = { version = "0.9.0", features = ["sqlite", "runtime-tokio", "chrono", "uuid", "json", "migrate"] }
 sha2 = "0.11.0"
+hmac = "0.13.0"
 rand = "0.10.2"
 hex = "0.4.3"
 anyhow = "1.0.104"

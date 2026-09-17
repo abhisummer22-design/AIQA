@@ -486,6 +486,11 @@ PERF_TEST_MAX_TOTAL_REQUESTS=10000
 
 # Webhook Notifications
 AIQA_WEBHOOK_URL=
+# Optional — when set, every webhook delivery carries a real HMAC-SHA256
+# signature (`X-AIQA-Signature-256: sha256=<hex>`) over the raw JSON body,
+# so the receiver can verify it genuinely came from this server. Unset
+# means an unsigned delivery, exactly like before this existed.
+AIQA_WEBHOOK_SECRET=
 
 # Frontend Dev Injection (Local Development Only)
 VITE_AIQA_ORCH_KEY=<configure-this-value>

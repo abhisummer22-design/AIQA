@@ -28,6 +28,7 @@ dependencies = [
  "chrono",
  "futures-util",
  "hex",
+ "hmac",
  "http-body-util",
  "rand 0.10.2",
  "regex",
