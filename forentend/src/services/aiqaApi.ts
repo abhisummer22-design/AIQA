@@ -101,6 +101,12 @@ import type {
   HealingStrategyMetricsRow,
   TrendAnalysis,
   QualityGraphResponse,
+  RiskCalibration,
+  FailureInvestigation,
+  EnvironmentCorrelationMatrix,
+  InvestigationTimelineEvent,
+  RetentionPolicy,
+  RetentionReport,
 } from '../types/contract';
 
 /** Base path for orchestrator calls. Dev: proxy this to the orchestrator
@@ -553,6 +559,21 @@ export const aiqaApi = {
       requestJson<TrendAnalysis>(`/projects/${encodeURIComponent(projectId)}/intelligence/trends`, { signal }),
     qualityGraph: (projectId: string, signal?: AbortSignal) =>
       requestJson<QualityGraphResponse>(`/projects/${encodeURIComponent(projectId)}/intelligence/quality-graph`, { signal }),
+    risk: (projectId: string, signal?: AbortSignal) =>
+      requestJson<RiskCalibration>(`/projects/${encodeURIComponent(projectId)}/intelligence/risk`, { signal }),
+    // Phase 8: Intelligent QA Operations & Cross-Environment Observability
+    investigations: (projectId: string, signal?: AbortSignal) =>
+      requestJson<FailureInvestigation[]>(`/projects/${encodeURIComponent(projectId)}/intelligence/investigations`, { signal }),
+    investigation: (projectId: string, clusterId: string, signal?: AbortSignal) =>
+      requestJson<FailureInvestigation>(`/projects/${encodeURIComponent(projectId)}/intelligence/failures/${encodeURIComponent(clusterId)}/investigation`, { signal }),
+    environmentMatrix: (projectId: string, clusterId: string, signal?: AbortSignal) =>
+      requestJson<EnvironmentCorrelationMatrix>(`/projects/${encodeURIComponent(projectId)}/intelligence/failures/${encodeURIComponent(clusterId)}/environments`, { signal }),
+    investigationTimeline: (projectId: string, clusterId: string, signal?: AbortSignal) =>
+      requestJson<InvestigationTimelineEvent[]>(`/projects/${encodeURIComponent(projectId)}/intelligence/failures/${encodeURIComponent(clusterId)}/timeline`, { signal }),
+    retentionDryRun: (projectId: string, body: Partial<RetentionPolicy> = { retention_days: 30 }, signal?: AbortSignal) =>
+      requestJson<RetentionReport>(`/projects/${encodeURIComponent(projectId)}/intelligence/retention/dry-run`, { method: 'POST', body, signal }),
+    retentionPrune: (projectId: string, body: Partial<RetentionPolicy> = { retention_days: 30 }, signal?: AbortSignal) =>
+      requestJson<RetentionReport>(`/projects/${encodeURIComponent(projectId)}/intelligence/retention/prune`, { method: 'POST', body, signal }),
   },
 
   /** AUD-005 — real, persisted, project-isolated Test Case CRUD + lifecycle

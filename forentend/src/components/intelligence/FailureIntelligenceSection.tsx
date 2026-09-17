@@ -3,19 +3,25 @@
  * Displays normalized failure clusters, root cause hypotheses, and recurrence frequencies.
  */
 
-import React from 'react';
-import { Layers, AlertTriangle, CheckCircle, HelpCircle, ShieldAlert } from 'lucide-react';
+import React, { useState } from 'react';
+import { Layers, AlertTriangle, CheckCircle, HelpCircle, ShieldAlert, ArrowUpRight } from 'lucide-react';
 import type { FailureClusterRow } from '../../types/contract';
+import { FailureInvestigationWorkspaceModal } from './FailureInvestigationWorkspaceModal';
 
 interface FailureIntelligenceSectionProps {
   failures: FailureClusterRow[];
+  projectId?: string;
+  onInvestigate?: (cluster: FailureClusterRow) => void;
   loading?: boolean;
 }
 
 export const FailureIntelligenceSection: React.FC<FailureIntelligenceSectionProps> = ({
   failures,
+  projectId,
+  onInvestigate,
   loading,
 }) => {
+  const [activeClusterId, setActiveClusterId] = useState<string | null>(null);
   if (loading) {
     return (
       <div className="bg-slate-900/40 border border-slate-800 rounded-xl p-5 animate-pulse" data-testid="failure-intel-loading">
@@ -110,15 +116,41 @@ export const FailureIntelligenceSection: React.FC<FailureIntelligenceSectionProp
                   <p className="text-xs text-slate-500 italic">No automated hypothesis established yet.</p>
                 )}
 
-                {/* Timestamp metadata */}
-                <div className="mt-2 text-[10px] font-mono text-slate-500 flex items-center gap-4">
-                  <span>First seen: {new Date(cluster.first_seen_at).toLocaleDateString()}</span>
-                  <span>Last seen: {new Date(cluster.last_seen_at).toLocaleDateString()}</span>
+                {/* Card footer: timestamp metadata & investigate button */}
+                <div className="mt-3 pt-2 border-t border-slate-800/60 flex items-center justify-between">
+                  <div className="text-[10px] font-mono text-slate-500 flex items-center gap-4">
+                    <span>First seen: {new Date(cluster.first_seen_at).toLocaleDateString()}</span>
+                    <span>Last seen: {new Date(cluster.last_seen_at).toLocaleDateString()}</span>
+                  </div>
+                  <button
+                    onClick={() => {
+                      if (onInvestigate) {
+                        onInvestigate(cluster);
+                      } else {
+                        setActiveClusterId(cluster.id);
+                      }
+                    }}
+                    className="px-2.5 py-1 rounded-md bg-violet-950/40 hover:bg-violet-900/50 text-violet-300 border border-violet-800/50 text-[11px] font-medium font-mono flex items-center gap-1 transition-colors"
+                    data-testid={`investigate-cluster-${cluster.id}`}
+                  >
+                    <span>Investigate</span>
+                    <ArrowUpRight className="w-3 h-3" />
+                  </button>
                 </div>
               </div>
             );
           })}
         </div>
+      )}
+
+      {/* Failure Investigation Workspace Modal */}
+      {projectId && activeClusterId && (
+        <FailureInvestigationWorkspaceModal
+          projectId={projectId}
+          clusterId={activeClusterId}
+          isOpen={Boolean(activeClusterId)}
+          onClose={() => setActiveClusterId(null)}
+        />
       )}
     </div>
   );

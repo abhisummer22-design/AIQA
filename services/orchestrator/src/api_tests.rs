@@ -8956,3 +8956,235 @@ async fn list_logs_returns_recent_history_and_respects_project_scoping() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(proj_logs.as_array().unwrap().len(), 2);
 }
+
+#[tokio::test]
+async fn test_project_risk_intelligence_endpoint() {
+    let (state, _dir) = test_state().await;
+    let proj_id = Uuid::new_v4();
+    state
+        .store
+        .insert_project(proj_id, "Risk Test Proj", None)
+        .await
+        .unwrap();
+
+    let admin = mint_key(&state, "admin", None).await;
+
+    // 1. Initial state: insufficient data
+    let (status, body) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{proj_id}/intelligence/risk"),
+            Some(&admin),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["risk_level"], "INSUFFICIENT_DATA");
+    assert_eq!(body["risk_score"], 0.0);
+    assert_eq!(body["factors"]["failure_rate"], 0.0);
+
+    // 2. Insert real execution telemetry using TaskState
+    let mut task_state =
+        crate::domain::TaskState::new("task-1".to_string(), "Checkout Task".to_string());
+    task_state.status = crate::domain::TaskStatus::Failed;
+    task_state.started_at = Some(chrono::Utc::now());
+    task_state.finished_at = Some(chrono::Utc::now() + chrono::Duration::milliseconds(1500));
+    task_state.reason = Some("Selector timed out".to_string());
+
+    let tel = crate::adaptive_intelligence::ExecutionTelemetry::from_task_state(
+        &proj_id.to_string(),
+        Uuid::new_v4(),
+        &task_state,
+        "playwright",
+        "staging",
+        None,
+        vec![],
+        Some("#btn".to_string()),
+        None,
+        None,
+    );
+    state.store.insert_execution_telemetry(&tel).await.unwrap();
+
+    // 3. Query risk again: now should compute real score from authoritative 35% failure rate model
+    let (status2, body2) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{proj_id}/intelligence/risk"),
+            Some(&admin),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status2, StatusCode::OK);
+    assert_ne!(body2["risk_level"], "INSUFFICIENT_DATA");
+    assert!(body2["risk_score"].as_f64().unwrap() > 0.0);
+    assert_eq!(body2["factors"]["failure_rate"], 1.0);
+}
+
+#[tokio::test]
+async fn test_phase8_investigations_and_drilldown_endpoints() {
+    let (state, _dir) = test_state().await;
+    let proj_id = Uuid::new_v4();
+    state
+        .store
+        .insert_project(proj_id, "Operations Project", None)
+        .await
+        .unwrap();
+
+    let admin = mint_key(&state, "admin", None).await;
+
+    // Register failure cluster
+    let (cluster_id, _) = state
+        .store
+        .upsert_failure_cluster(
+            &proj_id.to_string(),
+            "sig-ops-test",
+            "API Gateway Timeout",
+            0.9,
+        )
+        .await
+        .unwrap();
+
+    // Add telemetry
+    let mut task = crate::domain::TaskState::new("task-ops-1", "GatewayTest");
+    task.status = crate::domain::TaskStatus::Failed;
+    task.reason = Some("sig-ops-test: connection timed out after 30000ms".to_string());
+    task.started_at = Some(chrono::Utc::now() - chrono::Duration::hours(1));
+    task.finished_at = Some(chrono::Utc::now() - chrono::Duration::minutes(59));
+
+    let tel = crate::adaptive_intelligence::ExecutionTelemetry::from_task_state(
+        &proj_id.to_string(),
+        Uuid::new_v4(),
+        &task,
+        "api_executor",
+        "staging",
+        None,
+        vec!["evidence/api-log.txt".to_string()],
+        None,
+        None,
+        None,
+    );
+    state.store.insert_execution_telemetry(&tel).await.unwrap();
+
+    // 1. GET investigations list
+    let (status, list) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{proj_id}/intelligence/investigations"),
+            Some(&admin),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let arr = list.as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["signature"], "sig-ops-test");
+
+    // 2. GET full investigation
+    let (status_inv, inv) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{proj_id}/intelligence/failures/{cluster_id}/investigation"),
+            Some(&admin),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status_inv, StatusCode::OK);
+    assert_eq!(inv["signature"], "sig-ops-test");
+    assert_eq!(inv["failure_category"], "TIMEOUT");
+    assert!(!inv["recommendations"].as_array().unwrap().is_empty());
+
+    // 3. GET environment matrix
+    let (status_env, env_mat) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{proj_id}/intelligence/failures/{cluster_id}/environments"),
+            Some(&admin),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status_env, StatusCode::OK);
+    assert_eq!(env_mat["signature"], "sig-ops-test");
+    assert_eq!(env_mat["environments"].as_array().unwrap().len(), 1);
+    assert_eq!(env_mat["environments"][0]["environment"], "staging");
+
+    // 4. GET timeline
+    let (status_time, timeline) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{proj_id}/intelligence/failures/{cluster_id}/timeline"),
+            Some(&admin),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status_time, StatusCode::OK);
+    assert!(!timeline.as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_phase8_retention_endpoints_and_rbac() {
+    let (state, _dir) = test_state().await;
+    let proj_id = Uuid::new_v4();
+    state
+        .store
+        .insert_project(proj_id, "Retention Project", None)
+        .await
+        .unwrap();
+
+    let admin = mint_key(&state, "admin", None).await;
+    let viewer = mint_key(&state, "viewer", Some(&proj_id.to_string())).await;
+
+    // 1. Viewer attempt to call retention dry-run -> 403 Forbidden
+    let (status_forbidden, _) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{proj_id}/intelligence/retention/dry-run"),
+            Some(&viewer),
+            Some(serde_json::json!({ "retention_days": 30 })),
+        ),
+    )
+    .await;
+    assert_eq!(status_forbidden, StatusCode::FORBIDDEN);
+
+    // 2. Admin calls dry-run -> 200 OK
+    let (status_ok, dry_report) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{proj_id}/intelligence/retention/dry-run"),
+            Some(&admin),
+            Some(serde_json::json!({ "retention_days": 30 })),
+        ),
+    )
+    .await;
+    assert_eq!(status_ok, StatusCode::OK);
+    assert_eq!(dry_report["dry_run"], true);
+    assert_eq!(dry_report["retention_days"], 30);
+
+    // 3. Admin calls prune -> 200 OK
+    let (status_prune, prune_report) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{proj_id}/intelligence/retention/prune"),
+            Some(&admin),
+            Some(serde_json::json!({ "retention_days": 30 })),
+        ),
+    )
+    .await;
+    assert_eq!(status_prune, StatusCode::OK);
+    assert_eq!(prune_report["dry_run"], false);
+    assert_eq!(prune_report["retention_days"], 30);
+}

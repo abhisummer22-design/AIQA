@@ -535,6 +535,48 @@ fn test_30_risk_calibration_uses_real_evidence() {
 }
 
 #[test]
+fn test_30b_risk_calibration_levels_and_authoritative_weights() {
+    // 1. LOW risk (< 0.25)
+    let low_factors = RiskFactors {
+        failure_rate: 0.10,
+        flakiness_score: 0.10,
+        failure_severity: 0.10,
+        dependency_count: 1,
+        healing_regression_rate: 0.0,
+        security_sensitivity: 0.0,
+    };
+    let cal_low = calibrate_risk("Low Service", low_factors);
+    assert_eq!(cal_low.risk_level, "LOW");
+    assert!(cal_low.risk_score < 0.25);
+
+    // 2. MEDIUM risk (0.25..0.50)
+    let med_factors = RiskFactors {
+        failure_rate: 0.50,
+        flakiness_score: 0.30,
+        failure_severity: 0.40,
+        dependency_count: 2,
+        healing_regression_rate: 0.10,
+        security_sensitivity: 0.0,
+    };
+    let cal_med = calibrate_risk("Med Service", med_factors);
+    assert_eq!(cal_med.risk_level, "MEDIUM");
+    assert!(cal_med.risk_score >= 0.25 && cal_med.risk_score < 0.50);
+
+    // 3. HIGH risk (0.50..0.70)
+    let high_factors = RiskFactors {
+        failure_rate: 0.70,
+        flakiness_score: 0.60,
+        failure_severity: 0.80,
+        dependency_count: 5,
+        healing_regression_rate: 0.0,
+        security_sensitivity: 0.0,
+    };
+    let cal_high = calibrate_risk("High Service", high_factors);
+    assert_eq!(cal_high.risk_level, "HIGH");
+    assert!(cal_high.risk_score >= 0.50 && cal_high.risk_score < 0.70);
+}
+
+#[test]
 fn test_31_intelligence_cannot_bypass_policy() {
     let rec = score_healing_strategy(&FailureCategory::SelectorNotFound, &[]);
     assert_eq!(rec.recommended_strategy, "selector_update");

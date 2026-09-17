@@ -2504,6 +2504,37 @@ impl Store {
         }))
     }
 
+    pub async fn get_failure_cluster_by_id_scoped(
+        &self,
+        project_id: &str,
+        id: Uuid,
+    ) -> Result<Option<FailureClusterRow>> {
+        let row = sqlx::query(
+            "SELECT id, signature, first_seen_at, last_seen_at, occurrence_count, root_cause_hypothesis, confidence, reproducibility, review_state,
+                    ai_hypothesis, ai_hypothesis_provider, ai_hypothesis_model, ai_hypothesis_generated_at
+             FROM failure_clusters WHERE id = ? AND project_id = ?",
+        )
+        .bind(id.to_string())
+        .bind(project_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| FailureClusterRow {
+            id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap_or_default(),
+            signature: r.get("signature"),
+            first_seen_at: parse_ts(&r.get::<String, _>("first_seen_at")),
+            last_seen_at: parse_ts(&r.get::<String, _>("last_seen_at")),
+            occurrence_count: r.get("occurrence_count"),
+            root_cause_hypothesis: r.get("root_cause_hypothesis"),
+            confidence: r.get("confidence"),
+            reproducibility: r.get("reproducibility"),
+            review_state: r.get("review_state"),
+            ai_hypothesis: r.get("ai_hypothesis"),
+            ai_hypothesis_provider: r.get("ai_hypothesis_provider"),
+            ai_hypothesis_model: r.get("ai_hypothesis_model"),
+            ai_hypothesis_generated_at: parse_ts_opt(r.get("ai_hypothesis_generated_at")),
+        }))
+    }
+
     /// Build order item 4 — persists an on-demand AI-assisted hypothesis
     /// onto an existing failure cluster. Additive only: never touches
     /// `root_cause_hypothesis`/`confidence`/`occurrence_count`/any
@@ -3283,6 +3314,144 @@ impl Store {
         };
 
         rows.into_iter().map(execution_telemetry_from_row).collect()
+    }
+
+    // ------------------------------------------------------------- operations & cross-env correlation (Phase 8)
+
+    pub async fn get_failure_cluster_by_signature(
+        &self,
+        project_id: &str,
+        signature: &str,
+    ) -> Result<Option<FailureClusterRow>> {
+        let row = sqlx::query(
+            "SELECT id, signature, first_seen_at, last_seen_at, occurrence_count, root_cause_hypothesis, confidence, reproducibility, review_state,
+                    ai_hypothesis, ai_hypothesis_provider, ai_hypothesis_model, ai_hypothesis_generated_at
+             FROM failure_clusters WHERE project_id = ? AND signature = ?",
+        )
+        .bind(project_id)
+        .bind(signature)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| FailureClusterRow {
+            id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap_or_default(),
+            signature: r.get("signature"),
+            first_seen_at: parse_ts(&r.get::<String, _>("first_seen_at")),
+            last_seen_at: parse_ts(&r.get::<String, _>("last_seen_at")),
+            occurrence_count: r.get("occurrence_count"),
+            root_cause_hypothesis: r.get("root_cause_hypothesis"),
+            confidence: r.get("confidence"),
+            reproducibility: r.get("reproducibility"),
+            review_state: r.get("review_state"),
+            ai_hypothesis: r.get("ai_hypothesis"),
+            ai_hypothesis_provider: r.get("ai_hypothesis_provider"),
+            ai_hypothesis_model: r.get("ai_hypothesis_model"),
+            ai_hypothesis_generated_at: parse_ts_opt(r.get("ai_hypothesis_generated_at")),
+        }))
+    }
+
+    pub async fn list_telemetry_for_cluster(
+        &self,
+        project_id: &str,
+        signature: &str,
+        fingerprint: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<ExecutionTelemetryRow>> {
+        let rows = if let Some(fp) = fingerprint {
+            sqlx::query(
+                "SELECT * FROM execution_telemetry
+                 WHERE project_id = ?
+                   AND (failure_fingerprint = ? OR failure_fingerprint = ? OR error_message LIKE ? OR task_name = ?)
+                 ORDER BY created_at ASC LIMIT ?",
+            )
+            .bind(project_id)
+            .bind(signature)
+            .bind(fp)
+            .bind(format!("%{signature}%"))
+            .bind(signature)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT * FROM execution_telemetry
+                 WHERE project_id = ?
+                   AND (failure_fingerprint = ? OR error_message LIKE ? OR task_name = ?)
+                 ORDER BY created_at ASC LIMIT ?",
+            )
+            .bind(project_id)
+            .bind(signature)
+            .bind(format!("%{signature}%"))
+            .bind(signature)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+        };
+
+        rows.into_iter().map(execution_telemetry_from_row).collect()
+    }
+
+    pub async fn list_healing_proposals_for_cluster(
+        &self,
+        project_id: &str,
+        fingerprint: Option<&str>,
+        task_ids: &[String],
+    ) -> Result<Vec<HealingProposalRow>> {
+        let all = self.list_healing_proposals(project_id, None).await?;
+        let filtered = all
+            .into_iter()
+            .filter(|p| {
+                if let Some(fp) = fingerprint {
+                    if p.failure_fingerprint == fp {
+                        return true;
+                    }
+                }
+                task_ids.iter().any(|tid| tid == &p.task_id)
+            })
+            .collect();
+        Ok(filtered)
+    }
+
+    pub async fn prune_execution_telemetry(
+        &self,
+        project_id: &str,
+        older_than: chrono::DateTime<chrono::Utc>,
+        dry_run: bool,
+    ) -> Result<u64> {
+        let older_str = older_than.to_rfc3339();
+
+        let eligible_count: i64 = sqlx::query_scalar(
+            r#"SELECT COUNT(*) FROM execution_telemetry
+               WHERE project_id = ?
+                 AND created_at < ?
+                 AND run_id NOT IN (SELECT id FROM runs WHERE project_id = ? AND state IN ('PENDING', 'RUNNING'))
+                 AND task_id NOT IN (SELECT task_id FROM healing_proposals WHERE project_id = ? AND state IN ('PENDING_APPROVAL', 'APPROVED'))"#
+        )
+        .bind(project_id)
+        .bind(&older_str)
+        .bind(project_id)
+        .bind(project_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        if dry_run {
+            return Ok(eligible_count.max(0) as u64);
+        }
+
+        let res = sqlx::query(
+            r#"DELETE FROM execution_telemetry
+               WHERE project_id = ?
+                 AND created_at < ?
+                 AND run_id NOT IN (SELECT id FROM runs WHERE project_id = ? AND state IN ('PENDING', 'RUNNING'))
+                 AND task_id NOT IN (SELECT task_id FROM healing_proposals WHERE project_id = ? AND state IN ('PENDING_APPROVAL', 'APPROVED'))"#
+        )
+        .bind(project_id)
+        .bind(&older_str)
+        .bind(project_id)
+        .bind(project_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(res.rows_affected())
     }
 }
 

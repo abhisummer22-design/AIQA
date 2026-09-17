@@ -16,6 +16,7 @@ import {
   Network,
   Sparkles,
   LayoutDashboard,
+  Database,
 } from 'lucide-react';
 import { useProject } from '../../context/ProjectContext';
 import { aiqaApi, ApiError } from '../../services/aiqaApi';
@@ -28,6 +29,7 @@ import type {
   HealingStrategyMetricsRow,
   TrendAnalysis,
   QualityGraphResponse,
+  RiskCalibration,
 } from '../../types/contract';
 
 // Subcomponents
@@ -41,6 +43,7 @@ import { RiskIntelligenceSection } from '../intelligence/RiskIntelligenceSection
 import { TrendsSection } from '../intelligence/TrendsSection';
 import { QualityGraphSection } from '../intelligence/QualityGraphSection';
 import { PlanningInsightsSection } from '../intelligence/PlanningInsightsSection';
+import { TelemetryRetentionModal } from '../intelligence/TelemetryRetentionModal';
 
 type IntelligenceTab = 'overview' | 'telemetry' | 'flakiness' | 'healing' | 'graph';
 
@@ -67,9 +70,11 @@ export const QaIntelligenceDashboardPage: React.FC = () => {
   const [strategies, setStrategies] = useState<HealingStrategyMetricsRow[]>([]);
   const [trends, setTrends] = useState<TrendAnalysis | null>(null);
   const [qualityGraph, setQualityGraph] = useState<QualityGraphResponse | null>(null);
+  const [risk, setRisk] = useState<RiskCalibration | null>(null);
 
   // Selected telemetry row for modal
   const [selectedTelemetry, setSelectedTelemetry] = useState<ExecutionTelemetryRow | null>(null);
+  const [retentionModalOpen, setRetentionModalOpen] = useState(false);
 
   const abortRef = useRef<AbortController | null>(null);
 
@@ -83,7 +88,7 @@ export const QaIntelligenceDashboardPage: React.FC = () => {
     setError(null);
 
     try {
-      const [telData, failData, flkData, stratData, trendData, graphData] = await Promise.all([
+      const [telData, failData, flkData, stratData, trendData, graphData, riskData] = await Promise.all([
         aiqaApi.intelligence.telemetry(projectId, controller.signal).catch((err) => {
           if (err instanceof ApiError && err.status === 404) return [];
           throw err;
@@ -108,6 +113,10 @@ export const QaIntelligenceDashboardPage: React.FC = () => {
           if (err instanceof ApiError && err.status === 404) return { nodes: [], relations: [] };
           throw err;
         }),
+        aiqaApi.intelligence.risk(projectId, controller.signal).catch((err) => {
+          if (err instanceof ApiError && err.status === 404) return null;
+          throw err;
+        }),
       ]);
 
       if (controller.signal.aborted) return;
@@ -118,6 +127,7 @@ export const QaIntelligenceDashboardPage: React.FC = () => {
       setStrategies(stratData || []);
       setTrends(trendData);
       setQualityGraph(graphData);
+      setRisk(riskData);
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') return;
       const apiErr = err instanceof ApiError ? err : new ApiError('server_error', String(err));
@@ -139,6 +149,7 @@ export const QaIntelligenceDashboardPage: React.FC = () => {
       setStrategies([]);
       setTrends(null);
       setQualityGraph(null);
+      setRisk(null);
       setError(null);
       setLoading(false);
       setRefreshing(false);
@@ -209,6 +220,15 @@ export const QaIntelligenceDashboardPage: React.FC = () => {
 
         <div className="flex items-center gap-2">
           <button
+            onClick={() => setRetentionModalOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-xs font-medium text-amber-400 hover:text-amber-300 transition-colors"
+            data-testid="retention-maintenance-btn"
+            title="Telemetry Retention Maintenance"
+          >
+            <Database className="w-3.5 h-3.5 text-amber-400" />
+            <span>Retention</span>
+          </button>
+          <button
             onClick={handleRefresh}
             disabled={loading || refreshing}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-xs font-medium text-slate-200 transition-colors disabled:opacity-50"
@@ -259,7 +279,11 @@ export const QaIntelligenceDashboardPage: React.FC = () => {
           <TrendsSection trends={trends} loading={loading} />
 
           {/* Top Failure Clusters */}
-          <FailureIntelligenceSection failures={failures} loading={loading} />
+          <FailureIntelligenceSection
+            failures={failures}
+            projectId={selectedProject.id}
+            loading={loading}
+          />
 
           {/* Planning Insights */}
           <PlanningInsightsSection
@@ -285,9 +309,7 @@ export const QaIntelligenceDashboardPage: React.FC = () => {
         <div className="space-y-6" data-testid="tab-content-flakiness">
           <FlakinessSection flakiness={flakiness} loading={loading} />
           <RiskIntelligenceSection
-            telemetry={telemetry}
-            flakiness={flakiness}
-            strategies={strategies}
+            risk={risk}
             loading={loading}
           />
         </div>
@@ -310,6 +332,18 @@ export const QaIntelligenceDashboardPage: React.FC = () => {
         <TelemetryDetailModal
           telemetry={selectedTelemetry}
           onClose={() => setSelectedTelemetry(null)}
+        />
+      )}
+
+      {/* Telemetry Retention Modal */}
+      {retentionModalOpen && (
+        <TelemetryRetentionModal
+          projectId={selectedProject.id}
+          isOpen={retentionModalOpen}
+          onClose={() => {
+            setRetentionModalOpen(false);
+            void loadData(selectedProject.id, true);
+          }}
         />
       )}
     </div>

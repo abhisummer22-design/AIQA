@@ -23,6 +23,7 @@ pub mod intelligence;
 pub mod log_bus;
 pub mod metrics;
 pub mod mobile;
+pub mod operations;
 pub mod performance_testing;
 pub mod plan_validator;
 pub mod policy;
@@ -45,6 +46,8 @@ mod api_tests;
 mod engine_tests;
 #[cfg(test)]
 mod governed_healing_tests;
+#[cfg(test)]
+mod operations_tests;
 #[cfg(test)]
 mod store_tests;
 #[cfg(test)]

@@ -212,6 +212,10 @@ pub fn router(state: AppState) -> Router {
             get(get_project_flakiness_handler),
         )
         .route(
+            "/api/v1/projects/:project_id/intelligence/risk",
+            get(get_project_risk_handler),
+        )
+        .route(
             "/api/v1/projects/:project_id/intelligence/strategies",
             get(get_project_strategies_handler),
         )
@@ -222,6 +226,31 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/projects/:project_id/intelligence/quality-graph",
             get(get_project_quality_graph_handler),
+        )
+        // Phase 8: Intelligent QA Operations & Cross-Environment Observability
+        .route(
+            "/api/v1/projects/:project_id/intelligence/investigations",
+            get(list_failure_investigations_handler),
+        )
+        .route(
+            "/api/v1/projects/:project_id/intelligence/failures/:cluster_id/investigation",
+            get(get_failure_investigation_handler),
+        )
+        .route(
+            "/api/v1/projects/:project_id/intelligence/failures/:cluster_id/environments",
+            get(get_cluster_environments_handler),
+        )
+        .route(
+            "/api/v1/projects/:project_id/intelligence/failures/:cluster_id/timeline",
+            get(get_cluster_timeline_handler),
+        )
+        .route(
+            "/api/v1/projects/:project_id/intelligence/retention/dry-run",
+            post(retention_dry_run_handler),
+        )
+        .route(
+            "/api/v1/projects/:project_id/intelligence/retention/prune",
+            post(retention_prune_handler),
         )
         // Phase 6 (crawler) — see `start_crawl_scoped`'s doc comment.
         .route(
@@ -6218,6 +6247,102 @@ async fn get_project_flakiness_handler(
     Ok(Json(metrics))
 }
 
+async fn get_project_risk_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+) -> Result<Json<crate::adaptive_intelligence::RiskCalibration>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let pid = project_id.to_string();
+    let telemetry = state
+        .store
+        .list_execution_telemetry(&pid, 100)
+        .await
+        .map_err(ApiError::internal)?;
+    let flakiness = state
+        .store
+        .list_flakiness_metrics(&pid)
+        .await
+        .map_err(ApiError::internal)?;
+    let strategies = state
+        .store
+        .list_healing_strategy_metrics(&pid)
+        .await
+        .map_err(ApiError::internal)?;
+
+    let total_runs = telemetry.len();
+    let failed_runs = telemetry
+        .iter()
+        .filter(|t| matches!(t.status.as_str(), "FAILED" | "TIMEOUT" | "INFRA_ERROR"))
+        .count();
+    let failure_rate = if total_runs > 0 {
+        failed_runs as f64 / total_runs as f64
+    } else {
+        0.0
+    };
+
+    let flakiness_score = if !flakiness.is_empty() {
+        let sum: f64 = flakiness.iter().map(|f| f.flakiness_score).sum();
+        sum / flakiness.len() as f64
+    } else {
+        0.0
+    };
+
+    let failure_severity = if failed_runs > 0 {
+        let infra_fails = telemetry
+            .iter()
+            .filter(|t| matches!(t.status.as_str(), "INFRA_ERROR" | "TIMEOUT"))
+            .count();
+        if infra_fails > 0 {
+            0.8
+        } else {
+            0.4
+        }
+    } else {
+        0.0
+    };
+
+    let relations = state
+        .store
+        .list_quality_relations_for_project(&pid)
+        .await
+        .unwrap_or_default();
+    let dependency_count = relations.len();
+
+    let total_attempts: i64 = strategies.iter().map(|s| s.attempts_count).sum();
+    let total_regressions: i64 = strategies.iter().map(|s| s.regression_count).sum();
+    let healing_regression_rate = if total_attempts > 0 {
+        total_regressions as f64 / total_attempts as f64
+    } else {
+        0.0
+    };
+
+    let security_sensitivity = 0.0;
+
+    let factors = crate::adaptive_intelligence::RiskFactors {
+        failure_rate,
+        flakiness_score,
+        failure_severity,
+        dependency_count,
+        healing_regression_rate,
+        security_sensitivity,
+    };
+
+    if total_runs == 0 && flakiness.is_empty() && strategies.is_empty() {
+        Ok(Json(crate::adaptive_intelligence::RiskCalibration {
+            task_name: pid,
+            risk_score: 0.0,
+            risk_level: "INSUFFICIENT_DATA".to_string(),
+            factors,
+            explanation: "Insufficient execution telemetry or metrics to calibrate quality risk"
+                .to_string(),
+        }))
+    } else {
+        let cal = crate::adaptive_intelligence::calibrate_risk(&pid, factors);
+        Ok(Json(cal))
+    }
+}
+
 async fn get_project_strategies_handler(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -6268,4 +6393,118 @@ async fn get_project_quality_graph_handler(
         "nodes": nodes,
         "relations": relations,
     })))
+}
+
+// ============================================================================
+// Phase 8: Intelligent QA Operations & Cross-Environment Handlers
+// ============================================================================
+
+async fn list_failure_investigations_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+) -> Result<Json<Vec<crate::operations::FailureInvestigation>>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let ops = crate::operations::OperationsService::new(state.store.clone());
+    let list = ops
+        .list_investigations(&project_id.to_string())
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(list))
+}
+
+async fn get_failure_investigation_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, cluster_id)): ApiPath<(Uuid, String)>,
+) -> Result<Json<crate::operations::FailureInvestigation>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let ops = crate::operations::OperationsService::new(state.store.clone());
+    let inv = ops
+        .get_investigation(&project_id.to_string(), &cluster_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::not_found("failure investigation not found"))?;
+    Ok(Json(inv))
+}
+
+async fn get_cluster_environments_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, cluster_id)): ApiPath<(Uuid, String)>,
+) -> Result<Json<crate::operations::EnvironmentCorrelationMatrix>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let ops = crate::operations::OperationsService::new(state.store.clone());
+    let matrix = ops
+        .get_environment_matrix(&project_id.to_string(), &cluster_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::not_found("environment correlation matrix not found"))?;
+    Ok(Json(matrix))
+}
+
+async fn get_cluster_timeline_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, cluster_id)): ApiPath<(Uuid, String)>,
+) -> Result<Json<Vec<crate::operations::InvestigationTimelineEvent>>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let ops = crate::operations::OperationsService::new(state.store.clone());
+    let timeline = ops
+        .get_investigation_timeline(&project_id.to_string(), &cluster_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::not_found("investigation timeline not found"))?;
+    Ok(Json(timeline))
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct RetentionRequestPayload {
+    pub retention_days: Option<u32>,
+}
+
+async fn retention_dry_run_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiJson(payload): ApiJson<RetentionRequestPayload>,
+) -> Result<Json<crate::operations::RetentionReport>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    auth::require_role(&ctx, Role::Admin)?;
+
+    let retention_days = payload.retention_days.unwrap_or(30);
+    let policy = crate::operations::RetentionPolicy {
+        retention_days,
+        dry_run: true,
+    };
+
+    let ops = crate::operations::OperationsService::new(state.store.clone());
+    let report = ops
+        .execute_retention(&project_id.to_string(), &policy, &ctx.name)
+        .await
+        .map_err(ApiError::validation)?;
+    Ok(Json(report))
+}
+
+async fn retention_prune_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiJson(payload): ApiJson<RetentionRequestPayload>,
+) -> Result<Json<crate::operations::RetentionReport>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    auth::require_role(&ctx, Role::Admin)?;
+
+    let retention_days = payload.retention_days.unwrap_or(30);
+    let policy = crate::operations::RetentionPolicy {
+        retention_days,
+        dry_run: false,
+    };
+
+    let ops = crate::operations::OperationsService::new(state.store.clone());
+    let report = ops
+        .execute_retention(&project_id.to_string(), &policy, &ctx.name)
+        .await
+        .map_err(ApiError::validation)?;
+    Ok(Json(report))
 }

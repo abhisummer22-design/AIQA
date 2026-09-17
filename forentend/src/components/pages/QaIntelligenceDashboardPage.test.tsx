@@ -17,6 +17,7 @@ import type {
   HealingStrategyMetricsRow,
   TrendAnalysis,
   QualityGraphResponse,
+  RiskCalibration,
 } from '../../types/contract';
 
 const MOCK_PROJECT = {
@@ -192,6 +193,22 @@ const MOCK_QUALITY_GRAPH: QualityGraphResponse = {
   ],
 };
 
+const MOCK_RISK: RiskCalibration = {
+  task_name: MOCK_PROJECT.id,
+  risk_score: 0.45,
+  risk_level: 'MEDIUM',
+  factors: {
+    failure_rate: 0.50,
+    flakiness_score: 0.35,
+    failure_severity: 0.40,
+    dependency_count: 2,
+    healing_regression_rate: 0.0,
+    security_sensitivity: 0.0,
+  },
+  explanation:
+    'Risk score 0.45 (MEDIUM): failure_rate=0.50, flakiness=0.35, severity=0.40, deps=2, regression=0.00',
+};
+
 function renderDashboard(project = MOCK_PROJECT as any) {
   const projectContextValue = {
     selectedProject: project,
@@ -217,6 +234,7 @@ describe('QaIntelligenceDashboardPage & Subcomponents (Phase 7)', () => {
     vi.spyOn(aiqaApi.intelligence, 'strategies').mockResolvedValue(MOCK_STRATEGIES);
     vi.spyOn(aiqaApi.intelligence, 'trends').mockResolvedValue(MOCK_TRENDS);
     vi.spyOn(aiqaApi.intelligence, 'qualityGraph').mockResolvedValue(MOCK_QUALITY_GRAPH);
+    vi.spyOn(aiqaApi.intelligence, 'risk').mockResolvedValue(MOCK_RISK);
   });
 
   afterEach(() => {
@@ -424,9 +442,13 @@ describe('QaIntelligenceDashboardPage & Subcomponents (Phase 7)', () => {
     expect(screen.getByText('Quality Risk & Multi-Factor Drilldown')).toBeTruthy();
     expect(screen.getByText('Failure Rate Factor')).toBeTruthy();
     expect(screen.getByText('Flakiness Factor')).toBeTruthy();
+    expect(screen.getByText('Failure Severity Factor')).toBeTruthy();
+    expect(screen.getByText('Dependency Factor')).toBeTruthy();
     expect(screen.getByText('Regression Factor')).toBeTruthy();
     expect(screen.getByText('Security & SSRF Boundary')).toBeTruthy();
     expect(screen.getByTestId('composite-risk-badge')).toBeTruthy();
+    expect(screen.getByTestId('composite-risk-badge').textContent).toBe('MEDIUM');
+    expect(screen.getByTestId('authoritative-risk-score').textContent).toContain('45%');
   });
 
   // 10. Flaky Test Drilldown Modal
@@ -515,5 +537,70 @@ describe('QaIntelligenceDashboardPage & Subcomponents (Phase 7)', () => {
     await waitFor(() => {
       expect(vi.mocked(aiqaApi.intelligence.telemetry).mock.calls.length).toBeGreaterThan(initialCalls);
     });
+  });
+
+  // 14. Authoritative Risk Intelligence Consistency
+  it('displays backend-provided risk score and classification without client-side recalculation', async () => {
+    // Custom backend risk payload that would fail under the old 40/30/30 formula
+    const customRisk: RiskCalibration = {
+      task_name: MOCK_PROJECT.id,
+      risk_score: 0.72,
+      risk_level: 'CRITICAL',
+      factors: {
+        failure_rate: 0.85,
+        flakiness_score: 0.60,
+        failure_severity: 0.80,
+        dependency_count: 4,
+        healing_regression_rate: 0.20,
+        security_sensitivity: 0.0,
+      },
+      explanation: 'Risk score 0.72 (CRITICAL): Authoritative Phase 6 Model',
+    };
+    vi.spyOn(aiqaApi.intelligence, 'risk').mockResolvedValue(customRisk);
+
+    renderDashboard();
+    await waitFor(() => expect(screen.getByText('Total Executions')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('tab-flakiness'));
+
+    // 1. Authoritative score displayed correctly
+    const scoreBadge = screen.getByTestId('authoritative-risk-score');
+    expect(scoreBadge.textContent).toContain('72%');
+    expect(scoreBadge.textContent).toContain('(0.72)');
+
+    // 2. Authoritative classification displayed correctly
+    const riskBadge = screen.getByTestId('composite-risk-badge');
+    expect(riskBadge.textContent).toBe('CRITICAL');
+
+    // 3. Explanation displayed correctly
+    expect(screen.getByTestId('risk-explanation').textContent).toBe(
+      'Risk score 0.72 (CRITICAL): Authoritative Phase 6 Model'
+    );
+
+    // 4. Authoritative factors displayed without hardcoded weights
+    expect(screen.getByText('85.0%')).toBeTruthy();
+    expect(screen.getByText('60.0%')).toBeTruthy();
+    expect(screen.getByText('80.0%')).toBeTruthy();
+    expect(screen.getByText('4 relations')).toBeTruthy();
+    expect(screen.getByText('20.0%')).toBeTruthy();
+    expect(screen.getByText('PASSED')).toBeTruthy();
+    expect(screen.queryByText('40% weight')).toBeNull();
+    expect(screen.queryByText('30% weight')).toBeNull();
+  });
+
+  // 15. Missing Factor Data Safety
+  it('handles missing risk data safely with INSUFFICIENT_DATA and no fabricated factor percentages', async () => {
+    vi.spyOn(aiqaApi.intelligence, 'risk').mockResolvedValue(null);
+
+    renderDashboard();
+    await waitFor(() => expect(screen.getByText('Total Executions')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('tab-flakiness'));
+
+    const riskBadge = screen.getByTestId('composite-risk-badge');
+    expect(riskBadge.textContent).toBe('INSUFFICIENT_DATA');
+    expect(screen.queryByTestId('authoritative-risk-score')).toBeNull();
+
+    // Factor values are honest N/A, not fabricated numbers
+    const naElements = screen.getAllByText('N/A');
+    expect(naElements.length).toBeGreaterThanOrEqual(5);
   });
 });

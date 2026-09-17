@@ -1,31 +1,40 @@
 /**
  * Phase 7: Risk Intelligence Section
- * Multi-factor quality risk drilldown (failure rate, flakiness, regression, security boundary).
+ * Displays authoritative Phase 6 quality risk calibration (35% failure rate, 20% flakiness,
+ * 15% severity, 10% dependencies, 10% regressions, 10% security boundary).
+ *
+ * STRICT INVARIANT:
+ * Zero client-side risk formula calculation. Zero hardcoded factor weights.
+ * Consumes authoritative backend risk score, classification, and factors directly.
  */
 
 import React from 'react';
 import { ShieldAlert, AlertTriangle, ShieldCheck, CheckCircle2 } from 'lucide-react';
-import type { ExecutionTelemetryRow, FlakinessMetricsRow, HealingStrategyMetricsRow } from '../../types/contract';
+import type {
+  RiskCalibration,
+  ExecutionTelemetryRow,
+  FlakinessMetricsRow,
+  HealingStrategyMetricsRow,
+} from '../../types/contract';
 
 interface RiskIntelligenceSectionProps {
-  telemetry: ExecutionTelemetryRow[];
-  flakiness: FlakinessMetricsRow[];
-  strategies: HealingStrategyMetricsRow[];
+  risk?: RiskCalibration | null;
+  telemetry?: ExecutionTelemetryRow[];
+  flakiness?: FlakinessMetricsRow[];
+  strategies?: HealingStrategyMetricsRow[];
   loading?: boolean;
 }
 
 export const RiskIntelligenceSection: React.FC<RiskIntelligenceSectionProps> = ({
-  telemetry,
-  flakiness,
-  strategies,
+  risk,
   loading,
 }) => {
   if (loading) {
     return (
       <div className="bg-slate-900/40 border border-slate-800 rounded-xl p-5 animate-pulse" data-testid="risk-intel-loading">
         <div className="h-6 w-48 bg-slate-800 rounded mb-4" />
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-          {[...Array(4)].map((_, i) => (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          {[...Array(6)].map((_, i) => (
             <div key={i} className="h-28 bg-slate-800/60 rounded" />
           ))}
         </div>
@@ -33,65 +42,61 @@ export const RiskIntelligenceSection: React.FC<RiskIntelligenceSectionProps> = (
     );
   }
 
-  const totalRuns = telemetry.length;
-  const failedRuns = telemetry.filter((t) => ['FAILED', 'TIMEOUT', 'INFRA_ERROR'].includes(t.status)).length;
-  const failureRate = totalRuns > 0 ? failedRuns / totalRuns : 0;
-
-  const totalFlaky = flakiness.filter((f) => f.flakiness_score >= 0.15).length;
-  const flakinessRatio = flakiness.length > 0 ? totalFlaky / flakiness.length : 0;
-
-  const totalRegressions = strategies.reduce((sum, s) => sum + s.regression_count, 0);
-  const totalHealingAttempts = strategies.reduce((sum, s) => sum + s.attempts_count, 0);
-  const regressionRate = totalHealingAttempts > 0 ? totalRegressions / totalHealingAttempts : 0;
-
-  // Composite risk score: failure rate (40%), flakiness (30%), regression rate (30%)
-  const hasData = totalRuns > 0 || flakiness.length > 0 || strategies.length > 0;
-  const compositeScore = hasData
-    ? Math.min(1, failureRate * 0.4 + flakinessRatio * 0.3 + regressionRate * 0.3)
-    : 0;
-
-  const riskLevel = !hasData
-    ? 'INSUFFICIENT_DATA'
-    : compositeScore >= 0.5
-    ? 'CRITICAL'
-    : compositeScore >= 0.25
-    ? 'HIGH'
-    : compositeScore >= 0.1
-    ? 'MEDIUM'
-    : 'LOW';
+  const riskLevel = risk?.risk_level ?? 'INSUFFICIENT_DATA';
+  const riskScore = risk?.risk_score;
+  const factorsData = risk?.factors;
+  const explanation =
+    risk?.explanation ||
+    'Calibrated quality risk score derived strictly from authoritative backend models.';
 
   const factors = [
     {
       name: 'Failure Rate Factor',
-      weight: '40% weight',
-      value: totalRuns > 0 ? `${(failureRate * 100).toFixed(1)}%` : 'N/A',
-      pct: failureRate * 100,
-      description: `${failedRuns} of ${totalRuns} executions failed`,
-      color: failureRate > 0.2 ? 'bg-rose-500' : 'bg-emerald-500',
+      tag: 'Empirical',
+      value: factorsData !== undefined ? `${(factorsData.failure_rate * 100).toFixed(1)}%` : 'N/A',
+      pct: factorsData !== undefined ? factorsData.failure_rate * 100 : 0,
+      description: 'Empirical failure frequency observed in execution telemetry',
+      color: factorsData && factorsData.failure_rate > 0.2 ? 'bg-rose-500' : 'bg-emerald-500',
     },
     {
       name: 'Flakiness Factor',
-      weight: '30% weight',
-      value: flakiness.length > 0 ? `${(flakinessRatio * 100).toFixed(1)}%` : 'N/A',
-      pct: flakinessRatio * 100,
-      description: `${totalFlaky} of ${flakiness.length} tests exhibiting flakiness`,
-      color: flakinessRatio > 0.15 ? 'bg-amber-500' : 'bg-emerald-500',
+      tag: 'Empirical',
+      value: factorsData !== undefined ? `${(factorsData.flakiness_score * 100).toFixed(1)}%` : 'N/A',
+      pct: factorsData !== undefined ? factorsData.flakiness_score * 100 : 0,
+      description: 'Statistical outcome variance across test runs',
+      color: factorsData && factorsData.flakiness_score > 0.15 ? 'bg-amber-500' : 'bg-emerald-500',
+    },
+    {
+      name: 'Failure Severity Factor',
+      tag: 'Empirical',
+      value: factorsData !== undefined ? `${(factorsData.failure_severity * 100).toFixed(1)}%` : 'N/A',
+      pct: factorsData !== undefined ? factorsData.failure_severity * 100 : 0,
+      description: 'Impact weight of infrastructure and timeout failures',
+      color: factorsData && factorsData.failure_severity > 0.5 ? 'bg-rose-500' : 'bg-emerald-500',
+    },
+    {
+      name: 'Dependency Factor',
+      tag: 'Topology',
+      value: factorsData !== undefined ? `${factorsData.dependency_count} relations` : 'N/A',
+      pct: factorsData !== undefined ? Math.min(100, (factorsData.dependency_count / 5) * 100) : 0,
+      description: 'Quality Graph relational coupling count',
+      color: factorsData && factorsData.dependency_count > 3 ? 'bg-amber-500' : 'bg-emerald-500',
     },
     {
       name: 'Regression Factor',
-      weight: '30% weight',
-      value: totalHealingAttempts > 0 ? `${(regressionRate * 100).toFixed(1)}%` : '0%',
-      pct: regressionRate * 100,
-      description: `${totalRegressions} regressions recorded across ${totalHealingAttempts} heals`,
-      color: totalRegressions > 0 ? 'bg-rose-500' : 'bg-emerald-500',
+      tag: 'Governance',
+      value: factorsData !== undefined ? `${(factorsData.healing_regression_rate * 100).toFixed(1)}%` : 'N/A',
+      pct: factorsData !== undefined ? factorsData.healing_regression_rate * 100 : 0,
+      description: 'Verified regressions introduced by AST healing attempts',
+      color: factorsData && factorsData.healing_regression_rate > 0 ? 'bg-rose-500' : 'bg-emerald-500',
     },
     {
       name: 'Security & SSRF Boundary',
-      weight: 'Governed Gate',
-      value: 'PASSED',
+      tag: 'Governed Gate',
+      value: factorsData !== undefined ? (factorsData.security_sensitivity === 0 ? 'PASSED' : 'FLAGGED') : 'PASSED',
       pct: 100,
       description: 'Zero SSRF / policy boundary violations detected',
-      color: 'bg-emerald-500',
+      color: factorsData && factorsData.security_sensitivity > 0 ? 'bg-rose-500' : 'bg-emerald-500',
     },
   ];
 
@@ -103,33 +108,40 @@ export const RiskIntelligenceSection: React.FC<RiskIntelligenceSectionProps> = (
             <ShieldAlert className="w-4 h-4 text-rose-400" />
             <span>Quality Risk & Multi-Factor Drilldown</span>
           </h3>
-          <p className="text-xs text-slate-400 mt-0.5">
-            Calibrated risk classification derived from telemetry, test stability, and healing safety.
+          <p className="text-xs text-slate-400 mt-0.5" data-testid="risk-explanation">
+            {explanation}
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-slate-400">Risk Assessment:</span>
-          <span
-            className={`px-3 py-1 rounded-md text-xs font-mono font-bold border ${
-              riskLevel === 'CRITICAL'
-                ? 'bg-rose-950/60 text-rose-400 border-rose-800'
-                : riskLevel === 'HIGH'
-                ? 'bg-amber-950/60 text-amber-400 border-amber-800'
-                : riskLevel === 'MEDIUM'
-                ? 'bg-yellow-950/60 text-yellow-400 border-yellow-800'
-                : riskLevel === 'LOW'
-                ? 'bg-emerald-950/60 text-emerald-400 border-emerald-800'
-                : 'bg-slate-800 text-slate-400 border-slate-700'
-            }`}
-            data-testid="composite-risk-badge"
-          >
-            {riskLevel}
-          </span>
+        <div className="flex items-center gap-3">
+          {riskScore !== undefined && riskScore !== null && (
+            <div className="text-xs font-mono text-slate-300" data-testid="authoritative-risk-score">
+              Score: <strong className="text-slate-100 font-bold">{(riskScore * 100).toFixed(0)}%</strong> ({riskScore.toFixed(2)})
+            </div>
+          )}
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-slate-400">Risk Assessment:</span>
+            <span
+              className={`px-3 py-1 rounded-md text-xs font-mono font-bold border ${
+                riskLevel === 'CRITICAL'
+                  ? 'bg-rose-950/60 text-rose-400 border-rose-800'
+                  : riskLevel === 'HIGH'
+                  ? 'bg-amber-950/60 text-amber-400 border-amber-800'
+                  : riskLevel === 'MEDIUM'
+                  ? 'bg-yellow-950/60 text-yellow-400 border-yellow-800'
+                  : riskLevel === 'LOW'
+                  ? 'bg-emerald-950/60 text-emerald-400 border-emerald-800'
+                  : 'bg-slate-800 text-slate-400 border-slate-700'
+              }`}
+              data-testid="composite-risk-badge"
+            >
+              {riskLevel}
+            </span>
+          </div>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
         {factors.map((f, idx) => (
           <div
             key={idx}
@@ -139,7 +151,7 @@ export const RiskIntelligenceSection: React.FC<RiskIntelligenceSectionProps> = (
             <div>
               <div className="flex items-center justify-between mb-1">
                 <span className="text-xs font-semibold text-slate-200">{f.name}</span>
-                <span className="text-[10px] font-mono text-slate-500">{f.weight}</span>
+                <span className="text-[10px] font-mono text-slate-500">{f.tag}</span>
               </div>
               <div className="text-lg font-bold font-mono text-slate-100 my-1">{f.value}</div>
               <div className="w-full bg-slate-900 rounded-full h-1.5 mb-2 overflow-hidden">
