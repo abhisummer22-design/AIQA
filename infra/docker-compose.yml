@@ -1,9 +1,21 @@
 version: "3.9"
 
-# SRD §1 Architecture: Postgres+pgvector system of record, Redis task
-# coordination, S3-compatible object storage. Not yet wired into the
-# orchestrator (which runs in-memory in this slice) — this is here so the
-# persistence layer has somewhere to run when that work starts.
+# SRD §1 Architecture: Postgres+pgvector system of record. Not yet wired
+# into the orchestrator (which runs on SQLite in this slice — see
+# services/orchestrator/src/store.rs's own module doc comment for why) —
+# this is here so the persistence layer has somewhere to run when that work
+# starts. `./migrations` mounts infra/migrations/, this directory's own
+# target schema (17 files, kept in sync with the real, running SQLite
+# schema in services/orchestrator/migrations/ as of Phase 3 gap-closing —
+# see that directory's own file-by-file comments for the real source each
+# one mirrors), auto-applied by Postgres on first container startup.
+#
+# Redis and MinIO were removed here (Phase 3 gap-closing): neither is
+# wired into any real code path anywhere in this repo — no `redis`/S3 crate
+# or npm package exists, and `engine.rs`/`evidence.rs` both explicitly
+# self-document "not integrated"/"not wired" for these respectively. Add
+# either back only alongside the real code that would actually use it, not
+# as speculative infrastructure with nothing behind it.
 
 services:
   postgres:
@@ -24,35 +36,5 @@ services:
       timeout: 5s
       retries: 10
 
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  minio:
-    image: minio/minio:latest
-    restart: unless-stopped
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: aiqa
-      MINIO_ROOT_PASSWORD: aiqa12345
-    ports:
-      - "9000:9000" # S3 API
-      - "9001:9001" # console
-    volumes:
-      - aiqa_minio_data:/data
-    healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
 volumes:
   aiqa_postgres_data:
-  aiqa_minio_data:

@@ -1,0 +1,11 @@
+-- Target-schema mirror of services/orchestrator/migrations/0010_custom_skill_metadata.sql
+-- (the real, running SQLite migration — see that file's own comment for the
+-- full rationale). Phase 3 gap-closing.
+--
+-- A real SKILL.md file's YAML frontmatter (version, author, license,
+-- applicable testing types/frameworks/languages/domains). JSONB here (a
+-- real, direct upgrade from SQLite's TEXT-as-JSON workaround) rather than
+-- fixed columns, because the set of keys is the *file's*, not ours — a
+-- fixed schema would force every author's frontmatter into a shape it was
+-- not written in. NULL means the skill was created by hand (no file).
+ALTER TABLE custom_skills ADD COLUMN metadata JSONB;

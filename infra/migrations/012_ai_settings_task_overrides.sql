@@ -1,0 +1,12 @@
+-- Target-schema mirror of services/orchestrator/migrations/0012_ai_settings_task_overrides.sql
+-- (the real, running SQLite migration — see that file's own comment for the
+-- full rationale). Phase 3 gap-closing.
+--
+-- Real, explicit per-task provider/model overrides for the AI router —
+-- e.g. "always use a real paid API for TEST_CASE_GENERATION once one is
+-- configured, leave every other task on the default/global preference".
+-- JSONB here (a real, direct upgrade — SQLite has no native map/array
+-- column type, hence its own TEXT-as-JSON workaround), keyed by the real
+-- AiTask variant name, each value a `{"provider": ..., "model": ...}` pair.
+-- NULL means "no overrides configured" (today's behavior, unchanged).
+ALTER TABLE ai_settings ADD COLUMN task_overrides JSONB;
