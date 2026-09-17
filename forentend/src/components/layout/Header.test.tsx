@@ -355,3 +355,39 @@ describe('Header — Target Environments selector (DEMO, UAT, LIVE only)', () =>
     expect(envButton.textContent).toContain('US-East');
   });
 });
+
+describe('Header — Phase 6 gap-closing real theme toggle', () => {
+  beforeEach(() => {
+    document.documentElement.removeAttribute('data-theme');
+  });
+
+  it('renders dark by default and switches the real data-theme attribute on click, with no reload', async () => {
+    localStorage.setItem('aiqa.orchestrator.apiKey', RAW_KEY);
+    mockBackend({ projects: [PROJECT_A] });
+    renderApp();
+    await verifyKey();
+
+    const toggle = document.getElementById('theme-toggle-button')!;
+    await waitFor(() => expect(toggle.getAttribute('title')).toBe('Switch to light mode'));
+    expect(document.documentElement.getAttribute('data-theme')).toBe('dark');
+
+    await act(async () => {
+      toggle.click();
+    });
+
+    expect(document.documentElement.getAttribute('data-theme')).toBe('light');
+    expect(toggle.getAttribute('title')).toBe('Switch to dark mode');
+    expect(localStorage.getItem('aiqa.theme')).toBe('light');
+  });
+
+  it('a stored light preference is honored on load, before any click', async () => {
+    localStorage.setItem('aiqa.orchestrator.apiKey', RAW_KEY);
+    localStorage.setItem('aiqa.theme', 'light');
+    mockBackend({ projects: [PROJECT_A] });
+    renderApp();
+    await verifyKey();
+
+    await waitFor(() => expect(document.documentElement.getAttribute('data-theme')).toBe('light'));
+    expect(document.getElementById('theme-toggle-button')!.getAttribute('title')).toBe('Switch to dark mode');
+  });
+});

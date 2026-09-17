@@ -37,22 +37,22 @@ export const Sidebar: React.FC = () => {
   return (
     <aside
       id="main-sidebar"
-      className={`relative flex flex-col border-r border-slate-800/90 bg-[#0B1120] transition-all duration-200 z-20 select-none ${
+      className={`relative flex flex-col border-r border-border-default/90 bg-surface-card transition-all duration-200 z-20 select-none ${
         isSidebarCollapsed ? 'w-16' : 'w-64'
       }`}
     >
       {/* Top Workspace Identity Section */}
-      <div className="p-3 border-b border-slate-800/80 flex items-center justify-between">
+      <div className="p-3 border-b border-border-default/80 flex items-center justify-between">
         {!isSidebarCollapsed ? (
           <div className="flex items-center gap-2.5 overflow-hidden">
             <div className="w-6 h-6 rounded bg-slate-800 border border-slate-700 flex items-center justify-center text-violet-400 font-mono text-[11px] font-bold">
               QE
             </div>
             <div className="truncate">
-              <div className="text-xs font-semibold text-slate-200 truncate">
+              <div className="text-xs font-semibold text-content-primary truncate">
                 {selectedProject ? selectedProject.name : 'AIQA'}
               </div>
-              <div className="text-[10px] font-mono text-slate-500 truncate">
+              <div className="text-[10px] font-mono text-content-muted truncate">
                 {selectedProject ? `Project: ${selectedProject.id.slice(0, 8)}` : 'No active project'}
               </div>
             </div>
@@ -67,7 +67,7 @@ export const Sidebar: React.FC = () => {
 
         <button
           onClick={toggleSidebar}
-          className="hidden md:flex p-1 rounded-md text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors cursor-pointer"
+          className="hidden md:flex p-1 rounded-md text-content-secondary hover:text-content-primary hover:bg-slate-800 transition-colors cursor-pointer"
           title={isSidebarCollapsed ? 'Expand Sidebar (Ctrl+B)' : 'Collapse Sidebar (Ctrl+B)'}
         >
           {isSidebarCollapsed ? (
@@ -81,7 +81,7 @@ export const Sidebar: React.FC = () => {
       {/* Navigation Links (Strictly the 8 required items) */}
       <nav className="flex-1 py-2.5 px-2 space-y-0.5 overflow-y-auto">
         {!isSidebarCollapsed && (
-          <div className="px-2 py-1 text-[10px] font-mono uppercase tracking-widest text-slate-500 font-bold">
+          <div className="px-2 py-1 text-[10px] font-mono uppercase tracking-widest text-content-muted font-bold">
             Navigation Plane
           </div>
         )}
@@ -97,7 +97,7 @@ export const Sidebar: React.FC = () => {
               className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-xs font-medium transition-all group relative cursor-pointer ${
                 isActive
                   ? 'bg-violet-600 text-white font-semibold shadow-sm shadow-violet-950/60'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent'
+                  : 'text-content-secondary hover:text-content-primary hover:bg-slate-800/60 border border-transparent'
               }`}
               title={isSidebarCollapsed ? item.label : undefined}
             >
@@ -110,7 +110,7 @@ export const Sidebar: React.FC = () => {
                 className={`w-4 h-4 shrink-0 transition-colors ${
                   isActive
                     ? 'text-white'
-                    : 'text-slate-400 group-hover:text-slate-200'
+                    : 'text-content-secondary group-hover:text-content-primary'
                 }`}
               />
 
@@ -125,7 +125,7 @@ export const Sidebar: React.FC = () => {
                   className={`text-[10px] font-mono px-1.5 py-0.2 rounded font-semibold uppercase tracking-wider shrink-0 ${
                     isActive
                       ? 'bg-violet-700/80 text-white'
-                      : 'bg-slate-800 text-slate-400 border border-slate-700'
+                      : 'bg-slate-800 text-content-secondary border border-slate-700'
                   }`}
                 >
                   {item.badge}

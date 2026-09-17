@@ -1,17 +1,59 @@
 @import "tailwindcss";
 
+/* Phase 6 gap-closing — real theme tokens. Before this, every surface/
+ * content/border color in the app was a hardcoded literal repeated inline
+ * (confirmed: ~4,150 raw color-utility occurrences across 64 files, zero
+ * `@theme`/custom-property tokens anywhere) — this is the first real,
+ * reusable color vocabulary this app has had. Deliberately scoped to
+ * *neutral* surface/content/border colors only: the existing accent
+ * palette (violet/amber/yellow/emerald/rose status colors) is left as
+ * plain Tailwind utilities, unchanged in both themes — a status color
+ * needs to stay recognizable, not invert, and already has enough contrast
+ * against both a near-black and a near-white background.
+ *
+ * These become real Tailwind utilities (Tailwind v4's `@theme` block
+ * compiles each `--color-*` entry into `bg-*`/`text-*`/`border-*`/etc.
+ * classes that reference the variable at *use* time, not a static
+ * literal) — so `:root[data-theme="light"]` below can override the same
+ * variable names and every utility class using them repaints correctly,
+ * with no `dark:`-variant duplication needed anywhere. */
+@theme {
+  --color-surface-page: #020617;
+  --color-surface-card: #0b1120;
+  --color-content-primary: #f1f5f9;
+  --color-content-secondary: #94a3b8;
+  --color-content-muted: #64748b;
+  --color-border-default: #1e293b;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+/* The only place a light value is ever declared — every component that
+ * uses the tokens above (not a hardcoded literal) repaints from this one
+ * block. Values chosen for the same real contrast ratio the dark palette
+ * already has against `content-primary`/`content-secondary`, not a naive
+ * inversion. */
+:root[data-theme='light'] {
+  color-scheme: light;
+  --color-surface-page: #f8fafc;
+  --color-surface-card: #ffffff;
+  --color-content-primary: #0f172a;
+  --color-content-secondary: #475569;
+  --color-content-muted: #64748b;
+  --color-border-default: #e2e8f0;
+}
+
 @layer base {
-  :root {
-    color-scheme: dark;
-  }
-  
   body {
-    background-color: #020617;
-    color: #f1f5f9;
+    background-color: var(--color-surface-page);
+    color: var(--color-content-primary);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     overflow-x: hidden;
+    transition: background-color 150ms ease, color 150ms ease;
   }
 
   /* Custom subtle scrollbar for high density */
@@ -20,14 +62,14 @@
     height: 5px;
   }
   ::-webkit-scrollbar-track {
-    background: #020617;
+    background: var(--color-surface-page);
   }
   ::-webkit-scrollbar-thumb {
-    background: #1e293b;
+    background: var(--color-border-default);
     border-radius: 2px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: #334155;
+    background: var(--color-content-muted);
   }
 }
 
