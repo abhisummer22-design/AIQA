@@ -20,6 +20,15 @@
  *     real role, real project scope, and real revocation state. Admin-only;
  *     a non-admin caller gets a real 403, which is shown honestly instead of
  *     the control silently disappearing.
+ *   - **Key management** (Phase 5 gap-closing) — real create/revoke,
+ *     wired to `api.rs::create_api_key`/`revoke_api_key_handler`. Both
+ *     endpoints already existed, Admin-gated and tested, since before this
+ *     page did — `main.rs`'s own router comment named the missing UI
+ *     explicitly ("FE-2's scoped admin UI is not built; removing these
+ *     would leave no way to create or revoke a key"). This is what lets a
+ *     team of real people get their own distinctly-named, individually-
+ *     revocable identity — and therefore genuine per-person attribution in
+ *     the audit log below — without OAuth/SSO or a new users table.
  *   - **Live enforcement** — every real 401/403 this backend produces now
  *     emits on the orchestrator log stream (`auth` source, added in
  *     `auth::require_auth`) and is written to the audit log as `authz.deny`.
@@ -38,13 +47,18 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   AlertTriangle,
+  Check,
+  Copy,
   FileClock,
   Info,
   KeyRound,
   Loader2,
+  Plus,
   RefreshCw,
   ShieldCheck,
+  Trash2,
   UserCheck,
+  X,
 } from 'lucide-react';
 import { SectionHeader } from '../common/SectionHeader';
 import { OrchestratorLogsPanel } from '../dashboard/OrchestratorLogsPanel';
@@ -52,7 +66,13 @@ import { aiqaApi, ApiError } from '../../services/aiqaApi';
 import { useAuth } from '../../context/AuthContext';
 import { useProject } from '../../context/ProjectContext';
 import { renderAuthState, renderResourceErrorState } from '../state/StateViews';
-import type { ApiKeyListRow, AuditRow, Role, WhoAmIResponse } from '../../types/contract';
+import type {
+  ApiKeyListRow,
+  AuditRow,
+  CreateApiKeyResponse,
+  Role,
+  WhoAmIResponse,
+} from '../../types/contract';
 
 const roleStyles: Record<string, string> = {
   admin: 'text-rose-300 bg-rose-950/70 border-rose-800',
@@ -105,7 +125,7 @@ function formatTime(iso: string): string {
 export const RBACTestingPage: React.FC = () => {
   const navigate = useNavigate();
   const auth = useAuth();
-  const { selectedProjectId } = useProject();
+  const { selectedProjectId, projects } = useProject();
 
   const [me, setMe] = useState<WhoAmIResponse | null>(null);
   const [meError, setMeError] = useState<ApiError | null>(null);
@@ -115,6 +135,29 @@ export const RBACTestingPage: React.FC = () => {
    *  such — the panel is not hidden, because hiding it would misrepresent
    *  the boundary as absent rather than enforced. */
   const [keysError, setKeysError] = useState<ApiError | null>(null);
+
+  // ------------------------------------------- Phase 5 gap-closing: key mgmt
+  const [showCreateForm, setShowCreateForm] = useState(false);
+  const [createName, setCreateName] = useState('');
+  const [createRole, setCreateRole] = useState<Role>('operator');
+  /** Empty string = global scope (`project_id: undefined` on the real
+   *  request) — matches `ApiKeyListRow.project_id === null`'s own meaning. */
+  const [createProjectId, setCreateProjectId] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  /** The real, one-time plaintext key just minted — never refetchable once
+   *  this state clears, same "shown exactly once" contract the backend
+   *  itself holds (`CreateApiKeyResponse`'s own doc comment). */
+  const [justCreated, setJustCreated] = useState<CreateApiKeyResponse | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  /** Two-click confirm, not a modal — revoking is a soft, already
+   *  Admin-gated, already-reversible-by-minting-a-new-key action, so a
+   *  full dialog would be more ceremony than the real stakes call for.
+   *  Holds the id currently awaiting a second click. */
+  const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
+  const [revokingId, setRevokingId] = useState<string | null>(null);
+  const [revokeError, setRevokeError] = useState<string | null>(null);
 
   const [denials, setDenials] = useState<AuditRow[] | null>(null);
   const [denialsError, setDenialsError] = useState<ApiError | null>(null);
@@ -197,6 +240,49 @@ export const RBACTestingPage: React.FC = () => {
       controller.abort();
     };
   }, [auth.status, load]);
+
+  const handleCreateKey = useCallback(async () => {
+    if (!createName.trim()) {
+      setCreateError('Name is required.');
+      return;
+    }
+    setCreating(true);
+    setCreateError(null);
+    try {
+      const result = await aiqaApi.rbac.createApiKey({
+        name: createName.trim(),
+        role: createRole,
+        project_id: createProjectId || undefined,
+      });
+      setJustCreated(result);
+      setCreateName('');
+      setCreateRole('operator');
+      setCreateProjectId('');
+      setShowCreateForm(false);
+      void load();
+    } catch (e) {
+      setCreateError(e instanceof ApiError ? e.message : 'Could not create the key.');
+    } finally {
+      setCreating(false);
+    }
+  }, [createName, createRole, createProjectId, load]);
+
+  const handleRevokeKey = useCallback(
+    async (id: string) => {
+      setRevokingId(id);
+      setRevokeError(null);
+      try {
+        await aiqaApi.rbac.revokeApiKey(id);
+        setConfirmRevokeId(null);
+        void load();
+      } catch (e) {
+        setRevokeError(e instanceof ApiError ? e.message : 'Could not revoke this key.');
+      } finally {
+        setRevokingId(null);
+      }
+    },
+    [load],
+  );
 
   if (auth.status !== 'authenticated') {
     return (
@@ -307,8 +393,139 @@ export const RBACTestingPage: React.FC = () => {
             iconClassName="text-violet-400"
             title="API Key Inventory"
             subtitle="Every real key, with its real role and project scope"
-            headerRight={keys ? <Pill label={`${keys.length} keys`} /> : undefined}
+            headerRight={
+              <div className="flex items-center gap-2">
+                {keys ? <Pill label={`${keys.length} keys`} /> : undefined}
+                {!keysError && (
+                  <button
+                    type="button"
+                    id="btn-create-api-key-toggle"
+                    onClick={() => {
+                      setShowCreateForm((v) => !v);
+                      setCreateError(null);
+                    }}
+                    className="flex items-center gap-1 px-2 py-1 rounded-md bg-violet-950/60 border border-violet-800/80 hover:border-violet-600 text-violet-300 hover:text-violet-200 font-mono text-[10px] font-semibold cursor-pointer transition-colors"
+                  >
+                    <Plus className="w-3 h-3" />
+                    New Key
+                  </button>
+                )}
+              </div>
+            }
           >
+            {justCreated && (
+              <div className="rounded-md bg-emerald-950/40 border border-emerald-800/70 p-3 space-y-2">
+                <div className="flex items-start gap-2">
+                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                  <p className="text-[11px] text-emerald-200">
+                    Key created. This is the only time the real plaintext key is ever shown — copy it now and hand
+                    it to whoever this key is for. Only its SHA-256 hash is stored from here on.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <code className="flex-1 min-w-0 truncate px-2 py-1.5 rounded bg-[#020617] border border-slate-800 text-[11px] font-mono text-slate-100">
+                    {justCreated.key}
+                  </code>
+                  <button
+                    type="button"
+                    id="btn-copy-new-api-key"
+                    onClick={() => {
+                      void navigator.clipboard.writeText(justCreated.key).then(() => {
+                        setCopied(true);
+                        setTimeout(() => setCopied(false), 2000);
+                      });
+                    }}
+                    className="flex items-center gap-1 px-2 py-1.5 rounded-md bg-[#020617] border border-slate-700 hover:border-emerald-600 text-slate-300 hover:text-emerald-300 font-mono text-[10px] font-semibold cursor-pointer transition-colors shrink-0"
+                  >
+                    {copied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                    {copied ? 'Copied' : 'Copy'}
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setJustCreated(null)}
+                  className="text-[10px] font-mono text-slate-500 hover:text-slate-300 cursor-pointer"
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
+
+            {showCreateForm && (
+              <div className="rounded-md bg-[#020617] border border-slate-800 p-3 space-y-2.5">
+                <div>
+                  <label className="block text-[10px] font-mono uppercase tracking-wider text-slate-500 mb-1">
+                    Name (whose key this is — shown in the audit log)
+                  </label>
+                  <input
+                    type="text"
+                    value={createName}
+                    onChange={(e) => setCreateName(e.target.value)}
+                    placeholder="e.g. priya-operator"
+                    className="w-full px-2.5 py-1.5 rounded bg-[#0B1120] border border-slate-700 text-xs font-mono text-slate-200 focus:outline-none focus:border-violet-500"
+                  />
+                </div>
+                <div className="flex gap-2">
+                  <div className="flex-1">
+                    <label className="block text-[10px] font-mono uppercase tracking-wider text-slate-500 mb-1">
+                      Role
+                    </label>
+                    <select
+                      value={createRole}
+                      onChange={(e) => setCreateRole(e.target.value as Role)}
+                      className="w-full px-2.5 py-1.5 rounded bg-[#0B1120] border border-slate-700 text-xs font-mono text-slate-200 focus:outline-none focus:border-violet-500 cursor-pointer"
+                    >
+                      <option value="viewer">Viewer</option>
+                      <option value="operator">Operator</option>
+                      <option value="admin">Admin</option>
+                    </select>
+                  </div>
+                  <div className="flex-1">
+                    <label className="block text-[10px] font-mono uppercase tracking-wider text-slate-500 mb-1">
+                      Project scope
+                    </label>
+                    <select
+                      value={createProjectId}
+                      onChange={(e) => setCreateProjectId(e.target.value)}
+                      className="w-full px-2.5 py-1.5 rounded bg-[#0B1120] border border-slate-700 text-xs font-mono text-slate-200 focus:outline-none focus:border-violet-500 cursor-pointer"
+                    >
+                      <option value="">Global (every project)</option>
+                      {projects.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                {createError && <p className="text-[11px] text-rose-400">{createError}</p>}
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    id="btn-submit-create-api-key"
+                    onClick={() => void handleCreateKey()}
+                    disabled={creating}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-violet-600 hover:bg-violet-500 disabled:bg-violet-900/60 text-white font-mono text-xs font-semibold cursor-pointer disabled:cursor-not-allowed transition-colors"
+                  >
+                    {creating && <Loader2 className="w-3 h-3 animate-spin" />}
+                    Create Key
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowCreateForm(false);
+                      setCreateError(null);
+                    }}
+                    className="px-3 py-1.5 rounded-md bg-[#0B1120] border border-slate-700 text-slate-400 hover:text-slate-200 font-mono text-xs cursor-pointer transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {revokeError && <p className="text-[11px] text-rose-400">{revokeError}</p>}
+
             {keysError ? (
               keysError.kind === 'forbidden' ? (
                 // A real, expected boundary — shown as enforcement working,
@@ -352,7 +569,44 @@ export const RBACTestingPage: React.FC = () => {
                         {k.project_id ? `scoped: ${k.project_id.slice(0, 8)}…` : 'global scope'}
                       </div>
                     </div>
-                    <Pill label={k.role} className={roleStyles[k.role]} />
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <Pill label={k.role} className={roleStyles[k.role]} />
+                      {!k.revoked_at &&
+                        (confirmRevokeId === k.id ? (
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => void handleRevokeKey(k.id)}
+                              disabled={revokingId === k.id}
+                              title="Confirm revoke"
+                              className="p-1 rounded bg-rose-950/70 border border-rose-800 text-rose-300 hover:text-rose-200 cursor-pointer disabled:opacity-50"
+                            >
+                              {revokingId === k.id ? (
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                              ) : (
+                                <Check className="w-3 h-3" />
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmRevokeId(null)}
+                              title="Cancel"
+                              className="p-1 rounded bg-[#0B1120] border border-slate-700 text-slate-400 hover:text-slate-200 cursor-pointer"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmRevokeId(k.id)}
+                            title={`Revoke ${k.name}`}
+                            className="p-1 rounded bg-[#0B1120] border border-slate-700 hover:border-rose-700 text-slate-500 hover:text-rose-400 cursor-pointer transition-colors"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        ))}
+                    </div>
                   </li>
                 ))}
               </ul>

@@ -13,7 +13,7 @@
  * than hidden or faked into a success.
  */
 import React from 'react';
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppShell } from '../../App';
@@ -72,15 +72,24 @@ const AUDIT: AuditRow[] = [
   },
 ];
 
-function mockBackend(opts: { me?: WhoAmIResponse; keysStatus?: number; audit?: AuditRow[] } = {}) {
-  const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+function mockBackend(
+  opts: { me?: WhoAmIResponse; keysStatus?: number; audit?: AuditRow[]; keys?: ApiKeyListRow[] } = {},
+) {
+  const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
     const u = String(url);
+    const method = (init?.method ?? 'GET').toUpperCase();
     if (u.includes('/auth/whoami')) return jsonResponse(200, opts.me ?? ADMIN_ME);
     if (u.includes('/admin/api-keys')) {
       if (opts.keysStatus && opts.keysStatus !== 200) {
         return jsonResponse(opts.keysStatus, envelope('FORBIDDEN', "role 'viewer' cannot perform this action"));
       }
-      return jsonResponse(200, KEYS);
+      if (method === 'POST') {
+        return jsonResponse(200, { id: 'new-key-id', key: 'aiqa_newlyminted00000000000' });
+      }
+      if (method === 'DELETE') {
+        return new Response(null, { status: 204 });
+      }
+      return jsonResponse(200, opts.keys ?? KEYS);
     }
     if (u.includes('/audit')) {
       // Real pagination envelope (api.rs::AuditLogResponse) — this
@@ -184,6 +193,101 @@ describe('RBACTestingPage — real authorization surface', () => {
     expect(screen.getByText(/scoped: proj-rba/)).toBeTruthy();
   });
 
+  it('an admin can create a real API key, and the real plaintext key is shown exactly once', async () => {
+    setApiKey(RAW_KEY);
+    const fetchMock = mockBackend();
+    renderApp('/rbac');
+    await verifyKey();
+    await waitFor(() => expect(screen.getByText('bootstrap-admin')).toBeTruthy());
+
+    await act(async () => {
+      document.getElementById('btn-create-api-key-toggle')!.click();
+    });
+    const nameInput = screen.getByPlaceholderText('e.g. priya-operator');
+    fireEvent.change(nameInput, { target: { value: 'priya-operator' } });
+    await act(async () => {
+      document.getElementById('btn-submit-create-api-key')!.click();
+    });
+
+    await waitFor(() => expect(screen.getByText('aiqa_newlyminted00000000000')).toBeTruthy());
+    expect(screen.getByText(/only time the real plaintext key is ever shown/)).toBeTruthy();
+
+    // A real POST with the real, entered fields — not a fabricated request.
+    const createCall = (fetchMock.mock.calls as [string, RequestInit?][]).find(
+      ([u, init]) => u.includes('/admin/api-keys') && init?.method === 'POST',
+    );
+    expect(createCall).toBeTruthy();
+    const body = JSON.parse(String(createCall![1]!.body));
+    expect(body).toEqual({ name: 'priya-operator', role: 'operator' });
+  });
+
+  it('requires a real name before creating a key — never submits an empty/placeholder name', async () => {
+    setApiKey(RAW_KEY);
+    const fetchMock = mockBackend();
+    renderApp('/rbac');
+    await verifyKey();
+    await waitFor(() => expect(screen.getByText('bootstrap-admin')).toBeTruthy());
+
+    await act(async () => {
+      document.getElementById('btn-create-api-key-toggle')!.click();
+    });
+    await act(async () => {
+      document.getElementById('btn-submit-create-api-key')!.click();
+    });
+
+    await waitFor(() => expect(screen.getByText('Name is required.')).toBeTruthy());
+    expect(
+      (fetchMock.mock.calls as [string, RequestInit?][]).some(
+        ([u, init]) => u.includes('/admin/api-keys') && init?.method === 'POST',
+      ),
+    ).toBe(false);
+  });
+
+  it('revoking a key requires a real second confirming click, and only then sends the real DELETE', async () => {
+    setApiKey(RAW_KEY);
+    const fetchMock = mockBackend();
+    renderApp('/rbac');
+    await verifyKey();
+    await waitFor(() => expect(screen.getByText('scoped-operator')).toBeTruthy());
+
+    const row = screen.getByText('scoped-operator').closest('li')!;
+    const revokeButton = within(row).getByTitle('Revoke scoped-operator');
+    await act(async () => {
+      revokeButton.click();
+    });
+
+    // First click only arms the confirm — no DELETE sent yet.
+    expect(
+      (fetchMock.mock.calls as [string, RequestInit?][]).some(
+        ([u, init]) => u.includes('/admin/api-keys/k2') && init?.method === 'DELETE',
+      ),
+    ).toBe(false);
+
+    const confirmButton = within(row).getByTitle('Confirm revoke');
+    await act(async () => {
+      confirmButton.click();
+    });
+
+    await waitFor(() =>
+      expect(
+        (fetchMock.mock.calls as [string, RequestInit?][]).some(
+          ([u, init]) => u.includes('/admin/api-keys/k2') && init?.method === 'DELETE',
+        ),
+      ).toBe(true),
+    );
+  });
+
+  it('an already-revoked key offers no revoke control', async () => {
+    setApiKey(RAW_KEY);
+    mockBackend();
+    renderApp('/rbac');
+    await verifyKey();
+    await waitFor(() => expect(screen.getByText('old-viewer')).toBeTruthy());
+
+    const row = screen.getByText('old-viewer').closest('li')!;
+    expect(within(row).queryByTitle('Revoke old-viewer')).toBeNull();
+  });
+
   it('a real 403 on the admin-only key list is shown as enforcement working — never hidden, never faked', async () => {
     setApiKey(RAW_KEY);
     mockBackend({ me: { ...ADMIN_ME, name: 'viewer-key', role: 'viewer' }, keysStatus: 403 });
@@ -196,6 +300,9 @@ describe('RBACTestingPage — real authorization surface', () => {
     expect(screen.getByText('API Key Inventory')).toBeTruthy();
     // And no key data is invented to fill it.
     expect(screen.queryByText('bootstrap-admin')).toBeNull();
+    // A caller who was just refused the list must not be offered a control
+    // to create more keys either — same real boundary, not a partial one.
+    expect(document.getElementById('btn-create-api-key-toggle')).toBeNull();
   });
 
   it('lists only REAL recorded denials from the audit log — allowed actions are not shown as denials', async () => {
