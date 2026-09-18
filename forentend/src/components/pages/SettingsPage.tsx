@@ -66,11 +66,11 @@ const OrchestratorAuthPanel: React.FC = () => {
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center gap-1.5 text-slate-200 font-semibold text-xs">
+      <div className="flex items-center gap-1.5 text-content-primary font-semibold text-xs">
         <Key className="w-3.5 h-3.5 text-violet-400" />
         AIQA Orchestrator API Key
       </div>
-      <div className="text-slate-400 text-[11px] -mt-2">
+      <div className="text-content-secondary text-[11px] -mt-2">
         Real backend credential (Bearer token) — <code className="font-mono">services/orchestrator</code>, opaque{' '}
         <code className="font-mono">aiqa_&lt;hex&gt;</code> keys, roles viewer / operator / admin.
       </div>
@@ -92,7 +92,7 @@ const OrchestratorAuthPanel: React.FC = () => {
               }
             }}
             placeholder="aiqa_..."
-            className="flex-1 px-2.5 py-1.5 rounded-md bg-[#0B1120] border border-slate-700 text-slate-200 focus:border-violet-500 focus:outline-none font-mono text-xs"
+            className="flex-1 px-2.5 py-1.5 rounded-md bg-surface-card border border-slate-700 text-content-primary focus:border-violet-500 focus:outline-none font-mono text-xs"
           />
           <button
             type="button"
@@ -126,9 +126,9 @@ function providerStatusBadge(status: AiProviderInfo['status']) {
     AVAILABLE: { label: 'Available', cls: 'bg-yellow-950/80 border-yellow-700 text-yellow-300' },
     DISCOVERING: { label: 'Discovering…', cls: 'bg-violet-950/80 border-violet-700 text-violet-300' },
     DEGRADED: { label: 'Degraded', cls: 'bg-amber-950/80 border-amber-700 text-amber-300' },
-    UNAVAILABLE: { label: 'Unavailable', cls: 'bg-slate-900 border-slate-700 text-slate-400' },
+    UNAVAILABLE: { label: 'Unavailable', cls: 'bg-slate-900 border-slate-700 text-content-secondary' },
     ERROR: { label: 'Error', cls: 'bg-rose-950/80 border-rose-700 text-rose-300' },
-    NOT_CONFIGURED: { label: 'Not Configured', cls: 'bg-slate-900 border-slate-700 text-slate-500' },
+    NOT_CONFIGURED: { label: 'Not Configured', cls: 'bg-slate-900 border-slate-700 text-content-muted' },
   };
   const m = map[status];
   return <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border ${m.cls}`}>{m.label}</span>;
@@ -274,7 +274,7 @@ const AiIntelligencePanel: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="p-6 flex items-center justify-center gap-2 text-slate-400 text-xs">
+      <div className="p-6 flex items-center justify-center gap-2 text-content-secondary text-xs">
         <Loader2 className="w-4 h-4 animate-spin" />
         <span>Loading AI infrastructure status…</span>
       </div>
@@ -302,25 +302,25 @@ const AiIntelligencePanel: React.FC = () => {
 
   return (
     <div id="ai-intelligence-panel" className="space-y-3">
-      <div className="pb-2 border-b border-slate-800">
-        <h3 className="text-xs font-bold text-slate-100 uppercase font-mono">AI Intelligence</h3>
-        <p className="text-slate-400 text-xs mt-0.5">Provider discovery, model routing, and generation health — all real, live-checked state.</p>
+      <div className="pb-2 border-b border-border-default">
+        <h3 className="text-xs font-bold text-content-primary uppercase font-mono">AI Intelligence</h3>
+        <p className="text-content-secondary text-xs mt-0.5">Provider discovery, model routing, and generation health — all real, live-checked state.</p>
       </div>
 
       {/* Overall status */}
-      <div className="p-3 rounded-lg bg-[#020617] border border-slate-800 flex items-center justify-between flex-wrap gap-2">
+      <div className="p-3 rounded-lg bg-surface-page border border-border-default flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <span className={`w-2 h-2 rounded-full ${overallCopy.dot}`} />
           <span className={`font-mono font-bold text-xs ${overallCopy.text}`}>{overallCopy.label}</span>
         </div>
-        <div className="flex items-center gap-2 text-[11px] font-mono text-slate-400">
+        <div className="flex items-center gap-2 text-[11px] font-mono text-content-secondary">
           <span>{status.providers.length} provider(s) checked</span>
           <button
             type="button"
             id="btn-refresh-ai-providers"
             onClick={() => void handleRefresh()}
             disabled={refreshing}
-            className="flex items-center gap-1 px-2 py-1 rounded bg-[#0B1120] border border-slate-700 hover:border-violet-600 text-slate-300 hover:text-violet-300 cursor-pointer disabled:opacity-50"
+            className="flex items-center gap-1 px-2 py-1 rounded bg-surface-card border border-slate-700 hover:border-violet-600 text-content-secondary hover:text-violet-300 cursor-pointer disabled:opacity-50"
           >
             <RefreshCw className={`w-3 h-3 ${refreshing ? 'animate-spin' : ''}`} />
             <span>Scan Providers</span>
@@ -330,28 +330,28 @@ const AiIntelligencePanel: React.FC = () => {
 
       {/* Active routing preview (real, from AiInfrastructure::route_among) */}
       {status.routing_preview ? (
-        <div className="p-3 rounded-lg bg-[#020617] border border-slate-800 space-y-1 text-xs font-mono">
+        <div className="p-3 rounded-lg bg-surface-page border border-border-default space-y-1 text-xs font-mono">
           <div className="flex justify-between">
-            <span className="text-slate-500">Active Provider</span>
-            <span className="text-slate-200 font-semibold">{status.routing_preview.provider_id}</span>
+            <span className="text-content-muted">Active Provider</span>
+            <span className="text-content-primary font-semibold">{status.routing_preview.provider_id}</span>
           </div>
           <div className="flex justify-between">
-            <span className="text-slate-500">Active Model</span>
-            <span className="text-slate-200 font-semibold">{status.routing_preview.model_id}</span>
+            <span className="text-content-muted">Active Model</span>
+            <span className="text-content-primary font-semibold">{status.routing_preview.model_id}</span>
           </div>
           <div className="flex justify-between">
-            <span className="text-slate-500">Reason</span>
-            <span className="text-slate-300">{status.routing_preview.reason}</span>
+            <span className="text-content-muted">Reason</span>
+            <span className="text-content-secondary">{status.routing_preview.reason}</span>
           </div>
           <div className="flex justify-between">
-            <span className="text-slate-500">Routing Score</span>
-            <span className="text-slate-300" title="A documented routing heuristic, not a benchmarked accuracy score.">
+            <span className="text-content-muted">Routing Score</span>
+            <span className="text-content-secondary" title="A documented routing heuristic, not a benchmarked accuracy score.">
               {status.routing_preview.routing_score.toFixed(1)}
             </span>
           </div>
         </div>
       ) : (
-        <div className="p-3 rounded-lg bg-slate-900/60 border border-slate-800 text-[11px] font-mono text-slate-400 flex items-start gap-2">
+        <div className="p-3 rounded-lg bg-slate-900/60 border border-border-default text-[11px] font-mono text-content-secondary flex items-start gap-2">
           <CircleHelp className="w-3.5 h-3.5 shrink-0 mt-0.5" />
           <span>No AI model currently available for Test Case Generation. Test generation will use the local template pipeline.</span>
         </div>
@@ -359,13 +359,13 @@ const AiIntelligencePanel: React.FC = () => {
 
       {/* Discovered providers */}
       <div className="space-y-1.5">
-        <span className="text-[10px] font-mono uppercase tracking-wider text-slate-500 font-semibold">Discovered Providers</span>
+        <span className="text-[10px] font-mono uppercase tracking-wider text-content-muted font-semibold">Discovered Providers</span>
         {status.providers.map((p) => (
-          <div key={p.id} className="p-2.5 rounded-md bg-[#020617] border border-slate-800 flex items-center justify-between flex-wrap gap-1.5">
+          <div key={p.id} className="p-2.5 rounded-md bg-surface-page border border-border-default flex items-center justify-between flex-wrap gap-1.5">
             <div className="flex items-center gap-2">
-              <span className="font-mono text-xs font-semibold text-slate-200">{p.name}</span>
-              <span className="text-[10px] font-mono text-slate-500">{p.provider_type}</span>
-              {p.models.length > 0 && <span className="text-[10px] font-mono text-slate-500">{p.models.length} model(s)</span>}
+              <span className="font-mono text-xs font-semibold text-content-primary">{p.name}</span>
+              <span className="text-[10px] font-mono text-content-muted">{p.provider_type}</span>
+              {p.models.length > 0 && <span className="text-[10px] font-mono text-content-muted">{p.models.length} model(s)</span>}
               <span
                 className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-950/40 border border-emerald-800/60 text-emerald-300"
                 title={
@@ -389,16 +389,16 @@ const AiIntelligencePanel: React.FC = () => {
           generically) because only a provider added here can be removed
           again; Ollama/MJ Gateway/Groq/Gemini are env-var-configured and
           have no real "delete" this UI could perform. */}
-      <div id="custom-ai-providers-section" className="p-3 rounded-lg bg-[#020617] border border-slate-800 space-y-2.5">
-        <span className="text-[10px] font-mono uppercase tracking-wider text-slate-500 font-semibold">Your Custom Providers</span>
+      <div id="custom-ai-providers-section" className="p-3 rounded-lg bg-surface-page border border-border-default space-y-2.5">
+        <span className="text-[10px] font-mono uppercase tracking-wider text-content-muted font-semibold">Your Custom Providers</span>
 
         {customProviders.length > 0 && (
           <div className="space-y-1.5">
             {customProviders.map((p) => (
-              <div key={p.id} className="p-2 rounded-md bg-[#0B1120] border border-slate-800 flex items-center justify-between gap-2">
+              <div key={p.id} className="p-2 rounded-md bg-surface-card border border-border-default flex items-center justify-between gap-2">
                 <div className="min-w-0">
-                  <div className="font-mono text-xs font-semibold text-slate-200 truncate">{p.name}</div>
-                  <div className="font-mono text-[10px] text-slate-500 truncate">{p.base_url}</div>
+                  <div className="font-mono text-xs font-semibold text-content-primary truncate">{p.name}</div>
+                  <div className="font-mono text-[10px] text-content-muted truncate">{p.base_url}</div>
                 </div>
                 <button
                   type="button"
@@ -406,7 +406,7 @@ const AiIntelligencePanel: React.FC = () => {
                   onClick={() => void handleDeleteCustomProvider(p.id)}
                   disabled={deletingProviderId === p.id}
                   title="Remove this custom provider"
-                  className="p-1.5 rounded text-slate-500 hover:text-rose-300 hover:bg-rose-950/40 cursor-pointer disabled:opacity-50 shrink-0"
+                  className="p-1.5 rounded text-content-muted hover:text-rose-300 hover:bg-rose-950/40 cursor-pointer disabled:opacity-50 shrink-0"
                 >
                   {deletingProviderId === p.id ? (
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -426,7 +426,7 @@ const AiIntelligencePanel: React.FC = () => {
             value={newProviderName}
             onChange={(e) => setNewProviderName(e.target.value)}
             placeholder="Name (e.g. My Provider)"
-            className="px-2.5 py-1.5 rounded bg-[#0B1120] border border-slate-700 text-xs font-mono text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-violet-500"
+            className="px-2.5 py-1.5 rounded bg-surface-card border border-slate-700 text-xs font-mono text-content-primary placeholder:text-slate-600 focus:outline-none focus:border-violet-500"
           />
           <input
             type="text"
@@ -434,7 +434,7 @@ const AiIntelligencePanel: React.FC = () => {
             value={newProviderBaseUrl}
             onChange={(e) => setNewProviderBaseUrl(e.target.value)}
             placeholder="Base URL (https://...)"
-            className="px-2.5 py-1.5 rounded bg-[#0B1120] border border-slate-700 text-xs font-mono text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-violet-500"
+            className="px-2.5 py-1.5 rounded bg-surface-card border border-slate-700 text-xs font-mono text-content-primary placeholder:text-slate-600 focus:outline-none focus:border-violet-500"
           />
           <input
             type="password"
@@ -442,10 +442,10 @@ const AiIntelligencePanel: React.FC = () => {
             value={newProviderApiKey}
             onChange={(e) => setNewProviderApiKey(e.target.value)}
             placeholder="API key"
-            className="px-2.5 py-1.5 rounded bg-[#0B1120] border border-slate-700 text-xs font-mono text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-violet-500"
+            className="px-2.5 py-1.5 rounded bg-surface-card border border-slate-700 text-xs font-mono text-content-primary placeholder:text-slate-600 focus:outline-none focus:border-violet-500"
           />
         </div>
-        <p className="text-[10px] font-mono text-slate-500">
+        <p className="text-[10px] font-mono text-content-muted">
           Must be a real, OpenAI-compatible endpoint (<code>{'{base_url}'}/v1/models</code> and{' '}
           <code>{'{base_url}'}/v1/chat/completions</code>) — the same convention Groq and most hosted providers already use.
         </p>
@@ -468,13 +468,13 @@ const AiIntelligencePanel: React.FC = () => {
       </div>
 
       {/* Mode */}
-      <div className="p-3 rounded-lg bg-[#020617] border border-slate-800 space-y-2.5">
+      <div className="p-3 rounded-lg bg-surface-page border border-border-default space-y-2.5">
         <div>
-          <label className="block text-xs font-bold font-mono text-slate-300 mb-1">AI Mode</label>
+          <label className="block text-xs font-bold font-mono text-content-secondary mb-1">AI Mode</label>
           <select
             value={draftMode}
             onChange={(e) => setDraftMode(e.target.value as AiSettings['mode'])}
-            className="w-full px-2.5 py-1.5 rounded bg-[#0B1120] border border-slate-700 text-xs font-mono text-slate-200 focus:outline-none focus:border-violet-500 cursor-pointer"
+            className="w-full px-2.5 py-1.5 rounded bg-surface-card border border-slate-700 text-xs font-mono text-content-primary focus:outline-none focus:border-violet-500 cursor-pointer"
           >
             <option value="AUTO">AUTO — best available model is selected automatically</option>
             <option value="MANUAL">MANUAL — choose a specific provider/model</option>
@@ -484,14 +484,14 @@ const AiIntelligencePanel: React.FC = () => {
         {draftMode === 'MANUAL' && (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
             <div>
-              <label className="block text-[10px] font-mono text-slate-400 mb-1">Provider</label>
+              <label className="block text-[10px] font-mono text-content-secondary mb-1">Provider</label>
               <select
                 value={draftProvider}
                 onChange={(e) => {
                   setDraftProvider(e.target.value);
                   setDraftModel('');
                 }}
-                className="w-full px-2.5 py-1.5 rounded bg-[#0B1120] border border-slate-700 text-xs font-mono text-slate-200 focus:outline-none focus:border-violet-500 cursor-pointer"
+                className="w-full px-2.5 py-1.5 rounded bg-surface-card border border-slate-700 text-xs font-mono text-content-primary focus:outline-none focus:border-violet-500 cursor-pointer"
               >
                 <option value="">Select a provider…</option>
                 {status.providers.map((p) => (
@@ -502,12 +502,12 @@ const AiIntelligencePanel: React.FC = () => {
               </select>
             </div>
             <div>
-              <label className="block text-[10px] font-mono text-slate-400 mb-1">Model</label>
+              <label className="block text-[10px] font-mono text-content-secondary mb-1">Model</label>
               <select
                 value={draftModel}
                 onChange={(e) => setDraftModel(e.target.value)}
                 disabled={!selectedProvider}
-                className="w-full px-2.5 py-1.5 rounded bg-[#0B1120] border border-slate-700 text-xs font-mono text-slate-200 focus:outline-none focus:border-violet-500 cursor-pointer disabled:opacity-50"
+                className="w-full px-2.5 py-1.5 rounded bg-surface-card border border-slate-700 text-xs font-mono text-content-primary focus:outline-none focus:border-violet-500 cursor-pointer disabled:opacity-50"
               >
                 <option value="">Select a model…</option>
                 {selectedProvider?.models.map((m) => (
@@ -520,7 +520,7 @@ const AiIntelligencePanel: React.FC = () => {
           </div>
         )}
 
-        <label className="flex items-center gap-2 text-[11px] font-mono text-slate-300 cursor-pointer">
+        <label className="flex items-center gap-2 text-[11px] font-mono text-content-secondary cursor-pointer">
           <input type="checkbox" checked={draftFallback} onChange={(e) => setDraftFallback(e.target.checked)} className="accent-violet-500" />
           <span>Fall back to another available model if the selected one fails</span>
         </label>
@@ -539,7 +539,7 @@ const AiIntelligencePanel: React.FC = () => {
         </button>
       </div>
 
-      <p className="text-[10px] font-mono text-slate-500">
+      <p className="text-[10px] font-mono text-content-muted">
         Settings are saved to the real orchestrator backend and take effect on the next AI generation request.
       </p>
     </div>
@@ -568,8 +568,8 @@ export const SettingsPage: React.FC = () => {
       {/* Main Settings Grid: Tabs on left, Content on right */}
       <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
         {/* Settings Navigation Tabs (4 cols) */}
-        <div className="md:col-span-4 rounded-lg border border-slate-800 bg-[#0B1120] p-2.5 space-y-1">
-          <div className="text-[10px] font-mono uppercase tracking-wider text-slate-500 px-2.5 py-1.5 font-bold">
+        <div className="md:col-span-4 rounded-lg border border-border-default bg-surface-card p-2.5 space-y-1">
+          <div className="text-[10px] font-mono uppercase tracking-wider text-content-muted px-2.5 py-1.5 font-bold">
             Configuration Sections
           </div>
           {tabs.map((tab) => {
@@ -583,10 +583,10 @@ export const SettingsPage: React.FC = () => {
                 className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-xs font-medium transition-all text-left cursor-pointer ${
                   isActive
                     ? 'bg-violet-950/60 border border-violet-800/80 text-violet-300 font-semibold shadow-sm'
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40 border border-transparent'
+                    : 'text-content-secondary hover:text-content-primary hover:bg-slate-800/40 border border-transparent'
                 }`}
               >
-                <Icon className={`w-3.5 h-3.5 shrink-0 ${isActive ? 'text-violet-400' : 'text-slate-500'}`} />
+                <Icon className={`w-3.5 h-3.5 shrink-0 ${isActive ? 'text-violet-400' : 'text-content-muted'}`} />
                 <span className="truncate">{tab.label}</span>
               </button>
             );
@@ -594,12 +594,12 @@ export const SettingsPage: React.FC = () => {
         </div>
 
         {/* Settings Body (8 cols) */}
-        <div className="md:col-span-8 rounded-lg border border-slate-800 bg-[#0B1120] p-4 space-y-4 text-xs">
+        <div className="md:col-span-8 rounded-lg border border-border-default bg-surface-card p-4 space-y-4 text-xs">
           {activeTab === 'authentication' && (
             <div className="space-y-3">
-              <div className="pb-2 border-b border-slate-800">
-                <h3 className="text-xs font-bold text-slate-100 uppercase font-mono">Authentication</h3>
-                <p className="text-slate-400 text-xs mt-0.5">The real orchestrator API key this frontend authenticates with</p>
+              <div className="pb-2 border-b border-border-default">
+                <h3 className="text-xs font-bold text-content-primary uppercase font-mono">Authentication</h3>
+                <p className="text-content-secondary text-xs mt-0.5">The real orchestrator API key this frontend authenticates with</p>
               </div>
               <OrchestratorAuthPanel />
             </div>
