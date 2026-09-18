@@ -62,7 +62,7 @@ export const TelemetryTableSection: React.FC<TelemetryTableSectionProps> = ({
 
   if (loading) {
     return (
-      <div className="bg-slate-900/40 border border-slate-800 rounded-xl p-5 animate-pulse" data-testid="telemetry-table-loading">
+      <div className="bg-slate-900/40 border border-border-default rounded-xl p-5 animate-pulse" data-testid="telemetry-table-loading">
         <div className="h-6 w-48 bg-slate-800 rounded mb-4" />
         <div className="space-y-2">
           {[...Array(5)].map((_, i) => (
@@ -74,23 +74,23 @@ export const TelemetryTableSection: React.FC<TelemetryTableSectionProps> = ({
   }
 
   return (
-    <div className="bg-slate-900/40 border border-slate-800 rounded-xl p-5" data-testid="telemetry-table-section">
+    <div className="bg-slate-900/40 border border-border-default rounded-xl p-5" data-testid="telemetry-table-section">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
         <div>
-          <h3 className="text-sm font-semibold text-slate-100 flex items-center gap-2">
+          <h3 className="text-sm font-semibold text-content-primary flex items-center gap-2">
             <span>Execution Telemetry</span>
-            <span className="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 font-mono">
+            <span className="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-content-secondary font-mono">
               {filtered.length} {filtered.length === 1 ? 'event' : 'events'}
             </span>
           </h3>
-          <p className="text-xs text-slate-400 mt-0.5">Real execution traces ingested from orchestrator runs.</p>
+          <p className="text-xs text-content-secondary mt-0.5">Real execution traces ingested from orchestrator runs.</p>
         </div>
 
         {/* Filter Controls */}
         <div className="flex flex-wrap items-center gap-2">
           {/* Search Input */}
           <div className="relative min-w-[180px]">
-            <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+            <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-content-secondary" />
             <input
               type="text"
               placeholder="Search task, run, category..."
@@ -99,7 +99,7 @@ export const TelemetryTableSection: React.FC<TelemetryTableSectionProps> = ({
                 setSearch(e.target.value);
                 setPage(1);
               }}
-              className="w-full pl-8 pr-3 py-1 text-xs bg-slate-950 border border-slate-800 rounded-md text-slate-200 placeholder-slate-500 focus:outline-none focus:border-violet-500"
+              className="w-full pl-8 pr-3 py-1 text-xs bg-slate-950 border border-border-default rounded-md text-content-primary placeholder-slate-500 focus:outline-none focus:border-violet-500"
               data-testid="telemetry-search-input"
             />
           </div>
@@ -111,7 +111,7 @@ export const TelemetryTableSection: React.FC<TelemetryTableSectionProps> = ({
               setStatusFilter(e.target.value);
               setPage(1);
             }}
-            className="text-xs bg-slate-950 border border-slate-800 rounded-md px-2 py-1 text-slate-300 focus:outline-none focus:border-violet-500"
+            className="text-xs bg-slate-950 border border-border-default rounded-md px-2 py-1 text-content-secondary focus:outline-none focus:border-violet-500"
             data-testid="telemetry-status-filter"
           >
             <option value="ALL">All Statuses</option>
@@ -129,7 +129,7 @@ export const TelemetryTableSection: React.FC<TelemetryTableSectionProps> = ({
                 setEnvFilter(e.target.value);
                 setPage(1);
               }}
-              className="text-xs bg-slate-950 border border-slate-800 rounded-md px-2 py-1 text-slate-300 focus:outline-none focus:border-violet-500"
+              className="text-xs bg-slate-950 border border-border-default rounded-md px-2 py-1 text-content-secondary focus:outline-none focus:border-violet-500"
               data-testid="telemetry-env-filter"
             >
               <option value="ALL">All Environments</option>
@@ -145,13 +145,13 @@ export const TelemetryTableSection: React.FC<TelemetryTableSectionProps> = ({
 
       {/* Table */}
       {filtered.length === 0 ? (
-        <div className="py-12 text-center text-slate-400 text-xs border border-dashed border-slate-800/80 rounded-lg" data-testid="telemetry-empty">
+        <div className="py-12 text-center text-content-secondary text-xs border border-dashed border-border-default/80 rounded-lg" data-testid="telemetry-empty">
           No execution telemetry found matching the criteria.
         </div>
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs text-slate-300">
-            <thead className="bg-slate-950/60 text-slate-400 uppercase font-mono text-[10px] border-b border-slate-800">
+          <table className="w-full text-left text-xs text-content-secondary">
+            <thead className="bg-slate-950/60 text-content-secondary uppercase font-mono text-[10px] border-b border-border-default">
               <tr>
                 <th className="py-2.5 px-3">Task / ID</th>
                 <th className="py-2.5 px-3">Status</th>
@@ -173,10 +173,10 @@ export const TelemetryTableSection: React.FC<TelemetryTableSectionProps> = ({
                     data-testid={`telemetry-row-${row.id}`}
                   >
                     <td className="py-2.5 px-3">
-                      <div className="font-medium text-slate-100 group-hover:text-violet-300 transition-colors">
+                      <div className="font-medium text-content-primary group-hover:text-violet-300 transition-colors">
                         {row.task_name}
                       </div>
-                      <div className="text-[10px] font-mono text-slate-500 truncate max-w-[200px]" title={row.task_id}>
+                      <div className="text-[10px] font-mono text-content-muted truncate max-w-[200px]" title={row.task_id}>
                         {row.task_id}
                       </div>
                     </td>
@@ -200,18 +200,18 @@ export const TelemetryTableSection: React.FC<TelemetryTableSectionProps> = ({
                         {row.status}
                       </span>
                     </td>
-                    <td className="py-2.5 px-3 font-mono text-slate-300">{row.duration_ms} ms</td>
-                    <td className="py-2.5 px-3 font-mono text-slate-400">{row.environment}</td>
-                    <td className="py-2.5 px-3 font-mono text-slate-400">
+                    <td className="py-2.5 px-3 font-mono text-content-secondary">{row.duration_ms} ms</td>
+                    <td className="py-2.5 px-3 font-mono text-content-secondary">{row.environment}</td>
+                    <td className="py-2.5 px-3 font-mono text-content-secondary">
                       {row.failure_category ? (
                         <span className="text-rose-300 bg-rose-950/40 px-1.5 py-0.5 rounded border border-rose-800/40">
                           {row.failure_category}
                         </span>
                       ) : (
-                        <span className="text-slate-600">—</span>
+                        <span className="text-content-muted">—</span>
                       )}
                     </td>
-                    <td className="py-2.5 px-3 font-mono text-[11px] text-slate-400">
+                    <td className="py-2.5 px-3 font-mono text-[11px] text-content-secondary">
                       {new Date(row.start_time).toLocaleString()}
                     </td>
                     <td className="py-2.5 px-3 text-right">
@@ -220,7 +220,7 @@ export const TelemetryTableSection: React.FC<TelemetryTableSectionProps> = ({
                           e.stopPropagation();
                           onSelectTelemetry(row);
                         }}
-                        className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-slate-100 transition-colors"
+                        className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-content-secondary hover:text-content-primary transition-colors"
                         title="View Details"
                         data-testid={`view-telemetry-${row.id}`}
                       >
@@ -237,7 +237,7 @@ export const TelemetryTableSection: React.FC<TelemetryTableSectionProps> = ({
 
       {/* Pagination */}
       {totalPages > 1 && (
-        <div className="flex items-center justify-between mt-4 pt-3 border-t border-slate-800 text-xs text-slate-400">
+        <div className="flex items-center justify-between mt-4 pt-3 border-t border-border-default text-xs text-content-secondary">
           <div>
             Showing {(currentPage - 1) * pageSize + 1} to {Math.min(currentPage * pageSize, filtered.length)} of{' '}
             {filtered.length}
@@ -246,7 +246,7 @@ export const TelemetryTableSection: React.FC<TelemetryTableSectionProps> = ({
             <button
               onClick={() => setPage((p) => Math.max(1, p - 1))}
               disabled={currentPage === 1}
-              className="p-1 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-slate-300 transition-colors"
+              className="p-1 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-content-secondary transition-colors"
               title="Previous Page"
             >
               <ChevronLeft className="w-4 h-4" />
@@ -257,7 +257,7 @@ export const TelemetryTableSection: React.FC<TelemetryTableSectionProps> = ({
             <button
               onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
               disabled={currentPage === totalPages}
-              className="p-1 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-slate-300 transition-colors"
+              className="p-1 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-content-secondary transition-colors"
               title="Next Page"
             >
               <ChevronRight className="w-4 h-4" />

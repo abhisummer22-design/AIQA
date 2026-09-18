@@ -24,7 +24,7 @@ export const ExecutionHealthSection: React.FC<ExecutionHealthSectionProps> = ({
     return (
       <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 mb-6 animate-pulse">
         {[...Array(8)].map((_, i) => (
-          <div key={i} className="bg-slate-900/60 border border-slate-800/80 rounded-lg p-4 h-24" />
+          <div key={i} className="bg-slate-900/60 border border-border-default/80 rounded-lg p-4 h-24" />
         ))}
       </div>
     );
@@ -60,7 +60,7 @@ export const ExecutionHealthSection: React.FC<ExecutionHealthSectionProps> = ({
       label: 'Pass Rate',
       value: passRate,
       icon: CheckCircle2,
-      color: passRate !== 'Insufficient data' ? 'text-emerald-400' : 'text-slate-400',
+      color: passRate !== 'Insufficient data' ? 'text-emerald-400' : 'text-content-secondary',
       border: 'border-emerald-500/20',
       bg: 'bg-emerald-500/5',
     },
@@ -68,7 +68,7 @@ export const ExecutionHealthSection: React.FC<ExecutionHealthSectionProps> = ({
       label: 'Failure Rate',
       value: failureRate,
       icon: XCircle,
-      color: failureRate !== 'Insufficient data' ? 'text-rose-400' : 'text-slate-400',
+      color: failureRate !== 'Insufficient data' ? 'text-rose-400' : 'text-content-secondary',
       border: 'border-rose-500/20',
       bg: 'bg-rose-500/5',
     },
@@ -76,7 +76,7 @@ export const ExecutionHealthSection: React.FC<ExecutionHealthSectionProps> = ({
       label: 'Flaky Tests',
       value: flakiness.length > 0 ? flakyCount.toString() : '0 detected',
       icon: AlertTriangle,
-      color: flakyCount > 0 ? 'text-amber-400' : 'text-slate-400',
+      color: flakyCount > 0 ? 'text-amber-400' : 'text-content-secondary',
       border: 'border-amber-500/20',
       bg: 'bg-amber-500/5',
     },
@@ -109,7 +109,7 @@ export const ExecutionHealthSection: React.FC<ExecutionHealthSectionProps> = ({
       value: strategies.length > 0 ? totalRegressions.toString() : '0 recorded',
       icon: ShieldAlert,
       color: totalRegressions > 0 ? 'text-rose-400' : 'text-emerald-400',
-      border: 'border-slate-800',
+      border: 'border-border-default',
       bg: 'bg-slate-900/40',
     },
   ];
@@ -124,10 +124,10 @@ export const ExecutionHealthSection: React.FC<ExecutionHealthSectionProps> = ({
             className={`rounded-lg border ${kpi.border} ${kpi.bg} p-3.5 flex flex-col justify-between transition-colors`}
           >
             <div className="flex items-center justify-between mb-1.5">
-              <span className="text-xs font-medium text-slate-400 uppercase tracking-wider">{kpi.label}</span>
+              <span className="text-xs font-medium text-content-secondary uppercase tracking-wider">{kpi.label}</span>
               <Icon className={`w-4 h-4 ${kpi.color}`} />
             </div>
-            <div className="text-xl font-bold font-mono text-slate-100">{kpi.value}</div>
+            <div className="text-xl font-bold font-mono text-content-primary">{kpi.value}</div>
           </div>
         );
       })}

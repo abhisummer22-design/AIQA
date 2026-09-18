@@ -18,7 +18,7 @@ export const HealingIntelligenceSection: React.FC<HealingIntelligenceSectionProp
 }) => {
   if (loading) {
     return (
-      <div className="bg-slate-900/40 border border-slate-800 rounded-xl p-5 animate-pulse" data-testid="healing-intel-loading">
+      <div className="bg-slate-900/40 border border-border-default rounded-xl p-5 animate-pulse" data-testid="healing-intel-loading">
         <div className="h-6 w-48 bg-slate-800 rounded mb-4" />
         <div className="h-16 bg-slate-800/40 rounded mb-4" />
         <div className="space-y-2">
@@ -41,17 +41,17 @@ export const HealingIntelligenceSection: React.FC<HealingIntelligenceSectionProp
   ];
 
   return (
-    <div className="bg-slate-900/40 border border-slate-800 rounded-xl p-5" data-testid="healing-intelligence-section">
+    <div className="bg-slate-900/40 border border-border-default rounded-xl p-5" data-testid="healing-intelligence-section">
       <div className="flex items-center justify-between mb-4">
         <div>
-          <h3 className="text-sm font-semibold text-slate-100 flex items-center gap-2">
+          <h3 className="text-sm font-semibold text-content-primary flex items-center gap-2">
             <Wrench className="w-4 h-4 text-indigo-400" />
             <span>Healing Strategy Reliability & Governance</span>
-            <span className="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 font-mono">
+            <span className="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-content-secondary font-mono">
               {strategies.length} {strategies.length === 1 ? 'strategy' : 'strategies'}
             </span>
           </h3>
-          <p className="text-xs text-slate-400 mt-0.5">
+          <p className="text-xs text-content-secondary mt-0.5">
             Calibrated empirical confidence and safety metrics for AST healing proposals.
           </p>
         </div>
@@ -85,8 +85,8 @@ export const HealingIntelligenceSection: React.FC<HealingIntelligenceSectionProp
                   <ArrowRight className="w-3 h-3 text-indigo-600 hidden lg:block -mr-1" />
                 )}
               </div>
-              <div className="text-xs font-semibold text-slate-200">{step.label}</div>
-              <div className="text-[10px] text-slate-400 mt-0.5 leading-tight">{step.desc}</div>
+              <div className="text-xs font-semibold text-content-primary">{step.label}</div>
+              <div className="text-[10px] text-content-secondary mt-0.5 leading-tight">{step.desc}</div>
             </div>
           ))}
         </div>
@@ -99,13 +99,13 @@ export const HealingIntelligenceSection: React.FC<HealingIntelligenceSectionProp
 
       {/* Strategies Table */}
       {strategies.length === 0 ? (
-        <div className="py-12 text-center text-slate-400 text-xs border border-dashed border-slate-800/80 rounded-lg" data-testid="healing-strategies-empty">
+        <div className="py-12 text-center text-content-secondary text-xs border border-dashed border-border-default/80 rounded-lg" data-testid="healing-strategies-empty">
           No healing strategy history recorded yet for this project.
         </div>
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs text-slate-300">
-            <thead className="bg-slate-950/60 text-slate-400 uppercase font-mono text-[10px] border-b border-slate-800">
+          <table className="w-full text-left text-xs text-content-secondary">
+            <thead className="bg-slate-950/60 text-content-secondary uppercase font-mono text-[10px] border-b border-border-default">
               <tr>
                 <th className="py-2.5 px-3">Strategy Name</th>
                 <th className="py-2.5 px-3">Category</th>
@@ -122,19 +122,19 @@ export const HealingIntelligenceSection: React.FC<HealingIntelligenceSectionProp
                 const isHighConf = row.calibrated_confidence >= 0.7;
                 return (
                   <tr key={row.id} className="hover:bg-slate-800/30 transition-colors" data-testid={`strategy-row-${row.id}`}>
-                    <td className="py-2.5 px-3 font-semibold text-slate-100 font-sans">{row.strategy}</td>
+                    <td className="py-2.5 px-3 font-semibold text-content-primary font-sans">{row.strategy}</td>
                     <td className="py-2.5 px-3">
-                      <span className="text-[11px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700">
+                      <span className="text-[11px] px-1.5 py-0.5 rounded bg-slate-800 text-content-secondary border border-slate-700">
                         {row.failure_category}
                       </span>
                     </td>
-                    <td className="py-2.5 px-3 text-slate-300">{row.attempts_count}</td>
+                    <td className="py-2.5 px-3 text-content-secondary">{row.attempts_count}</td>
                     <td className="py-2.5 px-3 text-emerald-400 font-bold">{row.verified_count}</td>
-                    <td className="py-2.5 px-3 text-slate-400">{row.not_verified_count}</td>
+                    <td className="py-2.5 px-3 text-content-secondary">{row.not_verified_count}</td>
                     <td className="py-2.5 px-3">
                       <span
                         className={`font-bold ${
-                          row.regression_count > 0 ? 'text-rose-400' : 'text-slate-400'
+                          row.regression_count > 0 ? 'text-rose-400' : 'text-content-secondary'
                         }`}
                       >
                         {row.regression_count}

@@ -198,20 +198,20 @@ export const QaIntelligenceDashboardPage: React.FC = () => {
   return (
     <div className="p-4 sm:p-6 max-w-7xl mx-auto space-y-6" data-testid="aiqa-intelligence-dashboard">
       {/* Top Header Bar */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800 pb-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-border-default pb-4">
         <div>
           <div className="flex items-center gap-2.5">
             <div className="p-2 rounded-lg bg-violet-500/10 border border-violet-500/20 text-violet-400">
               <Activity className="w-5 h-5" />
             </div>
             <div>
-              <h1 className="text-lg font-bold text-slate-100 flex items-center gap-2">
+              <h1 className="text-lg font-bold text-content-primary flex items-center gap-2">
                 <span>QA Intelligence & Observability</span>
                 <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-violet-950/60 text-violet-300 border border-violet-800/60">
                   {selectedProject.name}
                 </span>
               </h1>
-              <p className="text-xs text-slate-400">
+              <p className="text-xs text-content-secondary">
                 Governed adaptive intelligence, real execution telemetry, and empirical quality graphs.
               </p>
             </div>
@@ -221,7 +221,7 @@ export const QaIntelligenceDashboardPage: React.FC = () => {
         <div className="flex items-center gap-2">
           <button
             onClick={() => setRetentionModalOpen(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-xs font-medium text-amber-400 hover:text-amber-300 transition-colors"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-border-default text-xs font-medium text-amber-400 hover:text-amber-300 transition-colors"
             data-testid="retention-maintenance-btn"
             title="Telemetry Retention Maintenance"
           >
@@ -231,18 +231,18 @@ export const QaIntelligenceDashboardPage: React.FC = () => {
           <button
             onClick={handleRefresh}
             disabled={loading || refreshing}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-xs font-medium text-slate-200 transition-colors disabled:opacity-50"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-border-default text-xs font-medium text-content-primary transition-colors disabled:opacity-50"
             data-testid="intelligence-refresh-btn"
             title="Refresh Intelligence Data"
           >
-            <RotateCcw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin text-violet-400' : 'text-slate-400'}`} />
+            <RotateCcw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin text-violet-400' : 'text-content-secondary'}`} />
             <span>{refreshing ? 'Refreshing...' : 'Refresh'}</span>
           </button>
         </div>
       </div>
 
       {/* Tabs Navigation */}
-      <div className="flex items-center gap-1 border-b border-slate-800 pb-px overflow-x-auto">
+      <div className="flex items-center gap-1 border-b border-border-default pb-px overflow-x-auto">
         {tabs.map((tab) => {
           const Icon = tab.icon;
           const isActive = activeTab === tab.id;
@@ -253,7 +253,7 @@ export const QaIntelligenceDashboardPage: React.FC = () => {
               className={`flex items-center gap-2 px-3.5 py-2 text-xs font-medium rounded-t-lg transition-colors border-b-2 -mb-px whitespace-nowrap ${
                 isActive
                   ? 'border-violet-500 text-violet-400 bg-violet-500/5 font-semibold'
-                  : 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-900/40'
+                  : 'border-transparent text-content-secondary hover:text-content-primary hover:bg-slate-900/40'
               }`}
               data-testid={`tab-${tab.id}`}
             >

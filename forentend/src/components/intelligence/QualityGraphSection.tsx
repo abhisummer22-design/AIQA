@@ -77,7 +77,7 @@ export const QualityGraphSection: React.FC<QualityGraphSectionProps> = ({ graph,
 
   if (loading) {
     return (
-      <div className="bg-slate-900/40 border border-slate-800 rounded-xl p-5 animate-pulse" data-testid="graph-loading">
+      <div className="bg-slate-900/40 border border-border-default rounded-xl p-5 animate-pulse" data-testid="graph-loading">
         <div className="h-6 w-48 bg-slate-800 rounded mb-4" />
         <div className="h-64 bg-slate-800/40 rounded" />
       </div>
@@ -85,17 +85,17 @@ export const QualityGraphSection: React.FC<QualityGraphSectionProps> = ({ graph,
   }
 
   return (
-    <div className="bg-slate-900/40 border border-slate-800 rounded-xl p-5" data-testid="quality-graph-section">
+    <div className="bg-slate-900/40 border border-border-default rounded-xl p-5" data-testid="quality-graph-section">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
         <div>
-          <h3 className="text-sm font-semibold text-slate-100 flex items-center gap-2">
+          <h3 className="text-sm font-semibold text-content-primary flex items-center gap-2">
             <Network className="w-4 h-4 text-violet-400" />
             <span>Quality Graph Knowledge Network</span>
-            <span className="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 font-mono">
+            <span className="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-content-secondary font-mono">
               {nodes.length} nodes · {relations.length} edges
             </span>
           </h3>
-          <p className="text-xs text-slate-400 mt-0.5">
+          <p className="text-xs text-content-secondary mt-0.5">
             Relational topology connecting tests, runs, clusters, and healing strategies.
           </p>
         </div>
@@ -103,13 +103,13 @@ export const QualityGraphSection: React.FC<QualityGraphSectionProps> = ({ graph,
         {/* Filter controls */}
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative min-w-[160px]">
-            <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+            <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-content-secondary" />
             <input
               type="text"
               placeholder="Search nodes..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="w-full pl-8 pr-3 py-1 text-xs bg-slate-950 border border-slate-800 rounded-md text-slate-200 placeholder-slate-500 focus:outline-none focus:border-violet-500"
+              className="w-full pl-8 pr-3 py-1 text-xs bg-slate-950 border border-border-default rounded-md text-content-primary placeholder-slate-500 focus:outline-none focus:border-violet-500"
               data-testid="graph-search-input"
             />
           </div>
@@ -120,7 +120,7 @@ export const QualityGraphSection: React.FC<QualityGraphSectionProps> = ({ graph,
               setTypeFilter(e.target.value);
               setSelectedNode(null);
             }}
-            className="text-xs bg-slate-950 border border-slate-800 rounded-md px-2 py-1 text-slate-300 focus:outline-none focus:border-violet-500"
+            className="text-xs bg-slate-950 border border-border-default rounded-md px-2 py-1 text-content-secondary focus:outline-none focus:border-violet-500"
             data-testid="graph-type-filter"
           >
             <option value="ALL">All Types</option>
@@ -134,15 +134,15 @@ export const QualityGraphSection: React.FC<QualityGraphSectionProps> = ({ graph,
       </div>
 
       {nodes.length === 0 ? (
-        <div className="py-16 text-center text-slate-400 text-xs border border-dashed border-slate-800/80 rounded-lg" data-testid="graph-empty">
-          <Network className="w-8 h-8 text-slate-600 mx-auto mb-2" />
+        <div className="py-16 text-center text-content-secondary text-xs border border-dashed border-border-default/80 rounded-lg" data-testid="graph-empty">
+          <Network className="w-8 h-8 text-content-muted mx-auto mb-2" />
           No Quality Graph entities populated yet for this project. Execute runs to construct relational topology.
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           {/* Graph Nodes Canvas / Grid */}
-          <div className="lg:col-span-2 bg-slate-950/60 border border-slate-800/80 rounded-xl p-4 min-h-[360px] flex flex-col justify-between">
-            <div className="text-[11px] font-mono text-slate-500 mb-3 flex items-center justify-between">
+          <div className="lg:col-span-2 bg-slate-950/60 border border-border-default/80 rounded-xl p-4 min-h-[360px] flex flex-col justify-between">
+            <div className="text-[11px] font-mono text-content-muted mb-3 flex items-center justify-between">
               <span>Interactive Graph Entities ({filteredNodes.length})</span>
               <span>Click node to inspect relations</span>
             </div>
@@ -157,7 +157,7 @@ export const QualityGraphSection: React.FC<QualityGraphSectionProps> = ({ graph,
                     className={`p-3 rounded-lg border text-left transition-all flex flex-col justify-between ${
                       isSelected
                         ? 'bg-violet-950/40 border-violet-500 ring-1 ring-violet-500/50 shadow-md shadow-violet-950'
-                        : 'bg-slate-900/60 border-slate-800 hover:border-slate-700'
+                        : 'bg-slate-900/60 border-border-default hover:border-slate-700'
                     }`}
                     data-testid={`graph-node-${node.id}`}
                   >
@@ -171,10 +171,10 @@ export const QualityGraphSection: React.FC<QualityGraphSectionProps> = ({ graph,
                       </span>
                       {getNodeIcon(node.node_type)}
                     </div>
-                    <div className="font-semibold text-xs text-slate-100 truncate w-full" title={node.name}>
+                    <div className="font-semibold text-xs text-content-primary truncate w-full" title={node.name}>
                       {node.name}
                     </div>
-                    <div className="text-[10px] font-mono text-slate-500 truncate w-full mt-1">
+                    <div className="text-[10px] font-mono text-content-muted truncate w-full mt-1">
                       {node.id}
                     </div>
                   </button>
@@ -183,29 +183,29 @@ export const QualityGraphSection: React.FC<QualityGraphSectionProps> = ({ graph,
             </div>
 
             {/* Edge summary footer */}
-            <div className="mt-3 pt-3 border-t border-slate-800/80 text-[11px] font-mono text-slate-400 flex items-center justify-between">
+            <div className="mt-3 pt-3 border-t border-border-default/80 text-[11px] font-mono text-content-secondary flex items-center justify-between">
               <span>Topology: {nodes.length} Vertices</span>
               <span>Connectivity: {relations.length} Directed Edges</span>
             </div>
           </div>
 
           {/* Node Inspector Drawer */}
-          <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-4" data-testid="graph-node-inspector">
+          <div className="bg-slate-950/60 border border-border-default/80 rounded-xl p-4" data-testid="graph-node-inspector">
             {selectedNode ? (
               <div>
-                <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-3">
+                <div className="flex items-center justify-between border-b border-border-default pb-3 mb-3">
                   <div className="flex items-center gap-2">
                     {getNodeIcon(selectedNode.node_type)}
                     <div>
-                      <h4 className="text-xs font-bold text-slate-100 truncate max-w-[180px]">
+                      <h4 className="text-xs font-bold text-content-primary truncate max-w-[180px]">
                         {selectedNode.name}
                       </h4>
-                      <span className="text-[10px] font-mono text-slate-400">{selectedNode.node_type}</span>
+                      <span className="text-[10px] font-mono text-content-secondary">{selectedNode.node_type}</span>
                     </div>
                   </div>
                   <button
                     onClick={() => setSelectedNode(null)}
-                    className="p-1 rounded text-slate-400 hover:text-slate-200"
+                    className="p-1 rounded text-content-secondary hover:text-content-primary"
                     title="Close Inspector"
                   >
                     <X className="w-4 h-4" />
@@ -214,14 +214,14 @@ export const QualityGraphSection: React.FC<QualityGraphSectionProps> = ({ graph,
 
                 <div className="space-y-3 text-xs">
                   <div>
-                    <span className="text-[10px] text-slate-500 uppercase block font-mono">Node ID</span>
-                    <span className="font-mono text-[11px] text-slate-300 break-all">{selectedNode.id}</span>
+                    <span className="text-[10px] text-content-muted uppercase block font-mono">Node ID</span>
+                    <span className="font-mono text-[11px] text-content-secondary break-all">{selectedNode.id}</span>
                   </div>
 
                   {selectedNode.external_ref && (
                     <div>
-                      <span className="text-[10px] text-slate-500 uppercase block font-mono">External Ref</span>
-                      <span className="font-mono text-[11px] text-slate-300 break-all">
+                      <span className="text-[10px] text-content-muted uppercase block font-mono">External Ref</span>
+                      <span className="font-mono text-[11px] text-content-secondary break-all">
                         {selectedNode.external_ref}
                       </span>
                     </div>
@@ -229,20 +229,20 @@ export const QualityGraphSection: React.FC<QualityGraphSectionProps> = ({ graph,
 
                   {selectedNode.metadata && (
                     <div>
-                      <span className="text-[10px] text-slate-500 uppercase block font-mono">Metadata</span>
-                      <pre className="bg-slate-900/80 p-2 rounded text-[10px] font-mono text-slate-300 overflow-x-auto max-h-28">
+                      <span className="text-[10px] text-content-muted uppercase block font-mono">Metadata</span>
+                      <pre className="bg-slate-900/80 p-2 rounded text-[10px] font-mono text-content-secondary overflow-x-auto max-h-28">
                         {selectedNode.metadata}
                       </pre>
                     </div>
                   )}
 
                   {/* Connected Relations */}
-                  <div className="pt-2 border-t border-slate-800">
-                    <span className="text-[10px] text-slate-400 uppercase block font-mono mb-1.5">
+                  <div className="pt-2 border-t border-border-default">
+                    <span className="text-[10px] text-content-secondary uppercase block font-mono mb-1.5">
                       Connected Edges ({connectedRelations.length})
                     </span>
                     {connectedRelations.length === 0 ? (
-                      <div className="text-[11px] text-slate-500 italic">No direct edges linked.</div>
+                      <div className="text-[11px] text-content-muted italic">No direct edges linked.</div>
                     ) : (
                       <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
                         {connectedRelations.map((rel) => {
@@ -250,12 +250,12 @@ export const QualityGraphSection: React.FC<QualityGraphSectionProps> = ({ graph,
                           return (
                             <div
                               key={rel.id}
-                              className="bg-slate-900/60 border border-slate-800 p-2 rounded text-[10px] font-mono"
+                              className="bg-slate-900/60 border border-border-default p-2 rounded text-[10px] font-mono"
                             >
                               <div className="text-violet-300 font-bold mb-0.5">
                                 {isOutgoing ? '→ OUTGOING' : '← INCOMING'}: {rel.relation_type}
                               </div>
-                              <div className="text-slate-400 truncate">
+                              <div className="text-content-secondary truncate">
                                 Target: {isOutgoing ? rel.to_node_id : rel.from_node_id}
                               </div>
                             </div>
@@ -267,7 +267,7 @@ export const QualityGraphSection: React.FC<QualityGraphSectionProps> = ({ graph,
                 </div>
               </div>
             ) : (
-              <div className="h-full flex flex-col items-center justify-center text-center py-16 text-slate-500 text-xs">
+              <div className="h-full flex flex-col items-center justify-center text-center py-16 text-content-muted text-xs">
                 <Box className="w-8 h-8 opacity-40 mb-2" />
                 Select any node from the graph to inspect properties and relational edges.
               </div>
