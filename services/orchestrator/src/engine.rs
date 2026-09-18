@@ -2,6 +2,7 @@ use crate::domain::*;
 use crate::evidence::LocalEvidenceStore;
 use crate::executor::{ExecutionOutcome, ExecutorRegistry};
 use crate::intelligence::Intelligence;
+use crate::policy::PolicyConfig;
 use crate::scheduler::RunEngine;
 use crate::store::Store;
 use crate::webhook;
@@ -491,6 +492,7 @@ pub async fn approve_and_spawn(
     concurrency: usize,
     store: Store,
     evidence: Arc<LocalEvidenceStore>,
+    policy: Arc<PolicyConfig>,
     actor: &str,
     task_timeout: std::time::Duration,
 ) -> anyhow::Result<()> {
@@ -505,7 +507,7 @@ pub async fn approve_and_spawn(
     // loop already raced past, when it reads the run back right after this
     // returns. See `mark_run_running`'s doc comment.
     mark_run_running(&record, &store).await;
-    spawn_run(record, registry, concurrency, store, evidence, task_timeout);
+    spawn_run(record, registry, concurrency, store, evidence, policy, task_timeout);
     Ok(())
 }
 
@@ -689,6 +691,7 @@ pub fn spawn_run(
     concurrency: usize,
     store: Store,
     evidence: Arc<LocalEvidenceStore>,
+    policy: Arc<PolicyConfig>,
     task_timeout: std::time::Duration,
 ) {
     let task_defs = record.task_defs();
@@ -969,6 +972,88 @@ pub fn spawn_run(
             .await
         {
             tracing::warn!("intelligence ingest failed for run {}: {e}", record.run_id);
+        }
+
+        // Gap-closing — Phase 10: autonomous healing-proposal orchestration.
+        // Only meaningful with a real project scope (an untenanted/default
+        // run has nothing for GovernedHealingService's RBAC/project checks
+        // to scope against); every other gate below is the same live one a
+        // human-submitted proposal goes through.
+        if let Some(project_id) = record.project_id.as_deref() {
+            for t in &tasks_snapshot {
+                if !matches!(t.status, TaskStatus::Failed | TaskStatus::Timeout) {
+                    continue;
+                }
+                let Some(def) = task_defs.get(&t.id) else {
+                    continue;
+                };
+                let Some(selector) = def
+                    .params
+                    .get("selector")
+                    .and_then(|v| v.as_str())
+                    .map(ToString::to_string)
+                else {
+                    continue;
+                };
+                let executor_name = def.executor.as_deref().unwrap_or("simulated");
+
+                let Some(req) = intel
+                    .detect_autonomous_healing_candidate(
+                        project_id,
+                        record.run_id,
+                        t,
+                        executor_name,
+                        &selector,
+                    )
+                    .await
+                else {
+                    continue;
+                };
+
+                let dispatcher = crate::agent_execution::AgentExecutionDispatcher::new(
+                    store.clone(),
+                    (*policy).clone(),
+                    registry.clone(),
+                    evidence.clone(),
+                    None,
+                );
+                let healing_service = crate::governed_healing::GovernedHealingService::new(
+                    store.clone(),
+                    dispatcher,
+                    evidence.clone(),
+                    policy.clone(),
+                    None,
+                );
+                // Clearly attributable in every audit log entry as
+                // system-generated, never impersonating a real API key.
+                let system_ctx = crate::auth::AuthContext {
+                    key_id: Uuid::nil(),
+                    name: "system:phase10-autonomous-orchestrator".to_string(),
+                    role: crate::auth::Role::Operator,
+                    project_id: Some(project_id.to_string()),
+                };
+                match healing_service.propose_healing(&system_ctx, req).await {
+                    Ok(proposal) => {
+                        tracing::info!(
+                            "Phase 10: autonomously proposed healing {} for task '{}' in project {project_id} (run {})",
+                            proposal.id,
+                            t.name,
+                            record.run_id
+                        );
+                    }
+                    Err(e) => {
+                        // Expected and harmless in the common case — e.g.
+                        // this task/run already reached its bounded 1
+                        // healing attempt, or an identical proposal already
+                        // exists (idempotency key match). Never fatal to
+                        // run completion.
+                        tracing::debug!(
+                            "Phase 10: autonomous healing proposal skipped for task '{}' in project {project_id}: {e}",
+                            t.name
+                        );
+                    }
+                }
+            }
         }
 
         webhook::notify_run_completed(record.summary().await);

@@ -4098,6 +4098,7 @@ async fn create_run_core(
             plan.concurrency,
             state.store.clone(),
             state.evidence.clone(),
+            state.policy.clone(),
             engine::default_task_timeout(),
         );
     }
@@ -4798,6 +4799,7 @@ async fn approve_run_scoped(
         concurrency,
         state.store.clone(),
         state.evidence.clone(),
+        state.policy.clone(),
         &ctx.name,
         engine::default_task_timeout(),
     )

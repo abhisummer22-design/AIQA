@@ -81,6 +81,7 @@ async fn run_to_completion(
         concurrency,
         store.clone(),
         evidence,
+        std::sync::Arc::new(crate::policy::PolicyConfig::from_env()),
         task_timeout,
     );
 
@@ -481,6 +482,7 @@ async fn d1_approval_persistence_failure_is_propagated_and_does_not_spawn_or_app
         p.concurrency,
         store.clone(),
         evidence,
+        std::sync::Arc::new(crate::policy::PolicyConfig::from_env()),
         "approver_alice",
         std::time::Duration::from_secs(10),
     )
@@ -655,6 +657,7 @@ async fn d1_successful_approval_persists_and_spawns() {
         p.concurrency,
         store.clone(),
         evidence,
+        std::sync::Arc::new(crate::policy::PolicyConfig::from_env()),
         "approver_alice",
         std::time::Duration::from_secs(10),
     )
@@ -804,6 +807,7 @@ async fn d2_persistence_failure_reason_is_durable_and_survives_restart() {
         p.concurrency,
         store.clone(),
         evidence,
+        std::sync::Arc::new(crate::policy::PolicyConfig::from_env()),
         std::time::Duration::from_secs(10),
     );
 
@@ -949,6 +953,7 @@ async fn d3_orphaned_task_under_terminal_run_is_repaired_by_recovery() {
         p.concurrency,
         store.clone(),
         evidence,
+        std::sync::Arc::new(crate::policy::PolicyConfig::from_env()),
         std::time::Duration::from_secs(10),
     );
 
@@ -1208,6 +1213,7 @@ async fn d4_live_run_with_failed_task_matches_recovery_derived_state() {
         p.concurrency,
         store.clone(),
         evidence,
+        std::sync::Arc::new(crate::policy::PolicyConfig::from_env()),
         std::time::Duration::from_secs(10),
     );
 
@@ -1315,6 +1321,7 @@ async fn d4_live_run_with_blocked_task_matches_recovery_derived_state() {
         p.concurrency,
         store.clone(),
         evidence,
+        std::sync::Arc::new(crate::policy::PolicyConfig::from_env()),
         std::time::Duration::from_secs(10),
     );
 
@@ -1426,6 +1433,7 @@ async fn d4_live_run_with_timeout_task_matches_recovery_derived_state() {
         p.concurrency,
         store.clone(),
         evidence,
+        std::sync::Arc::new(crate::policy::PolicyConfig::from_env()),
         std::time::Duration::from_secs(2), // short ceiling so the hang times out quickly
     );
 
@@ -1569,6 +1577,7 @@ async fn d5_insert_evidence_failure_is_escalated_with_no_false_success_row() {
         p.concurrency,
         store.clone(),
         evidence,
+        std::sync::Arc::new(crate::policy::PolicyConfig::from_env()),
         std::time::Duration::from_secs(10),
     );
 
@@ -1700,6 +1709,7 @@ async fn d5_set_run_state_running_failure_is_escalated_and_run_finishes_failed()
         p.concurrency,
         store.clone(),
         evidence,
+        std::sync::Arc::new(crate::policy::PolicyConfig::from_env()),
         std::time::Duration::from_secs(10),
     );
 
@@ -1807,6 +1817,7 @@ async fn d5_set_run_started_failure_is_escalated_and_started_at_stays_null() {
         p.concurrency,
         store.clone(),
         evidence,
+        std::sync::Arc::new(crate::policy::PolicyConfig::from_env()),
         std::time::Duration::from_secs(10),
     );
 
@@ -2030,6 +2041,7 @@ async fn be13_cancel_actually_interrupts_an_in_flight_task_rather_than_waiting_i
         p.concurrency,
         store.clone(),
         evidence,
+        std::sync::Arc::new(crate::policy::PolicyConfig::from_env()),
         std::time::Duration::from_secs(30),
     );
 
@@ -2131,6 +2143,7 @@ async fn be13_cancel_prevents_a_not_yet_started_queued_task_from_ever_running() 
         p.concurrency,
         store.clone(),
         evidence,
+        std::sync::Arc::new(crate::policy::PolicyConfig::from_env()),
         std::time::Duration::from_secs(30),
     );
 
@@ -2229,5 +2242,177 @@ async fn be13_recovery_reports_cancelled_run_as_cancelled_not_completed() {
         summary.state,
         RunState::Cancelled,
         "a run with any CANCELLED task must recover as CANCELLED, not COMPLETED/PARTIAL"
+    );
+}
+
+// ============================================================================
+// GAP-CLOSING — Phase 10: autonomous healing-proposal orchestration
+// ============================================================================
+
+fn sim_task_with_selector(
+    id: &str,
+    outcome: SimOutcome,
+    delay_ms: u64,
+    selector: &str,
+) -> TaskDef {
+    TaskDef {
+        id: id.into(),
+        name: id.into(),
+        prerequisites: vec![],
+        simulate: Some(SimSpec { outcome, delay_ms }),
+        params: serde_json::json!({ "selector": selector }),
+        ..Default::default()
+    }
+}
+
+/// The Phase 10 autonomous-proposal loop runs inside `spawn_run`'s detached
+/// `tokio::spawn` block, strictly after `ingest_run` — later than the fixed
+/// 50ms tail `run_to_completion` already waits out for the *pre-existing*
+/// finalisation work. Poll (bounded, not a longer fixed sleep) rather than
+/// assert immediately, so this is robust under real test-machine load
+/// instead of merely "usually fast enough".
+async fn poll_healing_proposals(store: &Store, project_id: &str) -> Vec<crate::store::HealingProposalRow> {
+    for _ in 0..40 {
+        let proposals = store
+            .list_healing_proposals(project_id, None)
+            .await
+            .expect("list proposals");
+        if !proposals.is_empty() {
+            return proposals;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    Vec::new()
+}
+
+/// Runs one task-name to completion `outcomes.len()` times, in sequence, in
+/// the same project — the real, minimal way to build up the same kind of
+/// recent-history row set `task_history_by_name` reads for real telemetry.
+async fn run_task_repeatedly(
+    store: &Store,
+    evidence: Arc<LocalEvidenceStore>,
+    registry: Arc<ExecutorRegistry>,
+    task_name: &str,
+    selector: Option<&str>,
+    outcomes: &[SimOutcome],
+) {
+    for outcome in outcomes {
+        let task = match selector {
+            Some(sel) => sim_task_with_selector(task_name, outcome.clone(), 10, sel),
+            None => sim_task(task_name, outcome.clone(), 10),
+        };
+        run_to_completion(
+            store,
+            evidence.clone(),
+            registry.clone(),
+            plan("phase10-run", vec![task], 1),
+            std::time::Duration::from_secs(10),
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn phase10_recurring_failure_with_selector_autonomously_proposes_healing() {
+    let (store, _dir) = temp_store().await;
+    let evidence = evidence_store(&_dir);
+    let registry = Arc::new(ExecutorRegistry::new(Arc::new(SimulatedExecutor)));
+
+    // Only the first and last runs fail; the first has no history yet (a
+    // single data point can never classify as flaky, so it must not
+    // trigger), and the last has real alternating history behind it,
+    // scoring HighlyFlaky (2 flips / 4 transitions = 0.5 >= 0.40) — this
+    // is deliberately shaped so exactly one of the five runs qualifies,
+    // proving the detector reacts to the real pattern, not to failure
+    // count alone.
+    run_task_repeatedly(
+        &store,
+        evidence,
+        registry,
+        "flaky-login-test",
+        Some("#login-btn"),
+        &[
+            SimOutcome::Fail,
+            SimOutcome::Pass,
+            SimOutcome::Pass,
+            SimOutcome::Pass,
+            SimOutcome::Fail,
+        ],
+    )
+    .await;
+
+    let proposals = poll_healing_proposals(&store, "p1").await;
+    assert_eq!(
+        proposals.len(),
+        1,
+        "exactly one autonomous proposal should exist for this recurring pattern"
+    );
+    let p = &proposals[0];
+    assert_eq!(p.diagnosis_category, "RecurringFlakyFailure");
+    assert!(
+        p.confidence < 0.80,
+        "autonomous confidence must stay low enough to force review"
+    );
+    assert!(
+        p.requires_approval,
+        "an autonomously created proposal must never bypass human approval"
+    );
+    assert_eq!(
+        p.state, "PENDING_APPROVAL",
+        "the existing approval gate must hold for an autonomous proposal exactly like a human one"
+    );
+}
+
+#[tokio::test]
+async fn phase10_single_failure_does_not_autonomously_propose_healing() {
+    let (store, _dir) = temp_store().await;
+    let evidence = evidence_store(&_dir);
+    let registry = Arc::new(ExecutorRegistry::new(Arc::new(SimulatedExecutor)));
+
+    // Exactly one run, one failure — not yet a recurring pattern.
+    run_task_repeatedly(
+        &store,
+        evidence,
+        registry,
+        "one-off-failure-test",
+        Some("#submit-btn"),
+        &[SimOutcome::Fail],
+    )
+    .await;
+
+    let proposals = poll_healing_proposals(&store, "p1").await;
+    assert!(
+        proposals.is_empty(),
+        "a single failure must never autonomously create a healing proposal"
+    );
+}
+
+#[tokio::test]
+async fn phase10_recurring_failure_without_selector_does_not_autonomously_propose_healing() {
+    let (store, _dir) = temp_store().await;
+    let evidence = evidence_store(&_dir);
+    let registry = Arc::new(ExecutorRegistry::new(Arc::new(SimulatedExecutor)));
+
+    // Same flaky pattern as the positive test above, but this task never
+    // carries a selector in its params — there is nothing to heal.
+    run_task_repeatedly(
+        &store,
+        evidence,
+        registry,
+        "flaky-no-selector-test",
+        None,
+        &[
+            SimOutcome::Pass,
+            SimOutcome::Fail,
+            SimOutcome::Pass,
+            SimOutcome::Fail,
+        ],
+    )
+    .await;
+
+    let proposals = poll_healing_proposals(&store, "p1").await;
+    assert!(
+        proposals.is_empty(),
+        "a recurring failure with no selector must never autonomously create a healing proposal"
     );
 }
