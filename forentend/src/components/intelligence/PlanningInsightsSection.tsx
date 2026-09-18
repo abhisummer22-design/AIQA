@@ -23,7 +23,7 @@ export const PlanningInsightsSection: React.FC<PlanningInsightsSectionProps> = (
 }) => {
   if (loading) {
     return (
-      <div className="bg-slate-900/40 border border-slate-800 rounded-xl p-5 animate-pulse" data-testid="planning-insights-loading">
+      <div className="bg-slate-900/40 border border-border-default rounded-xl p-5 animate-pulse" data-testid="planning-insights-loading">
         <div className="h-6 w-48 bg-slate-800 rounded mb-4" />
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           {[...Array(3)].map((_, i) => (
@@ -85,14 +85,14 @@ export const PlanningInsightsSection: React.FC<PlanningInsightsSectionProps> = (
   }, [failures, fragileTests, fragileSelectors]);
 
   return (
-    <div className="bg-slate-900/40 border border-slate-800 rounded-xl p-5" data-testid="planning-insights-section">
+    <div className="bg-slate-900/40 border border-border-default rounded-xl p-5" data-testid="planning-insights-section">
       <div className="flex items-center justify-between mb-4">
         <div>
-          <h3 className="text-sm font-semibold text-slate-100 flex items-center gap-2">
+          <h3 className="text-sm font-semibold text-content-primary flex items-center gap-2">
             <Sparkles className="w-4 h-4 text-amber-400" />
             <span>Test Planning Agent Feedback & Recommendations</span>
           </h3>
-          <p className="text-xs text-slate-400 mt-0.5">
+          <p className="text-xs text-content-secondary mt-0.5">
             Empirical planning guidance derived directly from telemetry and historical regression patterns.
           </p>
         </div>
@@ -100,13 +100,13 @@ export const PlanningInsightsSection: React.FC<PlanningInsightsSectionProps> = (
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Fragile Tests */}
-        <div className="bg-slate-950/60 border border-slate-800/80 rounded-lg p-4">
+        <div className="bg-slate-950/60 border border-border-default/80 rounded-lg p-4">
           <div className="flex items-center gap-2 mb-3 text-xs font-semibold text-amber-300">
             <AlertTriangle className="w-4 h-4" />
             <span>Fragile Tests ({fragileTests.length})</span>
           </div>
           {fragileTests.length === 0 ? (
-            <div className="text-xs text-slate-500 italic py-4 text-center">
+            <div className="text-xs text-content-muted italic py-4 text-center">
               No fragile tests identified in current window.
             </div>
           ) : (
@@ -114,10 +114,10 @@ export const PlanningInsightsSection: React.FC<PlanningInsightsSectionProps> = (
               {fragileTests.map((ft) => (
                 <div
                   key={ft.id}
-                  className="bg-slate-900/60 border border-slate-800 p-2.5 rounded text-xs flex items-center justify-between"
+                  className="bg-slate-900/60 border border-border-default p-2.5 rounded text-xs flex items-center justify-between"
                   data-testid={`fragile-test-${ft.node_id}`}
                 >
-                  <span className="font-mono text-slate-200 truncate max-w-[150px]" title={ft.node_id}>
+                  <span className="font-mono text-content-primary truncate max-w-[150px]" title={ft.node_id}>
                     {ft.node_id}
                   </span>
                   <span className="font-mono text-[11px] text-amber-400 bg-amber-950/40 px-1.5 py-0.5 rounded border border-amber-800/40">
@@ -130,13 +130,13 @@ export const PlanningInsightsSection: React.FC<PlanningInsightsSectionProps> = (
         </div>
 
         {/* Fragile Selectors */}
-        <div className="bg-slate-950/60 border border-slate-800/80 rounded-lg p-4">
+        <div className="bg-slate-950/60 border border-border-default/80 rounded-lg p-4">
           <div className="flex items-center gap-2 mb-3 text-xs font-semibold text-rose-300">
             <Crosshair className="w-4 h-4" />
             <span>Fragile Selectors ({fragileSelectors.length})</span>
           </div>
           {fragileSelectors.length === 0 ? (
-            <div className="text-xs text-slate-500 italic py-4 text-center">
+            <div className="text-xs text-content-muted italic py-4 text-center">
               No broken or fragile element locators recorded.
             </div>
           ) : (
@@ -144,10 +144,10 @@ export const PlanningInsightsSection: React.FC<PlanningInsightsSectionProps> = (
               {fragileSelectors.map((fs, idx) => (
                 <div
                   key={idx}
-                  className="bg-slate-900/60 border border-slate-800 p-2.5 rounded text-xs flex items-center justify-between"
+                  className="bg-slate-900/60 border border-border-default p-2.5 rounded text-xs flex items-center justify-between"
                   data-testid={`fragile-selector-${idx}`}
                 >
-                  <code className="font-mono text-slate-300 truncate max-w-[170px]" title={fs.selector}>
+                  <code className="font-mono text-content-secondary truncate max-w-[170px]" title={fs.selector}>
                     {fs.selector}
                   </code>
                   <span className="font-mono text-[11px] text-rose-400 bg-rose-950/40 px-1.5 py-0.5 rounded border border-rose-800/40">
@@ -160,13 +160,13 @@ export const PlanningInsightsSection: React.FC<PlanningInsightsSectionProps> = (
         </div>
 
         {/* Recommended Regression Priorities */}
-        <div className="bg-slate-950/60 border border-slate-800/80 rounded-lg p-4">
+        <div className="bg-slate-950/60 border border-border-default/80 rounded-lg p-4">
           <div className="flex items-center gap-2 mb-3 text-xs font-semibold text-teal-300">
             <Target className="w-4 h-4" />
             <span>Recommended Test Priorities</span>
           </div>
           {priorities.length === 0 ? (
-            <div className="text-xs text-slate-500 italic py-4 text-center">
+            <div className="text-xs text-content-muted italic py-4 text-center">
               System is stable. No critical remediation priorities.
             </div>
           ) : (
@@ -174,14 +174,14 @@ export const PlanningInsightsSection: React.FC<PlanningInsightsSectionProps> = (
               {priorities.map((item, idx) => (
                 <div
                   key={idx}
-                  className="bg-slate-900/60 border border-slate-800 p-2.5 rounded text-xs"
+                  className="bg-slate-900/60 border border-border-default p-2.5 rounded text-xs"
                   data-testid={`planning-priority-${idx}`}
                 >
                   <div className="flex items-center justify-between mb-1">
                     <span className="font-bold text-teal-400 text-[11px] font-mono">{item.priority}</span>
                   </div>
-                  <div className="font-medium text-slate-200 mb-0.5">{item.title}</div>
-                  <div className="text-[11px] text-slate-400 leading-tight">{item.reason}</div>
+                  <div className="font-medium text-content-primary mb-0.5">{item.title}</div>
+                  <div className="text-[11px] text-content-secondary leading-tight">{item.reason}</div>
                 </div>
               ))}
             </div>

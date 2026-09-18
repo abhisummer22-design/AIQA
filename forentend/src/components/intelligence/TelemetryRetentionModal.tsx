@@ -76,19 +76,19 @@ export const TelemetryRetentionModal: React.FC<TelemetryRetentionModalProps> = (
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm overflow-y-auto"
       data-testid="telemetry-retention-modal"
     >
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden my-auto">
+      <div className="bg-slate-900 border border-border-default rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden my-auto">
         {/* Header */}
-        <div className="p-5 border-b border-slate-800 flex items-center justify-between bg-slate-950/40">
+        <div className="p-5 border-b border-border-default flex items-center justify-between bg-slate-950/40">
           <div className="flex items-center gap-2.5">
             <Database className="w-5 h-5 text-amber-400" />
             <div>
-              <h3 className="text-sm font-bold text-slate-100">Telemetry Retention Maintenance</h3>
-              <p className="text-xs text-slate-400">Safe, bounded historical telemetry pruning</p>
+              <h3 className="text-sm font-bold text-content-primary">Telemetry Retention Maintenance</h3>
+              <p className="text-xs text-content-secondary">Safe, bounded historical telemetry pruning</p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="p-1 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors"
+            className="p-1 rounded text-content-secondary hover:text-content-primary hover:bg-slate-800 transition-colors"
             data-testid="close-retention-modal"
           >
             <X className="w-4 h-4" />
@@ -96,14 +96,14 @@ export const TelemetryRetentionModal: React.FC<TelemetryRetentionModalProps> = (
         </div>
 
         {/* Content */}
-        <div className="p-6 space-y-5 text-xs text-slate-300">
+        <div className="p-6 space-y-5 text-xs text-content-secondary">
           {/* Safety Invariants Notice */}
-          <div className="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800 space-y-1.5">
+          <div className="p-3.5 rounded-xl bg-slate-950/60 border border-border-default space-y-1.5">
             <div className="flex items-center gap-1.5 text-emerald-400 font-semibold font-mono text-[11px]">
               <ShieldCheck className="w-4 h-4" />
               <span>SAFETY INVARIANTS GUARANTEED</span>
             </div>
-            <ul className="text-[11px] text-slate-400 space-y-1 list-disc list-inside">
+            <ul className="text-[11px] text-content-secondary space-y-1 list-disc list-inside">
               <li>Audit logs and Quality Graph nodes are 100% preserved.</li>
               <li>Active runs (PENDING or RUNNING) are never pruned.</li>
               <li>Telemetry linked to pending or approved healing is preserved.</li>
@@ -113,7 +113,7 @@ export const TelemetryRetentionModal: React.FC<TelemetryRetentionModalProps> = (
 
           {/* Retention Threshold Input */}
           <div className="space-y-2">
-            <label className="block text-xs font-medium text-slate-200">
+            <label className="block text-xs font-medium text-content-primary">
               Retention Window (Days)
             </label>
             <div className="flex items-center gap-3">
@@ -123,10 +123,10 @@ export const TelemetryRetentionModal: React.FC<TelemetryRetentionModalProps> = (
                 max="365"
                 value={retentionDays}
                 onChange={(e) => setRetentionDays(Math.max(1, parseInt(e.target.value, 10) || 1))}
-                className="w-24 px-3 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-100 font-mono focus:outline-none focus:border-violet-500"
+                className="w-24 px-3 py-1.5 bg-slate-950 border border-border-default rounded-lg text-content-primary font-mono focus:outline-none focus:border-violet-500"
                 data-testid="retention-days-input"
               />
-              <span className="text-slate-400 text-xs">
+              <span className="text-content-secondary text-xs">
                 Records older than {retentionDays} days will be eligible for pruning.
               </span>
             </div>
@@ -154,21 +154,21 @@ export const TelemetryRetentionModal: React.FC<TelemetryRetentionModalProps> = (
                 <span>
                   {report.dry_run ? 'SIMULATION OUTCOME (DRY-RUN)' : 'PRUNE EXECUTED'}
                 </span>
-                <span className="text-[10px] text-slate-400">
+                <span className="text-[10px] text-content-secondary">
                   {new Date(report.executed_at).toLocaleTimeString()}
                 </span>
               </div>
               <div className="grid grid-cols-2 gap-2 text-[11px] pt-1">
                 <div>
-                  <span className="text-slate-400">Eligible Records:</span>{' '}
-                  <strong className="text-slate-100">{report.eligible_count}</strong>
+                  <span className="text-content-secondary">Eligible Records:</span>{' '}
+                  <strong className="text-content-primary">{report.eligible_count}</strong>
                 </div>
                 <div>
-                  <span className="text-slate-400">Pruned Records:</span>{' '}
-                  <strong className="text-slate-100">{report.pruned_count}</strong>
+                  <span className="text-content-secondary">Pruned Records:</span>{' '}
+                  <strong className="text-content-primary">{report.pruned_count}</strong>
                 </div>
               </div>
-              <p className="text-[10px] text-slate-400 font-sans mt-1">
+              <p className="text-[10px] text-content-secondary font-sans mt-1">
                 {report.dry_run
                   ? 'No rows deleted. Click "Execute Prune" below to apply changes permanently.'
                   : 'Selected historical telemetry rows have been permanently pruned.'}
@@ -181,7 +181,7 @@ export const TelemetryRetentionModal: React.FC<TelemetryRetentionModalProps> = (
             <button
               onClick={handleDryRun}
               disabled={loading}
-              className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium text-xs transition-colors flex items-center gap-1.5 disabled:opacity-50"
+              className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-content-primary rounded-lg font-medium text-xs transition-colors flex items-center gap-1.5 disabled:opacity-50"
               data-testid="retention-dry-run-button"
             >
               <RotateCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />

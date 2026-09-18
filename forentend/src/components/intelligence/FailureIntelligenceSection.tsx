@@ -24,7 +24,7 @@ export const FailureIntelligenceSection: React.FC<FailureIntelligenceSectionProp
   const [activeClusterId, setActiveClusterId] = useState<string | null>(null);
   if (loading) {
     return (
-      <div className="bg-slate-900/40 border border-slate-800 rounded-xl p-5 animate-pulse" data-testid="failure-intel-loading">
+      <div className="bg-slate-900/40 border border-border-default rounded-xl p-5 animate-pulse" data-testid="failure-intel-loading">
         <div className="h-6 w-48 bg-slate-800 rounded mb-4" />
         <div className="space-y-3">
           {[...Array(3)].map((_, i) => (
@@ -38,24 +38,24 @@ export const FailureIntelligenceSection: React.FC<FailureIntelligenceSectionProp
   const maxOccurrences = Math.max(1, ...failures.map((f) => f.occurrence_count));
 
   return (
-    <div className="bg-slate-900/40 border border-slate-800 rounded-xl p-5" data-testid="failure-intelligence-section">
+    <div className="bg-slate-900/40 border border-border-default rounded-xl p-5" data-testid="failure-intelligence-section">
       <div className="flex items-center justify-between mb-4">
         <div>
-          <h3 className="text-sm font-semibold text-slate-100 flex items-center gap-2">
+          <h3 className="text-sm font-semibold text-content-primary flex items-center gap-2">
             <Layers className="w-4 h-4 text-violet-400" />
             <span>Failure Intelligence & Clusters</span>
-            <span className="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 font-mono">
+            <span className="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-content-secondary font-mono">
               {failures.length} {failures.length === 1 ? 'cluster' : 'clusters'}
             </span>
           </h3>
-          <p className="text-xs text-slate-400 mt-0.5">
+          <p className="text-xs text-content-secondary mt-0.5">
             Normalized failure fingerprints clustered by signature and recurrence frequency.
           </p>
         </div>
       </div>
 
       {failures.length === 0 ? (
-        <div className="py-12 text-center text-slate-400 text-xs border border-dashed border-slate-800/80 rounded-lg" data-testid="failure-clusters-empty">
+        <div className="py-12 text-center text-content-secondary text-xs border border-dashed border-border-default/80 rounded-lg" data-testid="failure-clusters-empty">
           <CheckCircle className="w-8 h-8 text-emerald-400 mx-auto mb-2 opacity-60" />
           No recurring failure clusters detected. Test executions are healthy.
         </div>
@@ -66,7 +66,7 @@ export const FailureIntelligenceSection: React.FC<FailureIntelligenceSectionProp
             return (
               <div
                 key={cluster.id}
-                className="bg-slate-950/60 border border-slate-800/80 hover:border-slate-700/80 rounded-lg p-4 transition-colors"
+                className="bg-slate-950/60 border border-border-default/80 hover:border-slate-700/80 rounded-lg p-4 transition-colors"
                 data-testid={`failure-cluster-${cluster.id}`}
               >
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-2">
@@ -79,20 +79,20 @@ export const FailureIntelligenceSection: React.FC<FailureIntelligenceSectionProp
                         cluster.review_state === 'CONFIRMED'
                           ? 'bg-emerald-950/40 text-emerald-400 border-emerald-800/50'
                           : cluster.review_state === 'DISMISSED'
-                          ? 'bg-slate-800/60 text-slate-400 border-slate-700'
+                          ? 'bg-slate-800/60 text-content-secondary border-slate-700'
                           : 'bg-amber-950/40 text-amber-400 border-amber-800/50'
                       }`}
                     >
                       {cluster.review_state}
                     </span>
                   </div>
-                  <div className="text-xs font-mono text-slate-400 flex items-center gap-3">
+                  <div className="text-xs font-mono text-content-secondary flex items-center gap-3">
                     <span>
-                      Occurrences: <strong className="text-slate-100">{cluster.occurrence_count}</strong>
+                      Occurrences: <strong className="text-content-primary">{cluster.occurrence_count}</strong>
                     </span>
                     {cluster.confidence !== null && (
                       <span>
-                        Confidence: <strong className="text-slate-100">{(cluster.confidence * 100).toFixed(0)}%</strong>
+                        Confidence: <strong className="text-content-primary">{(cluster.confidence * 100).toFixed(0)}%</strong>
                       </span>
                     )}
                   </div>
@@ -108,17 +108,17 @@ export const FailureIntelligenceSection: React.FC<FailureIntelligenceSectionProp
 
                 {/* Root Cause Hypothesis */}
                 {cluster.root_cause_hypothesis ? (
-                  <p className="text-xs text-slate-300 bg-slate-900/60 p-2.5 rounded border border-slate-800/60 font-sans">
-                    <strong className="text-slate-400 font-medium">Hypothesis: </strong>
+                  <p className="text-xs text-content-secondary bg-slate-900/60 p-2.5 rounded border border-border-default/60 font-sans">
+                    <strong className="text-content-secondary font-medium">Hypothesis: </strong>
                     {cluster.root_cause_hypothesis}
                   </p>
                 ) : (
-                  <p className="text-xs text-slate-500 italic">No automated hypothesis established yet.</p>
+                  <p className="text-xs text-content-muted italic">No automated hypothesis established yet.</p>
                 )}
 
                 {/* Card footer: timestamp metadata & investigate button */}
-                <div className="mt-3 pt-2 border-t border-slate-800/60 flex items-center justify-between">
-                  <div className="text-[10px] font-mono text-slate-500 flex items-center gap-4">
+                <div className="mt-3 pt-2 border-t border-border-default/60 flex items-center justify-between">
+                  <div className="text-[10px] font-mono text-content-muted flex items-center gap-4">
                     <span>First seen: {new Date(cluster.first_seen_at).toLocaleDateString()}</span>
                     <span>Last seen: {new Date(cluster.last_seen_at).toLocaleDateString()}</span>
                   </div>

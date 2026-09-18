@@ -29,9 +29,9 @@ export const TelemetryDetailModal: React.FC<TelemetryDetailModalProps> = ({ tele
       className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4"
       data-testid="telemetry-detail-modal"
     >
-      <div className="bg-[#0B1120] border border-slate-800 rounded-xl shadow-2xl max-w-2xl w-full max-h-[90vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+      <div className="bg-surface-card border border-border-default rounded-xl shadow-2xl max-w-2xl w-full max-h-[90vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
         {/* Header */}
-        <div className="p-4 border-b border-slate-800 flex items-center justify-between bg-slate-900/40">
+        <div className="p-4 border-b border-border-default flex items-center justify-between bg-slate-900/40">
           <div className="flex items-center gap-2.5">
             <div
               className={`p-1.5 rounded-md ${
@@ -41,13 +41,13 @@ export const TelemetryDetailModal: React.FC<TelemetryDetailModalProps> = ({ tele
               {isFailed ? <AlertOctagon className="w-5 h-5" /> : <CheckCircle2 className="w-5 h-5" />}
             </div>
             <div>
-              <h3 className="text-sm font-semibold text-slate-100">{telemetry.task_name}</h3>
-              <p className="text-xs font-mono text-slate-400">Run: {telemetry.run_id}</p>
+              <h3 className="text-sm font-semibold text-content-primary">{telemetry.task_name}</h3>
+              <p className="text-xs font-mono text-content-secondary">Run: {telemetry.run_id}</p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="p-1 rounded-md text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors"
+            className="p-1 rounded-md text-content-secondary hover:text-content-primary hover:bg-slate-800 transition-colors"
             title="Close"
           >
             <X className="w-5 h-5" />
@@ -57,9 +57,9 @@ export const TelemetryDetailModal: React.FC<TelemetryDetailModalProps> = ({ tele
         {/* Content */}
         <div className="p-5 overflow-y-auto space-y-4 text-xs">
           {/* Metadata Grid */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 bg-slate-900/30 border border-slate-800/80 rounded-lg p-3.5 font-mono">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 bg-slate-900/30 border border-border-default/80 rounded-lg p-3.5 font-mono">
             <div>
-              <span className="text-[10px] text-slate-500 uppercase block">Status</span>
+              <span className="text-[10px] text-content-muted uppercase block">Status</span>
               <span
                 className={`font-semibold ${
                   telemetry.status === 'PASSED'
@@ -73,38 +73,38 @@ export const TelemetryDetailModal: React.FC<TelemetryDetailModalProps> = ({ tele
               </span>
             </div>
             <div>
-              <span className="text-[10px] text-slate-500 uppercase block">Executor</span>
-              <span className="text-slate-200">{telemetry.executor}</span>
+              <span className="text-[10px] text-content-muted uppercase block">Executor</span>
+              <span className="text-content-primary">{telemetry.executor}</span>
             </div>
             <div>
-              <span className="text-[10px] text-slate-500 uppercase block">Environment</span>
-              <span className="text-slate-200">{telemetry.environment}</span>
+              <span className="text-[10px] text-content-muted uppercase block">Environment</span>
+              <span className="text-content-primary">{telemetry.environment}</span>
             </div>
             <div>
-              <span className="text-[10px] text-slate-500 uppercase block">Duration</span>
-              <span className="text-slate-200">{telemetry.duration_ms} ms</span>
+              <span className="text-[10px] text-content-muted uppercase block">Duration</span>
+              <span className="text-content-primary">{telemetry.duration_ms} ms</span>
             </div>
             <div>
-              <span className="text-[10px] text-slate-500 uppercase block">Retries</span>
-              <span className="text-slate-200">{telemetry.retry_count}</span>
+              <span className="text-[10px] text-content-muted uppercase block">Retries</span>
+              <span className="text-content-primary">{telemetry.retry_count}</span>
             </div>
             <div>
-              <span className="text-[10px] text-slate-500 uppercase block">Healing Attempts</span>
-              <span className="text-slate-200">{telemetry.healing_attempt_count}</span>
+              <span className="text-[10px] text-content-muted uppercase block">Healing Attempts</span>
+              <span className="text-content-primary">{telemetry.healing_attempt_count}</span>
             </div>
             <div>
-              <span className="text-[10px] text-slate-500 uppercase block">Task ID</span>
-              <span className="text-slate-200 truncate block" title={telemetry.task_id}>
+              <span className="text-[10px] text-content-muted uppercase block">Task ID</span>
+              <span className="text-content-primary truncate block" title={telemetry.task_id}>
                 {telemetry.task_id}
               </span>
             </div>
             <div>
-              <span className="text-[10px] text-slate-500 uppercase block">HTTP Status</span>
-              <span className="text-slate-200">{telemetry.http_status ?? 'N/A'}</span>
+              <span className="text-[10px] text-content-muted uppercase block">HTTP Status</span>
+              <span className="text-content-primary">{telemetry.http_status ?? 'N/A'}</span>
             </div>
             <div>
-              <span className="text-[10px] text-slate-500 uppercase block">Verification</span>
-              <span className="text-slate-200">{telemetry.verification_outcome ?? 'None'}</span>
+              <span className="text-[10px] text-content-muted uppercase block">Verification</span>
+              <span className="text-content-primary">{telemetry.verification_outcome ?? 'None'}</span>
             </div>
           </div>
 
@@ -117,8 +117,8 @@ export const TelemetryDetailModal: React.FC<TelemetryDetailModalProps> = ({ tele
                   <span>Failure Category: {telemetry.failure_category ?? 'UNKNOWN'}</span>
                 </div>
                 {telemetry.failure_fingerprint && (
-                  <div className="font-mono text-[11px] text-slate-400 break-all">
-                    Fingerprint: <span className="text-slate-200">{telemetry.failure_fingerprint}</span>
+                  <div className="font-mono text-[11px] text-content-secondary break-all">
+                    Fingerprint: <span className="text-content-primary">{telemetry.failure_fingerprint}</span>
                   </div>
                 )}
                 {telemetry.selector && (
@@ -130,8 +130,8 @@ export const TelemetryDetailModal: React.FC<TelemetryDetailModalProps> = ({ tele
 
               {telemetry.error_message && (
                 <div>
-                  <span className="text-xs font-semibold text-slate-300 block mb-1">Sanitized Error Message</span>
-                  <pre className="bg-slate-950 border border-slate-800 rounded-lg p-3 font-mono text-[11px] text-rose-300 whitespace-pre-wrap overflow-x-auto max-h-40">
+                  <span className="text-xs font-semibold text-content-secondary block mb-1">Sanitized Error Message</span>
+                  <pre className="bg-slate-950 border border-border-default rounded-lg p-3 font-mono text-[11px] text-rose-300 whitespace-pre-wrap overflow-x-auto max-h-40">
                     {sanitizeErrorMessage(telemetry.error_message)}
                   </pre>
                 </div>
@@ -142,15 +142,15 @@ export const TelemetryDetailModal: React.FC<TelemetryDetailModalProps> = ({ tele
           {/* Assertion Result */}
           {telemetry.assertion_result && (
             <div>
-              <span className="text-xs font-semibold text-slate-300 block mb-1">Assertion Diagnostic</span>
-              <pre className="bg-slate-950 border border-slate-800 rounded-lg p-3 font-mono text-[11px] text-slate-300 whitespace-pre-wrap">
+              <span className="text-xs font-semibold text-content-secondary block mb-1">Assertion Diagnostic</span>
+              <pre className="bg-slate-950 border border-border-default rounded-lg p-3 font-mono text-[11px] text-content-secondary whitespace-pre-wrap">
                 {telemetry.assertion_result}
               </pre>
             </div>
           )}
 
           {/* Timestamp & Privacy Notice */}
-          <div className="flex items-center justify-between text-[11px] text-slate-500 pt-2 border-t border-slate-800/80">
+          <div className="flex items-center justify-between text-[11px] text-content-muted pt-2 border-t border-border-default/80">
             <span className="flex items-center gap-1.5">
               <Clock className="w-3.5 h-3.5" />
               Recorded: {new Date(telemetry.created_at).toLocaleString()}

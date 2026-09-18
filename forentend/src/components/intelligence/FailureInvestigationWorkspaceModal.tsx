@@ -90,9 +90,9 @@ export const FailureInvestigationWorkspaceModal: React.FC<FailureInvestigationWo
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm overflow-y-auto"
       data-testid="failure-investigation-workspace-modal"
     >
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-5xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden my-auto">
+      <div className="bg-slate-900 border border-border-default rounded-2xl w-full max-w-5xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden my-auto">
         {/* Header */}
-        <div className="p-6 border-b border-slate-800/80 flex items-start justify-between bg-slate-950/40">
+        <div className="p-6 border-b border-border-default/80 flex items-start justify-between bg-slate-950/40">
           <div>
             <div className="flex flex-wrap items-center gap-2 mb-2">
               <span className="text-xs font-mono px-2.5 py-1 rounded bg-violet-950/50 text-violet-300 border border-violet-800/60 font-semibold">
@@ -124,19 +124,19 @@ export const FailureInvestigationWorkspaceModal: React.FC<FailureInvestigationWo
                 </>
               )}
             </div>
-            <h2 className="text-lg font-bold text-slate-100 flex items-center gap-2">
+            <h2 className="text-lg font-bold text-content-primary flex items-center gap-2">
               <Layers className="w-5 h-5 text-violet-400" />
               <span>Operational Failure Investigation</span>
             </h2>
             {investigation && (
-              <p className="text-xs font-mono text-slate-400 mt-1 break-all">
+              <p className="text-xs font-mono text-content-secondary mt-1 break-all">
                 {investigation.signature}
               </p>
             )}
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors"
+            className="p-1.5 rounded-lg text-content-secondary hover:text-content-primary hover:bg-slate-800 transition-colors"
             data-testid="close-investigation-modal"
           >
             <X className="w-5 h-5" />
@@ -144,31 +144,31 @@ export const FailureInvestigationWorkspaceModal: React.FC<FailureInvestigationWo
         </div>
 
         {/* Traceability Chain Bar */}
-        <div className="px-6 py-2.5 bg-slate-950/80 border-b border-slate-800/60 overflow-x-auto text-[11px] font-mono text-slate-400 flex items-center gap-1.5 whitespace-nowrap">
-          <span className="text-slate-500 font-semibold">TRACEABILITY:</span>
+        <div className="px-6 py-2.5 bg-slate-950/80 border-b border-border-default/60 overflow-x-auto text-[11px] font-mono text-content-secondary flex items-center gap-1.5 whitespace-nowrap">
+          <span className="text-content-muted font-semibold">TRACEABILITY:</span>
           <span className="text-violet-400">Test</span>
-          <ChevronRight className="w-3 h-3 text-slate-600" />
+          <ChevronRight className="w-3 h-3 text-content-muted" />
           <span className="text-violet-400">Task</span>
-          <ChevronRight className="w-3 h-3 text-slate-600" />
+          <ChevronRight className="w-3 h-3 text-content-muted" />
           <span className="text-rose-400 font-bold">Failure</span>
-          <ChevronRight className="w-3 h-3 text-slate-600" />
+          <ChevronRight className="w-3 h-3 text-content-muted" />
           <span className="text-amber-400">Cluster</span>
-          <ChevronRight className="w-3 h-3 text-slate-600" />
+          <ChevronRight className="w-3 h-3 text-content-muted" />
           <span className="text-cyan-400">Evidence</span>
-          <ChevronRight className="w-3 h-3 text-slate-600" />
+          <ChevronRight className="w-3 h-3 text-content-muted" />
           <span className="text-emerald-400">Healing Proposal</span>
-          <ChevronRight className="w-3 h-3 text-slate-600" />
+          <ChevronRight className="w-3 h-3 text-content-muted" />
           <span className="text-emerald-400">AST Diff</span>
-          <ChevronRight className="w-3 h-3 text-slate-600" />
+          <ChevronRight className="w-3 h-3 text-content-muted" />
           <span className="text-blue-400">Verification</span>
-          <ChevronRight className="w-3 h-3 text-slate-600" />
+          <ChevronRight className="w-3 h-3 text-content-muted" />
           <span className="text-purple-400">Quality Graph</span>
         </div>
 
         {/* Modal Body */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
           {loading && (
-            <div className="py-16 text-center text-slate-400 animate-pulse space-y-3" data-testid="investigation-loading">
+            <div className="py-16 text-center text-content-secondary animate-pulse space-y-3" data-testid="investigation-loading">
               <RefreshCw className="w-8 h-8 mx-auto animate-spin text-violet-400" />
               <p className="text-sm font-medium">Correlating cross-environment telemetry and operational trace...</p>
             </div>
@@ -187,31 +187,31 @@ export const FailureInvestigationWorkspaceModal: React.FC<FailureInvestigationWo
           {!loading && !error && investigation && (
             <>
               {/* Root Cause Hypothesis Callout */}
-              <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800 space-y-2">
-                <div className="flex items-center justify-between text-xs text-slate-400">
-                  <span className="font-semibold text-slate-300 flex items-center gap-1.5">
+              <div className="p-4 rounded-xl bg-slate-950/60 border border-border-default space-y-2">
+                <div className="flex items-center justify-between text-xs text-content-secondary">
+                  <span className="font-semibold text-content-secondary flex items-center gap-1.5">
                     <Sparkles className="w-4 h-4 text-amber-400" />
                     Root Cause Hypothesis
                   </span>
                   {investigation.confidence !== null && investigation.confidence !== undefined && (
                     <span className="font-mono">
-                      Confidence: <strong className="text-slate-200">{(investigation.confidence * 100).toFixed(0)}%</strong>
+                      Confidence: <strong className="text-content-primary">{(investigation.confidence * 100).toFixed(0)}%</strong>
                     </span>
                   )}
                 </div>
-                <p className="text-xs text-slate-200 font-sans leading-relaxed">
+                <p className="text-xs text-content-primary font-sans leading-relaxed">
                   {investigation.root_cause_hypothesis || 'Automated classification in progress; correlation patterns analyzed below.'}
                 </p>
               </div>
 
               {/* Navigation Tabs */}
-              <div className="flex items-center gap-2 border-b border-slate-800 pb-2">
+              <div className="flex items-center gap-2 border-b border-border-default pb-2">
                 <button
                   onClick={() => setActiveTab('matrix')}
                   className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5 ${
                     activeTab === 'matrix'
                       ? 'bg-violet-950/60 text-violet-300 border border-violet-800/60'
-                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+                      : 'text-content-secondary hover:text-content-primary hover:bg-slate-800/40'
                   }`}
                   data-testid="investigation-tab-matrix"
                 >
@@ -223,7 +223,7 @@ export const FailureInvestigationWorkspaceModal: React.FC<FailureInvestigationWo
                   className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5 ${
                     activeTab === 'timeline'
                       ? 'bg-violet-950/60 text-violet-300 border border-violet-800/60'
-                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+                      : 'text-content-secondary hover:text-content-primary hover:bg-slate-800/40'
                   }`}
                   data-testid="investigation-tab-timeline"
                 >
@@ -235,7 +235,7 @@ export const FailureInvestigationWorkspaceModal: React.FC<FailureInvestigationWo
                   className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5 ${
                     activeTab === 'healing'
                       ? 'bg-violet-950/60 text-violet-300 border border-violet-800/60'
-                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+                      : 'text-content-secondary hover:text-content-primary hover:bg-slate-800/40'
                   }`}
                   data-testid="investigation-tab-healing"
                 >
@@ -247,7 +247,7 @@ export const FailureInvestigationWorkspaceModal: React.FC<FailureInvestigationWo
                   className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5 ${
                     activeTab === 'recommendations'
                       ? 'bg-violet-950/60 text-violet-300 border border-violet-800/60'
-                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+                      : 'text-content-secondary hover:text-content-primary hover:bg-slate-800/40'
                   }`}
                   data-testid="investigation-tab-recommendations"
                 >
@@ -260,33 +260,33 @@ export const FailureInvestigationWorkspaceModal: React.FC<FailureInvestigationWo
               {activeTab === 'matrix' && (
                 <div className="space-y-4" data-testid="investigation-matrix-view">
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    <div className="p-3 bg-slate-950/50 border border-slate-800 rounded-lg">
-                      <span className="text-[11px] text-slate-400 font-medium">Total Occurrences</span>
-                      <p className="text-xl font-bold text-slate-100 font-mono mt-1">
+                    <div className="p-3 bg-slate-950/50 border border-border-default rounded-lg">
+                      <span className="text-[11px] text-content-secondary font-medium">Total Occurrences</span>
+                      <p className="text-xl font-bold text-content-primary font-mono mt-1">
                         {investigation.environment_matrix.total_occurrences}
                       </p>
                     </div>
-                    <div className="p-3 bg-slate-950/50 border border-slate-800 rounded-lg">
-                      <span className="text-[11px] text-slate-400 font-medium">Environments Affected</span>
-                      <p className="text-xl font-bold text-slate-100 font-mono mt-1">
+                    <div className="p-3 bg-slate-950/50 border border-border-default rounded-lg">
+                      <span className="text-[11px] text-content-secondary font-medium">Environments Affected</span>
+                      <p className="text-xl font-bold text-content-primary font-mono mt-1">
                         {investigation.environment_matrix.environments.length}
                       </p>
                     </div>
-                    <div className="p-3 bg-slate-950/50 border border-slate-800 rounded-lg">
-                      <span className="text-[11px] text-slate-400 font-medium">Divergence Level</span>
-                      <p className="text-sm font-semibold text-slate-200 mt-1">
+                    <div className="p-3 bg-slate-950/50 border border-border-default rounded-lg">
+                      <span className="text-[11px] text-content-secondary font-medium">Divergence Level</span>
+                      <p className="text-sm font-semibold text-content-primary mt-1">
                         {investigation.environment_matrix.cross_environment ? (
                           <span className="text-amber-400">Multi-Environment Correlated</span>
                         ) : (
-                          <span className="text-slate-400">Single Environment Isolated</span>
+                          <span className="text-content-secondary">Single Environment Isolated</span>
                         )}
                       </p>
                     </div>
                   </div>
 
-                  <div className="border border-slate-800 rounded-xl overflow-hidden">
+                  <div className="border border-border-default rounded-xl overflow-hidden">
                     <table className="w-full text-left text-xs">
-                      <thead className="bg-slate-950/70 border-b border-slate-800 font-mono text-slate-400">
+                      <thead className="bg-slate-950/70 border-b border-border-default font-mono text-content-secondary">
                         <tr>
                           <th className="py-2.5 px-3">Environment</th>
                           <th className="py-2.5 px-3">Failures</th>
@@ -302,18 +302,18 @@ export const FailureInvestigationWorkspaceModal: React.FC<FailureInvestigationWo
                           const ratePct = Math.round(env.failure_rate * 100);
                           return (
                             <tr key={env.environment} className="hover:bg-slate-800/30 transition-colors">
-                              <td className="py-2.5 px-3 font-mono font-medium text-slate-200">
+                              <td className="py-2.5 px-3 font-mono font-medium text-content-primary">
                                 <span className={`px-2 py-0.5 rounded border text-[11px] ${
                                   env.environment === 'production'
                                     ? 'bg-rose-950/50 text-rose-300 border-rose-800/60'
                                     : env.environment === 'staging'
                                     ? 'bg-amber-950/50 text-amber-300 border-amber-800/60'
-                                    : 'bg-slate-800 text-slate-300 border-slate-700'
+                                    : 'bg-slate-800 text-content-secondary border-slate-700'
                                 }`}>
                                   {env.environment}
                                 </span>
                               </td>
-                              <td className="py-2.5 px-3 font-mono text-slate-100 font-semibold">
+                              <td className="py-2.5 px-3 font-mono text-content-primary font-semibold">
                                 {env.occurrences} / {env.total_runs}
                               </td>
                               <td className="py-2.5 px-3">
@@ -326,7 +326,7 @@ export const FailureInvestigationWorkspaceModal: React.FC<FailureInvestigationWo
                                       style={{ width: `${Math.min(100, ratePct)}%` }}
                                     />
                                   </div>
-                                  <span className="font-mono text-[11px] text-slate-300">{ratePct}%</span>
+                                  <span className="font-mono text-[11px] text-content-secondary">{ratePct}%</span>
                                 </div>
                               </td>
                               <td className="py-2.5 px-3 font-mono text-[11px]">
@@ -339,18 +339,18 @@ export const FailureInvestigationWorkspaceModal: React.FC<FailureInvestigationWo
                                     <TrendingUp className="w-3.5 h-3.5" /> DEGRADING
                                   </span>
                                 ) : (
-                                  <span className="text-slate-400 flex items-center gap-1">
+                                  <span className="text-content-secondary flex items-center gap-1">
                                     <Minus className="w-3.5 h-3.5" /> STABLE
                                   </span>
                                 )}
                               </td>
-                              <td className="py-2.5 px-3 font-mono text-[11px] text-slate-300 max-w-xs truncate">
+                              <td className="py-2.5 px-3 font-mono text-[11px] text-content-secondary max-w-xs truncate">
                                 {env.affected_tests.join(', ') || 'None'}
                               </td>
-                              <td className="py-2.5 px-3 text-[11px] text-slate-400 font-mono">
+                              <td className="py-2.5 px-3 text-[11px] text-content-secondary font-mono">
                                 {new Date(env.first_seen).toLocaleDateString()}
                               </td>
-                              <td className="py-2.5 px-3 text-[11px] text-slate-400 font-mono">
+                              <td className="py-2.5 px-3 text-[11px] text-content-secondary font-mono">
                                 {new Date(env.last_seen).toLocaleDateString()}
                               </td>
                             </tr>
@@ -383,28 +383,28 @@ export const FailureInvestigationWorkspaceModal: React.FC<FailureInvestigationWo
                               : 'bg-rose-600'
                           }`}
                         />
-                        <div className="bg-slate-950/60 border border-slate-800/80 rounded-lg p-3 space-y-2 hover:border-slate-700 transition-colors">
+                        <div className="bg-slate-950/60 border border-border-default/80 rounded-lg p-3 space-y-2 hover:border-slate-700 transition-colors">
                           <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                             <div className="flex items-center gap-2">
-                              <span className="font-mono font-semibold px-2 py-0.5 rounded text-[10px] bg-slate-800 text-slate-300">
+                              <span className="font-mono font-semibold px-2 py-0.5 rounded text-[10px] bg-slate-800 text-content-secondary">
                                 {event.event_type}
                               </span>
-                              <span className="font-mono text-[10px] text-slate-400 bg-slate-900 px-1.5 py-0.5 rounded border border-slate-800">
+                              <span className="font-mono text-[10px] text-content-secondary bg-slate-900 px-1.5 py-0.5 rounded border border-border-default">
                                 env: {event.environment}
                               </span>
                             </div>
-                            <span className="font-mono text-[10px] text-slate-500">
+                            <span className="font-mono text-[10px] text-content-muted">
                               {new Date(event.timestamp).toLocaleString()}
                             </span>
                           </div>
-                          <p className="text-xs text-slate-200">{event.description}</p>
+                          <p className="text-xs text-content-primary">{event.description}</p>
                           {event.evidence_refs && event.evidence_refs.length > 0 && (
                             <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                              <span className="text-[10px] font-mono text-slate-500">Evidence:</span>
+                              <span className="text-[10px] font-mono text-content-muted">Evidence:</span>
                               {event.evidence_refs.map((ref, idx) => (
                                 <span
                                   key={idx}
-                                  className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-cyan-300 flex items-center gap-1"
+                                  className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-900 border border-border-default text-cyan-300 flex items-center gap-1"
                                 >
                                   <FileText className="w-3 h-3 text-cyan-400" />
                                   {ref}
@@ -437,7 +437,7 @@ export const FailureInvestigationWorkspaceModal: React.FC<FailureInvestigationWo
                       <h4 className="text-xs font-bold font-mono uppercase tracking-wider">
                         Regression Assessment: {investigation.regression_status}
                       </h4>
-                      <p className="text-xs mt-1 text-slate-300">
+                      <p className="text-xs mt-1 text-content-secondary">
                         {investigation.regression_status === 'Confirmed regression'
                           ? 'Automated verification confirmed a regression introduced by prior healing actions. Manual engineer sign-off required.'
                           : investigation.regression_status === 'Possible related regression'
@@ -448,7 +448,7 @@ export const FailureInvestigationWorkspaceModal: React.FC<FailureInvestigationWo
                   </div>
 
                   {investigation.healing_history.length === 0 ? (
-                    <div className="py-8 text-center text-slate-500 text-xs border border-dashed border-slate-800 rounded-lg">
+                    <div className="py-8 text-center text-content-muted text-xs border border-dashed border-border-default rounded-lg">
                       No automated healing proposals recorded for this failure cluster.
                     </div>
                   ) : (
@@ -456,14 +456,14 @@ export const FailureInvestigationWorkspaceModal: React.FC<FailureInvestigationWo
                       {investigation.healing_history.map((h: HealingHistoryCorrelation) => (
                         <div
                           key={h.proposal_id}
-                          className="bg-slate-950/60 border border-slate-800/80 rounded-lg p-4 space-y-2"
+                          className="bg-slate-950/60 border border-border-default/80 rounded-lg p-4 space-y-2"
                         >
                           <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                             <div className="flex items-center gap-2">
-                              <span className="font-mono text-xs font-bold text-slate-200">
+                              <span className="font-mono text-xs font-bold text-content-primary">
                                 Proposal: {h.proposal_id.slice(0, 8)}
                               </span>
-                              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300">
+                              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-content-secondary">
                                 Strategy: {h.strategy}
                               </span>
                               <span
@@ -478,17 +478,17 @@ export const FailureInvestigationWorkspaceModal: React.FC<FailureInvestigationWo
                                 Risk: {h.risk_level}
                               </span>
                             </div>
-                            <span className="font-mono text-[10px] text-slate-400">
-                              State: <strong className="text-slate-200">{h.state}</strong>
+                            <span className="font-mono text-[10px] text-content-secondary">
+                              State: <strong className="text-content-primary">{h.state}</strong>
                             </span>
                           </div>
 
                           <div className="flex items-center justify-between text-xs pt-1">
-                            <span className="text-slate-400 font-mono text-[11px]">
-                              Task: <strong className="text-slate-300">{h.task_id}</strong>
+                            <span className="text-content-secondary font-mono text-[11px]">
+                              Task: <strong className="text-content-secondary">{h.task_id}</strong>
                             </span>
                             {h.verification_result && (
-                              <span className="font-mono text-[11px] text-slate-400">
+                              <span className="font-mono text-[11px] text-content-secondary">
                                 Verification Outcome:{' '}
                                 <strong
                                   className={
@@ -519,7 +519,7 @@ export const FailureInvestigationWorkspaceModal: React.FC<FailureInvestigationWo
                                 </span>
                               </button>
                               {selectedAstDiff === h.proposal_id && (
-                                <pre className="mt-2 p-3 bg-slate-950 rounded-lg border border-slate-800 text-[11px] font-mono text-slate-300 overflow-x-auto">
+                                <pre className="mt-2 p-3 bg-slate-950 rounded-lg border border-border-default text-[11px] font-mono text-content-secondary overflow-x-auto">
                                   {h.ast_diff}
                                 </pre>
                               )}
@@ -537,12 +537,12 @@ export const FailureInvestigationWorkspaceModal: React.FC<FailureInvestigationWo
                 <div className="space-y-4" data-testid="investigation-recommendations-view">
                   {/* Non-Causal Change Observations */}
                   {investigation.non_causal_changes.length > 0 && (
-                    <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800 space-y-2">
-                      <h4 className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
+                    <div className="p-4 rounded-xl bg-slate-950/60 border border-border-default space-y-2">
+                      <h4 className="text-xs font-semibold text-content-secondary flex items-center gap-1.5">
                         <Clock className="w-4 h-4 text-amber-400" />
                         Temporal Change Correlations (Non-Causal Observations)
                       </h4>
-                      <ul className="space-y-1.5 text-xs text-slate-300 list-disc list-inside">
+                      <ul className="space-y-1.5 text-xs text-content-secondary list-disc list-inside">
                         {investigation.non_causal_changes.map((change, i) => (
                           <li key={i} className="leading-relaxed">
                             {change}
@@ -553,8 +553,8 @@ export const FailureInvestigationWorkspaceModal: React.FC<FailureInvestigationWo
                   )}
 
                   {/* Prioritized Recommendations */}
-                  <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800 space-y-3">
-                    <h4 className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
+                  <div className="p-4 rounded-xl bg-slate-950/60 border border-border-default space-y-3">
+                    <h4 className="text-xs font-semibold text-content-secondary flex items-center gap-1.5">
                       <ShieldAlert className="w-4 h-4 text-emerald-400" />
                       Prioritized Operational QA Recommendations
                     </h4>
@@ -562,7 +562,7 @@ export const FailureInvestigationWorkspaceModal: React.FC<FailureInvestigationWo
                       {investigation.recommendations.map((rec, i) => (
                         <div
                           key={i}
-                          className="flex items-start gap-2.5 p-2.5 rounded-lg bg-slate-900/60 border border-slate-800/80 text-xs text-slate-200"
+                          className="flex items-start gap-2.5 p-2.5 rounded-lg bg-slate-900/60 border border-border-default/80 text-xs text-content-primary"
                         >
                           <ChevronRight className="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />
                           <span className="leading-relaxed">{rec}</span>
@@ -577,11 +577,11 @@ export const FailureInvestigationWorkspaceModal: React.FC<FailureInvestigationWo
         </div>
 
         {/* Footer */}
-        <div className="p-4 border-t border-slate-800/80 bg-slate-950/40 flex items-center justify-between text-xs text-slate-500 font-mono">
+        <div className="p-4 border-t border-border-default/80 bg-slate-950/40 flex items-center justify-between text-xs text-content-muted font-mono">
           <span>AIQA Phase 8 Operational Trace Engine</span>
           <button
             onClick={onClose}
-            className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg transition-colors"
+            className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-content-primary rounded-lg transition-colors"
           >
             Close Workspace
           </button>
