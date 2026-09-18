@@ -199,6 +199,14 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/projects/:project_id/requirement-impact",
             get(get_requirement_impact_scoped),
         )
+        // Gap-closing — real TestPlanningAgent (Phase 3) wiring, grounded in
+        // real Phase 5 healing-strategy calibration and Phase 6 adaptive
+        // intelligence risk signals. See `generate_test_plan_scoped`'s doc
+        // comment.
+        .route(
+            "/api/v1/projects/:project_id/planning/test-plan",
+            post(generate_test_plan_scoped),
+        )
         // Phase 6: Adaptive QA Intelligence & Observability endpoints
         .route(
             "/api/v1/projects/:project_id/intelligence/telemetry",
@@ -6314,6 +6322,44 @@ async fn create_healing_proposal_scoped(
         .await
         .map_err(healing_err_to_api_err)?;
     Ok((StatusCode::CREATED, Json(proposal)))
+}
+
+/// POST /api/v1/projects/:project_id/planning/test-plan — runs the real
+/// `TestPlanningAgent` (Phase 3) against this project's real requirements/
+/// schema, grounded in its real healing-strategy calibration
+/// (`GovernedHealingService::get_feedback_for_planning`, Phase 5) and real
+/// fragile-test/risk signals (`AdaptiveIntelligenceService::generate_planning_feedback`,
+/// Phase 6) — both already built expressly to feed this agent, but never
+/// previously reachable outside their own tests. Missing history in either
+/// (a brand-new project) is a legitimate, honest state, not an error, so
+/// both are fetched best-effort rather than failing the whole request.
+async fn generate_test_plan_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiJson(mut req): ApiJson<crate::agents::planning::PlanningRequest>,
+) -> Result<Json<crate::agents::planning::TestPlanOutput>, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    require_scoped_project(&state, &ctx, project_id).await?;
+
+    let project_id_str = project_id.to_string();
+    let healing_service = make_healing_service(&state);
+    req.healing_feedback = healing_service
+        .get_feedback_for_planning(&project_id_str)
+        .await
+        .unwrap_or_default();
+    let qa_service =
+        crate::adaptive_intelligence::AdaptiveIntelligenceService::new(state.store.clone());
+    req.qa_feedback = qa_service
+        .generate_planning_feedback(&project_id_str)
+        .await
+        .ok();
+
+    let plan =
+        crate::agents::planning::generate_test_plan(state.store.clone(), &project_id_str, req)
+            .await
+            .map_err(ApiError::internal)?;
+    Ok(Json(plan))
 }
 
 async fn list_healing_proposals_scoped(
