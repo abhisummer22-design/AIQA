@@ -910,6 +910,103 @@ async fn test_12_retention_safety_guard_preserves_active_runs_and_pending_heals(
     assert!(!remaining_tasks.contains(&"NormalOldTask".to_string()));
 }
 
+/// Old telemetry for `task_name` plus a proposal on that task still marked PENDING_APPROVAL
+/// that expires at `expires_at`.
+async fn seed_old_telemetry_with_pending_proposal(
+    store: &Store,
+    project_id: &str,
+    task_name: &str,
+    expires_at: chrono::DateTime<Utc>,
+) {
+    let old_time = Utc::now() - Duration::days(40);
+    let telemetry = create_sample_telemetry(
+        project_id,
+        Uuid::new_v4(),
+        task_name,
+        "staging",
+        Some(FailureCategory::SelectorNotFound),
+        Some(format!("{task_name}-sig")),
+        Some("selector missing".to_string()),
+        vec![],
+        None,
+        old_time,
+        TaskStatus::Failed,
+    );
+    store.insert_execution_telemetry(&telemetry).await.unwrap();
+    store
+        .insert_healing_proposal(&HealingProposalRow {
+            id: Uuid::new_v4(),
+            project_id: project_id.to_string(),
+            run_id: telemetry.run_id,
+            task_id: telemetry.task_id.clone(),
+            failure_fingerprint: format!("{task_name}-sig"),
+            diagnosis_category: "SELECTOR_NOT_FOUND".to_string(),
+            confidence: 0.9,
+            risk_level: "LOW".to_string(),
+            requires_approval: true,
+            original_actions: "click()".to_string(),
+            proposed_actions: "click(#new)".to_string(),
+            ast_diff: "+ click(#new)".to_string(),
+            rationale: "update".to_string(),
+            evidence_refs: "[]".to_string(),
+            state: "PENDING_APPROVAL".to_string(),
+            idempotency_key: format!("idemp-{}", Uuid::new_v4()),
+            healing_run_id: None,
+            verification_result: None,
+            approved_by: None,
+            approved_at: None,
+            rejection_reason: None,
+            created_at: old_time,
+            expires_at,
+            updated_at: old_time,
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn test_12b_retention_stops_protecting_telemetry_once_its_pending_proposal_expired() {
+    let (store, _dir) = setup_test_store().await;
+    let ops = OperationsService::new(store.clone());
+
+    let pid = "proj-expired-shield";
+    let _ = store.insert_project(Uuid::new_v4(), pid, None).await;
+
+    // Expiry is applied lazily (only when someone approves), so a proposal nobody opened stays
+    // PENDING_APPROVAL forever. Only the one still inside its window may hold telemetry back.
+    seed_old_telemetry_with_pending_proposal(
+        &store,
+        pid,
+        "LiveProposalTask",
+        Utc::now() + Duration::hours(24),
+    )
+    .await;
+    seed_old_telemetry_with_pending_proposal(
+        &store,
+        pid,
+        "ExpiredProposalTask",
+        Utc::now() - Duration::hours(1),
+    )
+    .await;
+
+    let policy = RetentionPolicy {
+        retention_days: 30,
+        dry_run: false,
+    };
+    let report = ops.execute_retention(pid, &policy, "admin").await.unwrap();
+
+    assert_eq!(report.eligible_count, 1);
+    assert_eq!(report.pruned_count, 1);
+    let remaining: Vec<String> = store
+        .list_execution_telemetry(pid, 100)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|r| r.task_name)
+        .collect();
+    assert_eq!(remaining, vec!["LiveProposalTask".to_string()]);
+}
+
 #[tokio::test]
 async fn test_13_retention_zero_days_rejected() {
     let (store, _dir) = setup_test_store().await;

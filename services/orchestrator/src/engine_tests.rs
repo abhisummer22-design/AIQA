@@ -2249,12 +2249,7 @@ async fn be13_recovery_reports_cancelled_run_as_cancelled_not_completed() {
 // GAP-CLOSING — Phase 10: autonomous healing-proposal orchestration
 // ============================================================================
 
-fn sim_task_with_selector(
-    id: &str,
-    outcome: SimOutcome,
-    delay_ms: u64,
-    selector: &str,
-) -> TaskDef {
+fn sim_task_with_selector(id: &str, outcome: SimOutcome, delay_ms: u64, selector: &str) -> TaskDef {
     TaskDef {
         id: id.into(),
         name: id.into(),
@@ -2271,7 +2266,10 @@ fn sim_task_with_selector(
 /// finalisation work. Poll (bounded, not a longer fixed sleep) rather than
 /// assert immediately, so this is robust under real test-machine load
 /// instead of merely "usually fast enough".
-async fn poll_healing_proposals(store: &Store, project_id: &str) -> Vec<crate::store::HealingProposalRow> {
+async fn poll_healing_proposals(
+    store: &Store,
+    project_id: &str,
+) -> Vec<crate::store::HealingProposalRow> {
     for _ in 0..40 {
         let proposals = store
             .list_healing_proposals(project_id, None)
@@ -2298,8 +2296,8 @@ async fn run_task_repeatedly(
 ) {
     for outcome in outcomes {
         let task = match selector {
-            Some(sel) => sim_task_with_selector(task_name, outcome.clone(), 10, sel),
-            None => sim_task(task_name, outcome.clone(), 10),
+            Some(sel) => sim_task_with_selector(task_name, *outcome, 10, sel),
+            None => sim_task(task_name, *outcome, 10),
         };
         run_to_completion(
             store,
@@ -2415,4 +2413,277 @@ async fn phase10_recurring_failure_without_selector_does_not_autonomously_propos
         proposals.is_empty(),
         "a recurring failure with no selector must never autonomously create a healing proposal"
     );
+}
+
+/// What `healingLocator` printed in a real Playwright run for a selector it could not resolve
+/// (the `AIQA_HEALING_EVENT` line is byte-for-byte what that run emitted).
+const SELECTOR_MISS_OUTPUT: &str = r##"Running 1 test using 1 worker
+AIQA_HEALING_EVENT {"event":"heal","actionIndex":1,"actionKind":"CLICK","primarySelector":"#login-btn-that-does-not-exist","strategy":"none","resolved":false}
+
+  1) login.spec.ts:4:5 › login
+
+    Error: AIQA self-healing exhausted every real fallback strategy for selector "#login-btn-that-does-not-exist" (action #1, CLICK) — no matching element found.
+"##;
+
+/// A browser task that fails on the runs marked `true` in `script` (attaching `fail_output` as
+/// its captured output) and passes otherwise. Nothing in its `TaskDef` names a selector — the
+/// only place one exists is the output, as with a real compiled spec. Registered as
+/// `playwright` because the healing validator accepts only the closed executor vocabulary.
+struct ScriptedBrowserExecutor {
+    script: Vec<bool>,
+    fail_output: &'static str,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl ScriptedBrowserExecutor {
+    fn registry(script: &[bool], fail_output: &'static str) -> Arc<ExecutorRegistry> {
+        Arc::new(ExecutorRegistry::new(Arc::new(SimulatedExecutor)).register(
+            "playwright",
+            Arc::new(Self {
+                script: script.to_vec(),
+                fail_output,
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }),
+        ))
+    }
+}
+
+#[async_trait]
+impl Executor for ScriptedBrowserExecutor {
+    async fn execute(&self, _task: &TaskDef) -> ExecutionOutcome {
+        let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.script[call % self.script.len()] {
+            ExecutionOutcome {
+                status: TaskStatus::Failed,
+                reason: Some("playwright exited with 1".to_string()),
+                evidence: Some(self.fail_output.to_string()),
+            }
+        } else {
+            ExecutionOutcome {
+                status: TaskStatus::Passed,
+                reason: None,
+                evidence: None,
+            }
+        }
+    }
+}
+
+/// One run of the scripted browser task `name`, with no selector in its params.
+async fn run_scripted_browser_task(
+    store: &Store,
+    dir: &tempfile::TempDir,
+    registry: &Arc<ExecutorRegistry>,
+    name: &str,
+) {
+    let task = TaskDef {
+        id: name.into(),
+        name: name.into(),
+        executor: Some("playwright".into()),
+        ..Default::default()
+    };
+    run_to_completion(
+        store,
+        evidence_store(dir),
+        registry.clone(),
+        plan("phase10-browser-run", vec![task], 1),
+        std::time::Duration::from_secs(10),
+    )
+    .await;
+}
+
+// Fail, then three passes, then fail: the shape the flakiness gate reads as HighlyFlaky
+// (2 flips over 4 transitions) on the last run and never before it.
+const FLAKY_THEN_FAILS_AGAIN: [bool; 5] = [true, false, false, false, true];
+
+#[tokio::test]
+async fn phase10_proposes_the_selector_read_from_the_failed_tasks_own_output() {
+    let (store, dir) = temp_store().await;
+    let registry = ScriptedBrowserExecutor::registry(&FLAKY_THEN_FAILS_AGAIN, SELECTOR_MISS_OUTPUT);
+
+    for _ in FLAKY_THEN_FAILS_AGAIN {
+        run_scripted_browser_task(&store, &dir, &registry, "login-e2e").await;
+    }
+
+    let proposals = poll_healing_proposals(&store, "p1").await;
+    assert_eq!(
+        proposals.len(),
+        1,
+        "a real browser failure with no selector in its params must still reach the autonomous path"
+    );
+    assert!(
+        proposals[0]
+            .original_actions
+            .contains("#login-btn-that-does-not-exist"),
+        "the proposal must carry the selector the run actually failed on, got: {}",
+        proposals[0].original_actions
+    );
+    assert_eq!(proposals[0].state, "PENDING_APPROVAL");
+}
+
+#[tokio::test]
+async fn phase10_does_not_guess_a_selector_when_the_output_names_none() {
+    let (store, dir) = temp_store().await;
+    let registry = ScriptedBrowserExecutor::registry(
+        &FLAKY_THEN_FAILS_AGAIN,
+        "Running 1 test using 1 worker\n  1) login.spec.ts:4:5 › login\n    Error: expect(received).toBe(expected)\n",
+    );
+
+    for _ in FLAKY_THEN_FAILS_AGAIN {
+        run_scripted_browser_task(&store, &dir, &registry, "login-e2e").await;
+    }
+
+    assert!(
+        poll_healing_proposals(&store, "p1").await.is_empty(),
+        "a failure that names no selector has nothing to heal and must not get a made-up one"
+    );
+}
+
+#[tokio::test]
+async fn phase10_a_task_with_a_live_proposal_is_not_proposed_again() {
+    let (store, dir) = temp_store().await;
+    // Runs 5 and 7 both fail on a HighlyFlaky history; run 6 passes in between.
+    let script = [true, false, false, false, true, false, true];
+    let registry = ScriptedBrowserExecutor::registry(&script, SELECTOR_MISS_OUTPUT);
+
+    for _ in 0..5 {
+        run_scripted_browser_task(&store, &dir, &registry, "login-e2e").await;
+    }
+    assert_eq!(
+        poll_healing_proposals(&store, "p1").await.len(),
+        1,
+        "run 5 qualifies and raises the first proposal"
+    );
+
+    for _ in 5..script.len() {
+        run_scripted_browser_task(&store, &dir, &registry, "login-e2e").await;
+    }
+    // Run 7's autonomous pass runs after the run is finished; give it time to (wrongly) add one.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    let proposals = store
+        .list_healing_proposals("p1", None)
+        .await
+        .expect("list");
+    assert_eq!(
+        proposals.len(),
+        1,
+        "run 7 fails on the same task while its proposal is still awaiting a decision: \
+         it must not pile up another (got {})",
+        proposals.len()
+    );
+}
+
+fn proposal_row(
+    project_id: &str,
+    task_id: &str,
+    category: &str,
+    state: &str,
+    expires_at: chrono::DateTime<chrono::Utc>,
+) -> crate::store::HealingProposalRow {
+    let now = chrono::Utc::now();
+    crate::store::HealingProposalRow {
+        id: Uuid::new_v4(),
+        project_id: project_id.to_string(),
+        run_id: Uuid::new_v4(),
+        task_id: task_id.to_string(),
+        failure_fingerprint: "fp".to_string(),
+        diagnosis_category: category.to_string(),
+        confidence: 0.3,
+        risk_level: "LOW".to_string(),
+        requires_approval: true,
+        original_actions: "[]".to_string(),
+        proposed_actions: "[]".to_string(),
+        ast_diff: "{}".to_string(),
+        rationale: "test".to_string(),
+        evidence_refs: "[]".to_string(),
+        state: state.to_string(),
+        idempotency_key: format!("idemp-{}", Uuid::new_v4()),
+        healing_run_id: None,
+        verification_result: None,
+        approved_by: None,
+        approved_at: None,
+        rejection_reason: None,
+        created_at: now,
+        expires_at,
+        updated_at: now,
+    }
+}
+
+async fn is_open(
+    store: &Store,
+    project_id: &str,
+    task_id: &str,
+    at: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    store
+        .has_open_healing_proposal(project_id, task_id, at)
+        .await
+        .expect("query")
+}
+
+#[tokio::test]
+async fn phase10_open_proposal_check_counts_only_live_proposals_for_the_same_task() {
+    let (store, _dir) = temp_store().await;
+    let now = chrono::Utc::now();
+    let in_a_day = now + chrono::Duration::hours(24);
+
+    assert!(
+        !is_open(&store, "p1", "t1", now).await,
+        "nothing has been proposed yet"
+    );
+
+    store
+        .insert_healing_proposal(&proposal_row(
+            "p1",
+            "t1",
+            "SelectorNotFound",
+            "PENDING_APPROVAL",
+            in_a_day,
+        ))
+        .await
+        .expect("insert");
+    assert!(
+        is_open(&store, "p1", "t1", now).await,
+        "a proposal awaiting a decision inside its window is live, whoever raised it"
+    );
+
+    // Scoped to project and task.
+    assert!(!is_open(&store, "p2", "t1", now).await);
+    assert!(!is_open(&store, "p1", "t2", now).await);
+
+    // Nothing flips an unopened proposal to EXPIRED, so the window is judged against the clock.
+    assert!(
+        !is_open(&store, "p1", "t1", in_a_day + chrono::Duration::seconds(1)).await,
+        "a proposal past its expiry must stop blocking the task"
+    );
+
+    // Approved but not yet run is still live; a finished proposal is not.
+    store
+        .insert_healing_proposal(&proposal_row(
+            "p1",
+            "t-approved",
+            "RecurringFlakyFailure",
+            "APPROVED",
+            in_a_day,
+        ))
+        .await
+        .expect("insert");
+    assert!(is_open(&store, "p1", "t-approved", now).await);
+    for state in ["REJECTED", "EXPIRED", "VERIFIED"] {
+        let task = format!("t-{state}");
+        store
+            .insert_healing_proposal(&proposal_row(
+                "p1",
+                &task,
+                "RecurringFlakyFailure",
+                state,
+                in_a_day,
+            ))
+            .await
+            .expect("insert");
+        assert!(
+            !is_open(&store, "p1", &task, now).await,
+            "a {state} proposal is finished and must not block a new one"
+        );
+    }
 }

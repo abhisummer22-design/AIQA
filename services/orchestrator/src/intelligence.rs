@@ -229,7 +229,10 @@ impl<'a> Intelligence<'a> {
     /// (bounded attempts, SSRF/injection checks, the confidence<0.80
     /// approval gate) applies exactly as it does to a human-submitted
     /// proposal. Returns `None` for every task that doesn't qualify —
-    /// never fabricates a proposal from insufficient signal.
+    /// never fabricates a proposal from insufficient signal — and for a
+    /// task that already has a live proposal (autonomous or human):
+    /// `propose_healing` bounds attempts per *run*, so without that check a
+    /// task that keeps failing would collect a fresh proposal on every run.
     pub async fn detect_autonomous_healing_candidate(
         &self,
         project_id: &str,
@@ -250,6 +253,15 @@ impl<'a> Intelligence<'a> {
         let analysis = crate::adaptive_intelligence::evaluate_flakiness(&t.name, "test", &outcomes);
         if analysis.classification
             != crate::adaptive_intelligence::FlakinessClassification::HighlyFlaky
+        {
+            return None;
+        }
+        // A store error means "can't tell", which must not turn into another proposal.
+        if self
+            .store
+            .has_open_healing_proposal(project_id, &t.id, chrono::Utc::now())
+            .await
+            .ok()?
         {
             return None;
         }

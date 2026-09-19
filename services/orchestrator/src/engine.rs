@@ -507,7 +507,15 @@ pub async fn approve_and_spawn(
     // loop already raced past, when it reads the run back right after this
     // returns. See `mark_run_running`'s doc comment.
     mark_run_running(&record, &store).await;
-    spawn_run(record, registry, concurrency, store, evidence, policy, task_timeout);
+    spawn_run(
+        record,
+        registry,
+        concurrency,
+        store,
+        evidence,
+        policy,
+        task_timeout,
+    );
     Ok(())
 }
 
@@ -702,6 +710,10 @@ pub fn spawn_run(
         let (done_tx, mut done_rx) =
             tokio::sync::mpsc::unbounded_channel::<(TaskId, crate::executor::ExecutionOutcome)>();
         let mut in_flight = 0usize;
+        // Phase 10: the real selector each failed browser task ended on, read from its own
+        // captured output as it completes (see `executor::unresolved_healing_selector`).
+        // Held in memory for the autonomous-healing pass after the run; nothing else reads it.
+        let mut failed_selectors: HashMap<TaskId, String> = HashMap::new();
 
         loop {
             // B4 — a task is marked started only once it actually holds a
@@ -866,6 +878,16 @@ pub fn spawn_run(
                         }
                     }
 
+                    if matches!(outcome.status, TaskStatus::Failed | TaskStatus::Timeout) {
+                        if let Some(selector) = outcome
+                            .evidence
+                            .as_deref()
+                            .and_then(crate::executor::unresolved_healing_selector)
+                        {
+                            failed_selectors.insert(id.clone(), selector);
+                        }
+                    }
+
                     let newly_terminal = {
                         let mut engine = record.engine.write().await;
                         engine.complete_task(&id, outcome.status, outcome.reason.clone())
@@ -987,12 +1009,16 @@ pub fn spawn_run(
                 let Some(def) = task_defs.get(&t.id) else {
                     continue;
                 };
-                let Some(selector) = def
-                    .params
-                    .get("selector")
-                    .and_then(|v| v.as_str())
-                    .map(ToString::to_string)
-                else {
+                // Prefer the selector the task's own runtime self-healing gave up on, read from
+                // its output as it completed. `params["selector"]` is only an override for a
+                // hand-built plan that names one up front: no compiled plan sets it, so relying
+                // on it alone would never fire for a real run.
+                let Some(selector) = failed_selectors.get(&t.id).cloned().or_else(|| {
+                    def.params
+                        .get("selector")
+                        .and_then(|v| v.as_str())
+                        .map(ToString::to_string)
+                }) else {
                     continue;
                 };
                 let executor_name = def.executor.as_deref().unwrap_or("simulated");
@@ -1041,14 +1067,20 @@ pub fn spawn_run(
                             record.run_id
                         );
                     }
-                    Err(e) => {
-                        // Expected and harmless in the common case — e.g.
-                        // this task/run already reached its bounded 1
-                        // healing attempt, or an identical proposal already
-                        // exists (idempotency key match). Never fatal to
-                        // run completion.
+                    // This task/run already used its one bounded healing attempt (e.g. a person
+                    // proposed one first): the expected, harmless case.
+                    Err(e @ crate::governed_healing::GovernedHealingError::MaxHealingAttemptsExceeded(_)) => {
                         tracing::debug!(
                             "Phase 10: autonomous healing proposal skipped for task '{}' in project {project_id}: {e}",
+                            t.name
+                        );
+                    }
+                    // Anything else means a candidate that qualified was refused (validation,
+                    // security boundary, storage): surface it rather than lose it silently.
+                    // Never fatal to run completion.
+                    Err(e) => {
+                        tracing::warn!(
+                            "Phase 10: autonomous healing proposal refused for task '{}' in project {project_id}: {e}",
                             t.name
                         );
                     }
