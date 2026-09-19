@@ -223,7 +223,10 @@ impl<'a> Intelligence<'a> {
     /// automated, non-AI-derived values (see module doc comment) — this is
     /// confidence that the *pattern* is real, not confidence in a specific
     /// fix, since no DOM evidence is available at run-completion time to
-    /// diagnose one; the original action is proposed unchanged. The caller
+    /// diagnose one; the original action is proposed unchanged, which makes
+    /// it a signal for a person, not a fix: it can be rejected or left to
+    /// expire, but `approve_proposal` and `execute_approved` refuse a
+    /// proposal that changes nothing. The caller
     /// (`engine.rs`) still submits this through the real, unmodified
     /// `GovernedHealingService::propose_healing` — every existing gate
     /// (bounded attempts, SSRF/injection checks, the confidence<0.80

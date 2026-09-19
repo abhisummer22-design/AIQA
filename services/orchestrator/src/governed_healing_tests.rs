@@ -1127,3 +1127,78 @@ async fn test_42_existing_phase4_execution_remains_functional() {
     assert_eq!(resp.project_id, "proj-p4");
     assert_eq!(resp.tasks_count, 1);
 }
+
+// ============================================================================
+// PROPOSALS THAT CHANGE NOTHING (the autonomous Phase 10 path raises these)
+// ============================================================================
+
+fn no_change_request(project_id: &str, task_id: &str) -> HealingProposalRequest {
+    let mut req = sample_proposal_request(project_id, Uuid::new_v4(), task_id);
+    req.proposed_actions = req.original_actions.clone();
+    req
+}
+
+#[tokio::test]
+async fn a_proposal_that_changes_nothing_cannot_be_approved() {
+    let (_store, _reg, _ev, service, _dir) = setup_healing_harness().await;
+    let ctx = make_auth_ctx(Role::Operator, Some("proj-noop"));
+    let proposal = service
+        .propose_healing(&ctx, no_change_request("proj-noop", "task-noop"))
+        .await
+        .expect("a no-change proposal can still be raised as a signal");
+    assert_eq!(proposal.state, HealingState::PendingApproval);
+
+    let err = service
+        .approve_proposal(&ctx, proposal.id)
+        .await
+        .expect_err("there is nothing to approve");
+    assert!(
+        matches!(&err, GovernedHealingError::Conflict(m) if m.contains("changes nothing")),
+        "expected the no-change refusal, got {err:?}"
+    );
+
+    let after = service.get_proposal(proposal.id).await.expect("reload");
+    assert_eq!(
+        after.state,
+        HealingState::PendingApproval,
+        "a refused approval must leave the proposal as it was"
+    );
+}
+
+#[tokio::test]
+async fn a_proposal_that_changes_nothing_is_not_executed_even_when_auto_approved() {
+    let (store, _reg, _ev, service, _dir) = setup_healing_harness().await;
+    let ctx = make_auth_ctx(Role::Operator, Some("proj-noop-exec"));
+    let mut req = no_change_request("proj-noop-exec", "task-noop-exec");
+    req.confidence = 0.95;
+    req.auto_approve_safe = true;
+    let proposal = service
+        .propose_healing(&ctx, req)
+        .await
+        .expect("proposal created");
+    assert_eq!(
+        proposal.state,
+        HealingState::Approved,
+        "precondition: this route reaches APPROVED without anyone approving it"
+    );
+
+    let err = service
+        .execute_approved(&ctx, proposal.id)
+        .await
+        .expect_err("there is nothing to execute");
+    assert!(
+        matches!(&err, GovernedHealingError::Conflict(m) if m.contains("changes nothing")),
+        "expected the no-change refusal, not the state check, got {err:?}"
+    );
+
+    let row = store
+        .get_healing_proposal(proposal.id)
+        .await
+        .expect("query")
+        .expect("row");
+    assert!(
+        row.healing_run_id.is_none(),
+        "no healing run may be dispatched for a proposal that changes nothing"
+    );
+    assert_eq!(row.state, "APPROVED");
+}

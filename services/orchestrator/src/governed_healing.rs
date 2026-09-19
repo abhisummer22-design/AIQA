@@ -929,6 +929,23 @@ pub fn validate_safe_input_value(value: &str) -> Result<(), GovernedHealingError
     Ok(())
 }
 
+/// A proposal whose proposed actions equal the original ones changes nothing; the autonomous
+/// Phase 10 path raises exactly these, because it can see *that* a task keeps failing but not
+/// what should replace the step. Approving one authorizes no fix, and executing one would re-run
+/// the failing step and then have `verify_healing` record the result as if a healing strategy
+/// had been tried, feeding the calibration metrics and the quality graph. Recomputed from the
+/// actions rather than read from the stored diff, so a hand-written row cannot slip past.
+fn ensure_changes_something(proposal: &HealingProposal) -> Result<(), GovernedHealingError> {
+    if AstDiff::compute(&proposal.original_actions, &proposal.proposed_actions).has_changes {
+        return Ok(());
+    }
+    Err(GovernedHealingError::Conflict(
+        "proposal changes nothing: its proposed actions are identical to the original, so there \
+         is nothing to approve or execute (reject it, or investigate the failure manually)"
+            .to_string(),
+    ))
+}
+
 // ============================================================================
 // 5. GOVERNED HEALING SERVICE
 // ============================================================================
@@ -1243,6 +1260,8 @@ impl GovernedHealingService {
             ));
         }
 
+        ensure_changes_something(&proposal)?;
+
         // 3. Transition to Approved
         proposal.state = HealingState::Approved;
         proposal.approved_by = Some(ctx.name.clone());
@@ -1372,6 +1391,10 @@ impl GovernedHealingService {
                 proposal.state
             )));
         }
+
+        // Also guarded at approval, but a proposal can reach APPROVED without a person
+        // (`auto_approve_safe`), so this is the check every route into execution passes through.
+        ensure_changes_something(&proposal)?;
 
         // Convert proposal into an AgentExecutionPlan
         let healing_task_id = format!("heal-{}", proposal.task_id);
