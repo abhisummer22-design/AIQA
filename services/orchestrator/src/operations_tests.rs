@@ -401,6 +401,7 @@ async fn test_06_recurrence_state_resolved_via_verified_healing() {
         created_at: Utc::now() - Duration::hours(1),
         expires_at: Utc::now() + Duration::hours(24),
         updated_at: Utc::now() - Duration::minutes(20),
+        context: None,
     };
     store.insert_healing_proposal(&proposal).await.unwrap();
 
@@ -469,6 +470,7 @@ async fn test_07_operational_timeline_chronological_ordering() {
         created_at: Utc::now() - Duration::minutes(90),
         expires_at: Utc::now() + Duration::hours(24),
         updated_at: Utc::now() - Duration::minutes(60),
+        context: None,
     };
     store.insert_healing_proposal(&proposal).await.unwrap();
 
@@ -550,6 +552,7 @@ async fn test_08_conservative_regression_confirmed() {
         created_at: Utc::now() - Duration::hours(1),
         expires_at: Utc::now() + Duration::hours(24),
         updated_at: Utc::now() - Duration::minutes(30),
+        context: None,
     };
     store.insert_healing_proposal(&proposal).await.unwrap();
 
@@ -620,6 +623,7 @@ async fn test_09_non_causal_change_time_correlation_language() {
         created_at: base_time + Duration::hours(1),
         expires_at: Utc::now() + Duration::hours(24),
         updated_at: base_time + Duration::hours(2),
+        context: None,
     };
     store.insert_healing_proposal(&proposal).await.unwrap();
 
@@ -869,6 +873,7 @@ async fn test_12_retention_safety_guard_preserves_active_runs_and_pending_heals(
         created_at: old_time,
         expires_at: Utc::now() + Duration::hours(24),
         updated_at: old_time,
+        context: None,
     };
     store.insert_healing_proposal(&proposal).await.unwrap();
 
@@ -959,6 +964,7 @@ async fn seed_old_telemetry_with_pending_proposal(
             created_at: old_time,
             expires_at,
             updated_at: old_time,
+            context: None,
         })
         .await
         .unwrap();

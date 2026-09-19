@@ -2606,6 +2606,7 @@ fn proposal_row(
         created_at: now,
         expires_at,
         updated_at: now,
+        context: None,
     }
 }
 
