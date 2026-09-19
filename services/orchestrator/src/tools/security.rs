@@ -4,6 +4,7 @@
 //! - SSRF validation reusing `crate::executor::validate_target_url`.
 //! - Safe HTTP client with strict timeouts, redirect prevention, and size bounds.
 //! - Path traversal prevention for local file inspection.
+//! - Root containment for caller-supplied file paths (`resolve_path_within_root`).
 //! - Secret sanitization to prevent leaking tokens, passwords, or keys.
 
 use crate::agent_tools::ToolError;
@@ -208,6 +209,73 @@ pub fn validate_safe_local_path(tool_name: &str, raw_path: &str) -> Result<PathB
         repo_root.join(path)
     };
 
+    Ok(resolved)
+}
+
+/// Why `resolve_path_within_root` refused a path. The distinctions are for
+/// server logs and tests only: relaying them to an HTTP caller would turn
+/// the endpoint into an oracle for which files exist outside the root.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathContainmentError {
+    /// The root itself doesn't resolve to an existing directory.
+    RootUnavailable,
+    /// A network/device namespace path, or one that resolves to nothing.
+    Unresolvable,
+    /// Resolves (through symlinks, junctions and `..`) to outside the root.
+    OutsideRoot,
+    /// Resolves inside the root, but not to a regular file.
+    NotARegularFile,
+}
+
+/// Positive counterpart to `validate_safe_local_path`: returns the canonical
+/// path of a regular file that really lives inside `root`, or refuses.
+///
+/// The denylist above is lexical, so it never asks where a path actually
+/// leads: absolute paths, junctions, UNC shares and anything it doesn't
+/// list all pass. Here the OS resolves the path first and only the
+/// *result* is compared with the root. `raw_path` is absolute, or relative
+/// to `root`.
+pub fn resolve_path_within_root(
+    raw_path: &str,
+    root: &Path,
+) -> Result<PathBuf, PathContainmentError> {
+    // `\\host\share`, `\\?\…` and `\\.\…` (either slash style) are Windows
+    // network/device namespaces: canonicalizing one makes the server open an
+    // SMB connection to a caller-chosen host, so refuse before any
+    // filesystem call.
+    if cfg!(windows) && matches!(raw_path.as_bytes(), [b'\\' | b'/', b'\\' | b'/', ..]) {
+        return Err(PathContainmentError::Unresolvable);
+    }
+
+    // Both sides are canonicalized: on Windows that yields `\\?\` verbatim
+    // paths with on-disk casing, which a root left as configured would
+    // never compare equal to.
+    let root = root
+        .canonicalize()
+        .map_err(|_| PathContainmentError::RootUnavailable)?;
+    if !root.is_dir() {
+        return Err(PathContainmentError::RootUnavailable);
+    }
+
+    // `join` keeps a relative path under the root and lets an absolute one
+    // replace it; either way the resolved result is what gets judged. A
+    // path that doesn't exist can't be resolved, so it is refused, never
+    // used as given.
+    let resolved = root
+        .join(raw_path)
+        .canonicalize()
+        .map_err(|_| PathContainmentError::Unresolvable)?;
+
+    // Component-wise: `<root>-evil` shares a string prefix with `<root>`
+    // but is not inside it.
+    if !resolved.starts_with(&root) {
+        return Err(PathContainmentError::OutsideRoot);
+    }
+
+    // Excludes directories, and on Unix the FIFOs/devices a read would block on.
+    if !resolved.is_file() {
+        return Err(PathContainmentError::NotARegularFile);
+    }
     Ok(resolved)
 }
 

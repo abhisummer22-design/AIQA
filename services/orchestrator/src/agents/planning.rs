@@ -36,6 +36,10 @@ pub struct PlanningRequest {
     pub requirement_ids: Vec<String>,
     #[serde(default)]
     pub schema_content: Option<String>,
+    /// Untrusted when it arrives over HTTP: `api::confine_schema_file_path`
+    /// confines it to `AIQA_SCHEMA_ROOT` before the agent sees it, and
+    /// anything else building a request from caller input must do the same,
+    /// because the schema inspector reads whatever path it is handed.
     #[serde(default)]
     pub schema_file_path: Option<String>,
     #[serde(default)]

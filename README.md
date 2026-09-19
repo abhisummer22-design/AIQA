@@ -479,6 +479,13 @@ AIQA_REQUIRE_APPROVAL_FOR=maestro
 AIQA_BLOCKED_EXECUTORS=
 AIQA_CORS_ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 
+# Planning Schema Files (POST /api/v1/projects/:id/planning/test-plan)
+# The one directory a request's `schema_file_path` may point into (symlinks,
+# junctions and `..` are resolved first, so they cannot escape it). Unset or
+# blank = server-side schema files are disabled and callers send the schema
+# inline as `schema_content` instead.
+AIQA_SCHEMA_ROOT=
+
 # Performance Testing Safeguards
 PERF_TEST_MAX_CONCURRENCY=50
 PERF_TEST_MAX_DURATION_SECS=300

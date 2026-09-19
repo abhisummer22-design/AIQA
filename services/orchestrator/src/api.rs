@@ -6333,6 +6333,10 @@ async fn create_healing_proposal_scoped(
 /// previously reachable outside their own tests. Missing history in either
 /// (a brand-new project) is a legitimate, honest state, not an error, so
 /// both are fetched best-effort rather than failing the whole request.
+///
+/// `schema_file_path` is the one field that names something on the server's
+/// own disk, so it is confined to `AIQA_SCHEMA_ROOT` before anything else
+/// runs — see `confine_schema_file_path`.
 async fn generate_test_plan_scoped(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -6341,6 +6345,7 @@ async fn generate_test_plan_scoped(
 ) -> Result<Json<crate::agents::planning::TestPlanOutput>, ApiError> {
     auth::require_role(&ctx, Role::Operator)?;
     require_scoped_project(&state, &ctx, project_id).await?;
+    confine_schema_file_path(&mut req, schema_root_from_env().as_deref())?;
 
     let project_id_str = project_id.to_string();
     let healing_service = make_healing_service(&state);
@@ -6360,6 +6365,78 @@ async fn generate_test_plan_scoped(
             .await
             .map_err(ApiError::internal)?;
     Ok(Json(plan))
+}
+
+/// `AIQA_SCHEMA_ROOT` — the one directory a planning request's
+/// `schema_file_path` may point into. Unset or blank means server-side
+/// schema files are off and callers send the schema inline. Read per
+/// request, and only here: `confine_schema_file_path` takes the root as a
+/// parameter so tests never mutate process-wide environment state.
+fn schema_root_from_env() -> Option<std::path::PathBuf> {
+    std::env::var("AIQA_SCHEMA_ROOT")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| std::path::PathBuf::from(s.trim()))
+}
+
+/// Untrusted-input boundary for `PlanningRequest::schema_file_path`. The
+/// schema inspector reads whatever path it is handed, and its lexical
+/// denylist doesn't stop absolute paths, UNC shares or junctions, so without
+/// this an Operator key could point the server at any file on its own disk.
+/// The path is resolved by the OS and must land on a regular file inside
+/// `root`; the request is then rewritten to carry that canonical path, so the
+/// tool reads exactly what was checked (a relative path would otherwise be
+/// re-resolved against the repo root, not `root`).
+///
+/// An absent or blank path is left alone, so inline schemas are unaffected.
+/// A refused path always gets the same 400, with no path in it: telling
+/// "doesn't exist" from "exists but outside the root" would make the endpoint
+/// a file-existence oracle. The precise reason goes to the server log instead.
+pub(crate) fn confine_schema_file_path(
+    req: &mut crate::agents::planning::PlanningRequest,
+    root: Option<&std::path::Path>,
+) -> Result<(), ApiError> {
+    use crate::tools::security::{resolve_path_within_root, PathContainmentError};
+
+    const UNAVAILABLE: &str = "schema_file_path is not available: this server has no usable \
+        schema directory configured. Send the schema inline as schema_content, or ask an \
+        administrator to configure AIQA_SCHEMA_ROOT.";
+    const REFUSED: &str = "schema_file_path must name an existing regular file inside the \
+        server's schema directory (AIQA_SCHEMA_ROOT). Send the schema inline as \
+        schema_content instead.";
+
+    let Some(raw) = req
+        .schema_file_path
+        .as_deref()
+        .filter(|p| !p.trim().is_empty())
+    else {
+        return Ok(());
+    };
+    let Some(root) = root else {
+        return Err(ApiError::validation(UNAVAILABLE));
+    };
+
+    // The request carries the path as text; a lossy conversion could name a
+    // different file, so a non-UTF-8 result is refused instead.
+    let resolved = resolve_path_within_root(raw, root).and_then(|p| {
+        p.into_os_string()
+            .into_string()
+            .map_err(|_| PathContainmentError::Unresolvable)
+    });
+    match resolved {
+        Ok(canonical) => {
+            req.schema_file_path = Some(canonical);
+            Ok(())
+        }
+        Err(PathContainmentError::RootUnavailable) => {
+            tracing::warn!("AIQA_SCHEMA_ROOT {root:?} does not resolve to a directory");
+            Err(ApiError::validation(UNAVAILABLE))
+        }
+        Err(reason) => {
+            tracing::warn!("planning: schema_file_path refused ({reason:?}): {raw:?}");
+            Err(ApiError::validation(REFUSED))
+        }
+    }
 }
 
 async fn list_healing_proposals_scoped(
