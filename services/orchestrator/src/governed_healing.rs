@@ -15,10 +15,13 @@
 //! - Traceability to LocalEvidenceStore and audit logs
 //! - Zero private chain-of-thought leakage (concise operational rationale only)
 
+use crate::agent::{run_agent_loop, AgentContext, AgentLimits, AgentStatus};
 use crate::agent_execution::{
     AgentExecutionBudget, AgentExecutionDispatcher, AgentExecutionRequest,
 };
+use crate::agent_tools::AgentToolRegistry;
 pub use crate::agents::healing::{FailureEvidence, SelfHealingAgent, SelfHealingOutput};
+use crate::ai_router::AiInfrastructure;
 use crate::auth::{AuthContext, Role};
 use crate::domain::TaskStatus;
 use crate::evidence::LocalEvidenceStore;
@@ -28,6 +31,7 @@ use crate::plan_validator::{
 };
 use crate::policy::PolicyConfig;
 use crate::store::{HealingProposalRow, Store};
+use crate::tools::register_diagnostic_tools;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -740,10 +744,19 @@ pub struct HealingProposalRequest {
     pub failed_selector: Option<String>,
     pub failure_reason: String,
     pub original_actions: Vec<Action>,
-    pub proposed_actions: Vec<Action>,
-    pub diagnosis_category: String,
-    pub confidence: f64,
-    pub rationale: String,
+    /// The healed action plan. May be omitted, along with
+    /// `diagnosis_category`/`confidence`/`rationale`, to have the real
+    /// `SelfHealingAgent` (Phase 3) diagnose the failure itself via the
+    /// Phase 2 diagnostic tools instead of requiring the caller to already
+    /// know the fix — see `crawl_task_id`/`crawl_output` below.
+    #[serde(default)]
+    pub proposed_actions: Option<Vec<Action>>,
+    #[serde(default)]
+    pub diagnosis_category: Option<String>,
+    #[serde(default)]
+    pub confidence: Option<f64>,
+    #[serde(default)]
+    pub rationale: Option<String>,
     #[serde(default)]
     pub evidence_refs: Vec<String>,
     #[serde(default)]
@@ -754,6 +767,16 @@ pub struct HealingProposalRequest {
     pub custom_params: Option<serde_json::Value>,
     #[serde(default)]
     pub auto_approve_safe: bool,
+    /// Task ID of a prior crawler run, read from orchestrator disk exactly
+    /// as `dom_prober` reads it — used only for auto-diagnosis (i.e. when
+    /// `proposed_actions`/`diagnosis_category`/`confidence`/`rationale` are
+    /// omitted), so the agent has real DOM evidence to reason over.
+    #[serde(default)]
+    pub crawl_task_id: Option<String>,
+    /// Inline `CrawlOutput` JSON, as an alternative to `crawl_task_id` for
+    /// auto-diagnosis.
+    #[serde(default)]
+    pub crawl_output: Option<serde_json::Value>,
 }
 
 // ============================================================================
@@ -823,6 +846,7 @@ pub fn compute_failure_fingerprint(
 /// Verifies immutable security boundaries on a proposed healing.
 pub async fn verify_immutable_security_boundaries(
     req: &HealingProposalRequest,
+    proposed_actions: &[Action],
     original_env: &str,
     original_executor: &str,
 ) -> Result<(), GovernedHealingError> {
@@ -843,7 +867,7 @@ pub async fn verify_immutable_security_boundaries(
     }
 
     // 3. Closed Action AST & SSRF Verification
-    for action in &req.proposed_actions {
+    for action in proposed_actions {
         match action {
             Action::Navigate { url } => {
                 crate::executor::validate_target_url(url)
@@ -947,6 +971,88 @@ fn ensure_changes_something(proposal: &HealingProposal) -> Result<(), GovernedHe
 }
 
 // ============================================================================
+// 4B. PHASE 1-3 WIRING — REAL AGENT-DRIVEN AUTO-DIAGNOSIS
+// ============================================================================
+
+/// Resolved diagnosis fields, either supplied directly by the caller or
+/// computed by actually running the real `SelfHealingAgent` (Phase 3)
+/// through `run_agent_loop` (Phase 1) against the diagnostic tools (Phase
+/// 2) — the concrete wiring point that makes those three phases reachable
+/// from a live request instead of only from their own tests.
+struct ResolvedDiagnosis {
+    diagnosis_category: String,
+    confidence: f64,
+    rationale: String,
+    proposed_actions: Vec<Action>,
+}
+
+/// Maps a completed `SelfHealingOutput` onto the fields a `HealingProposal`
+/// needs, replacing the failed selector with the agent's recommended
+/// replacement inside a copy of the original action plan. When the agent
+/// found no confident replacement, the original actions are proposed
+/// unchanged — the existing low-confidence approval gate (`confidence <
+/// 0.80` in `propose_healing`) is what keeps this from ever auto-executing
+/// silently; this function's job is only to produce an honest record.
+fn healed_output_to_diagnosis(
+    output: &SelfHealingOutput,
+    original_actions: &[Action],
+) -> ResolvedDiagnosis {
+    let confidence = output
+        .candidates
+        .first()
+        .map(|c| c.confidence_score)
+        .unwrap_or(match output.confidence.as_str() {
+            "HIGH" => 0.9,
+            "MEDIUM" => 0.6,
+            _ => 0.3,
+        });
+
+    let rationale = format!("{} {}", output.reason, output.recommendation)
+        .trim()
+        .to_string();
+
+    let proposed_actions = match &output.recommended_selector {
+        Some(new_sel) if new_sel != &output.original_selector => original_actions
+            .iter()
+            .cloned()
+            .map(|action| replace_action_selector(action, &output.original_selector, new_sel))
+            .collect(),
+        _ => original_actions.to_vec(),
+    };
+
+    ResolvedDiagnosis {
+        diagnosis_category: output.failure_classification.clone(),
+        confidence,
+        rationale,
+        proposed_actions,
+    }
+}
+
+/// Replaces `old_sel` with `new_sel` inside the selector field of any
+/// action variant that carries one; every other variant (and any occurrence
+/// of a different selector) passes through unchanged, so healing can only
+/// ever touch the exact selector it diagnosed.
+fn replace_action_selector(action: Action, old_sel: &str, new_sel: &str) -> Action {
+    match action {
+        Action::Click { selector } if selector == old_sel => Action::Click {
+            selector: new_sel.to_string(),
+        },
+        Action::AssertVisible { selector } if selector == old_sel => Action::AssertVisible {
+            selector: new_sel.to_string(),
+        },
+        Action::Fill { selector, value } if selector == old_sel => Action::Fill {
+            selector: new_sel.to_string(),
+            value,
+        },
+        Action::AssertText { selector, text } if selector == old_sel => Action::AssertText {
+            selector: new_sel.to_string(),
+            text,
+        },
+        other => other,
+    }
+}
+
+// ============================================================================
 // 5. GOVERNED HEALING SERVICE
 // ============================================================================
 
@@ -975,6 +1081,108 @@ impl GovernedHealingService {
             policy,
             budget: budget.unwrap_or_default(),
         }
+    }
+
+    /// Runs the real `SelfHealingAgent` (Phase 3) through `run_agent_loop`
+    /// (Phase 1) with the Phase 2 diagnostic tools registered, so a caller
+    /// that does not already know the fix can still get a governed healing
+    /// proposal — diagnosed from real DOM evidence rather than supplied by
+    /// hand. Requires `failed_selector` plus one of `crawl_task_id` /
+    /// `crawl_output`; without crawl evidence `dom_prober` cannot answer
+    /// anything, so this fails fast with a clear error instead of letting
+    /// the agent burn its whole turn budget on a tool call that can only
+    /// ever fail.
+    async fn auto_diagnose(
+        &self,
+        project_id: &str,
+        req: &HealingProposalRequest,
+    ) -> Result<ResolvedDiagnosis, GovernedHealingError> {
+        let failed_selector = req.failed_selector.as_deref().unwrap_or("").trim();
+        if failed_selector.is_empty() {
+            return Err(GovernedHealingError::ValidationError(vec![
+                PlanValidationError::new(
+                    "MISSING_FAILED_SELECTOR",
+                    "failed_selector is required to auto-diagnose a healing proposal when proposed_actions/diagnosis_category/confidence/rationale are not supplied directly",
+                    Some("failed_selector"),
+                ),
+            ]));
+        }
+        if req.crawl_task_id.is_none() && req.crawl_output.is_none() {
+            return Err(GovernedHealingError::ValidationError(vec![
+                PlanValidationError::new(
+                    "MISSING_CRAWL_EVIDENCE",
+                    "crawl_task_id or crawl_output is required to auto-diagnose a healing proposal; supply one, or supply proposed_actions/diagnosis_category/confidence/rationale directly instead",
+                    Some("crawl_task_id"),
+                ),
+            ]));
+        }
+
+        let evidence = FailureEvidence {
+            project_id: project_id.to_string(),
+            test_case_id: None,
+            test_execution_id: Some(req.run_id.to_string()),
+            url: req.target_url.clone(),
+            failed_selector: failed_selector.to_string(),
+            expected_behavior: None,
+            actual_behavior: None,
+            failure_message: Some(req.failure_reason.clone()),
+            crawl_task_id: req.crawl_task_id.clone(),
+            crawl_output: req.crawl_output.clone(),
+            role: None,
+            surrounding_context: None,
+        };
+
+        let mut registry = AgentToolRegistry::new();
+        register_diagnostic_tools(&mut registry, Some(self.store.clone())).map_err(|e| {
+            GovernedHealingError::Internal(format!(
+                "failed to register diagnostic tools for self-healing: {e}"
+            ))
+        })?;
+
+        let mut context = AgentContext::new(
+            format!("heal-diagnose-{}", req.task_id),
+            Some(project_id.to_string()),
+            req.run_id.to_string(),
+            AgentLimits::default(),
+            None,
+        );
+
+        // SelfHealingAgent is a deterministic, tool-driven diagnostician
+        // (see agents/healing.rs — its `step` takes `_ai` and never reads
+        // it); `run_agent_loop` still requires an `AiInfrastructure` by
+        // signature, so an empty, provider-less one is genuinely
+        // equivalent here, not a stand-in for a real call that got skipped.
+        let ai = AiInfrastructure::new(vec![], std::collections::HashMap::new());
+        let agent = SelfHealingAgent::new(evidence);
+
+        let outcome = run_agent_loop(&agent, &mut context, &registry, &ai, None)
+            .await
+            .map_err(|e| {
+                GovernedHealingError::Internal(format!("self-healing diagnosis failed: {e}"))
+            })?;
+
+        if outcome.status != AgentStatus::Completed {
+            return Err(GovernedHealingError::Internal(format!(
+                "self-healing agent could not reach a diagnosis (status: {:?}{})",
+                outcome.status,
+                outcome
+                    .error
+                    .map(|e| format!(", {e}"))
+                    .unwrap_or_default()
+            )));
+        }
+        let output_val = outcome.final_output.ok_or_else(|| {
+            GovernedHealingError::Internal(
+                "self-healing agent completed without producing a diagnosis".to_string(),
+            )
+        })?;
+        let output: SelfHealingOutput = serde_json::from_value(output_val).map_err(|e| {
+            GovernedHealingError::Internal(format!(
+                "failed to parse self-healing diagnosis output: {e}"
+            ))
+        })?;
+
+        Ok(healed_output_to_diagnosis(&output, &req.original_actions))
     }
 
     /// Creates a governed healing proposal from a diagnosed failure.
@@ -1045,7 +1253,29 @@ impl GovernedHealingService {
             )));
         }
 
-        if req.proposed_actions.is_empty() {
+        // 3B. Resolve the diagnosis: use the caller-supplied fields verbatim
+        // when all four are present (a human or external system already
+        // knows the fix), otherwise run the real SelfHealingAgent (Phase 3)
+        // against the Phase 2 diagnostic tools to diagnose it here — this
+        // is the actual Phase 1-3 wiring point.
+        let diagnosis = match (
+            &req.proposed_actions,
+            &req.diagnosis_category,
+            req.confidence,
+            &req.rationale,
+        ) {
+            (Some(actions), Some(category), Some(confidence), Some(rationale)) => {
+                ResolvedDiagnosis {
+                    diagnosis_category: category.clone(),
+                    confidence,
+                    rationale: rationale.clone(),
+                    proposed_actions: actions.clone(),
+                }
+            }
+            _ => self.auto_diagnose(project_id, &req).await?,
+        };
+
+        if diagnosis.proposed_actions.is_empty() {
             return Err(GovernedHealingError::ValidationError(vec![
                 PlanValidationError::new(
                     "EMPTY_ACTIONS",
@@ -1057,13 +1287,19 @@ impl GovernedHealingService {
 
         // 4. Immutable Security Boundaries Verification
         let original_env = req.environment.as_deref().unwrap_or("test");
-        verify_immutable_security_boundaries(&req, original_env, &req.executor).await?;
+        verify_immutable_security_boundaries(
+            &req,
+            &diagnosis.proposed_actions,
+            original_env,
+            &req.executor,
+        )
+        .await?;
 
         // 5. Closed Action AST Diff Computation
-        let ast_diff = AstDiff::compute(&req.original_actions, &req.proposed_actions);
+        let ast_diff = AstDiff::compute(&req.original_actions, &diagnosis.proposed_actions);
 
         // 6. Risk Level & Human Approval Gate Calculation
-        let risk_level = ast_diff.calculate_risk_level(original_env, req.confidence);
+        let risk_level = ast_diff.calculate_risk_level(original_env, diagnosis.confidence);
         let is_prod = original_env == "production" || original_env == "prod";
         let is_gated_executor = self
             .policy
@@ -1073,7 +1309,7 @@ impl GovernedHealingService {
         let requires_approval = is_prod
             || is_gated_executor
             || risk_level >= HealingRiskLevel::High
-            || req.confidence < 0.80
+            || diagnosis.confidence < 0.80
             || !req.auto_approve_safe;
 
         // 7. PlanValidator Structural & Budget Validation
@@ -1084,7 +1320,7 @@ impl GovernedHealingService {
             prerequisites: Vec::new(),
             executor: req.executor.clone(),
             target_url: req.target_url.clone(),
-            actions: req.proposed_actions.clone(),
+            actions: diagnosis.proposed_actions.clone(),
             timeout_secs: req.timeout_secs.or(Some(30)),
             requirement_reference: req.requirement_reference.clone(),
             custom_params: req.custom_params.clone(),
@@ -1139,7 +1375,7 @@ impl GovernedHealingService {
 
         // 8. Construct Strongly-Typed Proposal
         // Non-leaking invariant: store only operational rationale, never private CoT
-        let clean_rationale = req.rationale.trim().to_string();
+        let clean_rationale = diagnosis.rationale.trim().to_string();
 
         let proposal = HealingProposal {
             id: proposal_id,
@@ -1151,12 +1387,12 @@ impl GovernedHealingService {
             environment: original_env.to_string(),
             target_url: req.target_url.clone(),
             failure_fingerprint: fingerprint.clone(),
-            diagnosis_category: req.diagnosis_category.clone(),
-            confidence: req.confidence,
+            diagnosis_category: diagnosis.diagnosis_category.clone(),
+            confidence: diagnosis.confidence,
             risk_level,
             requires_approval,
             original_actions: req.original_actions.clone(),
-            proposed_actions: req.proposed_actions.clone(),
+            proposed_actions: diagnosis.proposed_actions.clone(),
             ast_diff: ast_diff.clone(),
             rationale: clean_rationale,
             evidence_refs: req.evidence_refs.clone(),
@@ -1199,8 +1435,8 @@ impl GovernedHealingService {
                 Some(&format!(
                     "Risk: {}, Category: {}, Confidence: {:.2}",
                     risk_level.as_str(),
-                    req.diagnosis_category,
-                    req.confidence
+                    diagnosis.diagnosis_category,
+                    diagnosis.confidence
                 )),
                 "ok",
             )

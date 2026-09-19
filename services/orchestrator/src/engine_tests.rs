@@ -2687,3 +2687,286 @@ async fn phase10_open_proposal_check_counts_only_live_proposals_for_the_same_tas
         );
     }
 }
+
+// ---------------------------------------------------------------- crawl evidence
+
+/// A run in `project_id`'s history holding one task, in the states given.
+async fn seed_run(
+    store: &Store,
+    project_id: &str,
+    run_name: &str,
+    run_state: RunState,
+    task_status: TaskStatus,
+) -> (Uuid, String) {
+    let task_id = Uuid::new_v4().to_string();
+    let seeded = plan(
+        run_name,
+        vec![TaskDef {
+            id: task_id.clone(),
+            name: run_name.into(),
+            ..Default::default()
+        }],
+        1,
+    );
+    let run_id = Uuid::new_v4();
+    store
+        .insert_run(
+            run_id,
+            &seeded,
+            Some(project_id),
+            Some("tester"),
+            run_state,
+            None,
+        )
+        .await
+        .expect("insert run");
+    store
+        .set_task_status(run_id, &task_id, task_status, None, true, true)
+        .await
+        .expect("set task status");
+    (run_id, task_id)
+}
+
+/// A finished crawl as `api.rs::start_crawl_scoped` records one, plus (when `result` is given)
+/// the result file the crawler would have written. That file lives in a fixed, git-ignored
+/// directory, so it is removed again when this drops.
+struct SeededCrawl {
+    run_id: Uuid,
+    id: String,
+    result_file: std::path::PathBuf,
+}
+
+impl Drop for SeededCrawl {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.result_file);
+    }
+}
+
+async fn seed_completed_crawl(
+    store: &Store,
+    project_id: &str,
+    result: Option<&crate::crawler::CrawlOutput>,
+) -> SeededCrawl {
+    let (run_id, id) = seed_run(
+        store,
+        project_id,
+        "Crawl: http://127.0.0.1:8080",
+        RunState::Completed,
+        TaskStatus::Passed,
+    )
+    .await;
+    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../executors/playwright/tests/generated");
+    let result_file = dir.join(format!("crawl-result-{id}.json"));
+    if let Some(output) = result {
+        std::fs::create_dir_all(&dir).expect("generated dir");
+        std::fs::write(
+            &result_file,
+            serde_json::to_string(output).expect("serialize crawl"),
+        )
+        .expect("write crawl result");
+    }
+    SeededCrawl {
+        run_id,
+        id,
+        result_file,
+    }
+}
+
+/// Pinned explicitly so which crawl is "newest" does not depend on the clock's resolution.
+async fn set_created_at(store: &Store, crawl: &SeededCrawl, created: &str) {
+    sqlx::query("UPDATE runs SET created_at = ? WHERE id = ?")
+        .bind(created)
+        .bind(crawl.run_id.to_string())
+        .execute(&store.pool)
+        .await
+        .expect("set created_at");
+}
+
+#[tokio::test]
+async fn phase10_recent_crawls_are_the_projects_own_finished_ones_newest_first() {
+    let (store, _dir) = temp_store().await;
+    let older = seed_completed_crawl(&store, "p1", None).await;
+    let newer = seed_completed_crawl(&store, "p1", None).await;
+    let other_project = seed_completed_crawl(&store, "p2", None).await;
+    set_created_at(&store, &older, "2026-01-01T00:00:00+00:00").await;
+    set_created_at(&store, &newer, "2026-02-01T00:00:00+00:00").await;
+    // Not usable as evidence: still running, finished but failed, or not a crawl at all.
+    seed_run(
+        &store,
+        "p1",
+        "Crawl: http://127.0.0.1:8080",
+        RunState::Running,
+        TaskStatus::Running,
+    )
+    .await;
+    seed_run(
+        &store,
+        "p1",
+        "Crawl: http://127.0.0.1:8080",
+        RunState::Failed,
+        TaskStatus::Failed,
+    )
+    .await;
+    seed_run(
+        &store,
+        "p1",
+        "Nightly regression",
+        RunState::Completed,
+        TaskStatus::Passed,
+    )
+    .await;
+
+    assert_eq!(
+        store
+            .recent_completed_crawl_task_ids("p1", 5)
+            .await
+            .unwrap(),
+        vec![newer.id.clone(), older.id.clone()]
+    );
+    assert_eq!(
+        store
+            .recent_completed_crawl_task_ids("p1", 1)
+            .await
+            .unwrap(),
+        vec![newer.id.clone()],
+        "the limit keeps the newest"
+    );
+    assert_eq!(
+        store
+            .recent_completed_crawl_task_ids("p2", 5)
+            .await
+            .unwrap(),
+        vec![other_project.id.clone()],
+        "another project's crawl is never offered as evidence"
+    );
+}
+
+/// The `AIQA_HEALING_EVENT` line `healingLocator` prints for a selector it could not resolve,
+/// here for the selector `sample_healing_crawl_data` has a renamed counterpart of.
+const DELETE_USER_MISS_OUTPUT: &str = r##"Running 1 test using 1 worker
+AIQA_HEALING_EVENT {"event":"heal","actionIndex":1,"actionKind":"CLICK","primarySelector":"#delete-user-btn","strategy":"none","resolved":false}
+"##;
+
+/// Runs the flaky script against `registry` and returns the (single) proposal it raises.
+async fn proposals_after_a_recurring_failure(
+    store: &Store,
+    dir: &tempfile::TempDir,
+    registry: &Arc<ExecutorRegistry>,
+) -> Vec<crate::store::HealingProposalRow> {
+    for _ in FLAKY_THEN_FAILS_AGAIN {
+        run_scripted_browser_task(store, dir, registry, "delete-user-e2e").await;
+    }
+    poll_healing_proposals(store, "p1").await
+}
+
+#[tokio::test]
+async fn phase10_a_readable_crawl_turns_the_signal_into_a_replacement_suggestion() {
+    let (store, dir) = temp_store().await;
+    let registry =
+        ScriptedBrowserExecutor::registry(&FLAKY_THEN_FAILS_AGAIN, DELETE_USER_MISS_OUTPUT);
+    let _crawl = seed_completed_crawl(
+        &store,
+        "p1",
+        Some(&crate::governed_healing_tests::sample_healing_crawl_data()),
+    )
+    .await;
+
+    let proposals = proposals_after_a_recurring_failure(&store, &dir, &registry).await;
+
+    assert_eq!(proposals.len(), 1);
+    let p = &proposals[0];
+    assert_eq!(
+        p.diagnosis_category, "SelectorRenamedOrRelocated",
+        "the agent's diagnosis from the crawl, not the placeholder category"
+    );
+    assert!(
+        p.original_actions.contains("#delete-user-btn")
+            && !p.original_actions.contains("#delete-user-account-btn"),
+        "original keeps the selector the run failed on, got {}",
+        p.original_actions
+    );
+    assert!(
+        p.proposed_actions.contains("#delete-user-account-btn"),
+        "proposed carries the replacement found in the crawl, got {}",
+        p.proposed_actions
+    );
+    assert_eq!(p.state, "PENDING_APPROVAL");
+    assert!(
+        p.requires_approval,
+        "a crawl-grounded proposal is still held for a person"
+    );
+}
+
+#[tokio::test]
+async fn phase10_an_unreadable_crawl_falls_back_to_the_advisory_proposal() {
+    let (store, dir) = temp_store().await;
+    let registry =
+        ScriptedBrowserExecutor::registry(&FLAKY_THEN_FAILS_AGAIN, DELETE_USER_MISS_OUTPUT);
+    // Recorded as completed, but its result file is gone.
+    let _crawl = seed_completed_crawl(&store, "p1", None).await;
+
+    let proposals = proposals_after_a_recurring_failure(&store, &dir, &registry).await;
+
+    assert_eq!(
+        proposals.len(),
+        1,
+        "the recurring failure must still be reported"
+    );
+    let p = &proposals[0];
+    assert_eq!(p.diagnosis_category, "RecurringFlakyFailure");
+    assert_eq!(
+        p.original_actions, p.proposed_actions,
+        "with nothing to diagnose from, it proposes no change"
+    );
+}
+
+#[tokio::test]
+async fn phase10_an_older_readable_crawl_is_used_when_the_newest_result_is_gone() {
+    let (store, dir) = temp_store().await;
+    let registry =
+        ScriptedBrowserExecutor::registry(&FLAKY_THEN_FAILS_AGAIN, DELETE_USER_MISS_OUTPUT);
+    let older = seed_completed_crawl(
+        &store,
+        "p1",
+        Some(&crate::governed_healing_tests::sample_healing_crawl_data()),
+    )
+    .await;
+    let newer = seed_completed_crawl(&store, "p1", None).await;
+    set_created_at(&store, &older, "2026-01-01T00:00:00+00:00").await;
+    set_created_at(&store, &newer, "2026-02-01T00:00:00+00:00").await;
+
+    let proposals = proposals_after_a_recurring_failure(&store, &dir, &registry).await;
+
+    assert_eq!(proposals.len(), 1);
+    assert_eq!(
+        proposals[0].diagnosis_category, "SelectorRenamedOrRelocated",
+        "one crawl whose result file was deleted must not hide an older usable one"
+    );
+}
+
+#[tokio::test]
+async fn phase10_a_diagnosis_that_is_refused_falls_back_to_the_advisory_proposal() {
+    let (store, dir) = temp_store().await;
+    let registry =
+        ScriptedBrowserExecutor::registry(&FLAKY_THEN_FAILS_AGAIN, DELETE_USER_MISS_OUTPUT);
+    // The best candidate in the crawl is an unsafe selector, which `propose_healing` refuses.
+    let mut crawl = crate::governed_healing_tests::sample_healing_crawl_data();
+    crawl.roles[0].pages[0].elements[0].selector_hint = "javascript:void(delete-user)".to_string();
+    let _crawl = seed_completed_crawl(&store, "p1", Some(&crawl)).await;
+
+    let proposals = proposals_after_a_recurring_failure(&store, &dir, &registry).await;
+
+    assert_eq!(
+        proposals.len(),
+        1,
+        "a refused diagnosis must not swallow the report of a recurring failure"
+    );
+    let p = &proposals[0];
+    assert_eq!(p.diagnosis_category, "RecurringFlakyFailure");
+    assert!(
+        !p.proposed_actions.contains("javascript:"),
+        "the refused selector must not reach a stored proposal, got {}",
+        p.proposed_actions
+    );
+}
