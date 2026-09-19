@@ -52,6 +52,21 @@ fn split_csv(s: &str) -> HashSet<String> {
         .collect()
 }
 
+/// Kill switch for Phase 10's autonomous healing proposals (`engine.rs::spawn_run`). On by
+/// default; an operator turns it off with `AIQA_AUTONOMOUS_HEALING=off` (also `0`, `false`, `no`
+/// or `disabled`, any case). A plain environment setting rather than a `PolicyConfig` field, so
+/// no other constructor or call site has to know about it.
+pub fn autonomous_healing_enabled() -> bool {
+    autonomous_healing_flag(std::env::var("AIQA_AUTONOMOUS_HEALING").ok().as_deref())
+}
+
+fn autonomous_healing_flag(value: Option<&str>) -> bool {
+    !matches!(
+        value.map(|v| v.trim().to_lowercase()).as_deref(),
+        Some("0" | "false" | "off" | "no" | "disabled")
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PolicyDecision {
     Allow,
@@ -155,5 +170,26 @@ mod tests {
         let mut plan = plan_with_executor("maestro");
         plan.concurrency = 10;
         assert!(matches!(evaluate(&cfg, &plan), PolicyDecision::Deny(_)));
+    }
+
+    #[test]
+    fn autonomous_healing_is_on_unless_explicitly_turned_off() {
+        for on in [
+            None,
+            Some(""),
+            Some("1"),
+            Some("true"),
+            Some("on"),
+            Some("yes"),
+            Some("anything"),
+        ] {
+            assert!(autonomous_healing_flag(on), "{on:?} must leave it on");
+        }
+        for off in ["0", "false", "off", "no", "disabled", " OFF ", "False"] {
+            assert!(
+                !autonomous_healing_flag(Some(off)),
+                "{off:?} must turn it off"
+            );
+        }
     }
 }

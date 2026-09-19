@@ -1000,8 +1000,10 @@ pub fn spawn_run(
         // Only meaningful with a real project scope (an untenanted/default
         // run has nothing for GovernedHealingService's RBAC/project checks
         // to scope against); every other gate below is the same live one a
-        // human-submitted proposal goes through.
-        if let Some(project_id) = record.project_id.as_deref() {
+        // human-submitted proposal goes through. An operator can switch the
+        // whole pass off with `AIQA_AUTONOMOUS_HEALING=off`.
+        let autonomous_healing = crate::policy::autonomous_healing_enabled();
+        if let Some(project_id) = record.project_id.as_deref().filter(|_| autonomous_healing) {
             for t in &tasks_snapshot {
                 if !matches!(t.status, TaskStatus::Failed | TaskStatus::Timeout) {
                     continue;
