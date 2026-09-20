@@ -64,6 +64,39 @@ const DEFAULT_OPTIONS: NeuralActivityOptions = {
   showSignals: true,
 };
 
+/** Most device pixels per CSS pixel the canvas is drawn at; a canvas this small costs nothing at 3x. */
+const MAX_DEVICE_SCALE = 3;
+
+/**
+ * The bitmap size (and the transform onto it) for a canvas that occupies `cssW` x `cssH` CSS pixels.
+ *
+ * The bitmap has to cover exactly the device pixels the element occupies, or the browser resamples it onto
+ * them and everything drawn on it, text included, comes out soft. Rounding the size to whole CSS pixels first
+ * and then multiplying by the display scaling does not manage that: with 125% or 150% scaling, or in a layout
+ * whose column is not a whole number of pixels wide, the bitmap ends up a fraction of a device pixel off.
+ *
+ * `device` is the exact device-pixel size the browser reports for the element (`ResizeObserver`'s
+ * `device-pixel-content-box`). It is used only when it agrees with `css * dpr` to within a couple of device
+ * pixels, since a browser under display-scale emulation can report a size that belongs to another scale; the
+ * fractional CSS size times `dpr` is used otherwise. `scaleX`/`scaleY` map the CSS-pixel coordinates the
+ * drawing code works in onto the bitmap.
+ */
+export function canvasBackingSize(
+  cssW: number,
+  cssH: number,
+  dpr: number,
+  device?: { width: number; height: number } | null,
+): { width: number; height: number; scaleX: number; scaleY: number } {
+  const fit = (css: number, exact: number | undefined) => {
+    const estimate = css * dpr;
+    const wanted = exact && Math.abs(exact - estimate) <= 1.5 ? exact : estimate;
+    return Math.max(1, Math.min(Math.round(wanted), Math.round(css * MAX_DEVICE_SCALE)));
+  };
+  const width = fit(cssW, device?.width);
+  const height = fit(cssH, device?.height);
+  return { width, height, scaleX: width / cssW, scaleY: height / cssH };
+}
+
 export class NeuralActivity {
   private canvas: HTMLCanvasElement;
   /** `null` in an environment with no real 2D canvas support (some jsdom
@@ -114,8 +147,11 @@ export class NeuralActivity {
     });
 
     this.rgb = NeuralActivity.hexToRgb(this.opts.accent);
-    this.resizeObserver = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => this.resize()) : null;
-    this.resizeObserver?.observe(canvas);
+    this.resizeObserver =
+      typeof ResizeObserver !== 'undefined'
+        ? new ResizeObserver((entries) => this.resize(entries[entries.length - 1]))
+        : null;
+    this.observeCanvas();
     this.resize();
     if (this.ctx) this.raf = requestAnimationFrame(() => this.frame());
   }
@@ -203,13 +239,32 @@ export class NeuralActivity {
     return parsed;
   }
 
-  private resize(): void {
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
-    const w = this.canvas.clientWidth || 300;
-    const h = this.canvas.clientHeight || 200;
-    this.canvas.width = w * dpr;
-    this.canvas.height = h * dpr;
-    this.ctx?.setTransform(dpr, 0, 0, dpr, 0, 0);
+  /** Watches the canvas's device-pixel size where the browser can report it, so a change of display scaling
+   *  redraws the bitmap too; its CSS size otherwise. */
+  private observeCanvas(): void {
+    if (!this.resizeObserver) return;
+    try {
+      this.resizeObserver.observe(this.canvas, { box: 'device-pixel-content-box' });
+    } catch {
+      this.resizeObserver.observe(this.canvas);
+    }
+  }
+
+  private resize(entry?: ResizeObserverEntry): void {
+    // The size as laid out, fractional: `clientWidth` is rounded to a whole CSS pixel, which is what left the
+    // bitmap a fraction of a device pixel off the element (see `canvasBackingSize`).
+    const w = entry?.contentRect.width || this.canvas.clientWidth || 300;
+    const h = entry?.contentRect.height || this.canvas.clientHeight || 200;
+    const box = entry?.devicePixelContentBoxSize?.[0];
+    const size = canvasBackingSize(
+      w,
+      h,
+      window.devicePixelRatio || 1,
+      box ? { width: box.inlineSize, height: box.blockSize } : null,
+    );
+    this.canvas.width = size.width;
+    this.canvas.height = size.height;
+    this.ctx?.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
     this.w = w;
     this.h = h;
   }

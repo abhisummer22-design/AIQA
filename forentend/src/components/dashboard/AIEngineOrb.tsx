@@ -198,22 +198,26 @@ export const AIEngineOrb: React.FC<AIEngineOrbProps> = ({ model, routingScore, p
       data-routing-score={routingScore ?? ''}
       data-level={level.toFixed(3)}
       {...capDataAttrs}
-      className="relative w-full h-[200px]"
+      className="w-full"
       aria-hidden="true"
     >
-      <NeuralActivityCanvas
-        level={level}
-        inputs={inputs}
-        pulseKey={pulseKey}
-        accent={live ? LIVE_ACCENT : IDLE_ACCENT}
-        layers={layers}
-        nodeColors={nodeColors}
-        nodeLabels={nodeLabels}
-        layerLabels={layerLabels}
-        activeNode={activeNode}
-      />
+      <div className="w-full h-[200px]">
+        <NeuralActivityCanvas
+          level={level}
+          inputs={inputs}
+          pulseKey={pulseKey}
+          accent={live ? LIVE_ACCENT : IDLE_ACCENT}
+          layers={layers}
+          nodeColors={nodeColors}
+          nodeLabels={nodeLabels}
+          layerLabels={layerLabels}
+          activeNode={activeNode}
+        />
+      </div>
+      {/* Below the canvas, not laid over it: with four or more providers the last provider node's own label
+          sits in the canvas's bottom margin, and a label laid over that margin covered it. */}
       <div
-        className={`absolute bottom-1 inset-x-0 text-center text-[10px] font-mono font-bold tracking-wide truncate px-2 ${
+        className={`mt-1 text-center text-[10px] font-mono font-bold tracking-wide truncate px-2 ${
           live ? 'text-yellow-300' : 'text-slate-500'
         }`}
       >
