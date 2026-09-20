@@ -51,6 +51,9 @@ use crate::agents::healing::{FailureEvidence, SelfHealingAgent};
 use crate::agents::planning::{PlanningRequest, TestPlanningAgent};
 use crate::ai_router::AiInfrastructure;
 use crate::auth::{AuthContext, Role};
+use crate::crawler::{
+    CrawlOutput, CrawledElement, CrawledPage, RoleCrawlResult, VisibilityDiffEntry,
+};
 use crate::evidence::LocalEvidenceStore;
 use crate::execution_plan::Action;
 use crate::executor::ExecutorRegistry;
@@ -142,22 +145,24 @@ fn sample_proposal_request(
                 selector: "#login-btn".to_string(),
             },
         ],
-        proposed_actions: vec![
+        proposed_actions: Some(vec![
             Action::Navigate {
                 url: "http://127.0.0.1:8080/app".to_string(),
             },
             Action::Click {
                 selector: "[data-testid='login-btn']".to_string(),
             },
-        ],
-        diagnosis_category: "SelectorRenamedOrRelocated".to_string(),
-        confidence: 0.90,
-        rationale: "Observed selector #login-btn was renamed; replaced with stable data-testid attribute identified via DOM prober.".to_string(),
+        ]),
+        diagnosis_category: Some("SelectorRenamedOrRelocated".to_string()),
+        confidence: Some(0.90),
+        rationale: Some("Observed selector #login-btn was renamed; replaced with stable data-testid attribute identified via DOM prober.".to_string()),
         evidence_refs: vec!["evidence/log-01.log".to_string()],
         timeout_secs: Some(30),
         requirement_reference: Some("REQ-AUTH-01".to_string()),
         custom_params: None,
         auto_approve_safe: false,
+        crawl_task_id: None,
+        crawl_output: None,
     }
 }
 
@@ -284,7 +289,7 @@ async fn test_05_invalid_ast_rejected() {
     let (_store, _reg, _ev, service, _dir) = setup_healing_harness().await;
     let ctx = make_auth_ctx(Role::Operator, Some("proj-1"));
     let mut req = sample_proposal_request("proj-1", Uuid::new_v4(), "task-v2");
-    req.proposed_actions = vec![]; // empty actions!
+    req.proposed_actions = Some(vec![]); // empty actions!
 
     let res = service.propose_healing(&ctx, req).await;
     assert!(res.is_err());
@@ -361,9 +366,9 @@ async fn test_08_ssrf_rejected() {
     let ctx = make_auth_ctx(Role::Operator, Some("proj-ssrf"));
     let mut req = sample_proposal_request("proj-ssrf", Uuid::new_v4(), "task-ssrf");
     // Cloud metadata address
-    req.proposed_actions = vec![Action::Navigate {
+    req.proposed_actions = Some(vec![Action::Navigate {
         url: "http://169.254.169.254/latest/meta-data".to_string(),
-    }];
+    }]);
 
     let res = service.propose_healing(&ctx, req).await;
     assert!(res.is_err());
@@ -378,9 +383,9 @@ async fn test_09_injection_rejected() {
     let (_store, _reg, _ev, service, _dir) = setup_healing_harness().await;
     let ctx = make_auth_ctx(Role::Operator, Some("proj-inj"));
     let mut req = sample_proposal_request("proj-inj", Uuid::new_v4(), "task-inj");
-    req.proposed_actions = vec![Action::Click {
+    req.proposed_actions = Some(vec![Action::Click {
         selector: "<script>alert(document.cookie)</script>".to_string(),
-    }];
+    }]);
 
     let res = service.propose_healing(&ctx, req).await;
     assert!(res.is_err());
@@ -429,7 +434,13 @@ async fn test_12_environment_change_rejected() {
     let mut req = sample_proposal_request("proj-env", Uuid::new_v4(), "task-env");
     req.environment = Some("staging".to_string()); // original was test
 
-    let check = verify_immutable_security_boundaries(&req, "test", &req.executor).await;
+    let check = verify_immutable_security_boundaries(
+        &req,
+        req.proposed_actions.as_deref().unwrap_or(&[]),
+        "test",
+        &req.executor,
+    )
+    .await;
     assert!(check.is_err());
     assert!(matches!(
         check.unwrap_err(),
@@ -457,7 +468,13 @@ async fn test_14_executor_change_rejected() {
     let mut req = sample_proposal_request("proj-exec", Uuid::new_v4(), "task-exec");
     req.executor = "playwright".to_string(); // attempted executor change
 
-    let check = verify_immutable_security_boundaries(&req, "test", "simulated").await;
+    let check = verify_immutable_security_boundaries(
+        &req,
+        req.proposed_actions.as_deref().unwrap_or(&[]),
+        "test",
+        "simulated",
+    )
+    .await;
     assert!(check.is_err());
     assert!(matches!(
         check.unwrap_err(),
@@ -470,10 +487,10 @@ async fn test_15_credential_security_boundary_change_rejected() {
     let (_store, _reg, _ev, service, _dir) = setup_healing_harness().await;
     let ctx = make_auth_ctx(Role::Operator, Some("proj-cred"));
     let mut req = sample_proposal_request("proj-cred", Uuid::new_v4(), "task-cred");
-    req.proposed_actions = vec![Action::Fill {
+    req.proposed_actions = Some(vec![Action::Fill {
         selector: "#token".to_string(),
         value: "javascript:void(0)".to_string(),
-    }];
+    }]);
 
     let res = service.propose_healing(&ctx, req).await;
     assert!(res.is_err());
@@ -488,7 +505,7 @@ async fn test_16_low_confidence_proposal_requires_approval() {
     let (_store, _reg, _ev, service, _dir) = setup_healing_harness().await;
     let ctx = make_auth_ctx(Role::Operator, Some("proj-conf"));
     let mut req = sample_proposal_request("proj-conf", Uuid::new_v4(), "task-lowconf");
-    req.confidence = 0.55; // Low confidence
+    req.confidence = Some(0.55); // Low confidence
     req.auto_approve_safe = true;
 
     let proposal = service
@@ -505,7 +522,7 @@ async fn test_17_high_risk_proposal_requires_approval() {
     let ctx = make_auth_ctx(Role::Operator, Some("proj-risk"));
     let mut req = sample_proposal_request("proj-risk", Uuid::new_v4(), "task-highrisk");
     // Action replacement increases risk to High
-    req.proposed_actions = vec![
+    req.proposed_actions = Some(vec![
         Action::Navigate {
             url: "http://127.0.0.1:8080/app".to_string(),
         },
@@ -513,7 +530,7 @@ async fn test_17_high_risk_proposal_requires_approval() {
             selector: "#username".to_string(),
             value: "admin".to_string(),
         },
-    ];
+    ]);
 
     let proposal = service
         .propose_healing(&ctx, req)
@@ -530,7 +547,7 @@ async fn test_18_production_always_requires_approval() {
     let ctx = make_auth_ctx(Role::Operator, Some("proj-prod"));
     let mut req = sample_proposal_request("proj-prod", Uuid::new_v4(), "task-prod");
     req.environment = Some("production".to_string());
-    req.confidence = 0.99;
+    req.confidence = Some(0.99);
     req.auto_approve_safe = true;
 
     let proposal = service
@@ -1023,7 +1040,7 @@ async fn test_34_planning_agent_feedback() {
 async fn test_35_no_source_file_mutation() {
     // Assert that governed healing operates on AST in memory/DB without touching source code
     let req = sample_proposal_request("proj-safe", Uuid::new_v4(), "task-safe");
-    assert_eq!(req.proposed_actions.len(), 2);
+    assert_eq!(req.proposed_actions.as_ref().map(Vec::len), Some(2));
     // Closed Action AST contains Navigate and Click only; no file write handles exist
 }
 
@@ -1127,6 +1144,209 @@ async fn test_42_existing_phase4_execution_remains_functional() {
         .expect("Phase 4 dispatch succeeds");
     assert_eq!(resp.project_id, "proj-p4");
     assert_eq!(resp.tasks_count, 1);
+}
+
+// ============================================================================
+// TESTS 43 TO 47 — PHASE 1-3 WIRING (real SelfHealingAgent-driven diagnosis)
+// ============================================================================
+//
+// These prove the healing endpoint can now reach the Phase 1 agent loop,
+// Phase 2 diagnostic tools, and Phase 3 SelfHealingAgent from a live
+// request — not just from their own isolated unit tests — while every
+// existing Phase 5 safety gate (bounded attempts, SSRF/injection checks,
+// the confidence<0.80 and risk-level approval gates) still applies exactly
+// the same way to an agent-computed diagnosis as to a human-supplied one.
+
+/// Same shape as the proven fixture in `agents/tests.rs`
+/// (`sample_crawler_data`): `#delete-user-btn` does not exist, but
+/// `#delete-user-account-btn` does and is a strong text/kind match for it —
+/// `SelfHealingAgent` reliably classifies this as `SelectorRenamedOrRelocated`
+/// with HIGH confidence.
+fn sample_healing_crawl_data() -> CrawlOutput {
+    CrawlOutput {
+        roles: vec![RoleCrawlResult {
+            role: "admin".to_string(),
+            login_succeeded: true,
+            login_error: None,
+            pages: vec![CrawledPage {
+                url: "http://127.0.0.1:8080/users".to_string(),
+                title: "User Management".to_string(),
+                elements: vec![CrawledElement {
+                    kind: "button".to_string(),
+                    text: "Delete User Account".to_string(),
+                    selector_hint: "#delete-user-account-btn".to_string(),
+                    href: None,
+                }],
+            }],
+        }],
+        visibility_matrix: vec![VisibilityDiffEntry {
+            url: "http://127.0.0.1:8080/users".to_string(),
+            roles_with_access: vec!["admin".to_string()],
+            elements_only_visible_to: std::collections::BTreeMap::new(),
+        }],
+    }
+}
+
+fn auto_diagnose_request(project_id: &str, run_id: Uuid, task_id: &str) -> HealingProposalRequest {
+    HealingProposalRequest {
+        project_id: project_id.to_string(),
+        run_id,
+        task_id: task_id.to_string(),
+        task_name: format!("Task {task_id}"),
+        executor: "simulated".to_string(),
+        environment: Some("test".to_string()),
+        target_url: Some("http://127.0.0.1:8080/users".to_string()),
+        failed_selector: Some("#delete-user-btn".to_string()),
+        failure_reason: "Element not found: #delete-user-btn".to_string(),
+        original_actions: vec![
+            Action::Navigate {
+                url: "http://127.0.0.1:8080/users".to_string(),
+            },
+            Action::Click {
+                selector: "#delete-user-btn".to_string(),
+            },
+        ],
+        proposed_actions: None,
+        diagnosis_category: None,
+        confidence: None,
+        rationale: None,
+        evidence_refs: vec![],
+        timeout_secs: Some(30),
+        requirement_reference: None,
+        custom_params: None,
+        auto_approve_safe: true,
+        crawl_task_id: None,
+        crawl_output: Some(serde_json::to_value(sample_healing_crawl_data()).unwrap()),
+    }
+}
+
+#[tokio::test]
+async fn test_43_auto_diagnosis_wires_real_agent_into_healing_proposal() {
+    let (_store, _reg, _ev, service, _dir) = setup_healing_harness().await;
+    let ctx = make_auth_ctx(Role::Operator, Some("proj-web"));
+    let req = auto_diagnose_request("proj-web", Uuid::new_v4(), "task-delete");
+
+    let proposal = service
+        .propose_healing(&ctx, req)
+        .await
+        .expect("auto-diagnosed proposal created");
+
+    assert_eq!(proposal.diagnosis_category, "SelectorRenamedOrRelocated");
+    assert!(
+        proposal.confidence >= 0.80,
+        "expected high confidence from a clean rename match, got {}",
+        proposal.confidence
+    );
+    assert!(proposal.rationale.contains("delete-user-account-btn"));
+
+    // The real dom_prober-driven diagnosis, not a caller-supplied guess,
+    // rewrote the failing Click's selector — everything else in the plan
+    // (the Navigate) is untouched.
+    assert_eq!(proposal.proposed_actions.len(), 2);
+    assert_eq!(proposal.proposed_actions[0], proposal.original_actions[0]);
+    assert_eq!(
+        proposal.proposed_actions[1],
+        Action::Click {
+            selector: "#delete-user-account-btn".to_string()
+        }
+    );
+
+    // Pure selector replacement, same page, high confidence, non-prod,
+    // non-gated executor, auto_approve_safe: true -> the existing gate
+    // (unmodified by this change) clears it without human approval.
+    assert_eq!(proposal.risk_level, HealingRiskLevel::Low);
+    assert!(!proposal.requires_approval);
+    assert_eq!(proposal.state, HealingState::Approved);
+}
+
+#[tokio::test]
+async fn test_44_auto_diagnosis_requires_failed_selector() {
+    let (_store, _reg, _ev, service, _dir) = setup_healing_harness().await;
+    let ctx = make_auth_ctx(Role::Operator, Some("proj-web"));
+    let mut req = auto_diagnose_request("proj-web", Uuid::new_v4(), "task-no-selector");
+    req.failed_selector = None;
+
+    let res = service.propose_healing(&ctx, req).await;
+    assert!(matches!(
+        res.unwrap_err(),
+        GovernedHealingError::ValidationError(_)
+    ));
+}
+
+#[tokio::test]
+async fn test_45_auto_diagnosis_requires_crawl_evidence() {
+    let (_store, _reg, _ev, service, _dir) = setup_healing_harness().await;
+    let ctx = make_auth_ctx(Role::Operator, Some("proj-web"));
+    let mut req = auto_diagnose_request("proj-web", Uuid::new_v4(), "task-no-crawl");
+    req.crawl_output = None; // and crawl_task_id is already None
+
+    let res = service.propose_healing(&ctx, req).await;
+    assert!(matches!(
+        res.unwrap_err(),
+        GovernedHealingError::ValidationError(_)
+    ));
+}
+
+#[tokio::test]
+async fn test_46_inconclusive_auto_diagnosis_still_requires_approval() {
+    let (_store, _reg, _ev, service, _dir) = setup_healing_harness().await;
+    let ctx = make_auth_ctx(Role::Operator, Some("proj-web"));
+    let mut req = auto_diagnose_request("proj-web", Uuid::new_v4(), "task-inconclusive");
+    // Nothing in the crawl remotely resembles this selector or keyword —
+    // the agent must land on SelectorNotFound with LOW confidence, not
+    // fabricate a match.
+    req.failed_selector = Some("#totally-unrelated-widget".to_string());
+    req.original_actions = vec![Action::Click {
+        selector: "#totally-unrelated-widget".to_string(),
+    }];
+    req.auto_approve_safe = true; // even so...
+
+    let proposal = service
+        .propose_healing(&ctx, req)
+        .await
+        .expect("inconclusive diagnosis still yields an auditable proposal");
+
+    assert_eq!(proposal.diagnosis_category, "SelectorNotFound");
+    assert!(proposal.confidence < 0.80);
+    // The existing low-confidence gate (unmodified by this change) applies
+    // just as strictly to an agent-computed diagnosis as to a human one —
+    // auto_approve_safe: true never overrides it.
+    assert!(proposal.requires_approval);
+    assert_eq!(proposal.state, HealingState::PendingApproval);
+    // No confident replacement was found, so the original action is
+    // proposed unchanged rather than a fabricated guess.
+    assert_eq!(proposal.proposed_actions, proposal.original_actions);
+}
+
+#[tokio::test]
+async fn test_47_manual_diagnosis_takes_priority_over_auto_diagnosis() {
+    let (_store, _reg, _ev, service, _dir) = setup_healing_harness().await;
+    let ctx = make_auth_ctx(Role::Operator, Some("proj-web"));
+    let mut req = auto_diagnose_request("proj-web", Uuid::new_v4(), "task-manual-priority");
+    // Crawl evidence is present (auto-diagnosis *could* run), but a human
+    // already supplied a full diagnosis — that must win verbatim, proving
+    // the agent-wiring is additive and never overrides an explicit caller.
+    req.proposed_actions = Some(vec![Action::Click {
+        selector: "#manually-chosen-selector".to_string(),
+    }]);
+    req.diagnosis_category = Some("ManualOverride".to_string());
+    req.confidence = Some(0.42);
+    req.rationale = Some("A human already diagnosed this one.".to_string());
+
+    let proposal = service
+        .propose_healing(&ctx, req)
+        .await
+        .expect("manual proposal created");
+
+    assert_eq!(proposal.diagnosis_category, "ManualOverride");
+    assert_eq!(proposal.confidence, 0.42);
+    assert_eq!(proposal.rationale, "A human already diagnosed this one.");
+    assert_eq!(
+        proposal.proposed_actions,
+        vec![Action::Click {
+            selector: "#manually-chosen-selector".to_string()
+        }]
+    );
 }
 
 // ============================================================================
