@@ -74,6 +74,7 @@ fn healing_proposal_from_row(r: sqlx::sqlite::SqliteRow) -> Result<HealingPropos
         created_at: parse_ts(&r.get::<String, _>("created_at")),
         expires_at: parse_ts(&r.get::<String, _>("expires_at")),
         updated_at: parse_ts(&r.get::<String, _>("updated_at")),
+        context: r.get("context"),
     })
 }
 
@@ -3013,8 +3014,8 @@ impl Store {
                 confidence, risk_level, requires_approval, original_actions, proposed_actions,
                 ast_diff, rationale, evidence_refs, state, idempotency_key, healing_run_id,
                 verification_result, approved_by, approved_at, rejection_reason, created_at,
-                expires_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+                expires_at, updated_at, context
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
         )
         .bind(p.id.to_string())
         .bind(&p.project_id)
@@ -3040,6 +3041,7 @@ impl Store {
         .bind(p.created_at.to_rfc3339())
         .bind(p.expires_at.to_rfc3339())
         .bind(p.updated_at.to_rfc3339())
+        .bind(&p.context)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -3918,6 +3920,10 @@ pub struct HealingProposalRow {
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub expires_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+    /// JSON: what the proposal needs to be executed later but has no column of its own (executor,
+    /// environment, target URL, ...); see `0018_healing_proposal_context.sql`. `None` for a row
+    /// written before that column existed.
+    pub context: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

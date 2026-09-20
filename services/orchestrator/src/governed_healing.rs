@@ -1952,7 +1952,31 @@ impl GovernedHealingService {
 // 6. SERIALIZATION & ROW CONVERSIONS
 // ============================================================================
 
+/// What a `HealingProposal` needs in order to be executed later but `HealingProposalRow` has no
+/// column of its own for, kept as JSON in its `context` column. Without it a reloaded proposal
+/// came back as a `simulated` task in the `test` environment, so `execute_approved` ran the
+/// healing plan on the wrong executor (always passing) and skipped the production run gate.
+#[derive(Serialize, Deserialize)]
+struct StoredProposalContext {
+    task_name: String,
+    executor: String,
+    environment: String,
+    target_url: Option<String>,
+    timeout_secs: Option<u64>,
+    requirement_reference: Option<String>,
+    custom_params: Option<serde_json::Value>,
+}
+
 fn proposal_to_row(p: &HealingProposal) -> Result<HealingProposalRow, GovernedHealingError> {
+    let context = StoredProposalContext {
+        task_name: p.task_name.clone(),
+        executor: p.executor.clone(),
+        environment: p.environment.clone(),
+        target_url: p.target_url.clone(),
+        timeout_secs: p.timeout_secs,
+        requirement_reference: p.requirement_reference.clone(),
+        custom_params: p.custom_params.clone(),
+    };
     Ok(HealingProposalRow {
         id: p.id,
         project_id: p.project_id.clone(),
@@ -1987,6 +2011,10 @@ fn proposal_to_row(p: &HealingProposal) -> Result<HealingProposalRow, GovernedHe
         created_at: p.created_at,
         expires_at: p.expires_at,
         updated_at: p.updated_at,
+        context: Some(
+            serde_json::to_string(&context)
+                .map_err(|e| GovernedHealingError::Internal(e.to_string()))?,
+        ),
     })
 }
 
@@ -2014,15 +2042,33 @@ fn row_to_proposal(r: HealingProposalRow) -> Result<HealingProposal, GovernedHea
             ))
         })?;
 
+    // A row written before the `context` column existed has none. Its real values were never
+    // recorded, so it is rebuilt with the fixed defaults every row used to get; a context that is
+    // present but unreadable is an error, not a silent fall back to a different executor.
+    let context: StoredProposalContext = match r.context.as_deref() {
+        Some(json) => serde_json::from_str(json).map_err(|e| {
+            GovernedHealingError::Internal(format!("failed to deserialize context: {e}"))
+        })?,
+        None => StoredProposalContext {
+            task_name: format!("Task {}", r.task_id),
+            executor: "simulated".to_string(),
+            environment: "test".to_string(),
+            target_url: None,
+            timeout_secs: Some(30),
+            requirement_reference: None,
+            custom_params: None,
+        },
+    };
+
     Ok(HealingProposal {
         id: r.id,
         project_id: r.project_id,
         run_id: r.run_id,
         task_id: r.task_id.clone(),
-        task_name: format!("Task {}", r.task_id),
-        executor: "simulated".to_string(), // default or rehydrated
-        environment: "test".to_string(),
-        target_url: None,
+        task_name: context.task_name,
+        executor: context.executor,
+        environment: context.environment,
+        target_url: context.target_url,
         failure_fingerprint: r.failure_fingerprint,
         diagnosis_category: r.diagnosis_category,
         confidence: r.confidence,
@@ -2043,8 +2089,8 @@ fn row_to_proposal(r: HealingProposalRow) -> Result<HealingProposal, GovernedHea
         created_at: r.created_at,
         expires_at: r.expires_at,
         updated_at: r.updated_at,
-        timeout_secs: Some(30),
-        requirement_reference: None,
-        custom_params: None,
+        timeout_secs: context.timeout_secs,
+        requirement_reference: context.requirement_reference,
+        custom_params: context.custom_params,
     })
 }
