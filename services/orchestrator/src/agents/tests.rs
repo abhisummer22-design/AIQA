@@ -166,6 +166,7 @@ async fn test_01_planning_agent_synthesizes_plan_with_schema() {
         priority_hints: vec!["CRITICAL".to_string()],
         max_planned_tests: Some(20),
         healing_feedback: vec![],
+        qa_feedback: None,
     };
 
     let agent = TestPlanningAgent::new(request);
@@ -235,6 +236,7 @@ async fn test_02_planning_agent_rejects_cross_project_access() {
         priority_hints: vec![],
         max_planned_tests: None,
         healing_feedback: vec![],
+        qa_feedback: None,
     };
 
     let agent = TestPlanningAgent::new(request);
@@ -283,6 +285,7 @@ async fn test_03_planning_agent_detects_coverage_gaps_with_store() {
         priority_hints: vec![],
         max_planned_tests: Some(10),
         healing_feedback: vec![],
+        qa_feedback: None,
     };
 
     let agent = TestPlanningAgent::new(request);
@@ -316,6 +319,7 @@ async fn test_04_planning_agent_enforces_budget_limits() {
         priority_hints: vec![],
         max_planned_tests: Some(3), // Strict limit: max 3 tests
         healing_feedback: vec![],
+        qa_feedback: None,
     };
 
     let agent = TestPlanningAgent::new(request);
@@ -557,6 +561,7 @@ async fn test_10_boundary_zero_production_test_execution_during_agent_reasoning(
         priority_hints: vec![],
         max_planned_tests: None,
         healing_feedback: vec![],
+        qa_feedback: None,
     });
 
     let heal_agent = SelfHealingAgent::new(FailureEvidence {
@@ -576,4 +581,112 @@ async fn test_10_boundary_zero_production_test_execution_during_agent_reasoning(
 
     assert_eq!(plan_agent.agent_type(), "qa_planning");
     assert_eq!(heal_agent.agent_type(), "qa_self_healing");
+}
+
+// ===========================================================================
+// 4. GAP-CLOSING — real `generate_test_plan` wiring (TestPlanningAgent into
+// a live request, not just its own step()/run_agent_loop unit tests above)
+// ===========================================================================
+
+#[tokio::test]
+async fn test_11_generate_test_plan_wires_real_agent_end_to_end() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("plan_wiring_test.sqlite3");
+    let store = crate::store::Store::connect(&path).await.expect("connect");
+
+    store
+        .upsert_quality_node(
+            "proj-wire",
+            "requirement",
+            "REQ-WIRE-01",
+            "Wired Requirement",
+        )
+        .await
+        .unwrap();
+
+    // project_id on the request is deliberately wrong — generate_test_plan
+    // must overwrite it from its own `project_id` parameter, exactly like
+    // the healing endpoint overwrites HealingProposalRequest.project_id
+    // from the URL path.
+    let request = super::planning::PlanningRequest {
+        project_id: "wrong-project".to_string(),
+        requirement_query: Some("Wired".to_string()),
+        requirement_ids: vec!["REQ-WIRE-01".to_string()],
+        schema_content: None,
+        schema_file_path: None,
+        schema_url: None,
+        path_filter: None,
+        priority_hints: vec![],
+        max_planned_tests: Some(10),
+        healing_feedback: vec![],
+        qa_feedback: None,
+    };
+
+    let plan = super::planning::generate_test_plan(store, "proj-wire", request)
+        .await
+        .expect("real agent-driven plan generated");
+
+    assert_eq!(plan.project_id, "proj-wire");
+    assert!(!plan.coverage_gaps.is_empty());
+    assert!(plan
+        .coverage_gaps
+        .iter()
+        .any(|g| g.area == "REQ-WIRE-01"));
+    assert!(plan.total_planned_tests > 0);
+}
+
+#[tokio::test]
+async fn test_12_generate_test_plan_incorporates_qa_intelligence_feedback() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("plan_qa_feedback_test.sqlite3");
+    let store = crate::store::Store::connect(&path).await.expect("connect");
+
+    let qa_feedback = crate::adaptive_intelligence::QaIntelligenceFeedback {
+        fragile_tests: vec!["TC-CHECKOUT-07".to_string()],
+        fragile_selectors: vec!["#promo-code-input".to_string()],
+        high_risk_components: vec!["checkout-service".to_string()],
+        top_failure_clusters: vec!["FC-TIMEOUT-CHECKOUT".to_string()],
+        recommended_priorities: vec![
+            "Stabilize #promo-code-input before next regression pass".to_string(),
+        ],
+    };
+
+    let request = super::planning::PlanningRequest {
+        project_id: "proj-qa-feed".to_string(),
+        requirement_query: None,
+        requirement_ids: vec![],
+        schema_content: None,
+        schema_file_path: None,
+        schema_url: None,
+        path_filter: None,
+        priority_hints: vec![],
+        max_planned_tests: Some(10),
+        healing_feedback: vec![],
+        qa_feedback: Some(qa_feedback),
+    };
+
+    let plan = super::planning::generate_test_plan(store, "proj-qa-feed", request)
+        .await
+        .expect("plan generated with qa feedback");
+
+    assert!(plan
+        .qa_risk_signals
+        .iter()
+        .any(|s| s.contains("TC-CHECKOUT-07")));
+    assert!(plan
+        .qa_risk_signals
+        .iter()
+        .any(|s| s.contains("#promo-code-input")));
+    assert!(plan
+        .qa_risk_signals
+        .iter()
+        .any(|s| s.contains("checkout-service")));
+    assert!(plan
+        .qa_risk_signals
+        .iter()
+        .any(|s| s.contains("FC-TIMEOUT-CHECKOUT")));
+    assert!(plan
+        .recommended_next_actions
+        .iter()
+        .any(|a| a.contains("Stabilize #promo-code-input")));
 }

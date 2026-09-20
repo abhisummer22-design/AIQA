@@ -4,6 +4,7 @@
 //! - Schema Inspector (JSON, YAML, parameters, requests, responses, filters, limits, timeouts)
 //! - SSRF Protection (localhost, 127.0.0.1, ::1, 169.254.169.254, RFC1918 private IPs, schemes)
 //! - Path Traversal & Sensitive File Protection
+//! - Root Containment of caller-supplied file paths (traversal, sibling prefix, links, UNC)
 //! - DOM Prober (existence, not found, visibility across roles, accessibility roles, nearby context)
 //! - Script Injection Prevention (blocking JS, eval, scripts)
 //! - Unsupported Capability Transparency (no faking)
@@ -22,9 +23,12 @@ use crate::crawler::{
 use crate::tools::dom_prober::DomProberTool;
 use crate::tools::requirement_lookup::RequirementLookupTool;
 use crate::tools::schema_inspector::SchemaInspectorTool;
-use crate::tools::security::{validate_safe_local_path, validate_safe_url};
+use crate::tools::security::{
+    resolve_path_within_root, validate_safe_local_path, validate_safe_url, PathContainmentError,
+};
 use serde_json::json;
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -1046,4 +1050,310 @@ fn test_32_security_sanitize_secrets_redacts_credentials() {
     assert_eq!(data["user"]["password"], "[REDACTED]");
     assert_eq!(data["headers"][0]["authorization"], "[REDACTED]");
     assert_eq!(data["headers"][1]["cookie"], "[REDACTED]");
+}
+
+// ===========================================================================
+// 7. ROOT CONTAINMENT OF CALLER-SUPPLIED FILE PATHS
+// ===========================================================================
+
+/// `<tmp>/schemas` is the root under test. `<tmp>/schemas-evil` shares its
+/// name prefix and `<tmp>/outside` is a plain sibling; both hold a real,
+/// valid schema, so a refusal can only come from containment, never from
+/// "not found".
+struct RootFixture {
+    _tmp: tempfile::TempDir,
+    root: PathBuf,
+    evil: PathBuf,
+    outside: PathBuf,
+}
+
+fn root_fixture() -> RootFixture {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().join("schemas");
+    let evil = tmp.path().join("schemas-evil");
+    let outside = tmp.path().join("outside");
+    std::fs::create_dir_all(root.join("sub")).expect("create root/sub");
+    std::fs::create_dir_all(&evil).expect("create evil");
+    std::fs::create_dir_all(&outside).expect("create outside");
+    std::fs::write(root.join("api.yaml"), sample_openapi_yaml()).expect("write api.yaml");
+    std::fs::write(evil.join("api.yaml"), sample_openapi_yaml()).expect("write evil api.yaml");
+    std::fs::write(outside.join("secret.yaml"), sample_openapi_yaml()).expect("write secret.yaml");
+    RootFixture {
+        _tmp: tmp,
+        root,
+        evil,
+        outside,
+    }
+}
+
+/// Links `link` -> `target` without elevated rights: a symlink on Unix, a
+/// junction on Windows (`mklink /J`). A real directory symlink there needs
+/// SeCreateSymbolicLinkPrivilege, which a normal account lacks, but
+/// `canonicalize` resolves both reparse-point kinds the same way.
+fn link_dir(link: &Path, target: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link).is_ok()
+    }
+    #[cfg(windows)]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+}
+
+fn unlink_dir(link: &Path) {
+    #[cfg(unix)]
+    let _ = std::fs::remove_file(link);
+    #[cfg(windows)]
+    let _ = std::fs::remove_dir(link);
+}
+
+#[test]
+fn test_33_containment_accepts_a_file_inside_the_root() {
+    let f = root_fixture();
+    let expected = std::fs::canonicalize(f.root.join("api.yaml")).expect("canonicalize");
+
+    // Absolute, relative to the root, and with a `..` that stays inside it.
+    let absolute = f.root.join("api.yaml");
+    assert_eq!(
+        resolve_path_within_root(absolute.to_str().unwrap(), &f.root),
+        Ok(expected.clone())
+    );
+    assert_eq!(
+        resolve_path_within_root("api.yaml", &f.root),
+        Ok(expected.clone())
+    );
+    assert_eq!(
+        resolve_path_within_root("sub/../api.yaml", &f.root),
+        Ok(expected)
+    );
+}
+
+#[test]
+fn test_34_containment_rejects_an_absolute_path_outside_the_root() {
+    let f = root_fixture();
+    let outside = f.outside.join("secret.yaml");
+    assert_eq!(
+        resolve_path_within_root(outside.to_str().unwrap(), &f.root),
+        Err(PathContainmentError::OutsideRoot)
+    );
+}
+
+#[test]
+fn test_35_containment_rejects_dot_dot_traversal_out_of_the_root() {
+    let f = root_fixture();
+    for raw in ["../outside/secret.yaml", "sub/../../outside/secret.yaml"] {
+        assert_eq!(
+            resolve_path_within_root(raw, &f.root),
+            Err(PathContainmentError::OutsideRoot),
+            "{raw}"
+        );
+    }
+    // The same escape spelled as an absolute path.
+    let absolute = format!("{}/../outside/secret.yaml", f.root.display());
+    assert_eq!(
+        resolve_path_within_root(&absolute, &f.root),
+        Err(PathContainmentError::OutsideRoot)
+    );
+}
+
+#[test]
+fn test_36_containment_rejects_a_sibling_directory_sharing_the_roots_name_prefix() {
+    let f = root_fixture();
+    let evil_file = f.evil.join("api.yaml");
+    // The string-prefix relationship is real, so a text-based check would let this through.
+    assert!(evil_file
+        .to_str()
+        .unwrap()
+        .starts_with(f.root.to_str().unwrap()));
+
+    assert_eq!(
+        resolve_path_within_root(evil_file.to_str().unwrap(), &f.root),
+        Err(PathContainmentError::OutsideRoot)
+    );
+    assert_eq!(
+        resolve_path_within_root("../schemas-evil/api.yaml", &f.root),
+        Err(PathContainmentError::OutsideRoot)
+    );
+}
+
+#[test]
+fn test_37_containment_rejects_a_directory_even_inside_the_root() {
+    let f = root_fixture();
+    for raw in ["sub", "."] {
+        assert_eq!(
+            resolve_path_within_root(raw, &f.root),
+            Err(PathContainmentError::NotARegularFile),
+            "{raw}"
+        );
+    }
+}
+
+#[test]
+fn test_38_containment_rejects_a_nonexistent_file_instead_of_using_the_raw_path() {
+    let f = root_fixture();
+    assert_eq!(
+        resolve_path_within_root("missing.yaml", &f.root),
+        Err(PathContainmentError::Unresolvable)
+    );
+    // Outside the root and missing: refused the same way, never used as given.
+    let missing_outside = f.outside.join("missing.yaml");
+    assert_eq!(
+        resolve_path_within_root(missing_outside.to_str().unwrap(), &f.root),
+        Err(PathContainmentError::Unresolvable)
+    );
+}
+
+#[test]
+fn test_39_containment_rejects_a_directory_link_that_escapes_the_root() {
+    let f = root_fixture();
+    let link = f.root.join("escape");
+    if !link_dir(&link, &f.outside) {
+        eprintln!("skipped: this host cannot create a directory link");
+        return;
+    }
+    assert!(
+        link.join("secret.yaml").is_file(),
+        "the link must really lead to the outside directory"
+    );
+
+    // Lexically inside the root; only resolving the link shows it is not.
+    assert_eq!(
+        resolve_path_within_root("escape/secret.yaml", &f.root),
+        Err(PathContainmentError::OutsideRoot)
+    );
+    unlink_dir(&link);
+}
+
+#[cfg(windows)]
+#[test]
+fn test_40_containment_refuses_network_and_device_namespaces_before_touching_the_filesystem() {
+    let f = root_fixture();
+    // `\\localhost\C$\...` resolves fine on a real host, so `Unresolvable`
+    // (rather than `OutsideRoot`) shows the refusal came before any
+    // filesystem call. An in-root verbatim path is refused by design too.
+    let in_root_verbatim = format!(r"\\?\{}", f.root.join("api.yaml").display());
+    for raw in [
+        r"\\localhost\C$\Windows\win.ini",
+        "//localhost/C$/Windows/win.ini",
+        r"\/localhost/C$/Windows/win.ini",
+        r"\\.\C:\Windows\win.ini",
+        in_root_verbatim.as_str(),
+    ] {
+        assert_eq!(
+            resolve_path_within_root(raw, &f.root),
+            Err(PathContainmentError::Unresolvable),
+            "{raw}"
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn test_41_containment_matches_root_and_path_case_insensitively_on_windows() {
+    let f = root_fixture();
+    let root_lower = PathBuf::from(f.root.to_string_lossy().to_lowercase());
+    let file_upper = f.root.join("api.yaml").to_string_lossy().to_uppercase();
+    assert_eq!(
+        resolve_path_within_root(&file_upper, &root_lower),
+        Ok(std::fs::canonicalize(f.root.join("api.yaml")).expect("canonicalize"))
+    );
+}
+
+#[test]
+fn test_42_containment_reports_an_unusable_root_and_never_falls_back() {
+    let f = root_fixture();
+    let missing_root = f.root.join("no-such-dir");
+    assert_eq!(
+        resolve_path_within_root("api.yaml", &missing_root),
+        Err(PathContainmentError::RootUnavailable)
+    );
+    // A file is not a directory.
+    let file_as_root = f.root.join("api.yaml");
+    assert_eq!(
+        resolve_path_within_root("api.yaml", &file_as_root),
+        Err(PathContainmentError::RootUnavailable)
+    );
+}
+
+#[tokio::test]
+async fn test_43_schema_inspector_reads_the_canonical_path_the_boundary_hands_it() {
+    let f = root_fixture();
+    // On Windows this is a `\\?\` verbatim path; the tool must cope with it.
+    let canonical = resolve_path_within_root("api.yaml", &f.root).expect("inside the root");
+
+    let invocation = ToolInvocation {
+        call_id: "call-43".to_string(),
+        tool_name: "schema_inspector".to_string(),
+        arguments: json!({ "file_path": canonical.to_str().unwrap() }),
+    };
+    let obs = SchemaInspectorTool::new()
+        .execute(&invocation, &make_test_context(Some("proj-qa")))
+        .await
+        .expect("canonical path is readable by the tool");
+    assert_eq!(obs.output.unwrap()["title"], "Orders API");
+}
+
+#[tokio::test]
+async fn test_44_schema_inspector_size_cap_still_applies_to_a_file_inside_the_root() {
+    let f = root_fixture();
+    // 600KB, over the tool's 512KB limit.
+    std::fs::write(f.root.join("huge.json"), "x".repeat(600 * 1024)).expect("write huge.json");
+    let canonical = resolve_path_within_root("huge.json", &f.root)
+        .expect("containment allows it; size is the tool's job");
+
+    let invocation = ToolInvocation {
+        call_id: "call-44".to_string(),
+        tool_name: "schema_inspector".to_string(),
+        arguments: json!({ "file_path": canonical.to_str().unwrap() }),
+    };
+    let err = SchemaInspectorTool::new()
+        .execute(&invocation, &make_test_context(Some("proj-qa")))
+        .await
+        .unwrap_err();
+    match err {
+        ToolError::ExecutionFailed { details, .. } => {
+            assert!(details.contains("exceeds maximum limit"), "{details}")
+        }
+        other => panic!("expected ExecutionFailed, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_45_legacy_denylist_still_applies_on_top_of_containment() {
+    let f = root_fixture();
+    std::fs::write(f.root.join("passwd.yaml"), sample_openapi_yaml()).expect("write passwd.yaml");
+    let canonical =
+        resolve_path_within_root("passwd.yaml", &f.root).expect("containment alone accepts it");
+
+    let invocation = ToolInvocation {
+        call_id: "call-45".to_string(),
+        tool_name: "schema_inspector".to_string(),
+        arguments: json!({ "file_path": canonical.to_str().unwrap() }),
+    };
+    let err = SchemaInspectorTool::new()
+        .execute(&invocation, &make_test_context(Some("proj-qa")))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ToolError::SafetyViolation { .. }), "{err:?}");
+}
+
+#[cfg(windows)]
+#[test]
+fn test_46_containment_does_not_let_a_drive_relative_path_escape_the_root() {
+    let f = root_fixture();
+    // `X:.` means "the current directory of drive X": it has a drive prefix
+    // but is neither absolute nor under the root.
+    let cwd = std::env::current_dir().expect("cwd");
+    let drive = cwd.to_string_lossy().chars().next().expect("drive letter");
+    assert_eq!(
+        resolve_path_within_root(&format!("{drive}:."), &f.root),
+        Err(PathContainmentError::OutsideRoot)
+    );
 }

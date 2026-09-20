@@ -286,10 +286,10 @@ impl<'a> Intelligence<'a> {
                 .clone()
                 .unwrap_or_else(|| "recurring failure".to_string()),
             original_actions: vec![placeholder.clone()],
-            proposed_actions: vec![placeholder],
-            diagnosis_category: "RecurringFlakyFailure".to_string(),
-            confidence: 0.30,
-            rationale: format!(
+            proposed_actions: Some(vec![placeholder]),
+            diagnosis_category: Some("RecurringFlakyFailure".to_string()),
+            confidence: Some(0.30),
+            rationale: Some(format!(
                 "Autonomously detected by Phase 10 orchestration: '{}' failed {}/{} of its last {} runs (flakiness score {:.2}, classified {}). No DOM crawl evidence was available at run-completion time to diagnose a specific replacement selector, so the original action is proposed unchanged pending investigation.",
                 t.name,
                 analysis.failures,
@@ -297,12 +297,14 @@ impl<'a> Intelligence<'a> {
                 analysis.total_runs,
                 analysis.flakiness_score,
                 analysis.classification.as_str()
-            ),
+            )),
             evidence_refs: vec![],
             timeout_secs: None,
             requirement_reference: None,
             custom_params: None,
             auto_approve_safe: false,
+            crawl_task_id: None,
+            crawl_output: None,
         })
     }
 
