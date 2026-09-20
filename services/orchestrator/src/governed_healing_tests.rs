@@ -1127,3 +1127,166 @@ async fn test_42_existing_phase4_execution_remains_functional() {
     assert_eq!(resp.project_id, "proj-p4");
     assert_eq!(resp.tasks_count, 1);
 }
+
+// ============================================================================
+// A PROPOSAL KEEPS WHAT IT NEEDS TO BE EXECUTED ACROSS A RELOAD
+// ============================================================================
+//
+// `execute_approved`, `approve_proposal` and `verify_healing` all work from a proposal reloaded
+// out of the database. `HealingProposalRow` had no column for the executor, environment, target
+// URL and so on, so every reload invented them (`simulated`, `test`, none) and an approved
+// proposal was executed as a simulated task that always passed.
+
+/// Waits (bounded) for the healing run to leave the states it is dispatched in, so the run's
+/// background work is finished before the test's temporary database goes away.
+async fn wait_until_run_settles(store: &Store, run_id: Uuid) {
+    use crate::domain::RunState;
+    for _ in 0..100 {
+        let state = store
+            .get_run_summary(run_id)
+            .await
+            .expect("summary")
+            .expect("run exists")
+            .state;
+        if !matches!(
+            state,
+            RunState::Created | RunState::Scheduled | RunState::Running
+        ) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test]
+async fn a_reloaded_proposal_keeps_the_context_it_was_raised_with() {
+    let (_store, _reg, _ev, service, _dir) = setup_healing_harness().await;
+    let ctx = make_auth_ctx(Role::Operator, Some("proj-ctx"));
+    let mut req = sample_proposal_request("proj-ctx", Uuid::new_v4(), "task-ctx");
+    req.executor = "playwright".to_string();
+    req.environment = Some("staging".to_string());
+    req.task_name = "Checkout flow".to_string();
+    req.timeout_secs = Some(45);
+    req.requirement_reference = Some("REQ-CHK-7".to_string());
+    req.custom_params = Some(serde_json::json!({ "browser": "chromium" }));
+    let raised = service
+        .propose_healing(&ctx, req)
+        .await
+        .expect("proposal created");
+
+    let reloaded = service.get_proposal(raised.id).await.expect("reload");
+
+    assert_eq!(reloaded.executor, "playwright");
+    assert_eq!(reloaded.environment, "staging");
+    assert_eq!(reloaded.task_name, "Checkout flow");
+    assert_eq!(
+        reloaded.target_url.as_deref(),
+        Some("http://127.0.0.1:8080/app")
+    );
+    assert_eq!(reloaded.timeout_secs, Some(45));
+    assert_eq!(reloaded.requirement_reference.as_deref(), Some("REQ-CHK-7"));
+    assert_eq!(
+        reloaded.custom_params,
+        Some(serde_json::json!({ "browser": "chromium" }))
+    );
+}
+
+#[tokio::test]
+async fn an_approved_proposal_is_executed_on_the_executor_it_was_raised_for() {
+    let (store, _reg, _ev, service, _dir) = setup_healing_harness().await;
+    let ctx = make_auth_ctx(Role::Operator, Some("proj-exec"));
+    let mut req = sample_proposal_request("proj-exec", Uuid::new_v4(), "task-exec-ctx");
+    req.executor = "playwright".to_string();
+    let raised = service
+        .propose_healing(&ctx, req)
+        .await
+        .expect("proposal created");
+    service
+        .approve_proposal(&ctx, raised.id)
+        .await
+        .expect("approved");
+
+    let executed = service
+        .execute_approved(&ctx, raised.id)
+        .await
+        .expect("dispatched");
+    let run_id = executed.healing_run_id.expect("healing run id");
+    wait_until_run_settles(&store, run_id).await;
+
+    let kinds: Vec<Option<String>> =
+        sqlx::query_scalar("SELECT executor_kind FROM tasks WHERE run_id = ?")
+            .bind(run_id.to_string())
+            .fetch_all(&store.pool)
+            .await
+            .expect("query");
+    assert_eq!(
+        kinds,
+        vec![Some("playwright".to_string())],
+        "the healing run must use the proposal's own executor, not a stand-in"
+    );
+
+    // Materializing a browser plan wrote its spec into the (git-ignored) generated directory.
+    let spec = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../executors/playwright/tests/generated/compiled-heal-task-exec-ctx.spec.ts");
+    let _ = std::fs::remove_file(spec);
+}
+
+#[tokio::test]
+async fn a_production_proposal_is_executed_as_production_so_its_run_is_held_for_approval() {
+    use crate::domain::RunState;
+    let (store, _reg, _ev, service, _dir) = setup_healing_harness().await;
+    let ctx = make_auth_ctx(Role::Operator, Some("proj-prod-ctx"));
+    let mut req = sample_proposal_request("proj-prod-ctx", Uuid::new_v4(), "task-prod-ctx");
+    req.environment = Some("production".to_string());
+    let raised = service
+        .propose_healing(&ctx, req)
+        .await
+        .expect("proposal created");
+    service
+        .approve_proposal(&ctx, raised.id)
+        .await
+        .expect("approved");
+
+    let executed = service
+        .execute_approved(&ctx, raised.id)
+        .await
+        .expect("dispatched");
+
+    let run = store
+        .get_run_summary(executed.healing_run_id.expect("healing run id"))
+        .await
+        .expect("summary")
+        .expect("run exists");
+    assert_eq!(
+        run.state,
+        RunState::PendingApproval,
+        "a production plan is always held for a person; reloading it as `test` skipped that gate"
+    );
+}
+
+#[tokio::test]
+async fn a_proposal_stored_before_the_context_column_existed_is_rebuilt_with_the_old_defaults() {
+    let (store, _reg, _ev, service, _dir) = setup_healing_harness().await;
+    let ctx = make_auth_ctx(Role::Operator, Some("proj-legacy"));
+    let mut req = sample_proposal_request("proj-legacy", Uuid::new_v4(), "task-legacy");
+    req.executor = "playwright".to_string();
+    req.environment = Some("staging".to_string());
+    let raised = service
+        .propose_healing(&ctx, req)
+        .await
+        .expect("proposal created");
+    // What a row written before the column existed looks like: nothing recorded.
+    sqlx::query("UPDATE healing_proposals SET context = NULL WHERE id = ?")
+        .bind(raised.id.to_string())
+        .execute(&store.pool)
+        .await
+        .expect("clear context");
+
+    let reloaded = service.get_proposal(raised.id).await.expect("reload");
+
+    assert_eq!(reloaded.executor, "simulated");
+    assert_eq!(reloaded.environment, "test");
+    assert_eq!(reloaded.target_url, None);
+    assert_eq!(reloaded.task_name, "Task task-legacy");
+    assert_eq!(reloaded.timeout_secs, Some(30));
+}
