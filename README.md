@@ -477,6 +477,9 @@ AIQA_MAX_CONCURRENCY=4
 AIQA_TASK_TIMEOUT_SECS=300
 AIQA_REQUIRE_APPROVAL_FOR=maestro
 AIQA_BLOCKED_EXECUTORS=
+# Optional — Phase 10 raises human-gated healing proposals for tests that keep
+# failing. On by default; set to off (or 0 / false / no / disabled) to disable.
+AIQA_AUTONOMOUS_HEALING=
 AIQA_CORS_ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 
 # Planning Schema Files (POST /api/v1/projects/:id/planning/test-plan)

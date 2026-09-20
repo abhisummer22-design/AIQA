@@ -382,6 +382,7 @@ impl AgentExecutionDispatcher {
                 run_plan.concurrency,
                 self.store.clone(),
                 self.evidence.clone(),
+                std::sync::Arc::new(self.policy.clone()),
                 task_timeout,
             );
 
@@ -473,6 +474,7 @@ impl AgentExecutionDispatcher {
             record.plan.concurrency,
             self.store.clone(),
             self.evidence.clone(),
+            std::sync::Arc::new(self.policy.clone()),
             &ctx.name,
             task_timeout,
         )

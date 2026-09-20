@@ -213,6 +213,101 @@ impl<'a> Intelligence<'a> {
         Self { store }
     }
 
+    /// Gap-closing — Phase 10: autonomous healing-proposal detection.
+    /// Reuses the same deterministic `evaluate_flakiness` this module's own
+    /// `/intelligence/flakiness` endpoint is built on (real task history,
+    /// no AI call, no new scoring rule) and only returns a proposal request
+    /// when the pattern is genuinely recurring (`HighlyFlaky`, not just
+    /// `PotentiallyFlaky`) and a real selector is available. Confidence is
+    /// capped low, matching this module's own established convention for
+    /// automated, non-AI-derived values (see module doc comment) — this is
+    /// confidence that the *pattern* is real, not confidence in a specific
+    /// fix, since no DOM evidence is available at run-completion time to
+    /// diagnose one; the original action is proposed unchanged, which makes
+    /// it a signal for a person, not a fix: it can be rejected or left to
+    /// expire, but `approve_proposal` and `execute_approved` refuse a
+    /// proposal that changes nothing. The caller
+    /// (`engine.rs`) still submits this through the real, unmodified
+    /// `GovernedHealingService::propose_healing` — every existing gate
+    /// (bounded attempts, SSRF/injection checks, the confidence<0.80
+    /// approval gate) applies exactly as it does to a human-submitted
+    /// proposal. Returns `None` for every task that doesn't qualify —
+    /// never fabricates a proposal from insufficient signal — and for a
+    /// task that already has a live proposal (autonomous or human):
+    /// `propose_healing` bounds attempts per *run*, so without that check a
+    /// task that keeps failing would collect a fresh proposal on every run.
+    pub async fn detect_autonomous_healing_candidate(
+        &self,
+        project_id: &str,
+        run_id: Uuid,
+        t: &TaskState,
+        executor: &str,
+        selector: &str,
+    ) -> Option<crate::governed_healing::HealingProposalRequest> {
+        if !matches!(t.status, TaskStatus::Failed | TaskStatus::Timeout) {
+            return None;
+        }
+        let history = self
+            .store
+            .task_history_by_name(&t.name, Some(project_id), 20)
+            .await
+            .ok()?;
+        let outcomes: Vec<TaskStatus> = history.iter().map(|h| h.status).collect();
+        let analysis = crate::adaptive_intelligence::evaluate_flakiness(&t.name, "test", &outcomes);
+        if analysis.classification
+            != crate::adaptive_intelligence::FlakinessClassification::HighlyFlaky
+        {
+            return None;
+        }
+        // A store error means "can't tell", which must not turn into another proposal.
+        if self
+            .store
+            .has_open_healing_proposal(project_id, &t.id, chrono::Utc::now())
+            .await
+            .ok()?
+        {
+            return None;
+        }
+
+        let placeholder = crate::execution_plan::Action::AssertVisible {
+            selector: selector.to_string(),
+        };
+        Some(crate::governed_healing::HealingProposalRequest {
+            project_id: project_id.to_string(),
+            run_id,
+            task_id: t.id.clone(),
+            task_name: t.name.clone(),
+            executor: executor.to_string(),
+            environment: Some("test".to_string()),
+            target_url: None,
+            failed_selector: Some(selector.to_string()),
+            failure_reason: t
+                .reason
+                .clone()
+                .unwrap_or_else(|| "recurring failure".to_string()),
+            original_actions: vec![placeholder.clone()],
+            proposed_actions: Some(vec![placeholder]),
+            diagnosis_category: Some("RecurringFlakyFailure".to_string()),
+            confidence: Some(0.30),
+            rationale: Some(format!(
+                "Autonomously detected by Phase 10 orchestration: '{}' failed {}/{} of its last {} runs (flakiness score {:.2}, classified {}). No DOM crawl evidence was available at run-completion time to diagnose a specific replacement selector, so the original action is proposed unchanged pending investigation.",
+                t.name,
+                analysis.failures,
+                analysis.total_runs,
+                analysis.total_runs,
+                analysis.flakiness_score,
+                analysis.classification.as_str()
+            )),
+            evidence_refs: vec![],
+            timeout_secs: None,
+            requirement_reference: None,
+            custom_params: None,
+            auto_approve_safe: false,
+            crawl_task_id: None,
+            crawl_output: None,
+        })
+    }
+
     /// Called once per completed run (`engine.rs`, on `RunCompleted`).
     /// Updates the quality graph + risk/value/flakiness for every task that
     /// reached a terminal state, and clusters/drafts bugs for product

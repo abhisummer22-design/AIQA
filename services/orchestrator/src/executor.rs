@@ -565,6 +565,39 @@ fn outcome_from_output(output: std::process::Output, label: &str) -> ExecutionOu
     }
 }
 
+/// The selector a real, compiled browser test failed on, read from the
+/// structured line `executors/playwright/helpers/healing.ts` prints when its
+/// runtime self-healing gives up on a selector:
+/// `AIQA_HEALING_EVENT {"...","primarySelector":"<selector>","resolved":false}`.
+///
+/// That line lives only in a task's *full* captured output
+/// (`ExecutionOutcome.evidence`), never in the 15-line tail `reason` keeps.
+/// Events with `"resolved": true` (a fallback strategy worked) are not failures
+/// and are ignored. A test stops at its first throw, so if several unresolved
+/// events appear the last one is the one that ended the run. Returns `None` for
+/// anything else - a selector is never guessed.
+pub fn unresolved_healing_selector(evidence: &str) -> Option<String> {
+    const MARKER: &str = "AIQA_HEALING_EVENT ";
+    evidence
+        .lines()
+        .filter_map(|line| {
+            let json = &line[line.find(MARKER)? + MARKER.len()..];
+            let event: serde_json::Value = serde_json::Deserializer::from_str(json)
+                .into_iter::<serde_json::Value>()
+                .next()?
+                .ok()?;
+            if event.get("resolved")?.as_bool()? {
+                return None;
+            }
+            event
+                .get("primarySelector")?
+                .as_str()
+                .filter(|s| !s.trim().is_empty())
+                .map(ToString::to_string)
+        })
+        .next_back()
+}
+
 fn spawn_error_outcome(label: &str, err: std::io::Error) -> ExecutionOutcome {
     ExecutionOutcome {
         status: TaskStatus::InfraError,
@@ -1352,6 +1385,62 @@ pub fn materialize_playwright_spec(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ------------------------------------------ unresolved_healing_selector
+
+    /// The shape a real `--reporter=line` Playwright run printed when a compiled
+    /// test's selector matched nothing - captured from an actual run of
+    /// `helpers/healing.ts`, not hand-written - with the lines it really sits
+    /// between.
+    const REAL_SELECTOR_MISS_OUTPUT: &str = r##"Running 1 test using 1 worker
+AIQA_HEALING_EVENT {"event":"heal","actionIndex":1,"actionKind":"CLICK","primarySelector":"#login-btn-that-does-not-exist","strategy":"none","resolved":false}
+
+  1) tests\generated\tmp.spec.ts:4:5 › verify healing event format
+
+    Error: AIQA self-healing exhausted every real fallback strategy for selector "#login-btn-that-does-not-exist" (action #1, CLICK) — no matching element found.
+"##;
+
+    #[test]
+    fn a_real_selector_miss_yields_the_failed_selector() {
+        assert_eq!(
+            unresolved_healing_selector(REAL_SELECTOR_MISS_OUTPUT).as_deref(),
+            Some("#login-btn-that-does-not-exist")
+        );
+    }
+
+    #[test]
+    fn a_heal_that_worked_is_not_a_failure() {
+        let out = r##"AIQA_HEALING_EVENT {"event":"heal","actionIndex":0,"actionKind":"CLICK","primarySelector":"#old","strategy":"text-from-id","resolved":true}"##;
+
+        assert_eq!(unresolved_healing_selector(out), None);
+    }
+
+    #[test]
+    fn output_without_the_marker_has_no_selector() {
+        assert_eq!(
+            unresolved_healing_selector("Running 1 test\n  1 passed (1.2s)\n"),
+            None
+        );
+        assert_eq!(unresolved_healing_selector(""), None);
+    }
+
+    #[test]
+    fn malformed_or_incomplete_events_are_ignored_not_guessed() {
+        let out = "AIQA_HEALING_EVENT {not json\n\
+                   AIQA_HEALING_EVENT {\"resolved\":false}\n\
+                   AIQA_HEALING_EVENT {\"primarySelector\":\"#x\"}\n\
+                   AIQA_HEALING_EVENT {\"resolved\":false,\"primarySelector\":\"   \"}\n";
+
+        assert_eq!(unresolved_healing_selector(out), None);
+    }
+
+    #[test]
+    fn the_last_unresolved_event_wins_and_a_line_prefix_is_tolerated() {
+        let out = "AIQA_HEALING_EVENT {\"resolved\":false,\"primarySelector\":\"#first\"}\n\
+                   [chromium] stdout: AIQA_HEALING_EVENT {\"resolved\":false,\"primarySelector\":\"#second\"} trailing text\n";
+
+        assert_eq!(unresolved_healing_selector(out).as_deref(), Some("#second"));
+    }
 
     #[test]
     fn sanitize_token_accepts_realistic_params() {

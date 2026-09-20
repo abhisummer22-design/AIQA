@@ -2,6 +2,7 @@ use crate::domain::*;
 use crate::evidence::LocalEvidenceStore;
 use crate::executor::{ExecutionOutcome, ExecutorRegistry};
 use crate::intelligence::Intelligence;
+use crate::policy::PolicyConfig;
 use crate::scheduler::RunEngine;
 use crate::store::Store;
 use crate::webhook;
@@ -491,6 +492,7 @@ pub async fn approve_and_spawn(
     concurrency: usize,
     store: Store,
     evidence: Arc<LocalEvidenceStore>,
+    policy: Arc<PolicyConfig>,
     actor: &str,
     task_timeout: std::time::Duration,
 ) -> anyhow::Result<()> {
@@ -505,7 +507,15 @@ pub async fn approve_and_spawn(
     // loop already raced past, when it reads the run back right after this
     // returns. See `mark_run_running`'s doc comment.
     mark_run_running(&record, &store).await;
-    spawn_run(record, registry, concurrency, store, evidence, task_timeout);
+    spawn_run(
+        record,
+        registry,
+        concurrency,
+        store,
+        evidence,
+        policy,
+        task_timeout,
+    );
     Ok(())
 }
 
@@ -689,6 +699,7 @@ pub fn spawn_run(
     concurrency: usize,
     store: Store,
     evidence: Arc<LocalEvidenceStore>,
+    policy: Arc<PolicyConfig>,
     task_timeout: std::time::Duration,
 ) {
     let task_defs = record.task_defs();
@@ -699,6 +710,10 @@ pub fn spawn_run(
         let (done_tx, mut done_rx) =
             tokio::sync::mpsc::unbounded_channel::<(TaskId, crate::executor::ExecutionOutcome)>();
         let mut in_flight = 0usize;
+        // Phase 10: the real selector each failed browser task ended on, read from its own
+        // captured output as it completes (see `executor::unresolved_healing_selector`).
+        // Held in memory for the autonomous-healing pass after the run; nothing else reads it.
+        let mut failed_selectors: HashMap<TaskId, String> = HashMap::new();
 
         loop {
             // B4 — a task is marked started only once it actually holds a
@@ -863,6 +878,16 @@ pub fn spawn_run(
                         }
                     }
 
+                    if matches!(outcome.status, TaskStatus::Failed | TaskStatus::Timeout) {
+                        if let Some(selector) = outcome
+                            .evidence
+                            .as_deref()
+                            .and_then(crate::executor::unresolved_healing_selector)
+                        {
+                            failed_selectors.insert(id.clone(), selector);
+                        }
+                    }
+
                     let newly_terminal = {
                         let mut engine = record.engine.write().await;
                         engine.complete_task(&id, outcome.status, outcome.reason.clone())
@@ -969,6 +994,100 @@ pub fn spawn_run(
             .await
         {
             tracing::warn!("intelligence ingest failed for run {}: {e}", record.run_id);
+        }
+
+        // Gap-closing — Phase 10: autonomous healing-proposal orchestration.
+        // Only meaningful with a real project scope (an untenanted/default
+        // run has nothing for GovernedHealingService's RBAC/project checks
+        // to scope against); every other gate below is the same live one a
+        // human-submitted proposal goes through. An operator can switch the
+        // whole pass off with `AIQA_AUTONOMOUS_HEALING=off`.
+        let autonomous_healing = crate::policy::autonomous_healing_enabled();
+        if let Some(project_id) = record.project_id.as_deref().filter(|_| autonomous_healing) {
+            for t in &tasks_snapshot {
+                if !matches!(t.status, TaskStatus::Failed | TaskStatus::Timeout) {
+                    continue;
+                }
+                let Some(def) = task_defs.get(&t.id) else {
+                    continue;
+                };
+                // Prefer the selector the task's own runtime self-healing gave up on, read from
+                // its output as it completed. `params["selector"]` is only an override for a
+                // hand-built plan that names one up front: no compiled plan sets it, so relying
+                // on it alone would never fire for a real run.
+                let Some(selector) = failed_selectors.get(&t.id).cloned().or_else(|| {
+                    def.params
+                        .get("selector")
+                        .and_then(|v| v.as_str())
+                        .map(ToString::to_string)
+                }) else {
+                    continue;
+                };
+                let executor_name = def.executor.as_deref().unwrap_or("simulated");
+
+                let Some(req) = intel
+                    .detect_autonomous_healing_candidate(
+                        project_id,
+                        record.run_id,
+                        t,
+                        executor_name,
+                        &selector,
+                    )
+                    .await
+                else {
+                    continue;
+                };
+
+                let dispatcher = crate::agent_execution::AgentExecutionDispatcher::new(
+                    store.clone(),
+                    (*policy).clone(),
+                    registry.clone(),
+                    evidence.clone(),
+                    None,
+                );
+                let healing_service = crate::governed_healing::GovernedHealingService::new(
+                    store.clone(),
+                    dispatcher,
+                    evidence.clone(),
+                    policy.clone(),
+                    None,
+                );
+                // Clearly attributable in every audit log entry as
+                // system-generated, never impersonating a real API key.
+                let system_ctx = crate::auth::AuthContext {
+                    key_id: Uuid::nil(),
+                    name: "system:phase10-autonomous-orchestrator".to_string(),
+                    role: crate::auth::Role::Operator,
+                    project_id: Some(project_id.to_string()),
+                };
+                match healing_service.propose_healing(&system_ctx, req).await {
+                    Ok(proposal) => {
+                        tracing::info!(
+                            "Phase 10: autonomously proposed healing {} for task '{}' in project {project_id} (run {})",
+                            proposal.id,
+                            t.name,
+                            record.run_id
+                        );
+                    }
+                    // This task/run already used its one bounded healing attempt (e.g. a person
+                    // proposed one first): the expected, harmless case.
+                    Err(e @ crate::governed_healing::GovernedHealingError::MaxHealingAttemptsExceeded(_)) => {
+                        tracing::debug!(
+                            "Phase 10: autonomous healing proposal skipped for task '{}' in project {project_id}: {e}",
+                            t.name
+                        );
+                    }
+                    // Anything else means a candidate that qualified was refused (validation,
+                    // security boundary, storage): surface it rather than lose it silently.
+                    // Never fatal to run completion.
+                    Err(e) => {
+                        tracing::warn!(
+                            "Phase 10: autonomous healing proposal refused for task '{}' in project {project_id}: {e}",
+                            t.name
+                        );
+                    }
+                }
+            }
         }
 
         webhook::notify_run_completed(record.summary().await);

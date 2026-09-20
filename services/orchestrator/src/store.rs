@@ -3111,6 +3111,33 @@ impl Store {
         Ok(count)
     }
 
+    /// True while some proposal for this task is still live: waiting on a human
+    /// (`PENDING_APPROVAL`) or approved but not yet run, and not past its `expires_at`.
+    /// `propose_healing` bounds attempts per *run*, so a task that keeps failing across runs
+    /// would otherwise collect one new proposal per run; the autonomous path uses this to
+    /// raise one and wait. Expiry is checked here, not only in `approve`, because a proposal
+    /// nobody ever opens is never flipped to `EXPIRED` and would otherwise block the task forever.
+    /// Same notion of "live" as the retention shield in `prune_execution_telemetry`.
+    pub async fn has_open_healing_proposal(
+        &self,
+        project_id: &str,
+        task_id: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool> {
+        let count: i64 = sqlx::query_scalar(
+            r#"SELECT COUNT(*) FROM healing_proposals
+               WHERE project_id = ? AND task_id = ?
+                 AND state IN ('PENDING_APPROVAL', 'APPROVED')
+                 AND expires_at > ?"#,
+        )
+        .bind(project_id)
+        .bind(task_id)
+        .bind(now.to_rfc3339())
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(count > 0)
+    }
+
     pub async fn update_healing_proposal_state(
         &self,
         id: Uuid,
@@ -3589,18 +3616,24 @@ impl Store {
         dry_run: bool,
     ) -> Result<u64> {
         let older_str = older_than.to_rfc3339();
+        // A proposal shields its task's telemetry only while it can still be acted on. Expiry is
+        // otherwise applied lazily (only when someone approves), so an unopened proposal stays
+        // `PENDING_APPROVAL` indefinitely and, without this bound, would pin that task's
+        // telemetry out of retention for good.
+        let now_str = chrono::Utc::now().to_rfc3339();
 
         let eligible_count: i64 = sqlx::query_scalar(
             r#"SELECT COUNT(*) FROM execution_telemetry
                WHERE project_id = ?
                  AND created_at < ?
                  AND run_id NOT IN (SELECT id FROM runs WHERE project_id = ? AND state IN ('PENDING', 'RUNNING'))
-                 AND task_id NOT IN (SELECT task_id FROM healing_proposals WHERE project_id = ? AND state IN ('PENDING_APPROVAL', 'APPROVED'))"#
+                 AND task_id NOT IN (SELECT task_id FROM healing_proposals WHERE project_id = ? AND state IN ('PENDING_APPROVAL', 'APPROVED') AND expires_at > ?)"#
         )
         .bind(project_id)
         .bind(&older_str)
         .bind(project_id)
         .bind(project_id)
+        .bind(&now_str)
         .fetch_one(&self.pool)
         .await?;
 
@@ -3613,12 +3646,13 @@ impl Store {
                WHERE project_id = ?
                  AND created_at < ?
                  AND run_id NOT IN (SELECT id FROM runs WHERE project_id = ? AND state IN ('PENDING', 'RUNNING'))
-                 AND task_id NOT IN (SELECT task_id FROM healing_proposals WHERE project_id = ? AND state IN ('PENDING_APPROVAL', 'APPROVED'))"#
+                 AND task_id NOT IN (SELECT task_id FROM healing_proposals WHERE project_id = ? AND state IN ('PENDING_APPROVAL', 'APPROVED') AND expires_at > ?)"#
         )
         .bind(project_id)
         .bind(&older_str)
         .bind(project_id)
         .bind(project_id)
+        .bind(&now_str)
         .execute(&self.pool)
         .await?;
 
