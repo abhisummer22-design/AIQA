@@ -1060,7 +1060,33 @@ pub fn spawn_run(
                     role: crate::auth::Role::Operator,
                     project_id: Some(project_id.to_string()),
                 };
-                match healing_service.propose_healing(&system_ctx, req).await {
+                // With a readable crawl for the project, let the real SelfHealingAgent probe it
+                // for a replacement selector; if that diagnosis cannot be completed, fall back
+                // to the advisory proposal so a recurring failure is never silently dropped. A
+                // spent attempt is not a diagnosis failure and would fail the fallback the same
+                // way, so it is passed straight through.
+                let outcome = match intel.ground_in_latest_crawl(project_id, &req).await {
+                    Some(grounded) => match healing_service
+                        .propose_healing(&system_ctx, grounded)
+                        .await
+                    {
+                        Err(e)
+                            if !matches!(
+                                e,
+                                crate::governed_healing::GovernedHealingError::MaxHealingAttemptsExceeded(_)
+                            ) =>
+                        {
+                            tracing::warn!(
+                                "Phase 10: crawl-grounded diagnosis for task '{}' in project {project_id} produced no proposal ({e}); proposing without a diagnosed fix instead",
+                                t.name
+                            );
+                            healing_service.propose_healing(&system_ctx, req).await
+                        }
+                        other => other,
+                    },
+                    None => healing_service.propose_healing(&system_ctx, req).await,
+                };
+                match outcome {
                     Ok(proposal) => {
                         tracing::info!(
                             "Phase 10: autonomously proposed healing {} for task '{}' in project {project_id} (run {})",

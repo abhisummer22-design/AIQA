@@ -222,11 +222,12 @@ impl<'a> Intelligence<'a> {
     /// capped low, matching this module's own established convention for
     /// automated, non-AI-derived values (see module doc comment) — this is
     /// confidence that the *pattern* is real, not confidence in a specific
-    /// fix, since no DOM evidence is available at run-completion time to
-    /// diagnose one; the original action is proposed unchanged, which makes
-    /// it a signal for a person, not a fix: it can be rejected or left to
-    /// expire, but `approve_proposal` and `execute_approved` refuse a
-    /// proposal that changes nothing. The caller
+    /// fix, since this function has no DOM evidence to diagnose one with
+    /// (`ground_in_latest_crawl` supplies it when the project has a crawl);
+    /// the original action is proposed unchanged, which makes it a signal
+    /// for a person, not a fix: it can be rejected or left to expire, but
+    /// `approve_proposal` and `execute_approved` refuse a proposal that
+    /// changes nothing. The caller
     /// (`engine.rs`) still submits this through the real, unmodified
     /// `GovernedHealingService::propose_healing` — every existing gate
     /// (bounded attempts, SSRF/injection checks, the confidence<0.80
@@ -290,7 +291,7 @@ impl<'a> Intelligence<'a> {
             diagnosis_category: Some("RecurringFlakyFailure".to_string()),
             confidence: Some(0.30),
             rationale: Some(format!(
-                "Autonomously detected by Phase 10 orchestration: '{}' failed {}/{} of its last {} runs (flakiness score {:.2}, classified {}). No DOM crawl evidence was available at run-completion time to diagnose a specific replacement selector, so the original action is proposed unchanged pending investigation.",
+                "Autonomously detected by Phase 10 orchestration: '{}' failed {}/{} of its last {} runs (flakiness score {:.2}, classified {}). No readable DOM crawl was available for this project at run-completion time to diagnose a specific replacement selector, so the original action is proposed unchanged pending investigation.",
                 t.name,
                 analysis.failures,
                 analysis.total_runs,
@@ -306,6 +307,41 @@ impl<'a> Intelligence<'a> {
             crawl_task_id: None,
             crawl_output: None,
         })
+    }
+
+    /// The project's newest completed crawl whose result can actually be read back
+    /// (`crawler::read_crawl_result`). A few of the most recent are tried, so one crawl whose
+    /// result file was deleted does not hide an older usable one.
+    async fn latest_readable_crawl(&self, project_id: &str) -> Option<String> {
+        let ids = self
+            .store
+            .recent_completed_crawl_task_ids(project_id, 5)
+            .await
+            .ok()?;
+        ids.into_iter()
+            .find(|id| crate::crawler::read_crawl_result(id).is_ok())
+    }
+
+    /// Upgrades an advisory candidate from `detect_autonomous_healing_candidate` so that
+    /// `propose_healing` has the real `SelfHealingAgent` diagnose it from the project's newest
+    /// readable crawl, instead of taking the placeholder diagnosis as given. That is what can turn
+    /// "this task keeps failing on selector X" into "X now looks like Y". `None` when the project
+    /// has no readable crawl, in which case the advisory candidate is all there is.
+    pub async fn ground_in_latest_crawl(
+        &self,
+        project_id: &str,
+        advisory: &crate::governed_healing::HealingProposalRequest,
+    ) -> Option<crate::governed_healing::HealingProposalRequest> {
+        let crawl_task_id = self.latest_readable_crawl(project_id).await?;
+        let mut grounded = advisory.clone();
+        // `propose_healing` takes a diagnosis as given only when all four of these are set;
+        // leaving them unset is what makes it run the agent against the crawl.
+        grounded.proposed_actions = None;
+        grounded.diagnosis_category = None;
+        grounded.confidence = None;
+        grounded.rationale = None;
+        grounded.crawl_task_id = Some(crawl_task_id);
+        Some(grounded)
     }
 
     /// Called once per completed run (`engine.rs`, on `RunCompleted`).

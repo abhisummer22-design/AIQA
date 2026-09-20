@@ -1162,7 +1162,7 @@ async fn test_42_existing_phase4_execution_remains_functional() {
 /// `#delete-user-account-btn` does and is a strong text/kind match for it —
 /// `SelfHealingAgent` reliably classifies this as `SelectorRenamedOrRelocated`
 /// with HIGH confidence.
-fn sample_healing_crawl_data() -> CrawlOutput {
+pub(crate) fn sample_healing_crawl_data() -> CrawlOutput {
     CrawlOutput {
         roles: vec![RoleCrawlResult {
             role: "admin".to_string(),

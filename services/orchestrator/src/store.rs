@@ -2423,6 +2423,28 @@ impl Store {
         Ok(out)
     }
 
+    /// Result keys of the project's most recent crawls that finished successfully, newest first.
+    /// A crawl is a run named `Crawl: <base_url>` holding one task, and that task's id is the key
+    /// its result file is stored under (`api.rs::start_crawl_scoped`, `crawler::read_crawl_result`).
+    pub async fn recent_completed_crawl_task_ids(
+        &self,
+        project_id: &str,
+        limit: i64,
+    ) -> Result<Vec<String>> {
+        let ids: Vec<String> = sqlx::query_scalar(
+            "SELECT t.id FROM tasks t
+             JOIN runs r ON r.id = t.run_id
+             WHERE r.project_id = ? AND r.name LIKE 'Crawl: %'
+               AND r.state = 'COMPLETED' AND t.status = 'PASSED'
+             ORDER BY r.created_at DESC LIMIT ?",
+        )
+        .bind(project_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(ids)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn upsert_risk_assessment(
         &self,
