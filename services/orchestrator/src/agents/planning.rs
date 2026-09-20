@@ -11,9 +11,11 @@
 //! - Non-executing: strictly generates plans, never invokes real executors.
 //! - Zero private chain-of-thought leakage; structured operational telemetry only.
 
-use crate::agent::{Agent, AgentContext, AgentError, TurnDecision};
+use crate::agent::{run_agent_loop, Agent, AgentContext, AgentError, AgentLimits, AgentStatus, TurnDecision};
 use crate::agent_tools::{AgentToolRegistry, ToolInvocation};
+use crate::adaptive_intelligence::QaIntelligenceFeedback;
 use crate::ai_router::AiInfrastructure;
+use crate::store::Store;
 use crate::tools::security::sanitize_secrets;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -34,6 +36,10 @@ pub struct PlanningRequest {
     pub requirement_ids: Vec<String>,
     #[serde(default)]
     pub schema_content: Option<String>,
+    /// Untrusted when it arrives over HTTP: `api::confine_schema_file_path`
+    /// confines it to `AIQA_SCHEMA_ROOT` before the agent sees it, and
+    /// anything else building a request from caller input must do the same,
+    /// because the schema inspector reads whatever path it is handed.
     #[serde(default)]
     pub schema_file_path: Option<String>,
     #[serde(default)]
@@ -46,6 +52,13 @@ pub struct PlanningRequest {
     pub max_planned_tests: Option<usize>,
     #[serde(default)]
     pub healing_feedback: Vec<crate::governed_healing::HealingFeedback>,
+    /// Real fragile-test/selector and risk signals from Adaptive QA
+    /// Intelligence (Phase 6) — see `adaptive_intelligence::generate_planning_feedback`,
+    /// which was built expressly to feed this agent. Always computed
+    /// server-side by `generate_test_plan` below; a caller-supplied value
+    /// here is ignored.
+    #[serde(default)]
+    pub qa_feedback: Option<QaIntelligenceFeedback>,
 }
 
 /// A specific, testable QA objective within a planned suite.
@@ -99,6 +112,11 @@ pub struct TestPlanOutput {
     pub total_planned_tests: usize,
     #[serde(default)]
     pub healing_insights: Vec<String>,
+    /// Fragile tests/selectors, high-risk components, and top failure
+    /// clusters surfaced from real Adaptive QA Intelligence (Phase 6) —
+    /// see `PlanningRequest::qa_feedback`.
+    #[serde(default)]
+    pub qa_risk_signals: Vec<String>,
 }
 
 /// Test Planning Agent implementation.
@@ -504,6 +522,36 @@ fn synthesize_test_plan(
         ));
     }
 
+    let mut recommended_next_actions = vec![
+        "Review P0 and P1 test objectives with engineering lead".to_string(),
+        "Proceed to test case compilation for approved suites".to_string(),
+    ];
+
+    let mut qa_risk_signals = Vec::new();
+    if let Some(ref qa) = req.qa_feedback {
+        qa_risk_signals.extend(
+            qa.fragile_tests
+                .iter()
+                .map(|t| format!("Fragile test (real flakiness history): {t}")),
+        );
+        qa_risk_signals.extend(
+            qa.fragile_selectors
+                .iter()
+                .map(|s| format!("Fragile selector (repeated failures): {s}")),
+        );
+        qa_risk_signals.extend(
+            qa.high_risk_components
+                .iter()
+                .map(|c| format!("High-risk component: {c}")),
+        );
+        qa_risk_signals.extend(
+            qa.top_failure_clusters
+                .iter()
+                .map(|c| format!("Top failure cluster: {c}")),
+        );
+        recommended_next_actions.extend(qa.recommended_priorities.iter().cloned());
+    }
+
     TestPlanOutput {
         project_id: req.project_id.clone(),
         planning_summary: summary,
@@ -512,11 +560,63 @@ fn synthesize_test_plan(
         prioritized_test_suites: suites,
         coverage_gaps,
         assumptions,
-        recommended_next_actions: vec![
-            "Review P0 and P1 test objectives with engineering lead".to_string(),
-            "Proceed to test case compilation for approved suites".to_string(),
-        ],
+        recommended_next_actions,
         total_planned_tests: total_count,
         healing_insights,
+        qa_risk_signals,
     }
+}
+
+/// Runs the real `TestPlanningAgent` (Phase 3) through `run_agent_loop`
+/// (Phase 1) with the `requirement_lookup`/`schema_inspector` diagnostic
+/// tools registered (Phase 2) — the concrete wiring point that makes this
+/// agent reachable from a live request instead of only from its own tests.
+/// `project_id` overwrites whatever `req.project_id` already held, exactly
+/// like the healing proposal endpoint overwrites it from the URL path.
+pub async fn generate_test_plan(
+    store: Store,
+    project_id: &str,
+    mut req: PlanningRequest,
+) -> Result<TestPlanOutput, String> {
+    req.project_id = project_id.to_string();
+
+    let mut registry = AgentToolRegistry::new();
+    crate::tools::register_diagnostic_tools(&mut registry, Some(store))
+        .map_err(|e| format!("failed to register diagnostic tools for planning: {e}"))?;
+
+    let mut context = AgentContext::new(
+        format!("plan-{project_id}"),
+        Some(project_id.to_string()),
+        uuid::Uuid::new_v4().to_string(),
+        AgentLimits::default(),
+        None,
+    );
+
+    // TestPlanningAgent is a deterministic, tool-driven synthesizer (see
+    // `step` above — it takes `_ai` and never reads it); `run_agent_loop`
+    // still requires an `AiInfrastructure` by signature, so an empty,
+    // provider-less one is genuinely equivalent here, not a stand-in for a
+    // real call that got skipped.
+    let ai = AiInfrastructure::new(vec![], std::collections::HashMap::new());
+    let agent = TestPlanningAgent::new(req);
+
+    let outcome = run_agent_loop(&agent, &mut context, &registry, &ai, None)
+        .await
+        .map_err(|e| format!("test planning failed: {e}"))?;
+
+    if outcome.status != AgentStatus::Completed {
+        return Err(format!(
+            "test planning agent could not complete (status: {:?}{})",
+            outcome.status,
+            outcome
+                .error
+                .map(|e| format!(", {e}"))
+                .unwrap_or_default()
+        ));
+    }
+    let output_val = outcome
+        .final_output
+        .ok_or_else(|| "test planning agent completed without output".to_string())?;
+    serde_json::from_value(output_val)
+        .map_err(|e| format!("failed to parse test plan output: {e}"))
 }

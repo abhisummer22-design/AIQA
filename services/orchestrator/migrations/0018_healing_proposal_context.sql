@@ -1,0 +1,15 @@
+-- What a healing proposal needs in order to be executed later, but which the
+-- table had no column for: the executor and environment it was proposed for,
+-- the task's display name, the target URL, the run timeout, the requirement
+-- reference and the free-form run parameters.
+--
+-- Without them `governed_healing.rs::row_to_proposal` had to invent values on
+-- every reload, so an approved proposal was always executed as a `simulated`
+-- task in the `test` environment: the healing run never used the proposal's
+-- real executor, always passed, and skipped the production run gate.
+--
+-- Stored as one JSON object, like this table's other structured columns.
+-- `NULL` means the row was written before this column existed; its real values
+-- were never recorded, so such a row is rebuilt with the same fixed defaults it
+-- has always been (today's behavior, unchanged for those rows).
+ALTER TABLE healing_proposals ADD COLUMN context TEXT;
