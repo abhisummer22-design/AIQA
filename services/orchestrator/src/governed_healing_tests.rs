@@ -989,6 +989,7 @@ async fn test_34_planning_agent_feedback() {
         priority_hints: vec![],
         max_planned_tests: Some(10),
         healing_feedback: vec![feedback],
+        qa_feedback: None,
     };
 
     let agent = TestPlanningAgent::new(req);

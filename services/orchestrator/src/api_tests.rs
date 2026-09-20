@@ -9561,3 +9561,222 @@ async fn test_phase8_retention_endpoints_and_rbac() {
     assert_eq!(prune_report["dry_run"], false);
     assert_eq!(prune_report["retention_days"], 30);
 }
+
+// ========================= Planning endpoint — schema_file_path containment
+
+/// A minimal but genuinely valid OpenAPI document (`schema_inspector`
+/// refuses anything that isn't one), so a request whose schema *does* get
+/// read produces an observable plan: the distinctive `/widgets` area.
+fn planning_openapi_json() -> String {
+    serde_json::json!({
+        "openapi": "3.0.3",
+        "info": { "title": "Widget API", "version": "1.0.0" },
+        "paths": {
+            "/widgets": {
+                "get": {
+                    "operationId": "listWidgets",
+                    "responses": { "200": { "description": "ok" } }
+                }
+            }
+        }
+    })
+    .to_string()
+}
+
+/// Security finding: `schema_file_path` let any Operator key make the
+/// server read and parse an arbitrary file on its own disk. A real, valid
+/// schema that exists on the host but is not under `AIQA_SCHEMA_ROOT` must
+/// be refused at the HTTP boundary, and the refusal must not echo the path.
+///
+/// Deliberately env-independent: whether `AIQA_SCHEMA_ROOT` is unset (file
+/// paths disabled) or points somewhere else entirely, this file is refused
+/// with the same 400, so the test never mutates process-wide state.
+#[tokio::test]
+async fn planning_test_plan_refuses_a_schema_file_path_outside_the_schema_root() {
+    let (state, dir) = test_state().await;
+    let project = make_project(&state, "Planning containment").await;
+    let operator = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let host_file = dir.path().join("host-only-spec.json");
+    std::fs::write(&host_file, planning_openapi_json()).expect("write host file");
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/planning/test-plan"),
+            Some(&operator),
+            Some(serde_json::json!({
+                "project_id": project.to_string(),
+                "schema_file_path": host_file.to_string_lossy(),
+            })),
+        ),
+    )
+    .await;
+
+    assert_envelope(status, &body, StatusCode::BAD_REQUEST, "VALIDATION_ERROR");
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("schema_content") && message.contains("AIQA_SCHEMA_ROOT"),
+        "the caller must be told how to proceed: {message}"
+    );
+    assert!(
+        !message.contains("host-only-spec") && !message.contains(&*dir.path().to_string_lossy()),
+        "the error must not echo the requested or resolved path: {message}"
+    );
+}
+
+/// The inline path (`schema_content`) is untouched by the containment: no
+/// `AIQA_SCHEMA_ROOT` is needed, and the plan is built from the inline
+/// document exactly as before.
+#[tokio::test]
+async fn planning_test_plan_still_accepts_an_inline_schema() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "Planning inline").await;
+    let operator = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, plan) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/planning/test-plan"),
+            Some(&operator),
+            Some(serde_json::json!({
+                "project_id": project.to_string(),
+                "schema_content": planning_openapi_json(),
+            })),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "body={plan}");
+    assert!(
+        plan["api_areas_considered"]
+            .as_array()
+            .expect("api_areas_considered")
+            .iter()
+            .any(|a| a == "/widgets"),
+        "the plan must be built from the inline schema: {plan}"
+    );
+}
+
+/// A `PlanningRequest` as the HTTP layer deserializes it (every optional
+/// field defaulted), with only the schema fields under test set.
+fn planning_request(
+    schema_file_path: Option<&str>,
+    schema_content: Option<&str>,
+) -> crate::agents::planning::PlanningRequest {
+    serde_json::from_value(serde_json::json!({
+        "project_id": "proj-confine",
+        "schema_file_path": schema_file_path,
+        "schema_content": schema_content,
+    }))
+    .expect("valid PlanningRequest")
+}
+
+/// Renders an `ApiError` the way the router would, so a test can read its
+/// real status and envelope (its fields are private to `errors.rs`).
+async fn api_error_parts(err: crate::errors::ApiError) -> (StatusCode, Value) {
+    let resp = axum::response::IntoResponse::into_response(err);
+    let status = resp.status();
+    let bytes = resp
+        .into_body()
+        .collect()
+        .await
+        .expect("collect body")
+        .to_bytes();
+    (
+        status,
+        serde_json::from_slice(&bytes).expect("error envelope"),
+    )
+}
+
+/// `AIQA_SCHEMA_ROOT` unset means server-side schema files are off: any
+/// real path is refused with guidance, while the inline path (even with a
+/// blank `schema_file_path` beside it) passes through untouched.
+#[tokio::test]
+async fn planning_confine_disables_file_paths_when_no_schema_root_is_configured() {
+    let mut req = planning_request(Some("api.yaml"), None);
+    let err = crate::api::confine_schema_file_path(&mut req, None).unwrap_err();
+    let (status, body) = api_error_parts(err).await;
+    assert_envelope(status, &body, StatusCode::BAD_REQUEST, "VALIDATION_ERROR");
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("schema_content") && message.contains("AIQA_SCHEMA_ROOT"),
+        "the caller must be told how to proceed: {message}"
+    );
+
+    let inline = planning_openapi_json();
+    let mut req = planning_request(Some("   "), Some(&inline));
+    crate::api::confine_schema_file_path(&mut req, None).expect("inline needs no root");
+    assert_eq!(req.schema_file_path.as_deref(), Some("   "));
+    assert_eq!(req.schema_content.as_deref(), Some(inline.as_str()));
+}
+
+/// The three ways a path can be wrong (outside the root, missing, a
+/// directory) get one identical response with no path in it: telling them
+/// apart would make the endpoint a file-existence oracle for the whole host.
+#[tokio::test]
+async fn planning_confine_refuses_every_bad_path_with_one_uniform_message() {
+    let (_state, dir) = test_state().await;
+    let root = dir.path().join("schemas");
+    std::fs::create_dir_all(root.join("sub")).unwrap();
+    let outside = dir.path().join("host-only-spec.json");
+    std::fs::write(&outside, planning_openapi_json()).unwrap();
+
+    let outside_abs = outside.to_string_lossy().to_string();
+    let mut messages = Vec::new();
+    for raw in [
+        outside_abs.as_str(),
+        "../host-only-spec.json",
+        "missing.json",
+        "sub",
+    ] {
+        let mut req = planning_request(Some(raw), None);
+        let err = crate::api::confine_schema_file_path(&mut req, Some(&root)).unwrap_err();
+        let (status, body) = api_error_parts(err).await;
+        assert_envelope(status, &body, StatusCode::BAD_REQUEST, "VALIDATION_ERROR");
+        let message = body["error"]["message"].as_str().unwrap().to_string();
+        assert!(
+            !message.contains("host-only-spec")
+                && !message.contains("schemas")
+                && !message.contains(&*dir.path().to_string_lossy()),
+            "{raw}: the error must not echo the requested or resolved path: {message}"
+        );
+        assert_eq!(req.schema_file_path.as_deref(), Some(raw), "left untouched");
+        messages.push(message);
+    }
+    assert!(
+        messages.windows(2).all(|w| w[0] == w[1]),
+        "every refusal must read the same: {messages:?}"
+    );
+}
+
+/// The accepted path is rewritten to the canonical file that was checked,
+/// and that is what the real agent and tool then read. A root-relative name
+/// would otherwise be re-resolved by the schema inspector against the repo
+/// root, so the file checked and the file read would differ.
+#[tokio::test]
+async fn planning_confine_hands_the_tool_the_canonical_file_it_checked() {
+    let (state, dir) = test_state().await;
+    let root = dir.path().join("schemas");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("widgets.json"), planning_openapi_json()).unwrap();
+
+    let mut req = planning_request(Some("widgets.json"), None);
+    crate::api::confine_schema_file_path(&mut req, Some(&root)).expect("inside the root");
+    let canonical = std::fs::canonicalize(root.join("widgets.json")).unwrap();
+    assert_eq!(
+        req.schema_file_path.as_deref().map(std::path::Path::new),
+        Some(canonical.as_path())
+    );
+
+    let plan =
+        crate::agents::planning::generate_test_plan(state.store.clone(), "proj-confine", req)
+            .await
+            .expect("the tool reads the canonical path");
+    assert!(
+        plan.api_areas_considered.iter().any(|a| a == "/widgets"),
+        "the plan must come from the file inside the root: {plan:?}"
+    );
+}

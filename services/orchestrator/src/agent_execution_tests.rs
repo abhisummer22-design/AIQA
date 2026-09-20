@@ -269,6 +269,7 @@ async fn test_10_from_test_plan_output_conversion() {
         recommended_next_actions: Vec::new(),
         total_planned_tests: 1,
         healing_insights: Vec::new(),
+        qa_risk_signals: Vec::new(),
     };
 
     let agent_plan = AgentExecutionPlan::from_test_plan_output(&output, "http://127.0.0.1:8080");
