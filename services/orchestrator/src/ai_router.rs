@@ -662,6 +662,12 @@ pub enum ExecutionError {
     Timeout,
     InvalidResponse(String),
     NonSuccessStatus(u16),
+    /// The provider refused the request and said why. `message` is the provider's own words (a rate limit, a
+    /// request that is too large, a bad key), so the reason shown to the user is the real one and not just a number.
+    ProviderRejected {
+        status: u16,
+        message: String,
+    },
 }
 
 impl std::fmt::Display for ExecutionError {
@@ -672,6 +678,9 @@ impl std::fmt::Display for ExecutionError {
             ExecutionError::Timeout => write!(f, "TIMEOUT"),
             ExecutionError::InvalidResponse(e) => write!(f, "INVALID_RESPONSE: {e}"),
             ExecutionError::NonSuccessStatus(s) => write!(f, "PROVIDER_ERROR: HTTP {s}"),
+            ExecutionError::ProviderRejected { status, message } => {
+                write!(f, "PROVIDER_ERROR: HTTP {status}: {message}")
+            }
         }
     }
 }
@@ -1221,6 +1230,124 @@ impl GroqExecutor {
     }
 }
 
+/// Longest provider message kept in an error: enough to carry a rate-limit explanation, short enough for a log
+/// line or an error banner.
+const PROVIDER_MESSAGE_MAX_CHARS: usize = 400;
+
+/// Longest a Groq rate limit is waited out inside one request. A longer wait (a busy minute, or a per-day limit)
+/// is reported with Groq's own words instead, so a request never sits for minutes.
+const GROQ_MAX_RETRY_WAIT: Duration = Duration::from_secs(30);
+
+/// A completion budget below this cannot hold a useful test-case answer, so a shrink that would go below it is
+/// not tried.
+const MIN_COMPLETION_TOKENS: u64 = 1024;
+
+/// Tokens kept back between the completion budget and Groq's limit, because the prompt's size is worked out from
+/// Groq's message, not counted.
+const TOKEN_LIMIT_MARGIN: u64 = 256;
+
+/// A provider's own words for why it refused a request: `error.message` of an OpenAI-style error object, else the
+/// body text, with whitespace collapsed and cut to `PROVIDER_MESSAGE_MAX_CHARS`.
+fn provider_error_message(body: &str) -> String {
+    let text = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| {
+            let error = v.get("error")?;
+            error
+                .get("message")
+                .or(Some(error))?
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| body.to_string());
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.is_empty() {
+        return "no message in the response body".to_string();
+    }
+    if text.chars().count() > PROVIDER_MESSAGE_MAX_CHARS {
+        let cut: String = text.chars().take(PROVIDER_MESSAGE_MAX_CHARS).collect();
+        return format!("{cut}...");
+    }
+    text
+}
+
+/// True when the message names a per-day limit, which takes hours to clear, not seconds.
+fn is_daily_limit(message: &str) -> bool {
+    let m = message.to_ascii_lowercase();
+    m.contains("per day") || m.contains("(tpd)") || m.contains("(rpd)")
+}
+
+/// How long Groq says to wait: its `retry-after` header (seconds), else the "try again in 6.5s / 250ms /
+/// 1m7.2s" wording of the message.
+fn groq_retry_delay(retry_after: Option<&str>, message: &str) -> Option<Duration> {
+    if let Some(secs) = retry_after.and_then(|h| h.trim().parse::<f64>().ok()) {
+        return Duration::try_from_secs_f64(secs).ok();
+    }
+    static UNIT: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let unit =
+        UNIT.get_or_init(|| regex::Regex::new(r"(\d+(?:\.\d+)?)(ms|h|m|s)").expect("valid regex"));
+    let wording = message.split("try again in ").nth(1)?;
+    // "1m7.2s." — only the leading run of number-and-unit pieces belongs to the wait
+    let span: String = wording
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || matches!(c, '.' | 'h' | 'm' | 's'))
+        .collect();
+    let mut total = 0.0_f64;
+    let mut found = false;
+    for piece in unit.captures_iter(&span) {
+        let n: f64 = piece[1].parse().ok()?;
+        total += match &piece[2] {
+            "h" => n * 3600.0,
+            "m" => n * 60.0,
+            "s" => n,
+            _ => n / 1000.0,
+        };
+        found = true;
+    }
+    if found {
+        Duration::try_from_secs_f64(total).ok()
+    } else {
+        None
+    }
+}
+
+/// A smaller `max_tokens` that fits Groq's tokens-per-minute limit, worked out from Groq's own figures
+/// ("Limit 8000, Requested 10345"). A request is the prompt plus the completion budget, so the prompt is what
+/// is left of `Requested` after taking off the `sent` budget, and the room for the completion is the limit less
+/// that and a margin. `None` when the message has no such figures, when the prompt alone does not fit, when the
+/// budget would not shrink, or when what is left is too small to hold an answer.
+fn shrunk_max_tokens(message: &str, sent: u32) -> Option<u32> {
+    static FIGURES: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let figures = FIGURES
+        .get_or_init(|| regex::Regex::new(r"Limit (\d+), Requested (\d+)").expect("valid regex"));
+    let found = figures.captures(message)?;
+    let limit: u64 = found[1].parse().ok()?;
+    let requested: u64 = found[2].parse().ok()?;
+    let sent = u64::from(sent);
+    // `Requested` counts the prompt plus our completion budget; a figure that is not even that large says
+    // nothing about the prompt's size.
+    let prompt = requested.checked_sub(sent).filter(|p| *p > 0)?;
+    let room = limit.checked_sub(prompt + TOKEN_LIMIT_MARGIN)?;
+    if room >= MIN_COMPLETION_TOKENS && room < sent {
+        Some(room as u32)
+    } else {
+        None
+    }
+}
+
+/// Why an answer came back empty. `finish_reason: length` means the budget ran out before any answer text was
+/// written, which is what a reasoning model does when it spends the whole budget thinking.
+fn empty_response_reason(finish_reason: Option<&str>, max_tokens: u32) -> String {
+    match finish_reason {
+        Some("length") => format!(
+            "empty response: the model used its whole {max_tokens}-token budget before writing an answer \
+             (finish_reason=length); a reasoning model spends part of that budget thinking"
+        ),
+        Some(other) => format!("empty response (finish_reason={other})"),
+        None => "empty response".to_string(),
+    }
+}
+
 #[async_trait::async_trait]
 impl AiExecutor for GroqExecutor {
     async fn execute(
@@ -1254,69 +1381,116 @@ impl AiExecutor for GroqExecutor {
             "{}/v1/chat/completions",
             self.base_url.trim_end_matches('/')
         );
-        let mut body = serde_json::json!({
-            "model": model_id,
-            "messages": [{ "role": "user", "content": prompt }],
-            "stream": false,
-            "max_tokens": self.max_tokens,
-        });
-        // Groq's own real, documented structured-output enforcement — a
-        // genuine reliability improvement over prompt-only JSON for the
-        // tasks that need it. Not applied to the pre-existing MJ Gateway
-        // path (untouched here), which was never verified to support it.
-        if matches!(
-            task,
-            AiTask::TestCaseGeneration | AiTask::TestCaseCompilation
-        ) {
-            body["response_format"] = serde_json::json!({ "type": "json_object" });
-        }
-        let resp = client
-            .post(&url)
-            .bearer_auth(key)
-            .json(&body)
-            .timeout(self.timeout)
-            .send()
-            .await
-            .map_err(|e| {
-                if e.is_timeout() {
-                    ExecutionError::Timeout
-                } else {
-                    ExecutionError::ProviderUnavailable(e.to_string())
+        // Starts at the configured budget. Groq's free plans allow only a few thousand tokens a minute, so a
+        // request it refuses as too large is retried once with a budget that fits (`shrunk_max_tokens`), and a
+        // limit that clears within seconds is waited out once. Anything else is reported with Groq's own words.
+        let mut max_tokens = self.max_tokens;
+        let (mut shrank, mut waited) = (false, false);
+        loop {
+            let mut body = serde_json::json!({
+                "model": model_id,
+                "messages": [{ "role": "user", "content": prompt }],
+                "stream": false,
+                "max_tokens": max_tokens,
+            });
+            // Groq's own real, documented structured-output enforcement — a
+            // genuine reliability improvement over prompt-only JSON for the
+            // tasks that need it. Not applied to the pre-existing MJ Gateway
+            // path (untouched here), which was never verified to support it.
+            if matches!(
+                task,
+                AiTask::TestCaseGeneration | AiTask::TestCaseCompilation
+            ) {
+                body["response_format"] = serde_json::json!({ "type": "json_object" });
+            }
+            let resp = client
+                .post(&url)
+                .bearer_auth(key)
+                .json(&body)
+                .timeout(self.timeout)
+                .send()
+                .await
+                .map_err(|e| {
+                    if e.is_timeout() {
+                        ExecutionError::Timeout
+                    } else {
+                        ExecutionError::ProviderUnavailable(e.to_string())
+                    }
+                })?;
+            let status = resp.status();
+            if !status.is_success() {
+                let retry_after = resp
+                    .headers()
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_string);
+                let message = provider_error_message(&resp.text().await.unwrap_or_default());
+                let code = status.as_u16();
+                // 413: the request alone is bigger than the tokens-per-minute limit. 429: a limit was reached,
+                // and some of those clear within seconds.
+                if code == 413 || (code == 429 && !is_daily_limit(&message)) {
+                    if !shrank {
+                        if let Some(smaller) = shrunk_max_tokens(&message, max_tokens) {
+                            tracing::warn!(
+                                "Groq refused a {max_tokens}-token budget for '{model_id}' ({message}); retrying with {smaller}"
+                            );
+                            max_tokens = smaller;
+                            shrank = true;
+                            continue;
+                        }
+                    }
+                    if code == 429 && !waited {
+                        if let Some(delay) = groq_retry_delay(retry_after.as_deref(), &message)
+                            .filter(|d| *d <= GROQ_MAX_RETRY_WAIT)
+                        {
+                            tracing::warn!(
+                                "Groq rate-limited '{model_id}' ({message}); waiting {delay:?} and retrying once"
+                            );
+                            tokio::time::sleep(delay + Duration::from_millis(250)).await;
+                            waited = true;
+                            continue;
+                        }
+                    }
                 }
-            })?;
-        if !resp.status().is_success() {
-            return Err(ExecutionError::NonSuccessStatus(resp.status().as_u16()));
+                return Err(ExecutionError::ProviderRejected {
+                    status: code,
+                    message,
+                });
+            }
+            let parsed: serde_json::Value = resp
+                .json()
+                .await
+                .map_err(|e| ExecutionError::InvalidResponse(e.to_string()))?;
+            let choice = parsed.get("choices").and_then(|v| v.get(0));
+            let text = choice
+                .and_then(|c| c.get("message"))
+                .and_then(|m| m.get("content"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if text.trim().is_empty() {
+                let finish_reason = choice
+                    .and_then(|c| c.get("finish_reason"))
+                    .and_then(|v| v.as_str());
+                return Err(ExecutionError::InvalidResponse(empty_response_reason(
+                    finish_reason,
+                    max_tokens,
+                )));
+            }
+            let usage = TokenUsage {
+                prompt_tokens: parsed
+                    .get("usage")
+                    .and_then(|u| u.get("prompt_tokens"))
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32),
+                completion_tokens: parsed
+                    .get("usage")
+                    .and_then(|u| u.get("completion_tokens"))
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32),
+            };
+            return Ok(ExecutionOutput { text, usage });
         }
-        let parsed: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| ExecutionError::InvalidResponse(e.to_string()))?;
-        let text = parsed
-            .get("choices")
-            .and_then(|v| v.get(0))
-            .and_then(|c| c.get("message"))
-            .and_then(|m| m.get("content"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        if text.trim().is_empty() {
-            return Err(ExecutionError::InvalidResponse(
-                "empty response".to_string(),
-            ));
-        }
-        let usage = TokenUsage {
-            prompt_tokens: parsed
-                .get("usage")
-                .and_then(|u| u.get("prompt_tokens"))
-                .and_then(|v| v.as_u64())
-                .map(|v| v as u32),
-            completion_tokens: parsed
-                .get("usage")
-                .and_then(|u| u.get("completion_tokens"))
-                .and_then(|v| v.as_u64())
-                .map(|v| v as u32),
-        };
-        Ok(ExecutionOutput { text, usage })
     }
 }
 
@@ -2712,6 +2886,12 @@ pub mod test_support {
                 Err(ExecutionError::NonSuccessStatus(s)) => {
                     Err(ExecutionError::NonSuccessStatus(*s))
                 }
+                Err(ExecutionError::ProviderRejected { status, message }) => {
+                    Err(ExecutionError::ProviderRejected {
+                        status: *status,
+                        message: message.clone(),
+                    })
+                }
             }
         }
     }
@@ -4100,6 +4280,385 @@ mod tests {
         let addr = listener.local_addr().expect("local addr");
         tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
         format!("http://{addr}")
+    }
+
+    /// One scripted answer from `spawn_scripted_groq_chat`.
+    struct Scripted {
+        status: u16,
+        retry_after: Option<&'static str>,
+        body: String,
+    }
+
+    fn groq_ok(content: &str, finish_reason: &str) -> Scripted {
+        Scripted {
+            status: 200,
+            retry_after: None,
+            body: serde_json::json!({
+                "choices": [{
+                    "message": {"role": "assistant", "content": content},
+                    "finish_reason": finish_reason
+                }],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 50}
+            })
+            .to_string(),
+        }
+    }
+
+    fn groq_refusal(status: u16, message: &str) -> Scripted {
+        Scripted {
+            status,
+            retry_after: None,
+            body: serde_json::json!({
+                "error": {"message": message, "type": "tokens", "code": "rate_limit_exceeded"}
+            })
+            .to_string(),
+        }
+    }
+
+    /// A Groq chat endpoint that answers from a script, one entry per request, and records every request body.
+    /// A request past the end of the script gets a 500, so an unexpected extra call fails a test loudly.
+    async fn spawn_scripted_groq_chat(
+        script: Vec<Scripted>,
+    ) -> (
+        String,
+        std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    ) {
+        use axum::response::IntoResponse;
+
+        #[derive(Clone)]
+        struct Script {
+            answers: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<Scripted>>>,
+            seen: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+        }
+
+        async fn chat(
+            axum::extract::State(script): axum::extract::State<Script>,
+            axum::Json(body): axum::Json<serde_json::Value>,
+        ) -> axum::response::Response {
+            script.seen.lock().unwrap().push(body);
+            let next = script.answers.lock().unwrap().pop_front();
+            let Some(answer) = next else {
+                return (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "script exhausted",
+                )
+                    .into_response();
+            };
+            let mut response = (
+                axum::http::StatusCode::from_u16(answer.status).unwrap(),
+                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                answer.body,
+            )
+                .into_response();
+            if let Some(seconds) = answer.retry_after {
+                response
+                    .headers_mut()
+                    .insert("retry-after", seconds.parse().unwrap());
+            }
+            response
+        }
+
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let state = Script {
+            answers: std::sync::Arc::new(std::sync::Mutex::new(script.into())),
+            seen: seen.clone(),
+        };
+        let app = axum::Router::new()
+            .route("/v1/chat/completions", axum::routing::post(chat))
+            .with_state(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
+        (format!("http://{addr}"), seen)
+    }
+
+    fn groq_executor(base_url: String) -> GroqExecutor {
+        GroqExecutor {
+            base_url,
+            api_key: Some("groq_test_ok".to_string()),
+            timeout: Duration::from_secs(5),
+            max_tokens: 8192,
+        }
+    }
+
+    /// Groq's own wording for a request larger than the model's tokens-per-minute limit.
+    const TPM_TOO_LARGE: &str = "Request too large for model `qwen/qwen3.8-27b` in organization `org_01` service tier `on_demand` on tokens per minute (TPM): Limit 8000, Requested 10345, please reduce your message size and try again.";
+
+    async fn groq_generate(base_url: String) -> Result<ExecutionOutput, ExecutionError> {
+        groq_executor(base_url)
+            .execute_task(
+                GroqDiscovery::PROVIDER_ID,
+                "qwen/qwen3.8-27b",
+                "prompt",
+                AiTask::TestCaseGeneration,
+            )
+            .await
+    }
+
+    #[tokio::test]
+    async fn groq_retries_a_too_large_request_once_with_a_budget_that_fits_the_limit_it_reported() {
+        let (base_url, seen) = spawn_scripted_groq_chat(vec![
+            groq_refusal(413, TPM_TOO_LARGE),
+            groq_ok("{\"test_cases\":[]}", "stop"),
+        ])
+        .await;
+        let out = groq_generate(base_url)
+            .await
+            .expect("the second request fits and succeeds");
+        assert_eq!(out.text, "{\"test_cases\":[]}");
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2, "one refusal, then one retry");
+        assert_eq!(seen[0]["max_tokens"], 8192);
+        // Groq's own figures: the request was 10345 = prompt + 8192, so the prompt is 2153 tokens, which
+        // leaves 8000 - 2153 - 256 for the answer.
+        assert_eq!(seen[1]["max_tokens"], 5591);
+        // the retry asks for exactly what the first request did, apart from the budget
+        assert_eq!(seen[1]["response_format"]["type"], "json_object");
+        assert_eq!(seen[1]["model"], "qwen/qwen3.8-27b");
+        assert_eq!(seen[1]["messages"], seen[0]["messages"]);
+    }
+
+    #[tokio::test]
+    async fn groq_does_not_retry_when_the_prompt_alone_is_over_the_limit_and_says_so() {
+        let message = "Request too large for model `qwen/qwen3.8-27b` on tokens per minute (TPM): Limit 8000, Requested 20000, please reduce your message size and try again.";
+        let (base_url, seen) = spawn_scripted_groq_chat(vec![groq_refusal(413, message)]).await;
+        let err = groq_generate(base_url)
+            .await
+            .expect_err("no budget can make this fit");
+        match &err {
+            ExecutionError::ProviderRejected { status, message } => {
+                assert_eq!(*status, 413);
+                assert!(message.contains("Limit 8000, Requested 20000"), "{message}");
+            }
+            other => panic!("expected the provider's own refusal, got {other:?}"),
+        }
+        assert_eq!(seen.lock().unwrap().len(), 1, "no pointless retry");
+        // this is what the user reads on the generator page
+        assert!(
+            err.to_string()
+                .starts_with("PROVIDER_ERROR: HTTP 413: Request too large"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn groq_waits_out_a_short_rate_limit_once_and_retries_with_the_same_budget() {
+        let message = "Rate limit reached for model `qwen/qwen3.8-27b` on tokens per minute (TPM): Limit 8000, Used 7500, Requested 900. Please try again in 50ms. Need more tokens? Upgrade to Dev Tier today.";
+        let (base_url, seen) =
+            spawn_scripted_groq_chat(vec![groq_refusal(429, message), groq_ok("hello", "stop")])
+                .await;
+        let out = groq_generate(base_url)
+            .await
+            .expect("the retry after the wait succeeds");
+        assert_eq!(out.text, "hello");
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(
+            seen[1]["max_tokens"], 8192,
+            "a limit that clears is not a reason to shrink the answer"
+        );
+    }
+
+    #[tokio::test]
+    async fn groq_waits_only_once_and_then_reports_the_second_rate_limit() {
+        let message = "Rate limit reached on tokens per minute (TPM): Limit 8000, Used 7900, Requested 900. Please try again in 50ms.";
+        let (base_url, seen) =
+            spawn_scripted_groq_chat(vec![groq_refusal(429, message), groq_refusal(429, message)])
+                .await;
+        let err = groq_generate(base_url).await.expect_err("still limited");
+        assert!(matches!(
+            err,
+            ExecutionError::ProviderRejected { status: 429, .. }
+        ));
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            2,
+            "one wait, one retry, no more"
+        );
+    }
+
+    #[tokio::test]
+    async fn groq_does_not_wait_for_a_per_day_limit() {
+        // The wait it names is short here, so it is the per-day wording alone that rules a retry out, not the
+        // cap on how long a wait may be.
+        let message = "Rate limit reached for model `qwen/qwen3.8-27b` on tokens per day (TPD): Limit 200000, Used 199900, Requested 500. Please try again in 50ms.";
+        let (base_url, seen) = spawn_scripted_groq_chat(vec![groq_refusal(429, message)]).await;
+        let err = groq_generate(base_url).await.expect_err("a day limit");
+        assert!(err.to_string().contains("tokens per day (TPD)"), "{err}");
+        assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn groq_does_not_wait_longer_than_its_cap() {
+        let mut refusal = groq_refusal(
+            429,
+            "Rate limit reached on requests per minute (RPM). Please try again in 45s.",
+        );
+        refusal.retry_after = Some("120");
+        let (base_url, seen) = spawn_scripted_groq_chat(vec![refusal]).await;
+        let err = groq_generate(base_url).await.expect_err("too long to wait");
+        assert!(matches!(
+            err,
+            ExecutionError::ProviderRejected { status: 429, .. }
+        ));
+        assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn groq_reports_an_error_body_that_is_not_json_in_its_own_words() {
+        let (base_url, _seen) = spawn_scripted_groq_chat(vec![Scripted {
+            status: 502,
+            retry_after: None,
+            body: "<html>  Bad   gateway </html>".to_string(),
+        }])
+        .await;
+        let err = groq_generate(base_url).await.expect_err("a gateway error");
+        assert_eq!(
+            err.to_string(),
+            "PROVIDER_ERROR: HTTP 502: <html> Bad gateway </html>"
+        );
+    }
+
+    #[tokio::test]
+    async fn groq_reports_a_bad_key_with_its_message() {
+        let (base_url, _seen) =
+            spawn_scripted_groq_chat(vec![groq_refusal(401, "Invalid API Key")]).await;
+        let err = groq_generate(base_url).await.expect_err("a bad key");
+        assert_eq!(err.to_string(), "PROVIDER_ERROR: HTTP 401: Invalid API Key");
+    }
+
+    #[tokio::test]
+    async fn groq_says_when_an_empty_answer_used_up_the_token_budget() {
+        let (base_url, _seen) = spawn_scripted_groq_chat(vec![Scripted {
+            status: 200,
+            retry_after: None,
+            body: serde_json::json!({
+                "choices": [{
+                    "message": {"role": "assistant", "content": "", "reasoning": "let me think about the login flow..."},
+                    "finish_reason": "length"
+                }]
+            })
+            .to_string(),
+        }])
+        .await;
+        let err = groq_generate(base_url)
+            .await
+            .expect_err("nothing was written");
+        let text = err.to_string();
+        assert!(
+            text.starts_with("INVALID_RESPONSE: empty response"),
+            "{text}"
+        );
+        assert!(text.contains("8192-token budget"), "{text}");
+        assert!(text.contains("finish_reason=length"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn groq_still_reports_a_plain_empty_answer_plainly() {
+        let (base_url, _seen) = spawn_scripted_groq_chat(vec![groq_ok("", "stop")]).await;
+        let err = groq_generate(base_url)
+            .await
+            .expect_err("nothing was written");
+        assert_eq!(
+            err.to_string(),
+            "INVALID_RESPONSE: empty response (finish_reason=stop)"
+        );
+    }
+
+    #[test]
+    fn shrunk_max_tokens_works_from_groqs_own_figures() {
+        assert_eq!(shrunk_max_tokens(TPM_TOO_LARGE, 8192), Some(5591));
+        // the prompt alone does not fit
+        assert_eq!(
+            shrunk_max_tokens("Limit 8000, Requested 20000, reduce", 8192),
+            None
+        );
+        // what would be left is too small to hold an answer (prompt 7000, margin, leaves 744)
+        assert_eq!(shrunk_max_tokens("Limit 8000, Requested 15192", 8192), None);
+        // no figures, or figures that do not include our budget, say nothing about the prompt
+        assert_eq!(shrunk_max_tokens("Rate limit reached", 8192), None);
+        assert_eq!(shrunk_max_tokens("Limit 8000, Requested 5000", 8192), None);
+        // a budget that already fits is left alone
+        assert_eq!(
+            shrunk_max_tokens("Limit 30000, Requested 10345", 8192),
+            None
+        );
+    }
+
+    #[test]
+    fn groq_retry_delay_reads_the_header_and_the_wording() {
+        assert_eq!(
+            groq_retry_delay(Some("3"), "anything"),
+            Some(Duration::from_secs(3))
+        );
+        assert_eq!(
+            groq_retry_delay(None, "Please try again in 6.5s."),
+            Some(Duration::from_millis(6500))
+        );
+        assert_eq!(
+            groq_retry_delay(None, "Please try again in 250ms. Need more?"),
+            Some(Duration::from_millis(250))
+        );
+        assert_eq!(
+            groq_retry_delay(None, "Please try again in 1m7.2s."),
+            Some(Duration::from_millis(67_200))
+        );
+        assert_eq!(
+            groq_retry_delay(None, "Please try again in 1h2m3s."),
+            Some(Duration::from_secs(3723))
+        );
+        assert_eq!(groq_retry_delay(None, "no hint here"), None);
+        assert_eq!(
+            groq_retry_delay(Some("soon"), "Please try again in 2s."),
+            Some(Duration::from_secs(2)),
+            "a header that is not a number falls back to the wording"
+        );
+    }
+
+    #[test]
+    fn provider_error_message_takes_the_error_text_and_tidies_it() {
+        assert_eq!(
+            provider_error_message(r#"{"error":{"message":"Invalid  API\nKey","type":"x"}}"#),
+            "Invalid API Key"
+        );
+        assert_eq!(
+            provider_error_message(r#"{"error":"plain string error"}"#),
+            "plain string error"
+        );
+        assert_eq!(
+            provider_error_message("  <html>  down </html> "),
+            "<html> down </html>"
+        );
+        assert_eq!(
+            provider_error_message(""),
+            "no message in the response body"
+        );
+        let cut = provider_error_message(&"x".repeat(1000));
+        assert_eq!(cut.chars().count(), PROVIDER_MESSAGE_MAX_CHARS + 3);
+        assert!(cut.ends_with("..."));
+        // multi-byte characters are cut on a character boundary, never in the middle of one
+        assert!(
+            provider_error_message(&"é".repeat(1000)).chars().count()
+                <= PROVIDER_MESSAGE_MAX_CHARS + 3
+        );
+    }
+
+    #[test]
+    fn a_per_day_limit_is_told_apart_from_a_per_minute_one() {
+        assert!(is_daily_limit("on tokens per day (TPD): Limit 200000"));
+        assert!(is_daily_limit("requests per day (RPD)"));
+        assert!(!is_daily_limit("on tokens per minute (TPM): Limit 8000"));
+    }
+
+    #[test]
+    fn a_provider_rejection_reads_with_the_providers_own_words() {
+        let e = ExecutionError::ProviderRejected {
+            status: 413,
+            message: "Request too large".to_string(),
+        };
+        assert_eq!(e.to_string(), "PROVIDER_ERROR: HTTP 413: Request too large");
     }
 
     #[tokio::test]

@@ -3111,6 +3111,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn integration_failed_outcome_carries_the_providers_own_reason() {
+        let infra = infra_with_executor_error(ExecutionError::ProviderRejected {
+            status: 413,
+            message: "Request too large for model `x` on tokens per minute (TPM): Limit 8000, Requested 10345"
+                .to_string(),
+        });
+        let outcome = generate_test_cases(
+            &infra,
+            "Anything.",
+            &[],
+            &FeedbackContext::default(),
+            None,
+            None,
+        )
+        .await;
+        match outcome {
+            GenerationOutcome::Failed { reason } => {
+                assert!(reason.contains("HTTP 413"), "{reason}");
+                assert!(reason.contains("Request too large"), "{reason}");
+                assert!(reason.contains("Limit 8000, Requested 10345"), "{reason}");
+            }
+            GenerationOutcome::Ai { .. } => {
+                panic!("a refusing provider must never produce a fabricated Ai outcome")
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn integration_returns_failed_outcome_on_provider_timeout_never_a_fabricated_success() {
         let infra = infra_with_executor_error(ExecutionError::Timeout);
         let outcome = generate_test_cases(
