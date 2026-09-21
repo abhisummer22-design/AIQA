@@ -3402,6 +3402,167 @@ async fn be15_audit_log_scoped_to_project_and_isolated() {
     assert_envelope(status, &body, StatusCode::UNAUTHORIZED, "UNAUTHENTICATED");
 }
 
+/// Category: a global-scope key (the bootstrap admin key has no project) acting inside a project. Its audit
+/// rows used to carry the key's own scope, that is no project, so the project's audit trail stayed empty
+/// however much the key did there.
+#[tokio::test]
+async fn be15_audit_trail_lists_a_global_keys_actions_under_the_project_they_happened_in() {
+    let (state, _dir) = test_state().await;
+    let project_a = make_project(&state, "Audit Global A").await;
+    let project_b = make_project(&state, "Audit Global B").await;
+    let admin = mint_key(&state, "admin", None).await;
+
+    let (status, _) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_a}/executions"),
+            Some(&admin),
+            Some(simple_plan("global-a")),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_a}/test-cases"),
+            Some(&admin),
+            Some(sample_test_case_body("Global key case")),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_b}/executions"),
+            Some(&admin),
+            Some(simple_plan("global-b")),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, log_a) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_a}/audit"),
+            Some(&admin),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={log_a}");
+    let rows_a = log_a["rows"].as_array().unwrap();
+    let actions_a: Vec<&str> = rows_a
+        .iter()
+        .map(|r| r["action"].as_str().unwrap())
+        .collect();
+    assert!(actions_a.contains(&"run.create"), "actions={actions_a:?}");
+    assert!(
+        actions_a.contains(&"test_case.create"),
+        "actions={actions_a:?}"
+    );
+    assert!(
+        rows_a
+            .iter()
+            .all(|r| r["project_id"] == project_a.to_string()),
+        "rows={rows_a:?}"
+    );
+    assert_eq!(log_a["total"].as_i64().unwrap(), rows_a.len() as i64);
+
+    // Project B's trail holds B's own single action, and none of A's.
+    let (status, log_b) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_b}/audit"),
+            Some(&admin),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={log_b}");
+    let rows_b = log_b["rows"].as_array().unwrap();
+    assert_eq!(rows_b.len(), 1, "rows={rows_b:?}");
+    assert_eq!(rows_b[0]["action"], "run.create");
+    assert_eq!(rows_b[0]["project_id"], project_b.to_string());
+}
+
+/// Category: `project.create` has no project in its URL (the project did not exist until the request), so it
+/// is attributed to the project it created, which is what a new project's audit trail should start with.
+#[tokio::test]
+async fn be15_project_create_is_audited_under_the_new_project() {
+    let (state, _dir) = test_state().await;
+    let admin = mint_key(&state, "admin", None).await;
+    let (status, created) = send(
+        &state,
+        req(
+            "POST",
+            "/api/v1/projects",
+            Some(&admin),
+            Some(serde_json::json!({ "name": "Audited From The Start" })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={created}");
+    let id = created["id"].as_str().unwrap().to_string();
+
+    let (status, log) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{id}/audit"),
+            Some(&admin),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={log}");
+    let rows = log["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "rows={rows:?}");
+    assert_eq!(rows[0]["action"], "project.create");
+    assert_eq!(rows[0]["project_id"], id);
+}
+
+/// Category: which project a request URL names, which is what the attribution above is read from.
+#[test]
+fn project_from_path_reads_only_a_real_project_id_from_a_project_url() {
+    let id = "6f95ee30-3fc8-4bc6-9d6d-f8cb4c8ef988";
+    assert_eq!(
+        crate::auth::project_from_path(&format!("/api/v1/projects/{id}/test-cases")).as_deref(),
+        Some(id)
+    );
+    assert_eq!(
+        crate::auth::project_from_path(&format!("/api/v1/projects/{id}")).as_deref(),
+        Some(id)
+    );
+    // an upper-case id is canonicalised to the form projects are stored under
+    assert_eq!(
+        crate::auth::project_from_path(&format!("/api/v1/projects/{}/audit", id.to_uppercase()))
+            .as_deref(),
+        Some(id)
+    );
+    for not_a_project in [
+        "/api/v1/projects",
+        "/api/v1/projects/",
+        "/api/v1/projects/not-a-uuid/audit",
+        "/api/v1/logs",
+        "/health",
+        "/admin/api-keys",
+    ] {
+        assert_eq!(
+            crate::auth::project_from_path(not_a_project),
+            None,
+            "path={not_a_project}"
+        );
+    }
+}
+
 /// Category: real pagination — `offset` genuinely moves the window rather
 /// than being silently ignored, `total` is the real full count (not this
 /// response's own batch length), and paging all the way through with a
