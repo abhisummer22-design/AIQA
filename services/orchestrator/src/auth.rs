@@ -67,6 +67,28 @@ pub struct AuthContext {
     pub project_id: Option<String>,
 }
 
+tokio::task_local! {
+    /// The project a request is about, read from its URL (`/api/v1/projects/:project_id/...`), for the
+    /// duration of that request. A global-scope key has `AuthContext::project_id == None`, so without this an
+    /// audit row written while it acts inside a project was attributed to no project, and never showed up in
+    /// that project's own audit trail.
+    static REQUEST_PROJECT: Option<String>;
+}
+
+/// The project named in the current request's URL, if there is one.
+pub fn request_project() -> Option<String> {
+    REQUEST_PROJECT.try_with(|p| p.clone()).ok().flatten()
+}
+
+/// `/api/v1/projects/<uuid>/...` gives `<uuid>` in its canonical form; anything else (`/api/v1/projects`, a
+/// path that names no project, a malformed id) gives `None`.
+pub(crate) fn project_from_path(path: &str) -> Option<String> {
+    let rest = path.strip_prefix("/api/v1/projects/")?;
+    Uuid::parse_str(rest.split('/').next()?)
+        .ok()
+        .map(|id| id.to_string())
+}
+
 pub fn generate_key() -> String {
     let mut bytes = [0u8; 32];
     rand::rng().fill_bytes(&mut bytes);
@@ -169,7 +191,9 @@ pub async fn require_auth(
             let actor_project = ctx.project_id.clone();
             req.extensions_mut().insert(ctx);
 
-            let response = next.run(req).await;
+            let response = REQUEST_PROJECT
+                .scope(project_from_path(&path), next.run(req))
+                .await;
 
             // Authorization denials (403) are produced by `require_role` /
             // `require_project_access`, which are pure functions with no

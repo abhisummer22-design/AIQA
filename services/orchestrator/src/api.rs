@@ -558,12 +558,39 @@ async fn audit(
     detail: Option<&str>,
     outcome: &str,
 ) {
+    // A global-scope key (`ctx.project_id` is `None`) that acts inside a project is acting in *that*
+    // project, so record the one the request's URL names. Otherwise the row belongs to no project and
+    // never shows up in the project's own audit trail.
+    let project = ctx.project_id.clone().or_else(auth::request_project);
+    audit_in_project(
+        state,
+        ctx,
+        project.as_deref(),
+        action,
+        target,
+        detail,
+        outcome,
+    )
+    .await;
+}
+
+/// `audit`, for an action whose project the handler knows but the request's URL does not (`project.create`:
+/// the project did not exist until this request).
+async fn audit_in_project(
+    state: &AppState,
+    ctx: &AuthContext,
+    project_id: Option<&str>,
+    action: &str,
+    target: Option<&str>,
+    detail: Option<&str>,
+    outcome: &str,
+) {
     let _ = state
         .store
         .insert_audit(
             Some(&ctx.name),
             Some(ctx.role.as_str()),
-            ctx.project_id.as_deref(),
+            project_id,
             action,
             target,
             detail,
@@ -1367,9 +1394,10 @@ async fn create_project(
         .await
         .map_err(to_500)?;
 
-    audit(
+    audit_in_project(
         &state,
         &ctx,
+        Some(&id.to_string()),
         "project.create",
         Some(&id.to_string()),
         Some(name),
