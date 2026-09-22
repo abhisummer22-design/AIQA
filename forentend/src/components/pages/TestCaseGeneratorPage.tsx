@@ -9,7 +9,7 @@
  * - Traceability Chain Inspection & Test Case Approval
  */
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Sparkles,
@@ -238,7 +238,17 @@ export const TestCaseGeneratorPage: React.FC = () => {
   // is a real, human-readable reason whenever generation did not produce
   // reviewable cases (network/auth failure, no compatible AI model, or a
   // real AI response that produced zero cases passing validation).
-  const [generationError, setGenerationError] = useState<string | null>(null);
+  // `lastGenerationResult` always starts `null` on a fresh mount even when
+  // a session is restored below — it is the real backend response for a
+  // completed call *this page instance made*, never reconstructed from a
+  // prior visit's session. `generationError` is restored, because unlike
+  // that response, it is exactly what a resumed page needs to show why the
+  // last attempt didn't produce cases, with no false claim of a fresh
+  // response to go with it (see the "Generation Details" panel's own
+  // `lastGenerationResult`-gated fields further down).
+  const [generationError, setGenerationError] = useState<string | null>(
+    activeGenerationSession?.generationError ?? null
+  );
   const [lastGenerationResult, setLastGenerationResult] = useState<GenerateAiTestCasesResponse | null>(null);
   const [lastRoutingMode, setLastRoutingMode] = useState<AiRoutingMode | null>(null);
 
@@ -364,6 +374,87 @@ export const TestCaseGeneratorPage: React.FC = () => {
     [selectedSkillIds, autoMatchedSkillIds],
   );
   const isGeneratingNow = ['VALIDATING', 'PROCESSING', 'GENERATING'].includes(generationState);
+
+  // Keeps `activeGenerationSession` (`AIQAContext` — the one state React
+  // Router does not tear down on an in-app page switch, see that context's
+  // own doc comment) mirroring this page's setup and progress the moment
+  // any of it changes, not only once a generation call finishes. Before
+  // this, an upload, or generation simply starting, never reached that
+  // session — only `handleTriggerGenerate`'s own success/failure paths
+  // wrote to it, once each, at the very end — so navigating away before a
+  // generation finished (or before ever clicking Generate) genuinely lost
+  // the uploaded FRD/PRD/SRD and left the session with no sign a
+  // generation had even been attempted.
+  //
+  // This does not replace those two direct writes in `handleTriggerGenerate`
+  // below: a real response (or a real failure) can arrive after this page
+  // has already been left, and an effect never runs again once unmounted —
+  // only a setter belonging to the still-mounted `AIQAProvider`, called
+  // directly from that still-running async function regardless of this
+  // page's own lifetime, can still reach the session at that point. What
+  // this effect adds is everything that changes *while the page is still
+  // open* — every document upload, every config change, and the instant
+  // generation starts — none of which waits for that async function to
+  // finish.
+  useEffect(() => {
+    setActiveGenerationSession((prev) => ({
+      id: prev?.id ?? `gen-${Date.now()}`,
+      requirementText: buildRequirementText(),
+      specType: prev?.specType ?? 'NATURAL_LANGUAGE',
+      targetAppUrl: appSources.STAGING?.url || appSources.DEMO?.url || appSources.LIVE?.url || undefined,
+      currentStep: generatedCases.length > 0 ? 'GENERATED_CASES' : isGeneratingNow ? 'AI_PLANNING' : 'REQUIREMENT_INPUT',
+      generationState,
+      generationError,
+      selectedCategories,
+      documents,
+      appSources,
+      depth,
+      selectedSkillIds,
+      generatedCases,
+      createdAt: prev?.createdAt ?? new Date().toISOString(),
+    }));
+    // `buildRequirementText` closes over the same fields already listed
+    // below; `isGeneratingNow` is derived from `generationState`, already
+    // listed. Neither needs its own entry.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [documents, appSources, selectedCategories, depth, generationState, generationError, generatedCases, selectedSkillIds]);
+
+  // The controller for whichever `generate-ai` call is currently in
+  // flight, if any — set at the start of `handleTriggerGenerate`, so the
+  // unmount cleanup just below can cancel it. `null` before the first
+  // attempt and again once one settles on its own (success or a real
+  // failure), so that cleanup only ever acts on a call this page instance
+  // actually started and that is genuinely still running.
+  const generationAbortRef = useRef<AbortController | null>(null);
+
+  // Cancels an in-flight generation call when the page is left — the same
+  // abort-on-switch pattern used just below for the persisted-cases fetch.
+  // Without this, that request outlives the page: its eventual result can
+  // only ever reach the mirrored session above, by which point this page
+  // may already be gone or a fresh visit may already be showing it, with
+  // no way to tell a genuinely-finished attempt from one that is still
+  // running. Aborting it removes that uncertainty — and if the session
+  // still says GENERATING at that point (real fields, not a fabricated
+  // guess: this only touches a session this page itself left mid-flight),
+  // it is corrected to FAILED with an honest reason, since a later visit
+  // to this page must never show a spinner for a request that no longer
+  // exists.
+  useEffect(() => {
+    return () => {
+      if (!generationAbortRef.current) return;
+      generationAbortRef.current.abort();
+      generationAbortRef.current = null;
+      setActiveGenerationSession((prev) =>
+        prev && prev.generationState === 'GENERATING'
+          ? {
+              ...prev,
+              generationState: 'FAILED',
+              generationError: 'Generation was interrupted because you navigated away before it finished. Click Generate to try again.',
+            }
+          : prev
+      );
+    };
+  }, [setActiveGenerationSession]);
 
   // Real fetch of this project's persisted test cases — same abort-on-
   // switch pattern every other real-data page in this app already uses
@@ -760,6 +851,12 @@ export const TestCaseGeneratorPage: React.FC = () => {
     // real wave-start events (if any) arrive.
     setActiveWaveSkillNames([]);
 
+    // Lets the unmount-cleanup effect above cancel this specific call if
+    // the page is left before it finishes — see that effect's own doc
+    // comment.
+    const controller = new AbortController();
+    generationAbortRef.current = controller;
+
     const requestSkills: GenerateAiSkillInput[] = effectiveSkillIds
       .map((id) => skills.find((s) => s.id === id))
       .filter((s): s is (typeof skills)[number] => Boolean(s))
@@ -777,11 +874,18 @@ export const TestCaseGeneratorPage: React.FC = () => {
     }
 
     try {
-      const response = await aiqaApi.testCases.generateAi(realProjectId, {
-        requirement_text: reqText,
-        skills: requestSkills,
-        crawl_run_id: crawlRunId,
-      });
+      const response = await aiqaApi.testCases.generateAi(
+        realProjectId,
+        {
+          requirement_text: reqText,
+          skills: requestSkills,
+          crawl_run_id: crawlRunId,
+        },
+        controller.signal,
+      );
+      // The call settled on its own — nothing left for the unmount
+      // cleanup above to cancel.
+      generationAbortRef.current = null;
       setLastGenerationResult(response);
       // The whole multi-wave call has genuinely finished by now — every
       // wave it ran has really completed, so no wave is "in progress"
@@ -792,48 +896,76 @@ export const TestCaseGeneratorPage: React.FC = () => {
       const mapped = response.test_cases.map((draft, i) => aiDraftToDisplay(draft, i, meta));
       setGeneratedCases(mapped);
 
-      if (setActiveGenerationSession) {
-        setActiveGenerationSession({
-          id: `gen-${Date.now()}`,
-          requirementText: reqText,
-          specType: 'NATURAL_LANGUAGE',
-          targetAppUrl: appSources.STAGING?.url || appSources.DEMO?.url || appSources.LIVE?.url || undefined,
-          currentStep: 'GENERATED_CASES',
-          generationState: mapped.length > 0 ? 'COMPLETED' : response.generation_method === 'fallback' ? 'FAILED' : 'PARTIAL',
-          selectedCategories,
-          documents,
-          appSources,
-          depth,
-          generatedCases: mapped,
-          createdAt: new Date().toISOString(),
-          selectedSkillIds,
-        });
-      }
-
+      let finalState: GenerationExecutionState;
+      let finalError: string | null;
       if (response.generation_method === 'ai' && mapped.length > 0) {
-        setGenerationState('COMPLETED');
+        finalState = 'COMPLETED';
+        finalError = null;
         setActiveBranch('GENERATED_CASES');
       } else if (response.generation_method === 'ai') {
         // A real AI call ran, but every candidate case was dropped by the
         // real quality/traceability/dedup gates (`ai_generation.rs`) — a
         // genuine, non-empty outcome, not a network/server error, but also
         // not a set of cases to review.
-        setGenerationState('PARTIAL');
-        setGenerationError(
-          'The AI model responded, but no candidate test case passed quality/traceability validation. Try different test categories or skills.'
-        );
+        finalState = 'PARTIAL';
+        finalError =
+          'The AI model responded, but no candidate test case passed quality/traceability validation. Try different test categories or skills.';
       } else {
         // generation_method === 'fallback' — the real backend honestly
         // reports that no compatible AI model was available. Never
         // silently substitute local template output here.
-        setGenerationState('FAILED');
-        setGenerationError(response.fallback_reason || 'No AI provider is currently available for test case generation.');
+        finalState = 'FAILED';
+        finalError = response.fallback_reason || 'No AI provider is currently available for test case generation.';
       }
+      setGenerationState(finalState);
+      setGenerationError(finalError);
+
+      // Written directly, not only left to the mirror effect above: this
+      // completion can genuinely arrive after the page has already been
+      // left (no `AbortController` cancels this specific call, only a real
+      // navigate-away does, and only via that effect's own cleanup — see
+      // its doc comment). An effect never runs again once unmounted, but
+      // this setter belongs to the still-mounted `AIQAProvider`, so it
+      // still reaches the session regardless of whether this page is.
+      setActiveGenerationSession((prev) => ({
+        id: prev?.id ?? `gen-${Date.now()}`,
+        requirementText: reqText,
+        specType: prev?.specType ?? 'NATURAL_LANGUAGE',
+        targetAppUrl: appSources.STAGING?.url || appSources.DEMO?.url || appSources.LIVE?.url || undefined,
+        currentStep: mapped.length > 0 ? 'GENERATED_CASES' : 'REQUIREMENT_INPUT',
+        generationState: finalState,
+        generationError: finalError,
+        selectedCategories,
+        documents,
+        appSources,
+        depth,
+        generatedCases: mapped,
+        createdAt: prev?.createdAt ?? new Date().toISOString(),
+        selectedSkillIds,
+      }));
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        // Cancelled by the unmount cleanup above because the page was left
+        // before this finished — that cleanup already corrected the
+        // mirrored session directly; this page instance is gone, so there
+        // is no local state left to update, and this must not be reported
+        // as a real generation failure (the AI/backend never actually
+        // failed — this page just stopped waiting for it).
+        return;
+      }
+      generationAbortRef.current = null;
+      const message = err instanceof ApiError ? err.message : 'Test case generation failed.';
       setLastGenerationResult(null);
       setGenerationState('FAILED');
-      setGenerationError(err instanceof ApiError ? err.message : 'Test case generation failed.');
+      setGenerationError(message);
       setActiveWaveSkillNames([]);
+      // Same reasoning as the success path above — a real failure can also
+      // arrive after the page has been left, so it is written directly
+      // rather than left to the mirror effect. Only `generationState`/
+      // `generationError` are patched: an attempt that failed produced no
+      // new cases, so whatever was already in the session (from an earlier
+      // successful attempt, if any) is left exactly as it was.
+      setActiveGenerationSession((prev) => (prev ? { ...prev, generationState: 'FAILED', generationError: message } : prev));
     }
   };
 

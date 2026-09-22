@@ -2026,3 +2026,153 @@ describe('TestCaseGeneratorPage — live wave/skill indicator', () => {
     expect(parseWaveStartedSkillNames("Wave 'base' (Functional Testing) STARTED")).toBeNull();
   });
 });
+
+// ==================================================== surviving navigation
+//
+// Before this, this page's uploaded documents and in-progress generation
+// state lived only in its own local `useState` — genuinely destroyed the
+// instant React Router unmounted it for a different page, since none of it
+// reached `activeGenerationSession` (`AIQAContext`, the one state that
+// survives that) until a generation call finished. Navigating away lost an
+// uploaded FRD/PRD/SRD outright, and a still-running `generate-ai` call had
+// no `AbortController`, so it kept running unseen with no way for a later
+// visit to tell a genuinely-finished attempt from one that was still going.
+
+function frdFileInput(): HTMLInputElement {
+  return document.querySelector('#doc-slot-frd input[type=file]') as HTMLInputElement;
+}
+
+/** A real-shaped, empty `DashboardResponse`/`KpisResponse` — `DashboardPage`
+ *  (this suite's own "another page" to navigate to) reads real fields off
+ *  these (`dashboard.task_counts`, etc.), so an empty-array catch-all
+ *  response crashes it; this is what an honestly-empty project actually
+ *  looks like, not a shape this suite invented. */
+function dashboardResponseFor(url: string): Response | null {
+  if (url.includes('/dashboard')) {
+    return jsonResponse(200, {
+      project_id: PROJECT_A.id,
+      project_name: PROJECT_A.name,
+      execution_counts: {},
+      task_counts: {},
+      pass_fail: { passed: 0, failed: 0 },
+      test_count: 0,
+      generated_at: '2026-01-01T00:00:00Z',
+    });
+  }
+  if (url.includes('/kpis')) {
+    return jsonResponse(200, {
+      project_id: PROJECT_A.id,
+      execution_reliability: null,
+      execution_efficiency_ms: null,
+      execution_avg_run_duration_ms: null,
+      generated_at: '2026-01-01T00:00:00Z',
+    });
+  }
+  return null;
+}
+
+async function uploadFrd(fetchMock: ReturnType<typeof vi.fn>): Promise<void> {
+  await act(async () => {
+    fireEvent.change(frdFileInput(), {
+      target: { files: [new File(['Password must be at least 8 characters.'], 'requirements.frd.md', { type: 'text/markdown' })] },
+    });
+  });
+  await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/documents/extract-text'))).toBe(true));
+  await waitFor(() => expect(screen.getByText('requirements.frd.md')).toBeTruthy());
+}
+
+async function goToDashboard(): Promise<void> {
+  await act(async () => {
+    document.getElementById('nav-item-dashboard')!.click();
+  });
+  await waitFor(() => expect(document.getElementById('aiqa-test-case-generator-page')).toBeNull());
+}
+
+async function goToGenerator(): Promise<void> {
+  await act(async () => {
+    document.getElementById('nav-item-generator')!.click();
+  });
+  await waitFor(() => expect(page()).toBeTruthy());
+}
+
+describe('TestCaseGeneratorPage — surviving in-app navigation', () => {
+  it('an uploaded document survives navigating to another page and back, even before Generate is ever clicked', async () => {
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      if (url.includes('/documents/extract-text')) {
+        return jsonResponse(200, { text: 'Password must be at least 8 characters.', char_count: 40, truncated: false });
+      }
+      if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+      return dashboardResponseFor(url) ?? jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+    await uploadFrd(fetchMock);
+
+    await goToDashboard();
+    await goToGenerator();
+
+    // The real, extracted document is still here — not a re-upload, the
+    // same one, carried across the round trip through `activeGenerationSession`.
+    await waitFor(() => expect(screen.getByText('requirements.frd.md')).toBeTruthy());
+    expect(screen.queryByText(/could not be analyzed/)).toBeNull();
+  }, 15000);
+
+  it('navigating away while generation is in flight cancels the real request, and a return shows the interruption honestly — without losing the uploaded document', async () => {
+    let capturedSignal: AbortSignal | undefined;
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/documents/extract-text')) {
+        return jsonResponse(200, { text: 'Password must be at least 8 characters.', char_count: 40, truncated: false });
+      }
+      if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') {
+        capturedSignal = init.signal ?? undefined;
+        // Never settles — a real aborted fetch does not resolve with a
+        // response either; what must recover from this is the page, not a
+        // stub response.
+        return new Promise<Response>(() => {});
+      }
+      if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+      return dashboardResponseFor(url) ?? jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+    await uploadFrd(fetchMock);
+
+    await act(async () => {
+      document.getElementById('btn-generate-test-cases-primary')!.click();
+    });
+    await waitFor(() => expect(screen.getByText('Generating Test Cases...')).toBeTruthy());
+    expect(capturedSignal, 'the real fetch call must carry a cancellable AbortSignal').toBeTruthy();
+    expect(capturedSignal!.aborted).toBe(false);
+
+    await goToDashboard();
+
+    // Leaving the page really cancelled the real request — not just a
+    // local flag this page stopped looking at (the real backend receives
+    // this and can genuinely stop the work, unlike before, when nothing
+    // ever told it the caller had gone). `resolveFetch` is deliberately
+    // never called anywhere in this test: the fix must correct the shown
+    // state at the moment the page is left, not wait on this — a real,
+    // aborted browser fetch never resolves with a response at all.
+    expect(capturedSignal!.aborted).toBe(true);
+
+    await goToGenerator();
+
+    expect(screen.getByText('Generation Failed')).toBeTruthy();
+    expect(screen.getByText(/navigated away before it finished/)).toBeTruthy();
+    // No fabricated AI response is shown for a call that was cancelled,
+    // not actually answered.
+    expect(screen.queryByText('Provider:')).toBeNull();
+    // And the document that was already uploaded is still here.
+    expect(screen.getByText('requirements.frd.md')).toBeTruthy();
+  }, 15000);
+});
