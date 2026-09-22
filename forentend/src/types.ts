@@ -235,6 +235,12 @@ export interface GenerationSession {
   targetAppUrl?: string;
   currentStep: GeneratorPipelineStep;
   generationState?: GenerationExecutionState;
+  /** Real, human-readable reason `generationState` is `FAILED`/`PARTIAL` —
+   *  mirrors `TestCaseGeneratorPage.tsx`'s own local `generationError`, so
+   *  a page you navigate back to can show *why*, not just a bare status
+   *  badge. `undefined`/`null` for `COMPLETED`/`IDLE`, or when the reason
+   *  is not yet known. */
+  generationError?: string | null;
   selectedCategories?: TestGenerationCategory[];
   documents?: UploadedRequirementDoc[];
   appSources?: Record<AppSourceType, AppSourceConnection>;
