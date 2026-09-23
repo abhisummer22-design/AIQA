@@ -2231,12 +2231,21 @@ describe('TestCaseGeneratorPage — surviving a project switch', () => {
     expect(document.querySelector('#doc-slot-frd')?.textContent).toContain('No document uploaded');
   }, 20000);
 
-  it('switching projects mid-generation cancels the real request for the project that was left', async () => {
+  it('switching projects mid-generation leaves the real request running instead of cancelling it, and its result reaches the project it was for even though a different project is now on screen', async () => {
+    // Corrected behaviour, reported directly: generating for "ambiance",
+    // switching away, then switching back must show "ambiance" exactly as
+    // it was left — including a generation that was genuinely still running
+    // the whole time — never a wipe and never an abort just because the
+    // user looked at a different project for a while.
     let capturedSignal: AbortSignal | undefined;
+    let resolveFetch: (value: Response) => void;
+    const pending = new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    });
     const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
       if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') {
         capturedSignal = init.signal ?? undefined;
-        return new Promise<Response>(() => {}); // never settles — see the navigation test above
+        return pending;
       }
       if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A, PROJECT_B]);
       return jsonResponse(200, []);
@@ -2253,12 +2262,79 @@ describe('TestCaseGeneratorPage — surviving a project switch', () => {
       document.getElementById('btn-generate-test-cases-primary')!.click();
     });
     await waitFor(() => expect(screen.getByText('Generating Test Cases...')).toBeTruthy());
-    expect(capturedSignal!.aborted).toBe(false);
 
     await openAndSelectProject(PROJECT_B);
 
-    expect(capturedSignal!.aborted).toBe(true);
+    // The switch itself never cancels a request still genuinely running for
+    // the project it was left for — only truly leaving the page does that
+    // (the unmount-cleanup effect, exercised by the navigation tests above).
+    expect(capturedSignal!.aborted).toBe(false);
+    // "A Brand New Project" has never generated anything — its own fresh,
+    // untouched view, not "AUD-005 Project"'s in-progress one.
     expect(screen.getByText('Ready to Generate')).toBeTruthy();
+
+    await act(async () => {
+      resolveFetch(jsonResponse(200, aiGenerateResponse()));
+    });
+
+    // Still on "A Brand New Project"'s own view, undisturbed — a completion
+    // that arrives for a project no longer on screen must never touch
+    // whatever a *different* project is currently showing.
+    expect(screen.getByText('Ready to Generate')).toBeTruthy();
+    expect(screen.queryByText('Reject login with an expired session token')).toBeNull();
+
+    await openAndSelectProject(PROJECT_A);
+
+    // Back on "AUD-005 Project": its own generation really did keep running
+    // in the background the whole time it was away, and its real result is
+    // exactly what is shown now — not a wipe, not a stuck spinner, not a
+    // fabricated failure.
+    await waitFor(() => expect(screen.getByText(/Generated Test Suite/)).toBeTruthy());
+    expect(screen.getAllByText('Reject login with an expired session token').length).toBeGreaterThan(0);
+  }, 15000);
+
+  it('switching back to a project while it is still generating shows it honestly still generating — not reset, not a fabricated error — and it completes live once the real request actually resolves', async () => {
+    let resolveFetch: (value: Response) => void;
+    const pending = new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    });
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') return pending;
+      if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A, PROJECT_B]);
+      return jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+
+    await act(async () => {
+      document.getElementById('btn-generate-test-cases-primary')!.click();
+    });
+    await waitFor(() => expect(screen.getByText('Generating Test Cases...')).toBeTruthy());
+
+    await openAndSelectProject(PROJECT_B);
+    expect(screen.getByText('Ready to Generate')).toBeTruthy();
+
+    await openAndSelectProject(PROJECT_A);
+
+    // The real request never actually finished — a return to this project
+    // must say so honestly, not silently drop back to "Ready to Generate".
+    expect(screen.getByText('Generating Test Cases...')).toBeTruthy();
+    // And merely looking at it again never fires a second real request.
+    expect(fetchMock.mock.calls.filter((c) => String(c[0]).includes('/test-cases/generate-ai')).length).toBe(1);
+
+    await act(async () => {
+      resolveFetch(jsonResponse(200, aiGenerateResponse()));
+    });
+
+    // Resolves while this project is genuinely the one on screen — reflected
+    // live, exactly as if the switch away and back had never happened.
+    await waitFor(() => expect(screen.getByText(/Generated Test Suite/)).toBeTruthy());
+    expect(screen.getAllByText('Reject login with an expired session token').length).toBeGreaterThan(0);
   }, 15000);
 
   it('the project this page opens already showing (nothing switched away from) keeps its own real, restored generation session', async () => {

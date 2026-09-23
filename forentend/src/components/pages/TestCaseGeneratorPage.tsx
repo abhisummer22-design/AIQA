@@ -202,6 +202,8 @@ export const TestCaseGeneratorPage: React.FC = () => {
   const {
     activeGenerationSession,
     setActiveGenerationSession,
+    getGenerationSession,
+    setGenerationSessionFor,
   } = useAIQA();
   const { selectedProjectId: realProjectId } = useProject();
   const navigate = useNavigate();
@@ -390,64 +392,89 @@ export const TestCaseGeneratorPage: React.FC = () => {
   );
   const isGeneratingNow = ['VALIDATING', 'PROCESSING', 'GENERATING'].includes(generationState);
 
-  // The controller for whichever `generate-ai` call is currently in
-  // flight, if any — set at the start of `handleTriggerGenerate`, so the
-  // unmount cleanup and the project-switch reset just below can both
-  // cancel it. `null` before the first attempt and again once one settles
-  // on its own (success or a real failure), so that cleanup only ever acts
-  // on a call this page instance actually started and that is genuinely
-  // still running.
-  const generationAbortRef = useRef<AbortController | null>(null);
+  // The controller for each project's own `generate-ai` call currently in
+  // flight, if any, keyed by that project's id — a real map, not a single
+  // slot, because switching projects deliberately does not cancel one (see
+  // the reseed effect's own doc comment below for why it is meant to keep
+  // running instead), so this page can genuinely have more than one
+  // outstanding at once (generate for project A, switch to B before it
+  // settles, generate for B too). Set at the start of
+  // `handleTriggerGenerate`, keyed by the project that call is for; that
+  // entry is deleted once the call settles on its own (success or a real
+  // failure), so the unmount cleanup below only ever acts on calls that
+  // are genuinely still running.
+  const generationAbortControllersRef = useRef<Record<string, AbortController>>({});
 
-  // Resets every project-scoped piece of this page's own state when the
-  // *selected project itself* changes — a project switch never unmounts
-  // this page (`realProjectId` comes from `useProject()`, read inside an
+  // The project this page is *currently* showing, from whichever render's
+  // closure last ran this effect — kept in a ref (not just read off
+  // `realProjectId`) so `handleTriggerGenerate`'s completion handler,
+  // itself a closure over the render a real generation call actually
+  // started on, can tell "is the project I generated for still the one on
+  // screen right now" apart from "the user has since switched away from
+  // it", however much later that completion actually arrives. Doubles as
+  // the previous-vs-current comparison the reseed effect below needs;
+  // starts `null`, which only otherwise means "no project selected", so
+  // seeing it there is how that effect's very first run tells "just found
+  // out which project is active" apart from "the project genuinely
+  // changed under us".
+  const currentProjectIdRef = useRef<string | null>(null);
+
+  // Reseeds every project-scoped piece of this page's own state from that
+  // *other* real project's own real session the moment the selected
+  // project itself changes — a project switch never unmounts this page
+  // (`realProjectId` comes from `useProject()`, read inside an
   // already-mounted `TestCaseGeneratorPage`; the `key={realProjectId}` a
   // few hundred lines down only remounts this page's own child components,
   // not the state declared here, above them, that it hands down to them as
   // props), so without this, everything below kept right on showing
-  // whichever project was selected when it was last set. Reported: cases
-  // just generated for project "ambiance" kept showing after switching to
-  // a brand-new project with none of its own yet — `persistedCases`
-  // correctly became empty for it (its own real, project-scoped fetch,
-  // unaffected by this), but `hasPersisted` being `false` then fell back
-  // to `generatedCases`, which was still "ambiance"'s.
+  // whichever project was selected when it was last set.
+  //
+  // Reported in two parts: (1) cases just generated for project "ambiance"
+  // kept showing after switching to a brand-new project with none of its
+  // own yet — `persistedCases` correctly became empty for it (its own
+  // real, project-scoped fetch, unaffected by this), but `hasPersisted`
+  // being `false` then fell back to `generatedCases`, which was still
+  // "ambiance"'s; (2) switching back to "ambiance" afterward must show
+  // "ambiance"'s own session exactly as it was left, not a wipe — a
+  // generation genuinely in flight for it must keep running in the
+  // background the whole time, same as a person doing exactly that would
+  // expect. `activeGenerationSession` (`AIQAContext`) is the real, durable,
+  // per-project store this reseed reads from — kept correct for whichever
+  // project this page *last* showed by the continuous-mirror effect below
+  // (while this page was showing it) and by `handleTriggerGenerate`'s own
+  // completion handler (even after this page has since moved on, per that
+  // handler's own doc comment) — so a project's own entry is never stale
+  // by more than "a call for it that hasn't come back yet", which is
+  // exactly the "still generating" state a return to it should honestly
+  // show.
   //
   // Skipped on this page's very first render for whatever project it
-  // mounted already showing — `previousProjectId.current` starts `null`,
-  // which only otherwise means "no project selected", so seeing it there
-  // is how the very first run tells "just found out which project is
-  // active" apart from "the project genuinely changed under us" (the
-  // dependency array already skips a render where `realProjectId` itself
-  // did not change).
-  const previousProjectIdRef = useRef<string | null>(null);
+  // mounted already showing (see `currentProjectIdRef`'s own doc comment
+  // on why `null` is what that first run sees there; the dependency array
+  // already skips a render where `realProjectId` itself did not change).
   useEffect(() => {
-    const previousProjectId = previousProjectIdRef.current;
-    previousProjectIdRef.current = realProjectId;
+    const previousProjectId = currentProjectIdRef.current;
+    currentProjectIdRef.current = realProjectId;
     if (previousProjectId === null || previousProjectId === realProjectId) return;
 
-    generationAbortRef.current?.abort();
-    generationAbortRef.current = null;
-    setActiveBranch('SOURCES_AND_GENERATION');
-    setDocuments([]);
-    setAppSources(defaultAppSources());
-    setCrawlRunId(null);
-    setSelectedCategories(DEFAULT_SELECTED_CATEGORIES);
-    setDepth('STANDARD');
-    setGenerationState('IDLE');
-    setGenerationError(null);
-    setLastGenerationResult(null);
+    const session = realProjectId ? getGenerationSession(realProjectId) : null;
+    setActiveBranch(session?.generatedCases && session.generatedCases.length > 0 ? 'GENERATED_CASES' : 'SOURCES_AND_GENERATION');
+    setDocuments(session?.documents || []);
+    setAppSources(session?.appSources || defaultAppSources());
+    setCrawlRunId(null); // see this state's own declaration — never restored from a session yet, for any project
+    setSelectedCategories(session?.selectedCategories || DEFAULT_SELECTED_CATEGORIES);
+    setDepth(session?.depth || 'STANDARD');
+    setGenerationState(session?.generationState || 'IDLE');
+    setGenerationError(session?.generationError ?? null);
+    setLastGenerationResult(null); // see its own declaration — a real response *this page instance* received, never restored
     setLastRoutingMode(null);
     setActiveWaveSkillNames([]);
-    setGeneratedCases([]);
+    setGeneratedCases(session?.generatedCases || []);
     setSaveState('IDLE');
     setSaveErrorMessage(null);
     setHandoffError(null);
-    resetSelectedSkills(DEFAULT_SELECTED_SKILL_IDS);
-    // `activeGenerationSession` is not touched directly here — the mirror
-    // effect just below reacts to these same setters and writes the
-    // now-reset values into it on its own.
-  }, [realProjectId, resetSelectedSkills]);
+    resetSelectedSkills(session?.selectedSkillIds || DEFAULT_SELECTED_SKILL_IDS);
+  }, [realProjectId, getGenerationSession, resetSelectedSkills]);
 
   // Keeps `activeGenerationSession` (`AIQAContext` — the one state React
   // Router does not tear down on an in-app page switch, see that context's
@@ -493,34 +520,47 @@ export const TestCaseGeneratorPage: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [documents, appSources, selectedCategories, depth, generationState, generationError, generatedCases, selectedSkillIds]);
 
-  // Cancels an in-flight generation call when the page is left — the same
-  // abort-on-switch pattern used just below for the persisted-cases fetch.
-  // Without this, that request outlives the page: its eventual result can
-  // only ever reach the mirrored session above, by which point this page
-  // may already be gone or a fresh visit may already be showing it, with
-  // no way to tell a genuinely-finished attempt from one that is still
-  // running. Aborting it removes that uncertainty — and if the session
-  // still says GENERATING at that point (real fields, not a fabricated
-  // guess: this only touches a session this page itself left mid-flight),
-  // it is corrected to FAILED with an honest reason, since a later visit
-  // to this page must never show a spinner for a request that no longer
-  // exists.
+  // Cancels every generation call still in flight for *this page instance*
+  // — any project's — when the page itself is left; the same abort-on-
+  // switch pattern used just below for the persisted-cases fetch, just
+  // over a map instead of one slot (see `generationAbortControllersRef`'s
+  // own doc comment on why more than one can genuinely be outstanding at
+  // once). Without this, an outstanding request outlives the page: its
+  // eventual result can only ever reach the mirrored session above, by
+  // which point this page may already be gone or a fresh visit may
+  // already be showing it, with no way to tell a genuinely-finished
+  // attempt from one that is still running. Aborting each one removes
+  // that uncertainty — and if that project's own session still says
+  // GENERATING at that point (real fields, not a fabricated guess: this
+  // only touches a project this page itself was still generating for when
+  // it was left), it is corrected to FAILED with an honest reason, since a
+  // later visit to that project must never show a spinner for a request
+  // that no longer exists.
   useEffect(() => {
+    // Deliberately `[setGenerationSessionFor]` (a stable function for this
+    // provider's whole lifetime, never `[]` directly, only to make that
+    // stability an explicit, checkable fact rather than an assumption) —
+    // this cleanup must fire only on this *page* truly unmounting, not on
+    // a project switch (which also does not remount this component; see
+    // the reseed effect above for why a project switch must leave a
+    // generation running rather than cancel it).
     return () => {
-      if (!generationAbortRef.current) return;
-      generationAbortRef.current.abort();
-      generationAbortRef.current = null;
-      setActiveGenerationSession((prev) =>
-        prev && prev.generationState === 'GENERATING'
-          ? {
-              ...prev,
-              generationState: 'FAILED',
-              generationError: 'Generation was interrupted because you navigated away before it finished. Click Generate to try again.',
-            }
-          : prev
-      );
+      const controllers: Record<string, AbortController> = generationAbortControllersRef.current;
+      generationAbortControllersRef.current = {};
+      for (const [projectId, controller] of Object.entries(controllers)) {
+        controller.abort();
+        setGenerationSessionFor(projectId, (prev) =>
+          prev && prev.generationState === 'GENERATING'
+            ? {
+                ...prev,
+                generationState: 'FAILED',
+                generationError: 'Generation was interrupted because you navigated away before it finished. Click Generate to try again.',
+              }
+            : prev
+        );
+      }
     };
-  }, [setActiveGenerationSession]);
+  }, [setGenerationSessionFor]);
 
   // Real fetch of this project's persisted test cases — same abort-on-
   // switch pattern every other real-data page in this app already uses
@@ -904,6 +944,13 @@ export const TestCaseGeneratorPage: React.FC = () => {
       setGenerationError('Select a project before generating test cases — the real AI generation endpoint is project-scoped.');
       return;
     }
+    // Frozen for this one call, in this render's closure — deliberately not
+    // read again as `realProjectId` after the `await` below, since the user
+    // may by then have switched to a different project (`realProjectId`
+    // itself would reflect *that* one instead). This is the project the
+    // real backend call below is actually made for, and the one its result
+    // belongs to, however much later it actually arrives.
+    const generatingForProjectId = realProjectId;
     const reqText = buildRequirementText();
     if (!reqText.trim()) {
       setGenerationState('FAILED');
@@ -921,7 +968,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
     // the page is left before it finishes — see that effect's own doc
     // comment.
     const controller = new AbortController();
-    generationAbortRef.current = controller;
+    generationAbortControllersRef.current[generatingForProjectId] = controller;
 
     const requestSkills: GenerateAiSkillInput[] = effectiveSkillIds
       .map((id) => skills.find((s) => s.id === id))
@@ -941,7 +988,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
 
     try {
       const response = await aiqaApi.testCases.generateAi(
-        realProjectId,
+        generatingForProjectId,
         {
           requirement_text: reqText,
           skills: requestSkills,
@@ -950,24 +997,17 @@ export const TestCaseGeneratorPage: React.FC = () => {
         controller.signal,
       );
       // The call settled on its own — nothing left for the unmount
-      // cleanup above to cancel.
-      generationAbortRef.current = null;
-      setLastGenerationResult(response);
-      // The whole multi-wave call has genuinely finished by now — every
-      // wave it ran has really completed, so no wave is "in progress"
-      // anymore. Holding the glow on past this point would claim otherwise.
-      setActiveWaveSkillNames([]);
+      // cleanup above to cancel for this project.
+      delete generationAbortControllersRef.current[generatingForProjectId];
 
       const meta = { method: response.generation_method, provider: response.provider, model: response.model };
       const mapped = response.test_cases.map((draft, i) => aiDraftToDisplay(draft, i, meta));
-      setGeneratedCases(mapped);
 
       let finalState: GenerationExecutionState;
       let finalError: string | null;
       if (response.generation_method === 'ai' && mapped.length > 0) {
         finalState = 'COMPLETED';
         finalError = null;
-        setActiveBranch('GENERATED_CASES');
       } else if (response.generation_method === 'ai') {
         // A real AI call ran, but every candidate case was dropped by the
         // real quality/traceability/dedup gates (`ai_generation.rs`) — a
@@ -983,17 +1023,41 @@ export const TestCaseGeneratorPage: React.FC = () => {
         finalState = 'FAILED';
         finalError = response.fallback_reason || 'No AI provider is currently available for test case generation.';
       }
-      setGenerationState(finalState);
-      setGenerationError(finalError);
 
-      // Written directly, not only left to the mirror effect above: this
-      // completion can genuinely arrive after the page has already been
-      // left (no `AbortController` cancels this specific call, only a real
-      // navigate-away does, and only via that effect's own cleanup — see
-      // its doc comment). An effect never runs again once unmounted, but
-      // this setter belongs to the still-mounted `AIQAProvider`, so it
-      // still reaches the session regardless of whether this page is.
-      setActiveGenerationSession((prev) => ({
+      // The user may have since switched to a different project — this
+      // page's own local state (`documents`/`generatedCases`/... below) is
+      // whatever *that* project is currently showing, so a completion for a
+      // project no longer on screen must not touch any of it: doing so
+      // would overwrite a different project's own real, currently-displayed
+      // state with this one's. Its real result still needs to reach
+      // somewhere durable, though — see the explicit, project-id-targeted
+      // write below, which happens either way.
+      if (currentProjectIdRef.current === generatingForProjectId) {
+        setLastGenerationResult(response);
+        // The whole multi-wave call has genuinely finished by now — every
+        // wave it ran has really completed, so no wave is "in progress"
+        // anymore. Holding the glow on past this point would claim otherwise.
+        setActiveWaveSkillNames([]);
+        setGeneratedCases(mapped);
+        setGenerationState(finalState);
+        setGenerationError(finalError);
+        if (finalState === 'COMPLETED') setActiveBranch('GENERATED_CASES');
+      }
+
+      // Written directly, not only left to the mirror effect above, and
+      // explicitly targeting the project this call was actually for (not
+      // necessarily "whichever project is selected right now" —
+      // `setActiveGenerationSession` above means that, this does not): this
+      // completion can genuinely arrive after the page has moved on to a
+      // different project, or been left entirely (no `AbortController`
+      // cancels this specific call on either of those — a real page
+      // navigate-away does still cancel it, but only via the unmount
+      // cleanup's own effect, see its doc comment). An effect keyed on this
+      // page's own state never runs again once that state stops changing
+      // for the project in question, but this setter belongs to the
+      // still-mounted `AIQAProvider`, so it still reaches that project's own
+      // session regardless of what this page is currently showing.
+      setGenerationSessionFor(generatingForProjectId, (prev) => ({
         id: prev?.id ?? `gen-${Date.now()}`,
         requirementText: reqText,
         specType: prev?.specType ?? 'NATURAL_LANGUAGE',
@@ -1012,26 +1076,31 @@ export const TestCaseGeneratorPage: React.FC = () => {
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') {
         // Cancelled by the unmount cleanup above because the page was left
-        // before this finished — that cleanup already corrected the
-        // mirrored session directly; this page instance is gone, so there
-        // is no local state left to update, and this must not be reported
-        // as a real generation failure (the AI/backend never actually
-        // failed — this page just stopped waiting for it).
+        // entirely before this finished (never by a project switch — see
+        // the reseed effect's own doc comment) — that cleanup already
+        // corrected that project's own session directly; this page
+        // instance is gone, so there is no local state left to update, and
+        // this must not be reported as a real generation failure (the
+        // AI/backend never actually failed — this page just stopped
+        // waiting for it).
         return;
       }
-      generationAbortRef.current = null;
+      delete generationAbortControllersRef.current[generatingForProjectId];
       const message = err instanceof ApiError ? err.message : 'Test case generation failed.';
-      setLastGenerationResult(null);
-      setGenerationState('FAILED');
-      setGenerationError(message);
-      setActiveWaveSkillNames([]);
-      // Same reasoning as the success path above — a real failure can also
-      // arrive after the page has been left, so it is written directly
-      // rather than left to the mirror effect. Only `generationState`/
-      // `generationError` are patched: an attempt that failed produced no
-      // new cases, so whatever was already in the session (from an earlier
-      // successful attempt, if any) is left exactly as it was.
-      setActiveGenerationSession((prev) => (prev ? { ...prev, generationState: 'FAILED', generationError: message } : prev));
+      if (currentProjectIdRef.current === generatingForProjectId) {
+        setLastGenerationResult(null);
+        setGenerationState('FAILED');
+        setGenerationError(message);
+        setActiveWaveSkillNames([]);
+      }
+      // Same reasoning and the same explicit-project-id targeting as the
+      // success path above. Only `generationState`/`generationError` are
+      // patched: an attempt that failed produced no new cases, so whatever
+      // was already in that project's session (from an earlier successful
+      // attempt, if any) is left exactly as it was.
+      setGenerationSessionFor(generatingForProjectId, (prev) =>
+        prev ? { ...prev, generationState: 'FAILED', generationError: message } : prev,
+      );
     }
   };
 
