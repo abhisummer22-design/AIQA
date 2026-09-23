@@ -29,6 +29,7 @@ function jsonResponse(status: number, body: unknown): Response {
 }
 
 const PROJECT_A: Project = { id: 'proj-aud005', name: 'AUD-005 Project', description: null, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' };
+const PROJECT_B: Project = { id: 'proj-ambiance-2', name: 'A Brand New Project', description: null, created_at: '2026-01-02T00:00:00Z', updated_at: '2026-01-02T00:00:00Z' };
 
 function testCaseRow(overrides: Partial<TestCaseRow> = {}): TestCaseRow {
   return {
@@ -2174,5 +2175,119 @@ describe('TestCaseGeneratorPage — surviving in-app navigation', () => {
     expect(screen.queryByText('Provider:')).toBeNull();
     // And the document that was already uploaded is still here.
     expect(screen.getByText('requirements.frd.md')).toBeTruthy();
+  }, 15000);
+});
+
+// =============================================== surviving a project switch
+//
+// Reported: test cases generated for a project called "ambiance" kept
+// showing after creating and switching to a brand-new project. A project
+// switch never unmounts this page (`realProjectId` comes from
+// `useProject()`, read inside an already-mounted page; the `key=` this page
+// itself puts on its own root `<div>` only remounts what's *inside* that
+// div, not the state above it that gets handed down as props) — nothing
+// reset `documents`/`generatedCases`/config when the selected project
+// changed under an already-open page.
+
+describe('TestCaseGeneratorPage — surviving a project switch', () => {
+  it('switching to a different project clears the previous one\'s generated cases, uploaded documents, and configuration', async () => {
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/documents/extract-text')) {
+        return jsonResponse(200, { text: 'Password must be at least 8 characters.', char_count: 40, truncated: false });
+      }
+      if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') return jsonResponse(200, aiGenerateResponse());
+      if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A, PROJECT_B]);
+      return jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+    await uploadFrd(fetchMock);
+    await act(async () => {
+      document.getElementById('cat-card-security')!.click();
+    });
+    await generate();
+
+    // Really generated, for "AUD-005 Project" — the real case, the real
+    // uploaded document, a non-default category selection, all present
+    // before the switch.
+    await waitFor(() => expect(screen.getByText(/Generated Test Suite/)).toBeTruthy());
+    expect(screen.getAllByText('Reject login with an expired session token').length).toBeGreaterThan(0);
+
+    await openAndSelectProject(PROJECT_B);
+
+    // None of "AUD-005 Project"'s state survives the switch.
+    expect(screen.queryByText('Reject login with an expired session token')).toBeNull();
+    expect(screen.queryByText('requirements.frd.md')).toBeNull();
+    expect(document.getElementById('generation-details-panel')).toBeNull();
+    expect(screen.getByText('Ready to Generate')).toBeTruthy();
+    // Back on the branch a fresh, never-generated project actually opens
+    // on, with an untouched category selection.
+    await waitFor(() => expect(screen.getByText('9 / 14 SELECTED')).toBeTruthy());
+    expect(document.querySelector('#doc-slot-frd')?.textContent).toContain('No document uploaded');
+  }, 20000);
+
+  it('switching projects mid-generation cancels the real request for the project that was left', async () => {
+    let capturedSignal: AbortSignal | undefined;
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') {
+        capturedSignal = init.signal ?? undefined;
+        return new Promise<Response>(() => {}); // never settles — see the navigation test above
+      }
+      if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A, PROJECT_B]);
+      return jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+
+    await act(async () => {
+      document.getElementById('btn-generate-test-cases-primary')!.click();
+    });
+    await waitFor(() => expect(screen.getByText('Generating Test Cases...')).toBeTruthy());
+    expect(capturedSignal!.aborted).toBe(false);
+
+    await openAndSelectProject(PROJECT_B);
+
+    expect(capturedSignal!.aborted).toBe(true);
+    expect(screen.getByText('Ready to Generate')).toBeTruthy();
+  }, 15000);
+
+  it('the project this page opens already showing (nothing switched away from) keeps its own real, restored generation session', async () => {
+    // Not a regression this fix could cause, but the guard that makes the
+    // above possible (skip the reset when there was no real *previous*
+    // project) is new code, worth its own direct check rather than relying
+    // only on the broader "surviving in-app navigation" tests above to
+    // incidentally exercise it.
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') return jsonResponse(200, aiGenerateResponse());
+      if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+      return dashboardResponseFor(url) ?? jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+    await generate();
+    await waitFor(() => expect(screen.getByText(/Generated Test Suite/)).toBeTruthy());
+
+    await goToDashboard();
+    await goToGenerator();
+
+    // Still project A's real result — this fresh mount's very first sight
+    // of `realProjectId` (== PROJECT_A.id, already selected) must not be
+    // mistaken for "switched away from some other project".
+    expect(screen.getAllByText('Reject login with an expired session token').length).toBeGreaterThan(0);
   }, 15000);
 });

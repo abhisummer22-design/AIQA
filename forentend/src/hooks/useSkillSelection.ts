@@ -78,6 +78,12 @@ export interface UseSkillSelectionResult {
    *  comment); uncheck the category itself to actually remove one of
    *  those. */
   deselectAllSkills: () => void;
+  /** Replaces the selection outright with `ids` — for a caller that needs
+   *  to put it back to a specific, known set (e.g. the project-switch reset
+   *  in `TestCaseGeneratorPage.tsx`, back to its own initial default),
+   *  rather than clearing it (`deselectAllSkills`) or only adding to it
+   *  (`toggleSkill`/`selectAllSkills`). */
+  resetSelectedSkills: (ids: string[]) => void;
   /** Creates a real, backend-persisted custom skill and selects it. Throws
    *  `ApiError` on failure — the caller (the Skill Manager) is responsible
    *  for surfacing that, never for treating a failed create as if it
@@ -185,6 +191,10 @@ export function useSkillSelection(
     setSelectedSkillIds([]);
   }, []);
 
+  const resetSelectedSkills = useCallback((ids: string[]) => {
+    setSelectedSkillIds(ids);
+  }, []);
+
   const addCustomSkill = useCallback(async (draft: CustomSkillDraft): Promise<SkillDefinition> => {
     const row = await aiqaApi.skills.create({ name: draft.name.trim(), description: draft.description.trim() });
     const skill = customSkillRowToDefinition(row);
@@ -200,6 +210,7 @@ export function useSkillSelection(
     toggleSkill,
     selectAllSkills,
     deselectAllSkills,
+    resetSelectedSkills,
     addCustomSkill,
     customSkills,
     customSkillsLoading,

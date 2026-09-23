@@ -62,6 +62,35 @@ import type {
   OrchestratorLogEntry,
 } from '../../types/contract';
 
+/** The default test-category selection — a fresh generation for a project
+ *  starts here, same as it always has; pulled out to a constant only so the
+ *  project-switch reset below can put it back exactly, rather than
+ *  duplicating the literal a second time. */
+const DEFAULT_SELECTED_CATEGORIES: TestGenerationCategory[] = [
+  'Functional',
+  'Non-Functional',
+  'Positive',
+  'Negative',
+  'UI/UX',
+  'Edge Case',
+  'Business Logic',
+  'API',
+  'Security',
+];
+
+/** The default (nothing connected) Application Sources state — a function,
+ *  not a shared constant object, so every caller gets its own fresh object
+ *  no `setAppSources` call could ever end up mutating a copy someone else
+ *  is still holding. */
+function defaultAppSources(): Record<AppSourceType, AppSourceConnection> {
+  return {
+    STAGING: { type: 'STAGING', label: 'Staging', url: '', status: 'IDLE' },
+    DEMO: { type: 'DEMO', label: 'Demo', url: '', status: 'IDLE' },
+    LIVE: { type: 'LIVE', label: 'Live', url: '', status: 'IDLE' },
+    FIGMA: { type: 'FIGMA', label: 'Figma', url: '', status: 'IDLE' },
+  };
+}
+
 /** Parses a real `generate_ai` wave-start log message
  *  (`ai_generation.rs::run_wave`'s own `"Wave '{wave}' ({skills}) started"`
  *  format — the exact same message shape its "generated N case(s)"/"failed"
@@ -191,12 +220,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
 
   // 2. Application Sources State
   const [appSources, setAppSources] = useState<Record<AppSourceType, AppSourceConnection>>(
-    activeGenerationSession?.appSources || {
-      STAGING: { type: 'STAGING', label: 'Staging', url: '', status: 'IDLE' },
-      DEMO: { type: 'DEMO', label: 'Demo', url: '', status: 'IDLE' },
-      LIVE: { type: 'LIVE', label: 'Live', url: '', status: 'IDLE' },
-      FIGMA: { type: 'FIGMA', label: 'Figma', url: '', status: 'IDLE' },
-    }
+    activeGenerationSession?.appSources || defaultAppSources()
   );
 
   // 2b. Real crawl grounding (Phase 6 -> Phase 8 wiring) — the real,
@@ -207,17 +231,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
 
   // 3. Selected Test Categories (Defaults to all 14 or customizable)
   const [selectedCategories, setSelectedCategories] = useState<TestGenerationCategory[]>(
-    activeGenerationSession?.selectedCategories || [
-      'Functional',
-      'Non-Functional',
-      'Positive',
-      'Negative',
-      'UI/UX',
-      'Edge Case',
-      'Business Logic',
-      'API',
-      'Security',
-    ]
+    activeGenerationSession?.selectedCategories || DEFAULT_SELECTED_CATEGORIES
   );
 
   // 4. Generation depth (local template-selection preference — FE-16: the
@@ -350,6 +364,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
     toggleSkill,
     selectAllSkills,
     deselectAllSkills,
+    resetSelectedSkills,
     addCustomSkill,
     fileSkillErrors,
     fileSkillsDirectory,
@@ -374,6 +389,65 @@ export const TestCaseGeneratorPage: React.FC = () => {
     [selectedSkillIds, autoMatchedSkillIds],
   );
   const isGeneratingNow = ['VALIDATING', 'PROCESSING', 'GENERATING'].includes(generationState);
+
+  // The controller for whichever `generate-ai` call is currently in
+  // flight, if any — set at the start of `handleTriggerGenerate`, so the
+  // unmount cleanup and the project-switch reset just below can both
+  // cancel it. `null` before the first attempt and again once one settles
+  // on its own (success or a real failure), so that cleanup only ever acts
+  // on a call this page instance actually started and that is genuinely
+  // still running.
+  const generationAbortRef = useRef<AbortController | null>(null);
+
+  // Resets every project-scoped piece of this page's own state when the
+  // *selected project itself* changes — a project switch never unmounts
+  // this page (`realProjectId` comes from `useProject()`, read inside an
+  // already-mounted `TestCaseGeneratorPage`; the `key={realProjectId}` a
+  // few hundred lines down only remounts this page's own child components,
+  // not the state declared here, above them, that it hands down to them as
+  // props), so without this, everything below kept right on showing
+  // whichever project was selected when it was last set. Reported: cases
+  // just generated for project "ambiance" kept showing after switching to
+  // a brand-new project with none of its own yet — `persistedCases`
+  // correctly became empty for it (its own real, project-scoped fetch,
+  // unaffected by this), but `hasPersisted` being `false` then fell back
+  // to `generatedCases`, which was still "ambiance"'s.
+  //
+  // Skipped on this page's very first render for whatever project it
+  // mounted already showing — `previousProjectId.current` starts `null`,
+  // which only otherwise means "no project selected", so seeing it there
+  // is how the very first run tells "just found out which project is
+  // active" apart from "the project genuinely changed under us" (the
+  // dependency array already skips a render where `realProjectId` itself
+  // did not change).
+  const previousProjectIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const previousProjectId = previousProjectIdRef.current;
+    previousProjectIdRef.current = realProjectId;
+    if (previousProjectId === null || previousProjectId === realProjectId) return;
+
+    generationAbortRef.current?.abort();
+    generationAbortRef.current = null;
+    setActiveBranch('SOURCES_AND_GENERATION');
+    setDocuments([]);
+    setAppSources(defaultAppSources());
+    setCrawlRunId(null);
+    setSelectedCategories(DEFAULT_SELECTED_CATEGORIES);
+    setDepth('STANDARD');
+    setGenerationState('IDLE');
+    setGenerationError(null);
+    setLastGenerationResult(null);
+    setLastRoutingMode(null);
+    setActiveWaveSkillNames([]);
+    setGeneratedCases([]);
+    setSaveState('IDLE');
+    setSaveErrorMessage(null);
+    setHandoffError(null);
+    resetSelectedSkills(DEFAULT_SELECTED_SKILL_IDS);
+    // `activeGenerationSession` is not touched directly here — the mirror
+    // effect just below reacts to these same setters and writes the
+    // now-reset values into it on its own.
+  }, [realProjectId, resetSelectedSkills]);
 
   // Keeps `activeGenerationSession` (`AIQAContext` — the one state React
   // Router does not tear down on an in-app page switch, see that context's
@@ -418,14 +492,6 @@ export const TestCaseGeneratorPage: React.FC = () => {
     // listed. Neither needs its own entry.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [documents, appSources, selectedCategories, depth, generationState, generationError, generatedCases, selectedSkillIds]);
-
-  // The controller for whichever `generate-ai` call is currently in
-  // flight, if any — set at the start of `handleTriggerGenerate`, so the
-  // unmount cleanup just below can cancel it. `null` before the first
-  // attempt and again once one settles on its own (success or a real
-  // failure), so that cleanup only ever acts on a call this page instance
-  // actually started and that is genuinely still running.
-  const generationAbortRef = useRef<AbortController | null>(null);
 
   // Cancels an in-flight generation call when the page is left — the same
   // abort-on-switch pattern used just below for the persisted-cases fetch.
