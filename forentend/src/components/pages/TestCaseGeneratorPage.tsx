@@ -520,47 +520,15 @@ export const TestCaseGeneratorPage: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [documents, appSources, selectedCategories, depth, generationState, generationError, generatedCases, selectedSkillIds]);
 
-  // Cancels every generation call still in flight for *this page instance*
-  // — any project's — when the page itself is left; the same abort-on-
-  // switch pattern used just below for the persisted-cases fetch, just
-  // over a map instead of one slot (see `generationAbortControllersRef`'s
-  // own doc comment on why more than one can genuinely be outstanding at
-  // once). Without this, an outstanding request outlives the page: its
-  // eventual result can only ever reach the mirrored session above, by
-  // which point this page may already be gone or a fresh visit may
-  // already be showing it, with no way to tell a genuinely-finished
-  // attempt from one that is still running. Aborting each one removes
-  // that uncertainty — and if that project's own session still says
-  // GENERATING at that point (real fields, not a fabricated guess: this
-  // only touches a project this page itself was still generating for when
-  // it was left), it is corrected to FAILED with an honest reason, since a
-  // later visit to that project must never show a spinner for a request
-  // that no longer exists.
-  useEffect(() => {
-    // Deliberately `[setGenerationSessionFor]` (a stable function for this
-    // provider's whole lifetime, never `[]` directly, only to make that
-    // stability an explicit, checkable fact rather than an assumption) —
-    // this cleanup must fire only on this *page* truly unmounting, not on
-    // a project switch (which also does not remount this component; see
-    // the reseed effect above for why a project switch must leave a
-    // generation running rather than cancel it).
-    return () => {
-      const controllers: Record<string, AbortController> = generationAbortControllersRef.current;
-      generationAbortControllersRef.current = {};
-      for (const [projectId, controller] of Object.entries(controllers)) {
-        controller.abort();
-        setGenerationSessionFor(projectId, (prev) =>
-          prev && prev.generationState === 'GENERATING'
-            ? {
-                ...prev,
-                generationState: 'FAILED',
-                generationError: 'Generation was interrupted because you navigated away before it finished. Click Generate to try again.',
-              }
-            : prev
-        );
-      }
-    };
-  }, [setGenerationSessionFor]);
+  // A generation call still in flight keeps running even if this page
+  // itself is left (navigated away from entirely, not just switched to a
+  // different project) — same reasoning as the reseed effect above for a
+  // project switch: `handleTriggerGenerate`'s own completion handler
+  // writes its real result directly to `generatingForProjectId`'s session
+  // in `AIQAContext` (still mounted regardless of this page), so a later
+  // visit — to this project, from this page or a fresh one — reads that
+  // real result back, exactly as if this page had stayed open the whole
+  // time. Nothing here needs to cancel it just because this page unmounts.
 
   // Real fetch of this project's persisted test cases — same abort-on-
   // switch pattern every other real-data page in this app already uses

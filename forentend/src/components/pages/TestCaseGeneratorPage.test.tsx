@@ -2123,18 +2123,23 @@ describe('TestCaseGeneratorPage — surviving in-app navigation', () => {
     expect(screen.queryByText(/could not be analyzed/)).toBeNull();
   }, 15000);
 
-  it('navigating away while generation is in flight cancels the real request, and a return shows the interruption honestly — without losing the uploaded document', async () => {
+  it('navigating away while generation is in flight leaves the real request running, and a return shows its real result honestly — without losing the uploaded document', async () => {
+    // Corrected alongside the project-switch fix, on the same direct
+    // feedback: leaving this page for another one is just a more complete
+    // version of "not looking at this project right now" than a same-page
+    // project switch already is — it must not cancel the request either.
     let capturedSignal: AbortSignal | undefined;
+    let resolveFetch: (value: Response) => void;
+    const pending = new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    });
     const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
       if (url.includes('/documents/extract-text')) {
         return jsonResponse(200, { text: 'Password must be at least 8 characters.', char_count: 40, truncated: false });
       }
       if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') {
         capturedSignal = init.signal ?? undefined;
-        // Never settles — a real aborted fetch does not resolve with a
-        // response either; what must recover from this is the page, not a
-        // stub response.
-        return new Promise<Response>(() => {});
+        return pending;
       }
       if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
       return dashboardResponseFor(url) ?? jsonResponse(200, []);
@@ -2152,28 +2157,31 @@ describe('TestCaseGeneratorPage — surviving in-app navigation', () => {
       document.getElementById('btn-generate-test-cases-primary')!.click();
     });
     await waitFor(() => expect(screen.getByText('Generating Test Cases...')).toBeTruthy());
-    expect(capturedSignal, 'the real fetch call must carry a cancellable AbortSignal').toBeTruthy();
+    expect(capturedSignal, 'the real fetch call must carry a signal').toBeTruthy();
     expect(capturedSignal!.aborted).toBe(false);
 
     await goToDashboard();
 
-    // Leaving the page really cancelled the real request — not just a
-    // local flag this page stopped looking at (the real backend receives
-    // this and can genuinely stop the work, unlike before, when nothing
-    // ever told it the caller had gone). `resolveFetch` is deliberately
-    // never called anywhere in this test: the fix must correct the shown
-    // state at the moment the page is left, not wait on this — a real,
-    // aborted browser fetch never resolves with a response at all.
-    expect(capturedSignal!.aborted).toBe(true);
+    // Leaving the page never cancels a request still genuinely running for
+    // it — only whether this project's own real result eventually arrives
+    // matters, not whether this particular page instance is still around
+    // to see it happen.
+    expect(capturedSignal!.aborted).toBe(false);
+
+    await act(async () => {
+      resolveFetch(jsonResponse(200, aiGenerateResponse()));
+    });
 
     await goToGenerator();
 
-    expect(screen.getByText('Generation Failed')).toBeTruthy();
-    expect(screen.getByText(/navigated away before it finished/)).toBeTruthy();
-    // No fabricated AI response is shown for a call that was cancelled,
-    // not actually answered.
-    expect(screen.queryByText('Provider:')).toBeNull();
-    // And the document that was already uploaded is still here.
+    // The real result — reached while this page was gone — is shown
+    // exactly as if the navigation away had never happened.
+    await waitFor(() => expect(screen.getByText(/Generated Test Suite/)).toBeTruthy());
+    expect(screen.getAllByText('Reject login with an expired session token').length).toBeGreaterThan(0);
+    // And the document that was already uploaded is still here — a real
+    // completion switches to the Generated Cases branch, so check the one
+    // where an uploaded document is actually listed.
+    await goToSourcesBranch();
     expect(screen.getByText('requirements.frd.md')).toBeTruthy();
   }, 15000);
 });
