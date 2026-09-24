@@ -286,6 +286,8 @@ fn custom_ai_provider_from_row(r: sqlx::sqlite::SqliteRow) -> CustomAiProviderRo
         name: r.get("name"),
         base_url: r.get("base_url"),
         api_key: r.get("api_key"),
+        input_usd_per_1k: r.get("input_usd_per_1k"),
+        output_usd_per_1k: r.get("output_usd_per_1k"),
         created_by: r.get("created_by"),
         created_at: parse_ts(&r.get::<String, _>("created_at")),
     }
@@ -943,23 +945,28 @@ impl Store {
     /// `0013_custom_ai_providers.sql`'s own doc comment for why `api_key` is
     /// plaintext here, not the one-way `key_hash` this app's own auth keys
     /// use). Platform-wide like `ai_settings`/`custom_skills` — no
-    /// `project_id`.
+    /// `project_id`. `prices` is the provider's (input, output) USD per 1,000
+    /// tokens when the user entered them, `None` otherwise (see migration
+    /// `0019_custom_provider_pricing.sql`).
     pub async fn insert_custom_ai_provider(
         &self,
         id: &str,
         name: &str,
         base_url: &str,
         api_key: &str,
+        prices: Option<(f64, f64)>,
         created_by: &str,
     ) -> Result<()> {
         let now = now_rfc3339();
         sqlx::query(
-            "INSERT INTO custom_ai_providers (id, name, base_url, api_key, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO custom_ai_providers (id, name, base_url, api_key, input_usd_per_1k, output_usd_per_1k, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(id)
         .bind(name)
         .bind(base_url)
         .bind(api_key)
+        .bind(prices.map(|p| p.0))
+        .bind(prices.map(|p| p.1))
         .bind(created_by)
         .bind(&now)
         .execute(&self.pool)
@@ -977,7 +984,7 @@ impl Store {
     /// client response.
     pub async fn list_custom_ai_providers(&self) -> Result<Vec<CustomAiProviderRow>> {
         let rows = sqlx::query(
-            "SELECT id, name, base_url, api_key, created_by, created_at FROM custom_ai_providers ORDER BY created_at",
+            "SELECT id, name, base_url, api_key, input_usd_per_1k, output_usd_per_1k, created_by, created_at FROM custom_ai_providers ORDER BY created_at",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -3728,6 +3735,9 @@ pub struct CustomAiProviderRow {
     pub name: String,
     pub base_url: String,
     pub api_key: String,
+    /// USD per 1,000 tokens in / out, as entered by the user. Both set or both `None`.
+    pub input_usd_per_1k: Option<f64>,
+    pub output_usd_per_1k: Option<f64>,
     pub created_by: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }

@@ -219,14 +219,29 @@ pub struct AiProviderInfo {
 /// See `AiProviderInfo::pricing`. `input_usd_per_1k`/`output_usd_per_1k`
 /// must be the provider's real, disclosed published rate when set — this
 /// module never invents a plausible-looking number.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ProviderPricing {
+    #[default]
     Unmetered,
     Metered {
         input_usd_per_1k: f64,
         output_usd_per_1k: f64,
     },
+}
+
+impl ProviderPricing {
+    /// `Metered` only when both prices are known. A provider whose prices were not entered stays `Unmetered`, so
+    /// nothing is ever billed at a price nobody supplied.
+    pub fn from_prices(input_usd_per_1k: Option<f64>, output_usd_per_1k: Option<f64>) -> Self {
+        match (input_usd_per_1k, output_usd_per_1k) {
+            (Some(input_usd_per_1k), Some(output_usd_per_1k)) => Self::Metered {
+                input_usd_per_1k,
+                output_usd_per_1k,
+            },
+            _ => Self::Unmetered,
+        }
+    }
 }
 
 // -------------------------------------------------------------- discovery
@@ -2058,12 +2073,51 @@ impl Embedder for GeminiEmbedder {
 /// comment for why Gemini needed its own dedicated integration instead of
 /// fitting this generic path) — a provider that doesn't follow that
 /// convention needs its own dedicated code, same as Groq/Gemini got.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CustomProviderConfig {
     pub id: String,
     pub name: String,
     pub base_url: String,
+    /// The key itself, or `env:NAME` to read it from the environment variable `NAME` each time it is needed, so a
+    /// paid key never has to be stored (see `CustomProviderConfig::resolved_api_key`).
     pub api_key: String,
+    /// What the user said this endpoint costs; `Unmetered` (shown as free) when no price was entered.
+    #[serde(default)]
+    pub pricing: ProviderPricing,
+}
+
+/// An `api_key` written as `env:NAME` names an environment variable instead of holding the key.
+const ENV_KEY_PREFIX: &str = "env:";
+
+/// The environment variable an `api_key` refers to, when it is written `env:NAME`.
+pub fn env_key_name(api_key: &str) -> Option<&str> {
+    api_key.strip_prefix(ENV_KEY_PREFIX).map(str::trim)
+}
+
+/// What the environment variable `name` currently holds, if it holds something other than blanks.
+fn env_value(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// Whether the environment variable an `env:NAME` key names is set right now (the value itself is never exposed).
+pub fn env_key_is_set(name: &str) -> bool {
+    env_value(name).is_some()
+}
+
+impl CustomProviderConfig {
+    /// The secret to send: the stored key itself, or the current value of the environment variable an `env:NAME`
+    /// reference names. The `Err` names the variable that is missing or empty, never any secret.
+    fn resolved_api_key(&self) -> Result<String, String> {
+        match env_key_name(&self.api_key) {
+            None => Ok(self.api_key.clone()),
+            Some(name) => {
+                env_value(name).ok_or_else(|| format!("environment variable {name} is not set"))
+            }
+        }
+    }
 }
 
 /// Real, bounded, timeout-protected discovery for one custom provider —
@@ -2080,20 +2134,25 @@ async fn discover_custom_provider(cfg: &CustomProviderConfig, timeout: Duration)
         reachable: false,
         status: ProviderStatus::Unavailable,
         models: Vec::new(),
-        // Real fact this deployment cannot actually know for an arbitrary
-        // user-added endpoint (no published-pricing lookup exists for a
-        // custom base_url) — `Unmetered` would falsely claim it's free, so
-        // this reports the one thing that's true: real cost is genuinely
-        // unknown, at the cheapest possible honest value rather than a
-        // guessed rate. Disclosed to the user when they add one.
-        pricing: ProviderPricing::Unmetered,
+        // No published-pricing lookup exists for an arbitrary base_url, so this is only what the user entered
+        // when adding it; with no price entered it stays `Unmetered` (shown as free) rather than a guessed rate.
+        pricing: cfg.pricing,
     };
 
+    let api_key = match cfg.resolved_api_key() {
+        Ok(key) => key,
+        Err(why) => {
+            info.configured = false;
+            info.status = ProviderStatus::NotConfigured;
+            tracing::warn!("Custom provider '{}' discovery: {why}", cfg.id);
+            return info;
+        }
+    };
     let client = reqwest::Client::new();
     let url = format!("{}/v1/models", cfg.base_url.trim_end_matches('/'));
     let resp = match client
         .get(&url)
-        .bearer_auth(&cfg.api_key)
+        .bearer_auth(&api_key)
         .timeout(timeout)
         .send()
         .await
@@ -2183,6 +2242,9 @@ async fn execute_custom_provider(
     prompt: &str,
     timeout: Duration,
 ) -> Result<ExecutionOutput, ExecutionError> {
+    let api_key = cfg
+        .resolved_api_key()
+        .map_err(ExecutionError::ProviderUnavailable)?;
     let client = http_client();
     let url = format!("{}/v1/chat/completions", cfg.base_url.trim_end_matches('/'));
     let body = serde_json::json!({
@@ -2193,7 +2255,7 @@ async fn execute_custom_provider(
     let resp = send_waiting_out_transient(&cfg.name, || {
         client
             .post(&url)
-            .bearer_auth(&cfg.api_key)
+            .bearer_auth(&api_key)
             .json(&body)
             .timeout(timeout)
     })
@@ -5462,6 +5524,7 @@ mod tests {
             name: "My Custom Provider".to_string(),
             base_url,
             api_key: "custom_test_ok".to_string(),
+            ..Default::default()
         };
         let info = discover_custom_provider(&cfg, Duration::from_secs(2)).await;
 
@@ -5486,6 +5549,7 @@ mod tests {
             name: "My Custom Provider".to_string(),
             base_url: "http://127.0.0.1:1".to_string(),
             api_key: "whatever".to_string(),
+            ..Default::default()
         };
         let info = discover_custom_provider(&cfg, Duration::from_millis(500)).await;
         assert!(!info.reachable);
@@ -5503,6 +5567,7 @@ mod tests {
             name: "My Custom Provider".to_string(),
             base_url,
             api_key: "custom_test_ok".to_string(),
+            ..Default::default()
         };
         let output =
             execute_custom_provider(&cfg, "custom-model-1", "hello", Duration::from_secs(2))
@@ -5511,6 +5576,156 @@ mod tests {
         assert_eq!(output.text, "real custom provider reply");
         assert_eq!(output.usage.prompt_tokens, Some(9));
         assert_eq!(output.usage.completion_tokens, Some(3));
+    }
+
+    #[test]
+    fn provider_pricing_is_metered_only_when_both_prices_are_known() {
+        assert_eq!(
+            ProviderPricing::from_prices(Some(0.5), Some(1.5)),
+            ProviderPricing::Metered {
+                input_usd_per_1k: 0.5,
+                output_usd_per_1k: 1.5
+            }
+        );
+        assert_eq!(
+            ProviderPricing::from_prices(Some(0.5), None),
+            ProviderPricing::Unmetered
+        );
+        assert_eq!(
+            ProviderPricing::from_prices(None, Some(1.5)),
+            ProviderPricing::Unmetered
+        );
+        assert_eq!(
+            ProviderPricing::from_prices(None, None),
+            ProviderPricing::Unmetered
+        );
+    }
+
+    #[tokio::test]
+    async fn a_custom_provider_with_a_price_is_billed_at_that_price_and_one_without_costs_nothing()
+    {
+        let base_url = spawn_mock_custom_provider().await;
+        let priced = CustomProviderConfig {
+            id: "custom-ai-priced".to_string(),
+            name: "Priced".to_string(),
+            base_url: base_url.clone(),
+            api_key: "custom_test_ok".to_string(),
+            pricing: ProviderPricing::from_prices(Some(0.5), Some(1.5)),
+        };
+        let free = CustomProviderConfig {
+            id: "custom-ai-free".to_string(),
+            name: "Free".to_string(),
+            pricing: ProviderPricing::Unmetered,
+            ..priced.clone()
+        };
+
+        let info = discover_custom_provider(&priced, Duration::from_secs(2)).await;
+        assert_eq!(
+            info.pricing,
+            ProviderPricing::Metered {
+                input_usd_per_1k: 0.5,
+                output_usd_per_1k: 1.5
+            }
+        );
+
+        let infra = AiInfrastructure::new(vec![], HashMap::new());
+        infra.set_custom_providers(vec![priced, free]).await;
+        let cost_via = |id: &str| {
+            let infra = &infra;
+            let id = id.to_string();
+            async move {
+                match infra
+                    .generate(AiRequest {
+                        task: AiTask::GeneralAi,
+                        prompt: "hi".to_string(),
+                        preferred_provider: Some(id),
+                        preferred_model: Some("custom-model-1".to_string()),
+                    })
+                    .await
+                {
+                    GenerationOutcome2::Ok(r) => r.estimated_cost_usd,
+                    GenerationOutcome2::Failed { reason } => panic!("expected an answer: {reason}"),
+                }
+            }
+        };
+
+        // The mock reports 9 tokens in and 3 out: 9/1000 * 0.5 + 3/1000 * 1.5.
+        let billed = cost_via("custom-ai-priced").await.expect("a cost");
+        assert!((billed - 0.009).abs() < 1e-9, "billed={billed}");
+        assert_eq!(cost_via("custom-ai-free").await, Some(0.0));
+    }
+
+    #[test]
+    fn only_an_env_prefixed_key_names_an_environment_variable() {
+        assert_eq!(env_key_name("env:OPENAI_API_KEY"), Some("OPENAI_API_KEY"));
+        assert_eq!(env_key_name("env: SPACED "), Some("SPACED"));
+        assert_eq!(env_key_name("sk-live-123"), None);
+        assert_eq!(env_key_name("environment"), None);
+        assert_eq!(env_key_name("ENV:UPPER"), None);
+    }
+
+    #[tokio::test]
+    async fn a_key_given_as_env_name_is_read_from_the_environment_and_used_for_discovery_and_answers(
+    ) {
+        const VAR: &str = "AIQA_TEST_CUSTOM_KEY_READ_FROM_ENV";
+        let base_url = spawn_mock_custom_provider().await;
+        let cfg = CustomProviderConfig {
+            id: "custom-ai-env".to_string(),
+            name: "Env Key".to_string(),
+            base_url,
+            api_key: format!("env:{VAR}"),
+            ..Default::default()
+        };
+
+        std::env::set_var(VAR, "custom_test_ok");
+        let info = discover_custom_provider(&cfg, Duration::from_secs(2)).await;
+        let output =
+            execute_custom_provider(&cfg, "custom-model-1", "hello", Duration::from_secs(2)).await;
+        // The variable is read every time, so changing it takes effect without a restart.
+        std::env::set_var(VAR, "a-key-the-server-rejects");
+        let after_change =
+            execute_custom_provider(&cfg, "custom-model-1", "hello", Duration::from_secs(2)).await;
+        std::env::remove_var(VAR);
+
+        assert!(info.configured && info.reachable, "info={info:?}");
+        assert_eq!(info.status, ProviderStatus::Healthy);
+        assert_eq!(output.expect("answer").text, "real custom provider reply");
+        assert!(
+            after_change.is_err(),
+            "the endpoint rejects the changed key, proving the variable is re-read"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_key_naming_an_unset_or_blank_variable_is_not_configured_and_nothing_is_sent() {
+        const UNSET: &str = "AIQA_TEST_CUSTOM_KEY_NEVER_SET";
+        const BLANK: &str = "AIQA_TEST_CUSTOM_KEY_BLANK";
+        std::env::remove_var(UNSET);
+        std::env::set_var(BLANK, "   ");
+        for var in [UNSET, BLANK] {
+            let cfg = CustomProviderConfig {
+                id: "custom-ai-env".to_string(),
+                name: "Env Key".to_string(),
+                // Nothing listens here, so a request would show up as Unavailable, not NotConfigured.
+                base_url: "http://127.0.0.1:1".to_string(),
+                api_key: format!("env:{var}"),
+                ..Default::default()
+            };
+
+            let info = discover_custom_provider(&cfg, Duration::from_millis(500)).await;
+            assert!(!info.configured, "{var}: info={info:?}");
+            assert_eq!(info.status, ProviderStatus::NotConfigured, "{var}");
+            assert!(info.models.is_empty());
+
+            let err = execute_custom_provider(&cfg, "m", "hello", Duration::from_millis(500))
+                .await
+                .expect_err("no key, no request");
+            assert!(
+                matches!(&err, ExecutionError::ProviderUnavailable(m) if m.contains(var) && m.contains("is not set")),
+                "{var}: err={err:?}"
+            );
+        }
+        std::env::remove_var(BLANK);
     }
 
     #[tokio::test]
@@ -5528,6 +5743,7 @@ mod tests {
                 name: "My Custom Provider".to_string(),
                 base_url,
                 api_key: "custom_test_ok".to_string(),
+                ..Default::default()
             }])
             .await;
 
@@ -5559,6 +5775,7 @@ mod tests {
             name: "My Custom Provider".to_string(),
             base_url: "http://127.0.0.1:1".to_string(),
             api_key: "whatever".to_string(),
+            ..Default::default()
         };
         let infra = AiInfrastructure::new(vec![], HashMap::new());
         infra.set_custom_providers(vec![cfg]).await;
@@ -5896,6 +6113,7 @@ mod tests {
                 name: "My Custom Provider".to_string(),
                 base_url: base_url.clone(),
                 api_key: "k".to_string(),
+                ..Default::default()
             },
             Duration::from_secs(2),
         )
@@ -6092,6 +6310,7 @@ mod tests {
             name: "My Custom Provider".to_string(),
             base_url,
             api_key: "k".to_string(),
+            ..Default::default()
         };
         let err = execute_custom_provider(&cfg, "gpt-x", "hi", Duration::from_secs(5))
             .await
@@ -6142,6 +6361,7 @@ mod tests {
             name: "My Custom Provider".to_string(),
             base_url: "http://127.0.0.1:1".to_string(),
             api_key: "k".to_string(),
+            ..Default::default()
         };
         let err = execute_custom_provider(&cfg, "m", "hi", Duration::from_secs(5))
             .await

@@ -8934,6 +8934,250 @@ async fn custom_ai_provider_rbac_viewer_can_list_but_cannot_create_or_delete() {
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
+fn custom_provider_body(extra: serde_json::Value) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "name": "My Custom Provider",
+        "base_url": "http://127.0.0.1:1",
+        "api_key": "sk-real-secret-value"
+    });
+    for (k, v) in extra.as_object().expect("an object").clone() {
+        body[k] = v;
+    }
+    body
+}
+
+#[tokio::test]
+async fn custom_ai_provider_price_is_saved_shown_and_makes_the_provider_metered() {
+    let (state, dir) = test_state_with_ai_router(inert_ai_router()).await;
+    let operator = mint_key(&state, "operator", None).await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            "/api/v1/ai/providers/custom",
+            Some(&operator),
+            Some(custom_provider_body(
+                serde_json::json!({"input_usd_per_1k": 0.5, "output_usd_per_1k": 1.5}),
+            )),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    assert_eq!(body["input_usd_per_1k"], 0.5, "body={body}");
+    assert_eq!(body["output_usd_per_1k"], 1.5, "body={body}");
+    let id = body["id"].as_str().expect("real id").to_string();
+
+    let (_, listed) = send(
+        &state,
+        req("GET", "/api/v1/ai/providers/custom", Some(&operator), None),
+    )
+    .await;
+    assert_eq!(listed[0]["input_usd_per_1k"], 0.5, "body={listed}");
+
+    let reloaded = crate::store::Store::connect(&dir.path().join("api.sqlite3"))
+        .await
+        .expect("reconnect");
+    let rows = reloaded.list_custom_ai_providers().await.expect("query");
+    assert_eq!(rows[0].input_usd_per_1k, Some(0.5));
+    assert_eq!(rows[0].output_usd_per_1k, Some(1.5));
+
+    // Live in the router the very next discovery, not only on disk.
+    let providers = state.ai_infra.discover_all().await;
+    let provider = providers.iter().find(|p| p.id == id).expect("discovered");
+    assert_eq!(
+        provider.pricing,
+        crate::ai_router::ProviderPricing::Metered {
+            input_usd_per_1k: 0.5,
+            output_usd_per_1k: 1.5
+        }
+    );
+}
+
+#[tokio::test]
+async fn custom_ai_provider_without_a_price_shows_none_and_stays_unmetered() {
+    let (state, _dir) = test_state_with_ai_router(inert_ai_router()).await;
+    let operator = mint_key(&state, "operator", None).await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            "/api/v1/ai/providers/custom",
+            Some(&operator),
+            Some(custom_provider_body(serde_json::json!({}))),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    assert!(body["input_usd_per_1k"].is_null(), "body={body}");
+    assert!(body["output_usd_per_1k"].is_null(), "body={body}");
+    let id = body["id"].as_str().expect("real id").to_string();
+
+    let providers = state.ai_infra.discover_all().await;
+    let provider = providers.iter().find(|p| p.id == id).expect("discovered");
+    assert_eq!(provider.pricing, crate::ai_router::ProviderPricing::Unmetered);
+}
+
+#[tokio::test]
+async fn custom_ai_provider_rejects_a_half_or_negative_price() {
+    let (state, _dir) = test_state_with_ai_router(inert_ai_router()).await;
+    let operator = mint_key(&state, "operator", None).await;
+
+    for extra in [
+        serde_json::json!({"input_usd_per_1k": 0.5}),
+        serde_json::json!({"output_usd_per_1k": 1.5}),
+        serde_json::json!({"input_usd_per_1k": -0.1, "output_usd_per_1k": 1.5}),
+        serde_json::json!({"input_usd_per_1k": 0.5, "output_usd_per_1k": -1.0}),
+    ] {
+        let (status, body) = send(
+            &state,
+            req(
+                "POST",
+                "/api/v1/ai/providers/custom",
+                Some(&operator),
+                Some(custom_provider_body(extra.clone())),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "extra={extra} body={body}");
+        assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+    }
+    let (_, listed) = send(
+        &state,
+        req("GET", "/api/v1/ai/providers/custom", Some(&operator), None),
+    )
+    .await;
+    assert!(listed.as_array().unwrap().is_empty(), "nothing was saved");
+
+    // Zero is a real price (a provider that charges nothing), not a missing one.
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            "/api/v1/ai/providers/custom",
+            Some(&operator),
+            Some(custom_provider_body(
+                serde_json::json!({"input_usd_per_1k": 0.0, "output_usd_per_1k": 0.0}),
+            )),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+}
+
+#[tokio::test]
+async fn custom_ai_provider_key_can_be_an_env_reference_and_the_secret_is_never_stored_or_shown() {
+    const VAR: &str = "AIQA_TEST_API_ENV_KEY_VAR";
+    const SECRET: &str = "the-actual-secret-value-in-the-environment";
+    std::env::remove_var(VAR);
+    let (state, dir) = test_state_with_ai_router(inert_ai_router()).await;
+    let operator = mint_key(&state, "operator", None).await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            "/api/v1/ai/providers/custom",
+            Some(&operator),
+            Some(custom_provider_body(
+                serde_json::json!({"api_key": format!("env:{VAR}")}),
+            )),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    assert_eq!(body["api_key_env"], VAR, "body={body}");
+    assert_eq!(
+        body["api_key_env_set"], false,
+        "the variable is not set on the server yet: body={body}"
+    );
+    let id = body["id"].as_str().expect("real id").to_string();
+
+    // Not set: the router reports it as not configured instead of trying to call out with no key.
+    let providers = state.ai_infra.discover_all().await;
+    let provider = providers.iter().find(|p| p.id == id).expect("discovered");
+    assert_eq!(
+        provider.status,
+        crate::ai_router::ProviderStatus::NotConfigured
+    );
+
+    std::env::set_var(VAR, SECRET);
+    let (_, listed) = send(
+        &state,
+        req("GET", "/api/v1/ai/providers/custom", Some(&operator), None),
+    )
+    .await;
+    std::env::remove_var(VAR);
+    assert_eq!(listed[0]["api_key_env_set"], true, "body={listed}");
+    assert!(
+        !listed.to_string().contains(SECRET),
+        "the value of the variable must never reach a response: body={listed}"
+    );
+
+    let reloaded = crate::store::Store::connect(&dir.path().join("api.sqlite3"))
+        .await
+        .expect("reconnect");
+    let rows = reloaded.list_custom_ai_providers().await.expect("query");
+    assert_eq!(
+        rows[0].api_key,
+        format!("env:{VAR}"),
+        "only the variable's name is stored, never its value"
+    );
+}
+
+#[tokio::test]
+async fn a_key_stored_as_itself_has_no_env_fields() {
+    let (state, _dir) = test_state_with_ai_router(inert_ai_router()).await;
+    let operator = mint_key(&state, "operator", None).await;
+    let (_, body) = send(
+        &state,
+        req(
+            "POST",
+            "/api/v1/ai/providers/custom",
+            Some(&operator),
+            Some(custom_provider_body(serde_json::json!({}))),
+        ),
+    )
+    .await;
+    assert!(body["api_key_env"].is_null(), "body={body}");
+    assert!(body["api_key_env_set"].is_null(), "body={body}");
+}
+
+#[tokio::test]
+async fn custom_ai_provider_rejects_a_malformed_env_reference() {
+    let (state, _dir) = test_state_with_ai_router(inert_ai_router()).await;
+    let operator = mint_key(&state, "operator", None).await;
+
+    for bad in ["env:", "env:  ", "env:1ABC", "env:A B", "env:A-B", "env:A=B"] {
+        let (status, body) = send(
+            &state,
+            req(
+                "POST",
+                "/api/v1/ai/providers/custom",
+                Some(&operator),
+                Some(custom_provider_body(serde_json::json!({"api_key": bad}))),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "key={bad} body={body}");
+        assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+    }
+    for good in ["env:OPENAI_API_KEY", "env:_x9", "env: PADDED "] {
+        let (status, body) = send(
+            &state,
+            req(
+                "POST",
+                "/api/v1/ai/providers/custom",
+                Some(&operator),
+                Some(custom_provider_body(serde_json::json!({"api_key": good}))),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "key={good} body={body}");
+    }
+}
+
 #[tokio::test]
 async fn custom_ai_provider_rejects_a_real_validation_failure_never_silently_accepted() {
     let (state, _dir) = test_state_with_ai_router(inert_ai_router()).await;

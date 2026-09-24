@@ -1206,16 +1206,29 @@ struct CustomAiProviderView {
     id: String,
     name: String,
     base_url: String,
+    /// USD per 1,000 tokens in / out as the user entered them; both `null` when no price was entered.
+    input_usd_per_1k: Option<f64>,
+    output_usd_per_1k: Option<f64>,
+    /// The environment variable the key is read from when it was given as `env:NAME` (the name is not a secret);
+    /// `null` when the key itself is stored.
+    api_key_env: Option<String>,
+    /// Whether that environment variable is set on the server right now; `null` when the key itself is stored.
+    api_key_env_set: Option<bool>,
     created_by: String,
     created_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl From<&crate::store::CustomAiProviderRow> for CustomAiProviderView {
     fn from(r: &crate::store::CustomAiProviderRow) -> Self {
+        let env_name = crate::ai_router::env_key_name(&r.api_key);
         Self {
             id: r.id.clone(),
             name: r.name.clone(),
             base_url: r.base_url.clone(),
+            input_usd_per_1k: r.input_usd_per_1k,
+            output_usd_per_1k: r.output_usd_per_1k,
+            api_key_env: env_name.map(str::to_string),
+            api_key_env_set: env_name.map(crate::ai_router::env_key_is_set),
             created_by: r.created_by.clone(),
             created_at: r.created_at,
         }
@@ -1239,6 +1252,10 @@ async fn reload_custom_providers_into_infra(state: &AppState) -> Result<(), ApiE
             name: r.name,
             base_url: r.base_url,
             api_key: r.api_key,
+            pricing: crate::ai_router::ProviderPricing::from_prices(
+                r.input_usd_per_1k,
+                r.output_usd_per_1k,
+            ),
         })
         .collect();
     state.ai_infra.set_custom_providers(configs).await;
@@ -1249,13 +1266,21 @@ async fn reload_custom_providers_into_infra(state: &AppState) -> Result<(), ApiE
 struct CreateCustomAiProviderBody {
     name: String,
     base_url: String,
+    /// The key itself, or `env:NAME` to have it read from the environment variable `NAME` instead of stored.
     api_key: String,
+    /// What the provider charges, USD per 1,000 tokens. Both or neither.
+    #[serde(default)]
+    input_usd_per_1k: Option<f64>,
+    #[serde(default)]
+    output_usd_per_1k: Option<f64>,
 }
 
 fn validate_custom_provider_fields(
     name: &str,
     base_url: &str,
     api_key: &str,
+    input_usd_per_1k: Option<f64>,
+    output_usd_per_1k: Option<f64>,
 ) -> Result<(), ApiError> {
     if name.trim().is_empty() {
         return Err(ApiError::validation("provider name must not be empty"));
@@ -1267,6 +1292,32 @@ fn validate_custom_provider_fields(
     }
     if api_key.trim().is_empty() {
         return Err(ApiError::validation("api_key must not be empty"));
+    }
+    if let Some(var) = crate::ai_router::env_key_name(api_key) {
+        let mut chars = var.chars();
+        let valid = chars
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if !valid {
+            return Err(ApiError::validation(
+                "api_key written as env:NAME must name an environment variable (letters, digits and _, not starting with a digit)",
+            ));
+        }
+    }
+    if input_usd_per_1k.is_some() != output_usd_per_1k.is_some() {
+        return Err(ApiError::validation(
+            "enter both the input and the output price per 1K tokens, or neither",
+        ));
+    }
+    if [input_usd_per_1k, output_usd_per_1k]
+        .into_iter()
+        .flatten()
+        .any(|p| !p.is_finite() || p < 0.0)
+    {
+        return Err(ApiError::validation(
+            "prices must be zero or more (USD per 1K tokens)",
+        ));
     }
     Ok(())
 }
@@ -1286,12 +1337,25 @@ async fn create_custom_ai_provider(
     let name = body.name.trim();
     let base_url = body.base_url.trim().trim_end_matches('/');
     let api_key = body.api_key.trim();
-    validate_custom_provider_fields(name, base_url, api_key)?;
+    validate_custom_provider_fields(
+        name,
+        base_url,
+        api_key,
+        body.input_usd_per_1k,
+        body.output_usd_per_1k,
+    )?;
     let id = format!("custom-ai-{}", Uuid::new_v4());
 
     state
         .store
-        .insert_custom_ai_provider(&id, name, base_url, api_key, &ctx.name)
+        .insert_custom_ai_provider(
+            &id,
+            name,
+            base_url,
+            api_key,
+            body.input_usd_per_1k.zip(body.output_usd_per_1k),
+            &ctx.name,
+        )
         .await
         .map_err(to_500)?;
     reload_custom_providers_into_infra(&state).await?;
