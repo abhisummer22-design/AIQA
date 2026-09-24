@@ -327,6 +327,9 @@ const AiIntelligencePanel: React.FC = () => {
   }[overallStatus];
 
   const selectedProvider = status.providers.find((p) => p.id === draftProvider);
+  // The name a provider was given, not its internal id (a custom one is `custom-ai-<uuid>`).
+  const previewProviderId = status.routing_preview?.provider_id;
+  const previewProviderName = status.providers.find((p) => p.id === previewProviderId)?.name ?? previewProviderId;
 
   return (
     <div id="ai-intelligence-panel" className="space-y-3">
@@ -361,7 +364,7 @@ const AiIntelligencePanel: React.FC = () => {
         <div className="p-3 rounded-lg bg-surface-page border border-border-default space-y-1 text-xs font-mono">
           <div className="flex justify-between">
             <span className="text-content-muted">Active Provider</span>
-            <span className="text-content-primary font-semibold">{status.routing_preview.provider_id}</span>
+            <span className="text-content-primary font-semibold">{previewProviderName}</span>
           </div>
           <div className="flex justify-between">
             <span className="text-content-muted">Active Model</span>

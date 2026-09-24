@@ -108,7 +108,7 @@ describe('SettingsPage — AI Intelligence panel (Central AI Model Auto-Discover
     await waitFor(() => expect(screen.getByText('System Settings & Governance')).toBeTruthy());
     await openAiTab();
 
-    await waitFor(() => expect(screen.getByText('Ollama')).toBeTruthy());
+    await waitFor(() => expect(screen.getAllByText('Ollama').length).toBeGreaterThan(0));
     expect(screen.getByText('Healthy')).toBeTruthy();
     expect(screen.getByText('Not Configured')).toBeTruthy();
     expect(screen.getByText('Ready')).toBeTruthy();
@@ -117,6 +117,33 @@ describe('SettingsPage — AI Intelligence panel (Central AI Model Auto-Discover
     // provider shows Free, the (fixture) metered Gemini shows its real rate.
     expect(screen.getByText('Free')).toBeTruthy();
     expect(screen.getByText('$0.01/$0.03 per 1K')).toBeTruthy();
+  });
+
+  it('names the active provider by the name it was given, not its internal id, and falls back to the id when it is not in the list', async () => {
+    const custom = { ...OLLAMA_PROVIDER, id: 'custom-ai-3f2a', name: 'My Paid API', provider_type: 'CUSTOM' as const };
+    const previews = [
+      { provider_id: 'custom-ai-3f2a', model_id: 'gemma3:12b', routing_score: 200, reason: 'Task chain: first available model for TestCaseGeneration' },
+      { provider_id: 'custom-ai-gone', model_id: 'gemma3:12b', routing_score: 200, reason: 'AUTO mode: best available model for TestCaseGeneration by routing score' },
+    ];
+    for (const routing_preview of previews) {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockImplementation(async (url: string) => {
+          if (url.endsWith('/ai/status')) return jsonResponse(200, statusResponse({ providers: [custom], routing_preview }));
+          return jsonResponse(200, []);
+        }),
+      );
+
+      const { unmount } = renderApp();
+      await waitFor(() => expect(screen.getByText('System Settings & Governance')).toBeTruthy());
+      await openAiTab();
+      await waitFor(() => expect(document.getElementById('ai-intelligence-panel')).toBeTruthy());
+
+      const row = screen.getByText('Active Provider').parentElement!;
+      expect(row.textContent).toContain(routing_preview.provider_id === 'custom-ai-3f2a' ? 'My Paid API' : 'custom-ai-gone');
+      expect(row.textContent).not.toContain(routing_preview.provider_id === 'custom-ai-3f2a' ? 'custom-ai-3f2a' : 'My Paid API');
+      unmount();
+    }
   });
 
   it('shows a truthful Degraded status and "no AI model currently available" when nothing is healthy — never a fake Ready', async () => {
@@ -184,7 +211,7 @@ describe('SettingsPage — AI Intelligence panel (Central AI Model Auto-Discover
     renderApp();
     await waitFor(() => expect(screen.getByText('System Settings & Governance')).toBeTruthy());
     await openAiTab();
-    await waitFor(() => expect(screen.getByText('Ollama')).toBeTruthy());
+    await waitFor(() => expect(screen.getAllByText('Ollama').length).toBeGreaterThan(0));
 
     const modeSelect = document.querySelector('select') as HTMLSelectElement;
     await act(async () => {
