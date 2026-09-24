@@ -175,6 +175,10 @@ async fn main() {
                 name: r.name,
                 base_url: r.base_url,
                 api_key: r.api_key,
+                pricing: aiqa_orchestrator::ai_router::ProviderPricing::from_prices(
+                    r.input_usd_per_1k,
+                    r.output_usd_per_1k,
+                ),
             })
             .collect();
         ai_infra.set_custom_providers(configs).await;
