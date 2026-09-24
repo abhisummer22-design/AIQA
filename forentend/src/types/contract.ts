@@ -143,6 +143,16 @@ export interface CustomAiProviderView {
   id: string;
   name: string;
   base_url: string;
+  /** USD per 1,000 tokens in / out, as entered when the provider was added.
+   *  `null` (or absent, from an older backend) when no price was entered —
+   *  its cost then shows as free. */
+  input_usd_per_1k?: number | null;
+  output_usd_per_1k?: number | null;
+  /** When the key was given as `env:NAME`: the variable's name (not a
+   *  secret) and whether the server has it set right now. `null` when the
+   *  key itself is stored. */
+  api_key_env?: string | null;
+  api_key_env_set?: boolean | null;
   created_by: string;
   created_at: string;
 }
@@ -150,7 +160,12 @@ export interface CustomAiProviderView {
 export interface CreateCustomAiProviderRequest {
   name: string;
   base_url: string;
+  /** The key itself, or `env:NAME` to read it from an environment variable
+   *  on the server instead of storing it. */
   api_key: string;
+  /** What the provider charges, USD per 1,000 tokens. Both or neither. */
+  input_usd_per_1k?: number;
+  output_usd_per_1k?: number;
 }
 
 // ------------------------------------------------------------------- projects
@@ -1160,10 +1175,20 @@ export interface AiSettings {
 
 /** `ai_router.rs::TaskProviderPreference` — each field independently
  *  optional: pin just the provider (any of its models) or just the model
- *  (whichever provider serves it) for one specific task. */
+ *  (whichever provider serves it) for one specific task. `chain` is an
+ *  ordered list of exact provider/model pairs: the first is the primary,
+ *  the rest are tried in order if it fails, and nothing outside the list is
+ *  ever used for that task. Absent/empty = the usual routing. */
 export interface TaskProviderPreference {
   provider: string | null;
   model: string | null;
+  chain?: TaskTarget[];
+}
+
+/** `ai_router.rs::TaskTarget` — one exact provider + model. */
+export interface TaskTarget {
+  provider: string;
+  model: string;
 }
 
 /** `ai_router.rs::RoutingDecision` — a documented heuristic score, not a

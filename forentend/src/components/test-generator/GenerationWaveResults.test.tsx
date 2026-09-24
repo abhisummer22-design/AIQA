@@ -73,6 +73,16 @@ describe('GenerationWaveResults', () => {
     expect(screen.getAllByText('FAILED')).toHaveLength(2);
   });
 
+  it('shows the name a provider was given rather than its id when a name lookup is passed, and the id itself otherwise', () => {
+    const custom = wave({ provider: 'custom-ai-3f2a', model: 'gpt-4o' });
+    const { rerender } = render(<GenerationWaveResults waves={[custom]} />);
+    expect(screen.getByText('custom-ai-3f2a / gpt-4o')).toBeTruthy();
+
+    rerender(<GenerationWaveResults waves={[custom]} providerName={(id) => (id === 'custom-ai-3f2a' ? 'My Paid API' : id)} />);
+    expect(screen.getByText('My Paid API / gpt-4o')).toBeTruthy();
+    expect(screen.queryByText(/custom-ai-3f2a/)).toBeNull();
+  });
+
   it('marks a call a fallback served, and says so honestly when usage was not reported', () => {
     render(
       <GenerationWaveResults

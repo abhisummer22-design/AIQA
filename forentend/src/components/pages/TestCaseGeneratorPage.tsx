@@ -40,6 +40,7 @@ import { GenerationWaveResults } from '../test-generator/GenerationWaveResults';
 import { SkillsAndMcpPanel } from '../test-generator/SkillsAndMcpPanel';
 import { TestGenerationFlow } from '../test-generator/TestGenerationFlow';
 import { useSkillSelection } from '../../hooks/useSkillSelection';
+import { useProviderNames } from '../../hooks/useProviderNames';
 import { categoryMatchedSkillIds, DEFAULT_SELECTED_SKILL_IDS } from '../../services/skillRegistry';
 import {
   UploadedRequirementDoc,
@@ -267,6 +268,8 @@ export const TestCaseGeneratorPage: React.FC = () => {
     activeGenerationSession?.lastGenerationResult ?? null
   );
   const [lastRoutingMode, setLastRoutingMode] = useState<AiRoutingMode | null>(null);
+  // A provider added in Settings shows its own name, not its internal id.
+  const providerName = useProviderNames(lastGenerationResult !== null);
 
   // Real, in-flight "which skill is running right now" signal — a
   // project-scoped WS connection listening only for the real wave-start
@@ -1253,7 +1256,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
               </div>
               <div>
                 <span className="text-slate-500">Provider: </span>
-                {lastGenerationResult.provider ?? 'Not Reported'}
+                {lastGenerationResult.provider ? providerName(lastGenerationResult.provider) : 'Not Reported'}
               </div>
               <div>
                 <span className="text-slate-500">Model: </span>
@@ -1301,7 +1304,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
             </div>
           )}
           {lastGenerationResult?.waves && (
-            <GenerationWaveResults waves={lastGenerationResult.waves.filter((w) => !w.skipped)} />
+            <GenerationWaveResults waves={lastGenerationResult.waves.filter((w) => !w.skipped)} providerName={providerName} />
           )}
         </div>
       )}
@@ -1486,6 +1489,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
               generationState={generationState}
               lastGenerationResult={lastGenerationResult}
               generatedCasesCount={generatedCases.length}
+              providerName={providerName}
             />
           </div>
         </div>

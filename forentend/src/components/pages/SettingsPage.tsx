@@ -27,7 +27,8 @@ import { useAuth } from '../../context/AuthContext';
 import { renderAuthState } from '../state/StateViews';
 import { SectionHeader } from '../common/SectionHeader';
 import { ApiError, aiqaApi } from '../../services/aiqaApi';
-import type { AiProviderInfo, AiSettings, AiStatusResponse, CustomAiProviderView } from '../../types/contract';
+import { TaskRoutingChains } from '../settings/TaskRoutingChains';
+import type { AiProviderInfo, AiSettings, AiStatusResponse, CustomAiProviderView, TaskProviderPreference } from '../../types/contract';
 
 /**
  * FE-2/FE-3 — the real orchestrator credential panel: everything on this
@@ -157,6 +158,9 @@ const AiIntelligencePanel: React.FC = () => {
   const [draftProvider, setDraftProvider] = useState<string>('');
   const [draftModel, setDraftModel] = useState<string>('');
   const [draftFallback, setDraftFallback] = useState<boolean>(true);
+  // The per-task overrides (incl. each task's model chain) travel with every save — the backend replaces the
+  // whole settings row, so leaving them out would silently erase them.
+  const [draftTaskOverrides, setDraftTaskOverrides] = useState<Record<string, TaskProviderPreference>>({});
 
   // Real, user-added providers (Settings UI -> `custom_ai_providers` DB
   // table) — a separate list from `status.providers` (which already shows
@@ -166,6 +170,8 @@ const AiIntelligencePanel: React.FC = () => {
   const [newProviderName, setNewProviderName] = useState('');
   const [newProviderBaseUrl, setNewProviderBaseUrl] = useState('');
   const [newProviderApiKey, setNewProviderApiKey] = useState('');
+  const [newProviderInputPrice, setNewProviderInputPrice] = useState('');
+  const [newProviderOutputPrice, setNewProviderOutputPrice] = useState('');
   const [addingProvider, setAddingProvider] = useState(false);
   const [addProviderError, setAddProviderError] = useState<string | null>(null);
   const [deletingProviderId, setDeletingProviderId] = useState<string | null>(null);
@@ -178,6 +184,7 @@ const AiIntelligencePanel: React.FC = () => {
       setDraftProvider(s.settings.preferred_provider ?? '');
       setDraftModel(s.settings.preferred_model ?? '');
       setDraftFallback(s.settings.fallback_enabled);
+      setDraftTaskOverrides(s.settings.task_overrides ?? {});
       setError(null);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to load AI status.');
@@ -200,6 +207,16 @@ const AiIntelligencePanel: React.FC = () => {
     void loadCustomProviders();
   }, []);
 
+  // Both prices or neither (the backend enforces the same); each zero or more.
+  const inputPrice = newProviderInputPrice.trim();
+  const outputPrice = newProviderOutputPrice.trim();
+  const priceProblem =
+    (inputPrice === '') !== (outputPrice === '')
+      ? 'Enter both prices, or leave both empty.'
+      : [inputPrice, outputPrice].some((p) => p !== '' && !(Number(p) >= 0))
+        ? 'Prices must be zero or more.'
+        : null;
+
   const handleAddCustomProvider = async () => {
     setAddingProvider(true);
     setAddProviderError(null);
@@ -208,6 +225,7 @@ const AiIntelligencePanel: React.FC = () => {
         name: newProviderName.trim(),
         base_url: newProviderBaseUrl.trim(),
         api_key: newProviderApiKey.trim(),
+        ...(inputPrice !== '' ? { input_usd_per_1k: Number(inputPrice), output_usd_per_1k: Number(outputPrice) } : {}),
       });
       // The raw key never lingers in component state once saved — same
       // real-secret discipline `OrchestratorAuthPanel` above already
@@ -215,6 +233,8 @@ const AiIntelligencePanel: React.FC = () => {
       setNewProviderName('');
       setNewProviderBaseUrl('');
       setNewProviderApiKey('');
+      setNewProviderInputPrice('');
+      setNewProviderOutputPrice('');
       await loadCustomProviders();
       // Force a real, immediate discovery pass (same call "Scan Providers"
       // makes) so the new provider shows up in "Discovered Providers"
@@ -263,8 +283,16 @@ const AiIntelligencePanel: React.FC = () => {
         preferred_provider: draftMode === 'MANUAL' ? draftProvider || null : null,
         preferred_model: draftMode === 'MANUAL' ? draftModel || null : null,
         fallback_enabled: draftFallback,
+        ...(Object.keys(draftTaskOverrides).length > 0 ? { task_overrides: draftTaskOverrides } : {}),
       });
       setStatus((prev) => (prev ? { ...prev, settings: saved } : prev));
+      // "Active Model" above is worked out by the backend from these settings, so ask it again.
+      try {
+        const fresh = await aiqaApi.ai.status();
+        setStatus((prev) => (prev ? { ...prev, routing_preview: fresh.routing_preview } : prev));
+      } catch {
+        // The saved settings are already shown; the preview catches up on the next scan.
+      }
     } catch (err) {
       setSaveError(err instanceof ApiError ? err.message : 'Failed to save AI settings.');
     } finally {
@@ -299,6 +327,9 @@ const AiIntelligencePanel: React.FC = () => {
   }[overallStatus];
 
   const selectedProvider = status.providers.find((p) => p.id === draftProvider);
+  // The name a provider was given, not its internal id (a custom one is `custom-ai-<uuid>`).
+  const previewProviderId = status.routing_preview?.provider_id;
+  const previewProviderName = status.providers.find((p) => p.id === previewProviderId)?.name ?? previewProviderId;
 
   return (
     <div id="ai-intelligence-panel" className="space-y-3">
@@ -333,7 +364,7 @@ const AiIntelligencePanel: React.FC = () => {
         <div className="p-3 rounded-lg bg-surface-page border border-border-default space-y-1 text-xs font-mono">
           <div className="flex justify-between">
             <span className="text-content-muted">Active Provider</span>
-            <span className="text-content-primary font-semibold">{status.routing_preview.provider_id}</span>
+            <span className="text-content-primary font-semibold">{previewProviderName}</span>
           </div>
           <div className="flex justify-between">
             <span className="text-content-muted">Active Model</span>
@@ -399,6 +430,17 @@ const AiIntelligencePanel: React.FC = () => {
                 <div className="min-w-0">
                   <div className="font-mono text-xs font-semibold text-content-primary truncate">{p.name}</div>
                   <div className="font-mono text-[10px] text-content-muted truncate">{p.base_url}</div>
+                  <div className="font-mono text-[10px] text-content-muted">
+                    {p.input_usd_per_1k != null && p.output_usd_per_1k != null
+                      ? `$${p.input_usd_per_1k} in / $${p.output_usd_per_1k} out per 1K tokens`
+                      : 'No price entered — its cost shows as Free'}
+                  </div>
+                  {p.api_key_env && (
+                    <div className={`font-mono text-[10px] ${p.api_key_env_set === false ? 'text-amber-300' : 'text-content-muted'}`}>
+                      Key from env:{p.api_key_env}
+                      {p.api_key_env_set === false && ' — not set on the server yet (add it to the server environment and restart)'}
+                    </div>
+                  )}
                 </div>
                 <button
                   type="button"
@@ -441,10 +483,39 @@ const AiIntelligencePanel: React.FC = () => {
             id="new-custom-provider-api-key"
             value={newProviderApiKey}
             onChange={(e) => setNewProviderApiKey(e.target.value)}
-            placeholder="API key"
+            placeholder="API key, or env:NAME"
             className="px-2.5 py-1.5 rounded bg-surface-card border border-slate-700 text-xs font-mono text-content-primary placeholder:text-slate-600 focus:outline-none focus:border-violet-500"
           />
         </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <input
+            type="number"
+            min="0"
+            step="any"
+            id="new-custom-provider-input-price"
+            value={newProviderInputPrice}
+            onChange={(e) => setNewProviderInputPrice(e.target.value)}
+            placeholder="Input price, $ per 1K tokens (optional)"
+            className="px-2.5 py-1.5 rounded bg-surface-card border border-slate-700 text-xs font-mono text-content-primary placeholder:text-slate-600 focus:outline-none focus:border-violet-500"
+          />
+          <input
+            type="number"
+            min="0"
+            step="any"
+            id="new-custom-provider-output-price"
+            value={newProviderOutputPrice}
+            onChange={(e) => setNewProviderOutputPrice(e.target.value)}
+            placeholder="Output price, $ per 1K tokens (optional)"
+            className="px-2.5 py-1.5 rounded bg-surface-card border border-slate-700 text-xs font-mono text-content-primary placeholder:text-slate-600 focus:outline-none focus:border-violet-500"
+          />
+        </div>
+        {priceProblem && <p className="text-[11px] font-mono text-amber-300">{priceProblem}</p>}
+        <p className="text-[10px] font-mono text-content-muted">
+          Price: copy it from the provider's own price list so a run through it shows a real cost. With no price its
+          cost shows as Free — it is not looked up for you. Key: paste it, or write <code>env:NAME</code> (for example{' '}
+          <code>env:OPENAI_API_KEY</code>) to read it from an environment variable on the server, so the key itself is
+          never stored here.
+        </p>
         <p className="text-[10px] font-mono text-content-muted">
           Must be a real, OpenAI-compatible endpoint (<code>{'{base_url}'}/v1/models</code> and{' '}
           <code>{'{base_url}'}/v1/chat/completions</code>) — the same convention Groq and most hosted providers already use.
@@ -459,7 +530,7 @@ const AiIntelligencePanel: React.FC = () => {
           type="button"
           id="btn-add-custom-ai-provider"
           onClick={() => void handleAddCustomProvider()}
-          disabled={addingProvider || !newProviderName.trim() || !newProviderBaseUrl.trim() || !newProviderApiKey.trim()}
+          disabled={addingProvider || !newProviderName.trim() || !newProviderBaseUrl.trim() || !newProviderApiKey.trim() || priceProblem !== null}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-violet-600 hover:bg-violet-500 text-white font-mono text-xs font-semibold cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {addingProvider ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
@@ -524,6 +595,8 @@ const AiIntelligencePanel: React.FC = () => {
           <input type="checkbox" checked={draftFallback} onChange={(e) => setDraftFallback(e.target.checked)} className="accent-violet-500" />
           <span>Fall back to another available model if the selected one fails</span>
         </label>
+
+        <TaskRoutingChains providers={status.providers} overrides={draftTaskOverrides} onChange={setDraftTaskOverrides} />
 
         {saveError && <p className="text-[11px] font-mono text-rose-300">{saveError}</p>}
 
