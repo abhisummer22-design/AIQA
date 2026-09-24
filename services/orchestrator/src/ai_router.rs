@@ -896,26 +896,14 @@ impl AiExecutor for OllamaExecutor {
         if provider_id != "ollama" {
             return Err(ExecutionError::ProviderUnavailable(provider_id.to_string()));
         }
-        let client = reqwest::Client::new();
+        let client = http_client();
         let url = format!("{}/api/generate", self.base_url.trim_end_matches('/'));
         let mut body = Self::build_generate_body(model_id, prompt, Some(task));
         apply_num_ctx(&mut body, self.num_ctx);
-        let resp = client
-            .post(&url)
-            .json(&body)
-            .timeout(self.timeout)
-            .send()
-            .await
-            .map_err(|e| {
-                if e.is_timeout() {
-                    ExecutionError::Timeout
-                } else {
-                    ExecutionError::ProviderUnavailable(e.to_string())
-                }
-            })?;
-        if !resp.status().is_success() {
-            return Err(ExecutionError::NonSuccessStatus(resp.status().as_u16()));
-        }
+        let resp = send_waiting_out_transient("Ollama", || {
+            client.post(&url).json(&body).timeout(self.timeout)
+        })
+        .await?;
         let parsed: serde_json::Value = resp
             .json()
             .await
@@ -1367,6 +1355,81 @@ fn groq_retry_delay(retry_after: Option<&str>, message: &str) -> Option<Duration
     }
 }
 
+/// How long to wait before retrying a refusal that clears by itself: a rate limit (429) or a briefly overloaded
+/// server (502/503/504). `None` for anything else, a per-day limit, or a wait longer than `GROQ_MAX_RETRY_WAIT`.
+fn transient_retry_delay(
+    status: u16,
+    retry_after: Option<&str>,
+    message: &str,
+) -> Option<Duration> {
+    if is_daily_limit(message) {
+        return None;
+    }
+    let delay = match status {
+        429 => groq_retry_delay(retry_after, message),
+        502 | 503 | 504 => {
+            Some(groq_retry_delay(retry_after, message).unwrap_or(Duration::from_secs(2)))
+        }
+        _ => None,
+    };
+    delay.filter(|d| *d <= GROQ_MAX_RETRY_WAIT)
+}
+
+/// A client that gives up connecting after `AI_CONNECT_TIMEOUT_SECS` (default 10), so a host that has gone away (a
+/// home PC that is off) fails in seconds instead of waiting out the whole request timeout.
+fn http_client() -> reqwest::Client {
+    let secs: u64 = std::env::var("AI_CONNECT_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|s| *s > 0)
+        .unwrap_or(10);
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(secs))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// Sends the request `build` makes. A refusal that clears by itself is waited out once; any other refusal is returned
+/// with the provider's own words, so the reason shown to the user is the real one and not just a status number.
+async fn send_waiting_out_transient(
+    label: &str,
+    build: impl Fn() -> reqwest::RequestBuilder,
+) -> Result<reqwest::Response, ExecutionError> {
+    let mut waited = false;
+    loop {
+        let resp = build().send().await.map_err(|e| {
+            if e.is_connect() {
+                ExecutionError::ProviderUnavailable(format!("could not connect: {e}"))
+            } else if e.is_timeout() {
+                ExecutionError::Timeout
+            } else {
+                ExecutionError::ProviderUnavailable(e.to_string())
+            }
+        })?;
+        if resp.status().is_success() {
+            return Ok(resp);
+        }
+        let status = resp.status().as_u16();
+        let retry_after = resp
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let message = provider_error_message(&resp.text().await.unwrap_or_default());
+        if !waited {
+            if let Some(delay) = transient_retry_delay(status, retry_after.as_deref(), &message) {
+                tracing::warn!(
+                    "{label} refused a request (HTTP {status}: {message}); waiting {delay:?} and retrying once"
+                );
+                tokio::time::sleep(delay + Duration::from_millis(250)).await;
+                waited = true;
+                continue;
+            }
+        }
+        return Err(ExecutionError::ProviderRejected { status, message });
+    }
+}
+
 /// A smaller `max_tokens` that fits Groq's tokens-per-minute limit, worked out from Groq's own figures
 /// ("Limit 8000, Requested 10345"). A request is the prompt plus the completion budget, so the prompt is what
 /// is left of `Requested` after taking off the `sent` budget, and the room for the completion is the limit less
@@ -1770,7 +1833,7 @@ impl AiExecutor for GeminiExecutor {
             ));
         };
 
-        let client = reqwest::Client::new();
+        let client = http_client();
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let mut body = serde_json::json!({
             "model": model_id,
@@ -1784,23 +1847,14 @@ impl AiExecutor for GeminiExecutor {
         ) {
             body["response_format"] = serde_json::json!({ "type": "json_object" });
         }
-        let resp = client
-            .post(&url)
-            .bearer_auth(key)
-            .json(&body)
-            .timeout(self.timeout)
-            .send()
-            .await
-            .map_err(|e| {
-                if e.is_timeout() {
-                    ExecutionError::Timeout
-                } else {
-                    ExecutionError::ProviderUnavailable(e.to_string())
-                }
-            })?;
-        if !resp.status().is_success() {
-            return Err(ExecutionError::NonSuccessStatus(resp.status().as_u16()));
-        }
+        let resp = send_waiting_out_transient("Gemini", || {
+            client
+                .post(&url)
+                .bearer_auth(key)
+                .json(&body)
+                .timeout(self.timeout)
+        })
+        .await?;
         let parsed: serde_json::Value = resp
             .json()
             .await
@@ -2129,30 +2183,21 @@ async fn execute_custom_provider(
     prompt: &str,
     timeout: Duration,
 ) -> Result<ExecutionOutput, ExecutionError> {
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/v1/chat/completions", cfg.base_url.trim_end_matches('/'));
     let body = serde_json::json!({
         "model": model_id,
         "messages": [{ "role": "user", "content": prompt }],
         "stream": false,
     });
-    let resp = client
-        .post(&url)
-        .bearer_auth(&cfg.api_key)
-        .json(&body)
-        .timeout(timeout)
-        .send()
-        .await
-        .map_err(|e| {
-            if e.is_timeout() {
-                ExecutionError::Timeout
-            } else {
-                ExecutionError::ProviderUnavailable(e.to_string())
-            }
-        })?;
-    if !resp.status().is_success() {
-        return Err(ExecutionError::NonSuccessStatus(resp.status().as_u16()));
-    }
+    let resp = send_waiting_out_transient(&cfg.name, || {
+        client
+            .post(&url)
+            .bearer_auth(&cfg.api_key)
+            .json(&body)
+            .timeout(timeout)
+    })
+    .await?;
     let parsed: serde_json::Value = resp
         .json()
         .await
@@ -5655,6 +5700,225 @@ mod tests {
                 info.id
             );
         }
+    }
+
+    // -------------------------------------- refusals, retries and connection failures
+
+    #[test]
+    fn transient_retry_delay_waits_only_for_a_refusal_that_clears_by_itself() {
+        let secs = Duration::from_secs;
+        assert_eq!(
+            transient_retry_delay(429, Some("0"), "Rate limit reached"),
+            Some(secs(0))
+        );
+        assert_eq!(
+            transient_retry_delay(429, None, "Rate limit reached. Please try again in 3.5s."),
+            Some(Duration::from_millis(3500))
+        );
+        assert_eq!(
+            transient_retry_delay(503, None, "overloaded"),
+            Some(secs(2))
+        );
+        assert_eq!(transient_retry_delay(503, Some("1"), ""), Some(secs(1)));
+        // Too long to hold a request for, a per-day limit, and refusals a retry cannot change.
+        assert_eq!(
+            transient_retry_delay(429, Some("120"), "Rate limit reached"),
+            None
+        );
+        assert_eq!(
+            transient_retry_delay(429, Some("0"), "Rate limit reached on tokens per day (TPD)"),
+            None
+        );
+        for status in [400_u16, 401, 403, 404, 500] {
+            assert_eq!(
+                transient_retry_delay(status, Some("1"), "refused"),
+                None,
+                "HTTP {status}"
+            );
+        }
+    }
+
+    /// A mock chat endpoint that answers each POST from `script` (status, optional retry-after, body), repeating the
+    /// last entry, and counts the requests it received.
+    async fn spawn_scripted_chat(
+        path: &'static str,
+        script: Vec<(u16, Option<&'static str>, serde_json::Value)>,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use axum::response::IntoResponse;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        type Script = Arc<Vec<(u16, Option<&'static str>, serde_json::Value)>>;
+        async fn handler(
+            axum::extract::State((hits, script)): axum::extract::State<(Arc<AtomicUsize>, Script)>,
+        ) -> axum::response::Response {
+            let i = hits.fetch_add(1, Ordering::SeqCst).min(script.len() - 1);
+            let (status, retry_after, body) = &script[i];
+            let mut resp = (
+                axum::http::StatusCode::from_u16(*status).expect("valid status"),
+                axum::Json(body.clone()),
+            )
+                .into_response();
+            if let Some(ra) = retry_after {
+                resp.headers_mut()
+                    .insert("retry-after", axum::http::HeaderValue::from_static(ra));
+            }
+            resp
+        }
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let app = axum::Router::new()
+            .route(path, axum::routing::post(handler))
+            .with_state((hits.clone(), Arc::new(script)));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
+        (format!("http://{addr}"), hits)
+    }
+
+    fn chat_ok(text: &str) -> serde_json::Value {
+        serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 2}
+        })
+    }
+
+    #[tokio::test]
+    async fn gemini_waits_out_a_short_rate_limit_once_and_is_then_served() {
+        use std::sync::atomic::Ordering;
+        let (base_url, hits) = spawn_scripted_chat(
+            "/chat/completions",
+            vec![
+                (
+                    429,
+                    Some("0"),
+                    serde_json::json!({"error": {"message": "Rate limit reached"}}),
+                ),
+                (200, None, chat_ok("served after the wait")),
+            ],
+        )
+        .await;
+        let executor = GeminiExecutor {
+            base_url,
+            api_key: Some("k".to_string()),
+            timeout: Duration::from_secs(5),
+            max_tokens: 100,
+        };
+        let out = executor
+            .execute_task("gemini", "gemini-2.5-flash", "hi", AiTask::GeneralAi)
+            .await
+            .expect("a short rate limit is waited out once");
+        assert_eq!(out.text, "served after the wait");
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn gemini_reports_a_refusal_with_the_providers_own_words_and_does_not_retry_it() {
+        use std::sync::atomic::Ordering;
+        // Gemini's OpenAI-compatible endpoint can answer with a JSON *array* of error objects.
+        let (base_url, hits) = spawn_scripted_chat(
+            "/chat/completions",
+            vec![(
+                400,
+                None,
+                serde_json::json!([{"error": {"code": 400, "message": "API key not valid", "status": "INVALID_ARGUMENT"}}]),
+            )],
+        )
+        .await;
+        let executor = GeminiExecutor {
+            base_url,
+            api_key: Some("k".to_string()),
+            timeout: Duration::from_secs(5),
+            max_tokens: 100,
+        };
+        let err = executor
+            .execute_task("gemini", "gemini-2.5-flash", "hi", AiTask::GeneralAi)
+            .await
+            .expect_err("a bad request is refused");
+        let text = err.to_string();
+        assert!(text.starts_with("PROVIDER_ERROR: HTTP 400: "), "{text}");
+        assert!(text.contains("API key not valid"), "{text}");
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "a 400 is never retried");
+    }
+
+    #[tokio::test]
+    async fn a_custom_provider_waits_out_a_rate_limit_once_then_reports_it_in_the_providers_words()
+    {
+        use std::sync::atomic::Ordering;
+        let (base_url, hits) = spawn_scripted_chat(
+            "/v1/chat/completions",
+            vec![(
+                429,
+                Some("0"),
+                serde_json::json!({"error": {"message": "Rate limit reached for gpt-x"}}),
+            )],
+        )
+        .await;
+        let cfg = CustomProviderConfig {
+            id: "custom-ai-test".to_string(),
+            name: "My Custom Provider".to_string(),
+            base_url,
+            api_key: "k".to_string(),
+        };
+        let err = execute_custom_provider(&cfg, "gpt-x", "hi", Duration::from_secs(5))
+            .await
+            .expect_err("still limited after the one wait");
+        assert_eq!(
+            err.to_string(),
+            "PROVIDER_ERROR: HTTP 429: Rate limit reached for gpt-x"
+        );
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            2,
+            "one request, one wait, one retry — then it gives up"
+        );
+    }
+
+    #[tokio::test]
+    async fn ollama_says_why_a_request_was_refused() {
+        use std::sync::atomic::Ordering;
+        let (base_url, hits) = spawn_scripted_chat(
+            "/api/generate",
+            vec![(
+                404,
+                None,
+                serde_json::json!({"error": "model 'gemma9:99b' not found"}),
+            )],
+        )
+        .await;
+        let executor = OllamaExecutor {
+            base_url,
+            timeout: Duration::from_secs(5),
+            num_ctx: None,
+        };
+        let err = executor
+            .execute_task("ollama", "gemma9:99b", "hi", AiTask::GeneralAi)
+            .await
+            .expect_err("an unknown model is refused");
+        assert_eq!(
+            err.to_string(),
+            "PROVIDER_ERROR: HTTP 404: model 'gemma9:99b' not found"
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_host_that_refuses_connections_is_reported_as_unavailable_not_as_a_timeout() {
+        let cfg = CustomProviderConfig {
+            id: "custom-ai-test".to_string(),
+            name: "My Custom Provider".to_string(),
+            base_url: "http://127.0.0.1:1".to_string(),
+            api_key: "k".to_string(),
+        };
+        let err = execute_custom_provider(&cfg, "m", "hi", Duration::from_secs(5))
+            .await
+            .expect_err("nothing is listening");
+        assert!(
+            matches!(&err, ExecutionError::ProviderUnavailable(m) if m.contains("could not connect")),
+            "{err}"
+        );
     }
 
     #[test]
