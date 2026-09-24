@@ -66,8 +66,11 @@ import type {
   EvidenceRow,
   Finding,
   FindingAnalysis,
+  GenerateAiPlanRequest,
+  GenerateAiPlanResponse,
   GenerateAiTestCasesRequest,
   GenerateAiTestCasesResponse,
+  ListRequirementsResponse,
   StartCrawlRequest,
   CrawlStartedResponse,
   CrawlOutput,
@@ -612,6 +615,13 @@ export const aiqaApi = {
      *  `Role::Operator` and a real, scoped project id, same as `.create()`. */
     generateAi: (projectId: string, body: GenerateAiTestCasesRequest, signal?: AbortSignal) =>
       requestJson<GenerateAiTestCasesResponse>(`/projects/${projectId}/test-cases/generate-ai`, { method: 'POST', body, signal }),
+    /** What a requirement-driven `generateAi` of these documents with these
+     *  skills would do — how many calls, how many requirements each skill is
+     *  shown, where the calls would go — worked out by the same planning the
+     *  run uses, without calling any model (`api.rs::plan_generate_ai_scoped`).
+     *  Requires `Role::Operator`, like the generation it previews. */
+    planGenerateAi: (projectId: string, body: GenerateAiPlanRequest, signal?: AbortSignal) =>
+      requestJson<GenerateAiPlanResponse>(`/projects/${projectId}/test-cases/generate-ai/plan`, { method: 'POST', body, signal }),
     /** Phase 2.1 — real, read-only compilation preview
      *  (`api.rs::compile_test_case_scoped`). Never mutates anything; safe
      *  to call to preview READY/NOT_EXECUTABLE/COMPILATION_FAILED/
@@ -682,6 +692,18 @@ export const aiqaApi = {
   documents: {
     extractText: (projectId: string, body: ExtractDocumentTextRequest, signal?: AbortSignal) =>
       requestJson<ExtractDocumentTextResponse>(`/projects/${projectId}/documents/extract-text`, { method: 'POST', body, signal }),
+  },
+
+  /** The numbered requirements read out of a project's uploaded documents
+   *  (`api.rs::list_requirements_scoped`) — the whole project's, or only
+   *  those of the documents named. Read-only (any role that can view the
+   *  project). */
+  requirements: {
+    list: (projectId: string, opts: { documentIds?: string[] } = {}, signal?: AbortSignal) =>
+      requestJson<ListRequirementsResponse>(`/projects/${projectId}/requirements`, {
+        query: { document_ids: opts.documentIds && opts.documentIds.length > 0 ? opts.documentIds.join(',') : undefined },
+        signal,
+      }),
   },
 
   /** Central AI Provider & Model Intelligence Layer
