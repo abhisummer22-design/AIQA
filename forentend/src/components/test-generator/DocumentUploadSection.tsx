@@ -467,7 +467,7 @@ export const DocumentUploadSection: React.FC<DocumentUploadSectionProps> = ({
                           ) : null}
                           {uploadedDoc.extractedTruncated ? (
                             <div className="text-slate-400">
-                              Pasted-text generation still uses only the first 20,000 chars; "Generate from requirements" uses all of it.
+                              Pasted-text generation still uses only the first 20,000 chars; "Generate from Numbered Requirements" uses all of it.
                             </div>
                           ) : null}
                         </div>

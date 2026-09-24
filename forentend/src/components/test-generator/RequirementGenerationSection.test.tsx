@@ -172,6 +172,19 @@ describe('RequirementGenerationSection — opting in', () => {
     expect(screen.getByText(/documents will be pasted as usual/)).toBeTruthy();
   });
 
+  it('shows the option off while no document has requirements, and finds it on again when one does', () => {
+    stubBackend();
+    const { rerender } = render(<Harness documents={[doc()]} initiallyEnabled />);
+    expect(toggle().checked).toBe(true);
+
+    rerender(<Harness documents={[]} initiallyEnabled />);
+    expect(toggle().checked).toBe(false);
+    expect(toggle().disabled).toBe(true);
+
+    rerender(<Harness documents={[doc()]} initiallyEnabled />);
+    expect(toggle().checked).toBe(true);
+  });
+
   it('is disabled while a generation is running', () => {
     render(<Harness documents={[doc()]} disabled />);
     expect(toggle().disabled).toBe(true);
