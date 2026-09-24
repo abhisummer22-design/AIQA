@@ -461,6 +461,9 @@ MJ_AI_MAX_TOKENS=4096
 OLLAMA_BASE_URL=http://127.0.0.1:11434
 OLLAMA_TIMEOUT_SECS=120
 OLLAMA_DISCOVERY_TIMEOUT_SECS=5
+# Optional — context window (tokens) sent as options.num_ctx with every request.
+# Unset leaves Ollama's own default, which can silently cut a long prompt (e.g. 16384).
+OLLAMA_NUM_CTX=
 
 # Groq Cloud Configuration
 GROQ_BASE_URL=https://api.groq.com/openai/v1
