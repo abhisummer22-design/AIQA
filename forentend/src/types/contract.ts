@@ -1160,10 +1160,20 @@ export interface AiSettings {
 
 /** `ai_router.rs::TaskProviderPreference` — each field independently
  *  optional: pin just the provider (any of its models) or just the model
- *  (whichever provider serves it) for one specific task. */
+ *  (whichever provider serves it) for one specific task. `chain` is an
+ *  ordered list of exact provider/model pairs: the first is the primary,
+ *  the rest are tried in order if it fails, and nothing outside the list is
+ *  ever used for that task. Absent/empty = the usual routing. */
 export interface TaskProviderPreference {
   provider: string | null;
   model: string | null;
+  chain?: TaskTarget[];
+}
+
+/** `ai_router.rs::TaskTarget` — one exact provider + model. */
+export interface TaskTarget {
+  provider: string;
+  model: string;
 }
 
 /** `ai_router.rs::RoutingDecision` — a documented heuristic score, not a

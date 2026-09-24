@@ -27,7 +27,8 @@ import { useAuth } from '../../context/AuthContext';
 import { renderAuthState } from '../state/StateViews';
 import { SectionHeader } from '../common/SectionHeader';
 import { ApiError, aiqaApi } from '../../services/aiqaApi';
-import type { AiProviderInfo, AiSettings, AiStatusResponse, CustomAiProviderView } from '../../types/contract';
+import { TaskRoutingChains } from '../settings/TaskRoutingChains';
+import type { AiProviderInfo, AiSettings, AiStatusResponse, CustomAiProviderView, TaskProviderPreference } from '../../types/contract';
 
 /**
  * FE-2/FE-3 — the real orchestrator credential panel: everything on this
@@ -157,6 +158,9 @@ const AiIntelligencePanel: React.FC = () => {
   const [draftProvider, setDraftProvider] = useState<string>('');
   const [draftModel, setDraftModel] = useState<string>('');
   const [draftFallback, setDraftFallback] = useState<boolean>(true);
+  // The per-task overrides (incl. each task's model chain) travel with every save — the backend replaces the
+  // whole settings row, so leaving them out would silently erase them.
+  const [draftTaskOverrides, setDraftTaskOverrides] = useState<Record<string, TaskProviderPreference>>({});
 
   // Real, user-added providers (Settings UI -> `custom_ai_providers` DB
   // table) — a separate list from `status.providers` (which already shows
@@ -178,6 +182,7 @@ const AiIntelligencePanel: React.FC = () => {
       setDraftProvider(s.settings.preferred_provider ?? '');
       setDraftModel(s.settings.preferred_model ?? '');
       setDraftFallback(s.settings.fallback_enabled);
+      setDraftTaskOverrides(s.settings.task_overrides ?? {});
       setError(null);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to load AI status.');
@@ -263,8 +268,16 @@ const AiIntelligencePanel: React.FC = () => {
         preferred_provider: draftMode === 'MANUAL' ? draftProvider || null : null,
         preferred_model: draftMode === 'MANUAL' ? draftModel || null : null,
         fallback_enabled: draftFallback,
+        ...(Object.keys(draftTaskOverrides).length > 0 ? { task_overrides: draftTaskOverrides } : {}),
       });
       setStatus((prev) => (prev ? { ...prev, settings: saved } : prev));
+      // "Active Model" above is worked out by the backend from these settings, so ask it again.
+      try {
+        const fresh = await aiqaApi.ai.status();
+        setStatus((prev) => (prev ? { ...prev, routing_preview: fresh.routing_preview } : prev));
+      } catch {
+        // The saved settings are already shown; the preview catches up on the next scan.
+      }
     } catch (err) {
       setSaveError(err instanceof ApiError ? err.message : 'Failed to save AI settings.');
     } finally {
@@ -524,6 +537,8 @@ const AiIntelligencePanel: React.FC = () => {
           <input type="checkbox" checked={draftFallback} onChange={(e) => setDraftFallback(e.target.checked)} className="accent-violet-500" />
           <span>Fall back to another available model if the selected one fails</span>
         </label>
+
+        <TaskRoutingChains providers={status.providers} overrides={draftTaskOverrides} onChange={setDraftTaskOverrides} />
 
         {saveError && <p className="text-[11px] font-mono text-rose-300">{saveError}</p>}
 

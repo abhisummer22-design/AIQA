@@ -367,3 +367,170 @@ describe('SettingsPage — custom AI providers (add/remove via the Settings UI)'
     await waitFor(() => expect(screen.queryByText('My Real Provider')).toBeNull());
   });
 });
+
+describe('SettingsPage — task-wise routing chains', () => {
+  const QWEN = { ...OLLAMA_PROVIDER.models[0], id: 'qwen3:14b', display_name: 'qwen3:14b' };
+  const PROVIDERS = [{ ...OLLAMA_PROVIDER, models: [...OLLAMA_PROVIDER.models, QWEN] }, GEMINI_NOT_CONFIGURED];
+
+  /** Serves `status` for GET /ai/status and records the body of every PUT /ai/settings. */
+  function serve(status: () => AiStatusResponse) {
+    const saved: any[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.endsWith('/ai/settings') && init?.method === 'PUT') {
+          const body = JSON.parse(String(init.body));
+          saved.push(body);
+          return jsonResponse(200, body);
+        }
+        if (url.endsWith('/ai/status')) return jsonResponse(200, status());
+        return jsonResponse(200, []);
+      }),
+    );
+    return saved;
+  }
+
+  async function openPanel() {
+    renderApp();
+    await waitFor(() => expect(screen.getByText('System Settings & Governance')).toBeTruthy());
+    await openAiTab();
+    await waitFor(() => expect(document.getElementById('btn-save-ai-settings')).toBeTruthy());
+  }
+
+  const save = async () => {
+    await act(async () => {
+      document.getElementById('btn-save-ai-settings')!.click();
+    });
+  };
+
+  it('saving without any task list sends the same payload as before — no task_overrides key at all', async () => {
+    const saved = serve(() => statusResponse({ providers: PROVIDERS }));
+    await openPanel();
+
+    await save();
+
+    await waitFor(() => expect(saved).toHaveLength(1));
+    expect(saved[0]).toEqual({ mode: 'AUTO', preferred_provider: null, preferred_model: null, fallback_enabled: true });
+  });
+
+  it('saving sends the overrides the backend already has, so a save can never erase them', async () => {
+    const existing = {
+      TEST_CASE_GENERATION: {
+        provider: null,
+        model: null,
+        chain: [
+          { provider: 'ollama', model: 'qwen3:14b' },
+          { provider: 'gemini', model: 'gemini-2.5-flash' },
+        ],
+      },
+      BUG_ANALYSIS: { provider: 'ollama', model: null },
+    };
+    const saved = serve(() =>
+      statusResponse({
+        providers: PROVIDERS,
+        settings: { mode: 'AUTO', preferred_provider: null, preferred_model: null, fallback_enabled: true, task_overrides: existing },
+      }),
+    );
+    await openPanel();
+
+    // The saved chain is shown, already open.
+    expect(document.getElementById('task-chain-TEST_CASE_GENERATION')!.textContent).toContain('qwen3:14b');
+
+    await save();
+
+    await waitFor(() => expect(saved).toHaveLength(1));
+    expect(saved[0].task_overrides).toEqual(existing);
+  });
+
+  it('a chain built in the Settings UI is what gets saved', async () => {
+    const saved = serve(() => statusResponse({ providers: PROVIDERS }));
+    await openPanel();
+
+    await act(async () => {
+      document.getElementById('btn-toggle-task-routing')!.click();
+    });
+    await act(async () => {
+      fireEvent.change(document.getElementById('task-chain-TEST_CASE_GENERATION-provider')!, { target: { value: 'ollama' } });
+    });
+    await act(async () => {
+      fireEvent.change(document.getElementById('task-chain-TEST_CASE_GENERATION-model')!, { target: { value: 'qwen3:14b' } });
+    });
+    await act(async () => {
+      document.getElementById('task-chain-TEST_CASE_GENERATION-add')!.click();
+    });
+    await save();
+
+    await waitFor(() => expect(saved).toHaveLength(1));
+    expect(saved[0].task_overrides).toEqual({
+      TEST_CASE_GENERATION: { provider: null, model: null, chain: [{ provider: 'ollama', model: 'qwen3:14b' }] },
+    });
+  });
+
+  it('emptying every list and saving clears the overrides — the key is left out, not sent empty', async () => {
+    const saved = serve(() =>
+      statusResponse({
+        providers: PROVIDERS,
+        settings: {
+          mode: 'AUTO',
+          preferred_provider: null,
+          preferred_model: null,
+          fallback_enabled: true,
+          task_overrides: { TEST_CASE_GENERATION: { provider: null, model: null, chain: [{ provider: 'ollama', model: 'qwen3:14b' }] } },
+        },
+      }),
+    );
+    await openPanel();
+
+    await act(async () => {
+      screen.getByLabelText('Remove qwen3:14b from Test case generation').click();
+    });
+    await save();
+
+    await waitFor(() => expect(saved).toHaveLength(1));
+    expect('task_overrides' in saved[0]).toBe(false);
+  });
+
+  it('after saving, the Active Model preview is read again so it reflects the new lists', async () => {
+    let statusCalls = 0;
+    serve(() => {
+      statusCalls += 1;
+      return statusCalls === 1
+        ? statusResponse({ providers: PROVIDERS })
+        : statusResponse({
+            providers: PROVIDERS,
+            routing_preview: {
+              provider_id: 'ollama',
+              model_id: 'qwen3:14b',
+              routing_score: 200,
+              reason: 'Task chain: first available model for TestCaseGeneration',
+            },
+          });
+    });
+    await openPanel();
+    expect(screen.queryByText(/Task chain: first available model/)).toBeNull();
+
+    await save();
+
+    await waitFor(() => expect(screen.getByText('Task chain: first available model for TestCaseGeneration')).toBeTruthy());
+    expect(screen.getByText('qwen3:14b')).toBeTruthy();
+  });
+
+  it('a failed re-read of the preview after a successful save is not shown as a save error', async () => {
+    let statusCalls = 0;
+    const saved = serve(() => {
+      statusCalls += 1;
+      if (statusCalls > 1) throw new Error('offline');
+      return statusResponse({ providers: PROVIDERS });
+    });
+    await openPanel();
+
+    await save();
+
+    await waitFor(() => expect(saved).toHaveLength(1));
+    await waitFor(() => expect(statusCalls).toBe(2));
+    // Neither the offline message the failed read raises nor the generic save failure may appear.
+    expect(screen.queryByText(/Cannot reach the AIQA orchestrator/)).toBeNull();
+    expect(screen.queryByText(/Failed to save AI settings/)).toBeNull();
+    expect(document.getElementById('ai-intelligence-panel')).toBeTruthy();
+  });
+});
