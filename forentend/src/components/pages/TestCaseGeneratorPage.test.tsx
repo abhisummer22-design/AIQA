@@ -2184,6 +2184,81 @@ describe('TestCaseGeneratorPage — surviving in-app navigation', () => {
     await goToSourcesBranch();
     expect(screen.getByText('requirements.frd.md')).toBeTruthy();
   }, 15000);
+
+  // Leaving and re-entering mounts a *new* instance of the page. The call
+  // that started the generation belongs to the old one, and only reaches the
+  // project's session when it finishes — the new instance has to pick that up.
+  it('coming back to the page before a generation finishes shows its result the moment it arrives', async () => {
+    let resolveFetch: (value: Response) => void;
+    const pending = new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    });
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') return pending;
+      if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+      return dashboardResponseFor(url) ?? jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+    await act(async () => {
+      document.getElementById('btn-generate-test-cases-primary')!.click();
+    });
+    await waitFor(() => expect(screen.getByText('Generating Test Cases...')).toBeTruthy());
+
+    await goToDashboard();
+    await goToGenerator();
+    expect(screen.getByText('Generating Test Cases...')).toBeTruthy();
+
+    await act(async () => {
+      resolveFetch(jsonResponse(200, aiGenerateResponse()));
+    });
+
+    await waitFor(() => expect(screen.getByText(/Generated Test Suite/)).toBeTruthy());
+    expect(screen.getAllByText('Reject login with an expired session token').length).toBeGreaterThan(0);
+    expect(screen.queryByText('Generating Test Cases...')).toBeNull();
+  }, 15000);
+
+  it('coming back before a generation finishes, a real failure that arrives then is shown as failed, not left running', async () => {
+    let resolveFetch: (value: Response) => void;
+    const pending = new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    });
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') return pending;
+      if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+      return dashboardResponseFor(url) ?? jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+    await act(async () => {
+      document.getElementById('btn-generate-test-cases-primary')!.click();
+    });
+    await waitFor(() => expect(screen.getByText('Generating Test Cases...')).toBeTruthy());
+
+    await goToDashboard();
+    await goToGenerator();
+    expect(screen.getByText('Generating Test Cases...')).toBeTruthy();
+
+    await act(async () => {
+      resolveFetch(
+        jsonResponse(500, { error: { code: 'INTERNAL_ERROR', message: 'An internal error occurred.', details: null, request_id: 'r-nav-1' } }),
+      );
+    });
+
+    await waitFor(() => expect(screen.getByText('Generation Failed')).toBeTruthy());
+    expect(screen.getByText(/An internal error occurred/)).toBeTruthy();
+    expect(screen.queryByText('Generating Test Cases...')).toBeNull();
+  }, 15000);
 });
 
 // =============================================== surviving a project switch

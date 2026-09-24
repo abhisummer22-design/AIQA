@@ -520,6 +520,26 @@ export const TestCaseGeneratorPage: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [documents, appSources, selectedCategories, depth, generationState, generationError, generatedCases, selectedSkillIds]);
 
+  // The call that started a generation this page is showing as in flight can
+  // belong to an *earlier instance* of this page (left and re-entered while
+  // it ran): its completion handler only reaches the project's session, and
+  // this instance's own state is not subscribed to it. So when the session
+  // reports the attempt finished while this page still shows it running, take
+  // the real result from the session. Keyed on the session alone, so a new
+  // attempt (local state flips to running before the mirror effect above has
+  // written that to the session) is never reverted to the previous result.
+  useEffect(() => {
+    const finished = activeGenerationSession;
+    if (!isGeneratingNow || !finished?.generationState) return;
+    if (['VALIDATING', 'PROCESSING', 'GENERATING'].includes(finished.generationState)) return;
+    setGeneratedCases(finished.generatedCases || []);
+    setGenerationState(finished.generationState);
+    setGenerationError(finished.generationError ?? null);
+    setActiveWaveSkillNames([]);
+    if (finished.generationState === 'COMPLETED') setActiveBranch('GENERATED_CASES');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeGenerationSession]);
+
   // A generation call still in flight keeps running even if this page
   // itself is left (navigated away from entirely, not just switched to a
   // different project) — same reasoning as the reseed effect above for a
