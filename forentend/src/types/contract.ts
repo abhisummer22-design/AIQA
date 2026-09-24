@@ -839,16 +839,83 @@ export interface VerifyApplicationSourceResponse {
 export interface ExtractDocumentTextRequest {
   file_name: string;
   content_base64: string;
+  /** Which upload slot the file came from (BRD / PRD / FRD / SRD /
+   *  ADDITIONAL). It only prefixes the ids given to the document's
+   *  requirements; omitted, the file name is used instead. */
+  document_type?: string;
 }
 
 /** `doc_extract.rs::ExtractedDocument` — the real, extracted text of one
  *  uploaded Product Documentation file. `truncated` is only ever true when
  *  the real document exceeded the server's cap (20,000 characters) and was
- *  genuinely cut off — never set for any other reason. */
+ *  genuinely cut off — never set for any other reason.
+ *
+ *  `text`/`char_count`/`truncated` describe that bounded text only. The whole
+ *  document is read as well: `requirements_document` says what was found in
+ *  all of it (absent when it could not be stored — the bounded `text` above
+ *  is then all there is, exactly as before). */
 export interface ExtractDocumentTextResponse {
   text: string;
   char_count: number;
   truncated: boolean;
+  requirements_document?: RequirementDocumentSummary;
+}
+
+/** `api.rs::RequirementKind` (`requirements.rs`, snake_case on the wire). */
+export type RequirementKind =
+  | 'functional'
+  | 'security'
+  | 'performance'
+  | 'usability'
+  | 'interface'
+  | 'data'
+  | 'context'
+  | 'reference';
+
+/** `api.rs::RequirementDocumentSummary` — what reading one whole document
+ *  produced. `full_char_count` is the whole document (the `text` beside it
+ *  stops at 20,000); `full_truncated` is true only past a 3,000,000-character
+ *  safety ceiling. `skipped_sections` are sections left out on purpose (a
+ *  table of contents, a revision history). */
+export interface RequirementDocumentSummary {
+  document_id: string;
+  full_char_count: number;
+  full_truncated: boolean;
+  sections_count: number;
+  requirements_count: number;
+  skipped_sections: string[];
+  by_kind: Partial<Record<RequirementKind, number>>;
+}
+
+/** `store.rs::RequirementDocumentRow` — a document read for its requirements. */
+export interface RequirementDocumentRecord {
+  id: string;
+  file_name: string;
+  doc_type: string | null;
+  char_count: number;
+  requirements_count: number;
+  sections_count: number;
+  skipped_sections: string[];
+  furniture_lines: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** `store.rs::RequirementRow` — one numbered requirement read out of a
+ *  document. `key` is the id people see and a generated test case carries. */
+export interface RequirementRecord {
+  document_id: string;
+  key: string;
+  ordinal: number;
+  section: string | null;
+  kind: RequirementKind | string;
+  text: string;
+}
+
+/** `GET .../requirements[?document_ids=a,b]`. */
+export interface ListRequirementsResponse {
+  documents: RequirementDocumentRecord[];
+  requirements: RequirementRecord[];
 }
 
 // ---------------------------------------------------- AI-powered test generation
@@ -879,6 +946,55 @@ export interface GenerateAiTestCasesRequest {
   requirement_text: string;
   skills: GenerateAiSkillInput[];
   crawl_run_id?: string | null;
+  /** Generate from the numbered requirements read out of these documents
+   *  (`ExtractDocumentTextResponse.requirements_document.document_id`)
+   *  instead of from pasted document text: each skill is shown only the
+   *  requirements it tests, in batches that fit the provider, and every case
+   *  names the requirement it came from. Omitted or empty, the request is
+   *  generated exactly as it always was. */
+  requirement_document_ids?: string[];
+}
+
+/** `POST .../test-cases/generate-ai/plan` request — the same documents and
+ *  skills a generation would use; nothing is generated. */
+export interface GenerateAiPlanRequest {
+  skills: GenerateAiSkillInput[];
+  requirement_document_ids: string[];
+}
+
+/** `requirement_generation.rs::SkillPlan` — what one skill would be shown.
+ *  `note` is set when it would be skipped (nothing to test). */
+export interface GenerateAiPlanSkill {
+  skill_name: string;
+  wave: string;
+  requirements: number;
+  batches: number;
+  note?: string;
+}
+
+/** `api.rs::GeneratePlanResponse` — what a requirement-driven generation
+ *  would do, worked out by the same planning the run uses without calling any
+ *  model. `calls > max_calls` (`within_limit: false`) is refused by the
+ *  generation endpoint before any call is made. The token figures are rough
+ *  sizes, not a quote. `provider_name`/`model`/`prompt_window_tokens` are
+ *  absent when no provider can serve generation right now. */
+export interface GenerateAiPlanResponse {
+  requirements_total: number;
+  by_kind: Partial<Record<RequirementKind, number>>;
+  /** Requirements at least one selected skill will be shown. */
+  offered: number;
+  /** Of a kind no selected skill tests (at most 100 ids). */
+  not_offered_keys: string[];
+  calls: number;
+  max_calls: number;
+  within_limit: boolean;
+  skills: GenerateAiPlanSkill[];
+  budget_chars: number;
+  provider_name: string | null;
+  model: string | null;
+  prompt_window_tokens: number | null;
+  estimated_prompt_tokens: number;
+  estimated_completion_tokens: number;
 }
 
 /** `ai_generation.rs::DraftStep`. */
@@ -906,6 +1022,11 @@ export interface GeneratedTestCaseDraft {
   severity: string;
   evidence: GenerationEvidenceKind;
   source_reference: string | null;
+  /** Requirement-driven generation only: the id
+   *  (`RequirementRecord.key`) of the requirement this case tests. Absent
+   *  when the case could not be tied to one requirement, and always absent
+   *  for a request generated from pasted text. */
+  requirement_id?: string | null;
 }
 
 /** `ai_generation::WaveSummary` — one selected skill's real generation call.
@@ -926,6 +1047,27 @@ export interface GenerationWaveSummary {
   latency_ms: number | null;
   failure_reason: string | null;
   skipped: boolean;
+  /** Requirement-driven generation only: which batch of the skill's
+   *  requirements this call carried (`"2/5"`) and how many requirements were
+   *  in it. */
+  batch?: string;
+  requirements?: number;
+}
+
+/** `requirement_generation.rs::RequirementCoverage` — how much of the
+ *  requirement set a requirement-driven run reached. `uncovered_keys` were
+ *  shown to a skill but produced no case (a failed call, or nothing to test);
+ *  `not_offered_keys` are of a kind no selected skill tests. Both list at
+ *  most 100 ids. */
+export interface RequirementCoverage {
+  total: number;
+  offered: number;
+  covered: number;
+  uncovered_keys: string[];
+  not_offered_keys: string[];
+  notes: string[];
+  calls: number;
+  budget_chars: number;
 }
 
 /** `api.rs::GenerateAiTestCasesResponse`. `generation_method` is always
@@ -966,6 +1108,8 @@ export interface GenerateAiTestCasesResponse {
   total_completion_tokens: number | null;
   total_estimated_cost_usd: number | null;
   total_latency_ms: number;
+  /** Present only when the request named `requirement_document_ids`. */
+  requirements?: RequirementCoverage;
 }
 
 // ---------------------------------------------------------------- crawler

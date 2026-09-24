@@ -22,7 +22,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppShell } from '../../App';
 import { setApiKey } from '../../services/aiqaApi';
 import { parseWaveStartedSkillNames } from './TestCaseGeneratorPage';
-import type { GenerateAiTestCasesResponse, GenerationWaveSummary, Project, TestCaseRow, RunDetail, CrawlOutput } from '../../types/contract';
+import type { GenerateAiPlanResponse, GenerateAiTestCasesResponse, GenerationWaveSummary, Project, RequirementRecord, TestCaseRow, RunDetail, CrawlOutput } from '../../types/contract';
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -2765,4 +2765,388 @@ describe('TestCaseGeneratorPage — provider names', () => {
     expect(within(document.getElementById('generation-wave-results')!).getByText(`${CUSTOM_ID} / gpt-4o`)).toBeTruthy();
     expect(screen.getByText('Test Cases Generated')).toBeTruthy();
   }, 20000);
+});
+
+// ============================================== Phase 3 — generating from numbered requirements
+//
+// The documents have always reached the model as pasted text. A document that
+// the backend also read into numbered requirements can instead be generated
+// from by id (opt-in, off by default): each skill is shown only the
+// requirements it tests, and every case names the requirement it came from.
+// Everything below is what the page sends and shows around that.
+
+describe('TestCaseGeneratorPage — Phase 3, generating from numbered requirements', () => {
+  const FRD_DOC_ID = '11111111-1111-4111-8111-111111111111';
+  const FRD_TEXT = 'Password must be at least 8 characters.';
+  const LOCKOUT = 'Users must be locked out after five failed attempts.';
+
+  function extraction(withRequirements: boolean, text = FRD_TEXT, documentId = FRD_DOC_ID) {
+    return {
+      text,
+      char_count: text.length,
+      truncated: false,
+      ...(withRequirements
+        ? {
+            requirements_document: {
+              document_id: documentId,
+              full_char_count: text.length,
+              full_truncated: false,
+              sections_count: 2,
+              requirements_count: 2,
+              skipped_sections: [],
+              by_kind: { functional: 2 },
+            },
+          }
+        : {}),
+    };
+  }
+
+  function requirementRow(key: string, text: string, documentId = FRD_DOC_ID): RequirementRecord {
+    return { document_id: documentId, key, ordinal: 0, section: '3.2 Login', kind: 'functional', text };
+  }
+
+  function planFor(overrides: Partial<GenerateAiPlanResponse> = {}): GenerateAiPlanResponse {
+    return {
+      requirements_total: 2,
+      by_kind: { functional: 2 },
+      offered: 2,
+      not_offered_keys: [],
+      calls: 2,
+      max_calls: 150,
+      within_limit: true,
+      skills: [{ skill_name: 'Functional Testing', wave: 'Base', requirements: 2, batches: 1 }],
+      budget_chars: 12000,
+      provider_name: 'Groq',
+      model: 'llama-3.3-70b',
+      prompt_window_tokens: 8000,
+      estimated_prompt_tokens: 3000,
+      estimated_completion_tokens: 1000,
+      ...overrides,
+    };
+  }
+
+  /** A case tied to a requirement, and one the model could not tie to any. */
+  function requirementResponse(): GenerateAiTestCasesResponse {
+    const base = aiGenerateResponse().test_cases[0];
+    return aiGenerateResponse({
+      test_cases: [
+        { ...base, title: 'Lock the account after five failed sign-ins', requirement_id: 'FR-012', source_reference: 'locked out after five failed attempts' },
+        { ...base, title: 'Reject a password shorter than eight characters', source_reference: 'at least 8 characters' },
+      ],
+      // What the backend adds to a requirement-driven run: how much of the
+      // requirement set it reached.
+      requirements: {
+        total: 2,
+        offered: 2,
+        covered: 1,
+        uncovered_keys: ['FR-013'],
+        not_offered_keys: [],
+        notes: [],
+        calls: 2,
+        budget_chars: 12000,
+      },
+    });
+  }
+
+  interface Seen {
+    generate: any[];
+    plans: any[];
+    lists: string[];
+    saved: any[];
+  }
+
+  function serve(opts: {
+    extractions?: Record<string, () => Response>;
+    generation?: () => Response | Promise<Response>;
+    requirements?: () => Response;
+  } = {}): Seen {
+    const seen: Seen = { generate: [], plans: [], lists: [], saved: [] };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/documents/extract-text')) {
+          const name = JSON.parse(String(init?.body)).file_name as string;
+          return (opts.extractions?.[name] ?? (() => jsonResponse(200, extraction(true))))();
+        }
+        if (url.endsWith('/generate-ai/plan') && init?.method === 'POST') {
+          seen.plans.push(JSON.parse(String(init.body)));
+          return jsonResponse(200, planFor());
+        }
+        if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') {
+          const body = JSON.parse(String(init.body));
+          seen.generate.push(body);
+          // Like the backend: only a request that names documents is answered
+          // from requirements (cases tied to them, and a coverage report).
+          return (
+            opts.generation ??
+            (() => jsonResponse(200, body.requirement_document_ids ? requirementResponse() : aiGenerateResponse()))
+          )();
+        }
+        if (url.includes('/requirements')) {
+          seen.lists.push(url);
+          return (
+            opts.requirements ??
+            (() =>
+              jsonResponse(200, {
+                documents: [],
+                requirements: [requirementRow('FR-012', LOCKOUT), requirementRow('FR-013', FRD_TEXT)],
+              }))
+          )();
+        }
+        if (url.endsWith('/test-cases') && init?.method === 'POST') {
+          const body = JSON.parse(String(init.body));
+          seen.saved.push(body);
+          return jsonResponse(201, testCaseRow({ id: `case-${seen.saved.length}`, title: body.title }));
+        }
+        if (url.includes('/test-cases')) return jsonResponse(200, []);
+        if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A, PROJECT_B]);
+        return dashboardResponseFor(url) ?? jsonResponse(200, []);
+      }),
+    );
+    return seen;
+  }
+
+  async function openGenerator(): Promise<void> {
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+  }
+
+  async function upload(slot: 'frd' | 'prd' | 'brd', fileName: string): Promise<void> {
+    await act(async () => {
+      fireEvent.change(document.querySelector(`#doc-slot-${slot} input[type=file]`) as HTMLInputElement, {
+        target: { files: [new File(['x'], fileName, { type: 'text/markdown' })] },
+      });
+    });
+    await waitFor(() => expect(screen.getByText(fileName)).toBeTruthy());
+  }
+
+  const toggle = () => screen.getByLabelText('Generate from the requirements of my uploaded documents') as HTMLInputElement;
+
+  async function turnOn(): Promise<void> {
+    await act(async () => {
+      fireEvent.click(toggle());
+    });
+    await waitFor(() => expect(document.getElementById('requirement-plan')).toBeTruthy(), { timeout: 5000 });
+  }
+
+  it('is off by default: the request pastes the document as it always did and names no documents, and no plan is asked for', async () => {
+    const seen = serve();
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+
+    expect(toggle().checked).toBe(false);
+    await generate();
+
+    expect(seen.generate).toHaveLength(1);
+    expect(seen.generate[0]).not.toHaveProperty('requirement_document_ids');
+    expect(seen.generate[0].requirement_text).toContain(FRD_TEXT);
+    expect(seen.plans).toHaveLength(0);
+    // A run from pasted text has no requirement set to report on.
+    expect(document.getElementById('requirement-coverage')).toBeNull();
+  }, 20000);
+
+  it('turned on: shows the plan, then names the documents in the request instead of pasting them, for exactly the skills the plan was worked out for', async () => {
+    const seen = serve();
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+
+    await turnOn();
+    expect(seen.plans.length).toBeGreaterThan(0);
+    await generate();
+
+    expect(seen.generate).toHaveLength(1);
+    const sent = seen.generate[0];
+    expect(sent.requirement_document_ids).toEqual([FRD_DOC_ID]);
+    // Settings still go with it; the document's own text does not.
+    expect(sent.requirement_text).toContain('Requested generation depth: STANDARD');
+    expect(sent.requirement_text).toContain('Functional');
+    expect(sent.requirement_text).not.toContain(FRD_TEXT);
+    // The plan was for the very skills and documents this request carries.
+    const lastPlan = seen.plans[seen.plans.length - 1];
+    expect(lastPlan.skills).toEqual(sent.skills);
+    expect(lastPlan.requirement_document_ids).toEqual(sent.requirement_document_ids);
+  }, 30000);
+
+  it('turned on, a document with text but no requirements is left out of the request (and named), while the note about one that could not be analyzed stays', async () => {
+    const seen = serve({
+      extractions: {
+        'PRD.md': () => jsonResponse(200, extraction(false, 'Legacy paste-only PRD text.')),
+        'BRD.doc': () =>
+          jsonResponse(400, { error: { code: 'VALIDATION_ERROR', message: 'legacy .doc is not supported for content extraction.', details: {}, request_id: 'r' } }),
+      },
+    });
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+    await upload('prd', 'PRD.md');
+    await upload('brd', 'BRD.doc');
+
+    await turnOn();
+    expect(screen.getByText(/Left out while this is on/).textContent).toContain('PRD (PRD.md)');
+    await generate();
+
+    const sent = seen.generate[0];
+    expect(sent.requirement_document_ids).toEqual([FRD_DOC_ID]);
+    expect(sent.requirement_text).not.toContain('Legacy paste-only PRD text.');
+    expect(sent.requirement_text).not.toContain(FRD_TEXT);
+    expect(sent.requirement_text).toContain('BRD.doc) is attached, but its real content could not be analyzed');
+  }, 30000);
+
+  it('turned on, a case tied to a requirement is saved under that requirement\'s id, document and text; one the model could not tie keeps its quote', async () => {
+    const PRD_DOC_ID = '22222222-2222-4222-8222-222222222222';
+    const seen = serve({
+      extractions: { 'PRD.md': () => jsonResponse(200, extraction(true, 'The PRD says something else.', PRD_DOC_ID)) },
+    });
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+    await upload('prd', 'PRD.md');
+    await turnOn();
+    await generate();
+
+    await waitFor(() => expect(screen.getByText(/Generated Test Suite/)).toBeTruthy());
+    expect(seen.lists.length).toBeGreaterThan(0);
+    await act(async () => {
+      document.getElementById('btn-save-to-project')!.click();
+    });
+    await waitFor(() => expect(seen.saved).toHaveLength(2));
+
+    const linked = seen.saved.find((c) => c.title === 'Lock the account after five failed sign-ins');
+    expect(linked.requirement_reference).toBe('FR-012');
+    expect(linked.source_requirement).toBe(LOCKOUT);
+    // The requirement's own document — not every document that was uploaded.
+    expect(linked.source_document).toBe('FRD');
+    expect(linked.traceability.requirementRef).toBe('FR-012 — cites: "locked out after five failed attempts"');
+    expect(linked.traceability.requirementText).toBe(LOCKOUT);
+    expect(JSON.parse(linked.test_data)).toMatchObject({ requirement_id: 'FR-012' });
+
+    const unlinked = seen.saved.find((c) => c.title === 'Reject a password shorter than eight characters');
+    expect(unlinked.requirement_reference).toBe('at least 8 characters');
+    expect(unlinked.source_document).toBe('FRD + PRD');
+    expect(unlinked.source_requirement).toContain('Requested generation depth: STANDARD');
+    expect(JSON.parse(unlinked.test_data)).not.toHaveProperty('requirement_id');
+  }, 30000);
+
+  it('still ties a case to its requirement by id when the requirements cannot be read back — it just falls back to the request text as the source', async () => {
+    const seen = serve({
+      requirements: () => jsonResponse(500, { error: { code: 'INTERNAL_ERROR', message: 'boom', details: null, request_id: 'r' } }),
+    });
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+    await turnOn();
+    await generate();
+
+    expect(screen.getByText('Test Cases Generated')).toBeTruthy();
+    await waitFor(() => expect(screen.getByText(/Generated Test Suite/)).toBeTruthy());
+    expect(seen.lists.length).toBeGreaterThan(0);
+    await act(async () => {
+      document.getElementById('btn-save-to-project')!.click();
+    });
+    await waitFor(() => expect(seen.saved).toHaveLength(2));
+
+    const linked = seen.saved.find((c) => c.title === 'Lock the account after five failed sign-ins');
+    expect(linked.requirement_reference).toBe('FR-012');
+    expect(linked.source_requirement).toContain('Requested generation depth: STANDARD');
+    expect(linked.source_document).toBe('FRD');
+  }, 30000);
+
+  it('does not tell two documents\' requirements apart by an id they share — the case keeps the id but claims no text', async () => {
+    const SRD_DOC_ID = '33333333-3333-4333-8333-333333333333';
+    const seen = serve({
+      requirements: () =>
+        jsonResponse(200, {
+          documents: [],
+          requirements: [requirementRow('FR-012', LOCKOUT), requirementRow('FR-012', 'A different rule.', SRD_DOC_ID)],
+        }),
+    });
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+    await turnOn();
+    await generate();
+
+    await waitFor(() => expect(screen.getByText(/Generated Test Suite/)).toBeTruthy());
+    expect(seen.lists.length).toBeGreaterThan(0);
+    await act(async () => {
+      document.getElementById('btn-save-to-project')!.click();
+    });
+    await waitFor(() => expect(seen.saved).toHaveLength(2));
+    const linked = seen.saved.find((c) => c.title === 'Lock the account after five failed sign-ins');
+    expect(linked.requirement_reference).toBe('FR-012');
+    expect(linked.source_requirement).not.toBe(LOCKOUT);
+    expect(linked.source_requirement).not.toBe('A different rule.');
+  }, 30000);
+
+  it('shows, in Generation Details, what the run reached of the requirement set — and which requirements got no case', async () => {
+    serve();
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+    await turnOn();
+    await generate();
+
+    const coverage = document.getElementById('requirement-coverage')!;
+    expect(document.getElementById('generation-details-panel')!.contains(coverage)).toBe(true);
+    expect(coverage.textContent).toContain('Requirements: 1 of 2 has a case');
+    expect(coverage.textContent).toContain('1 requirement was shown to a skill but got no case');
+    expect(coverage.textContent).toContain('FR-013');
+  }, 30000);
+
+  it('an older backend that reports no requirements: the option cannot be turned on and the document is pasted as always', async () => {
+    const seen = serve({ extractions: { 'FRD.md': () => jsonResponse(200, extraction(false)) } });
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+
+    expect(toggle().disabled).toBe(true);
+    expect(screen.getByText(/No uploaded document has requirements to generate from/)).toBeTruthy();
+    await generate();
+
+    expect(seen.generate[0]).not.toHaveProperty('requirement_document_ids');
+    expect(seen.generate[0].requirement_text).toContain(FRD_TEXT);
+    expect(seen.plans).toHaveLength(0);
+  }, 20000);
+
+  it('the choice is still on after a generation that finished while the page was gone', async () => {
+    let resolveGeneration: (value: Response) => void;
+    const pending = new Promise<Response>((resolve) => {
+      resolveGeneration = resolve;
+    });
+    const seen = serve({ generation: () => pending });
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+    await turnOn();
+    await act(async () => {
+      document.getElementById('btn-generate-test-cases-primary')!.click();
+    });
+    await waitFor(() => expect(screen.getByText('Generating Test Cases...')).toBeTruthy());
+    expect(seen.generate[0].requirement_document_ids).toEqual([FRD_DOC_ID]);
+
+    await goToDashboard();
+    await act(async () => {
+      resolveGeneration(jsonResponse(200, requirementResponse()));
+    });
+    await goToGenerator();
+    await goToSourcesBranch();
+
+    await waitFor(() => expect(toggle().checked).toBe(true));
+  }, 30000);
+
+  it('the choice is kept across leaving the page and coming back, and belongs to its own project', async () => {
+    serve();
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+    await turnOn();
+
+    await goToDashboard();
+    await goToGenerator();
+    await goToSourcesBranch();
+    await waitFor(() => expect(toggle().checked).toBe(true));
+
+    // A different project has no documents of its own and starts off.
+    await openAndSelectProject(PROJECT_B);
+    await waitFor(() => expect(toggle().checked).toBe(false));
+    expect(toggle().disabled).toBe(true);
+
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(toggle().checked).toBe(true));
+  }, 30000);
 });

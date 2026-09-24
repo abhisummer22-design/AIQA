@@ -574,6 +574,106 @@ describe('aiqaApi.projects.create (FE-14 §16 — real POST /api/v1/projects, pr
   });
 });
 
+describe('Phase 3 — requirements client (documents -> numbered requirements -> generation)', () => {
+  const PROJECT_ID = 'proj-phase3';
+  const DOC_A = '11111111-1111-4111-8111-111111111111';
+  const DOC_B = '22222222-2222-4222-8222-222222222222';
+
+  it('extractText sends the upload slot as document_type and returns the requirements summary untouched', async () => {
+    setApiKey('aiqa_phase3test000000');
+    const summary = {
+      document_id: DOC_A,
+      full_char_count: 90_000,
+      full_truncated: false,
+      sections_count: 12,
+      requirements_count: 140,
+      skipped_sections: ['Table of Contents'],
+      by_kind: { functional: 100, security: 40 },
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(200, { text: 'abc', char_count: 3, truncated: false, requirements_document: summary }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await aiqaApi.documents.extractText(PROJECT_ID, {
+      file_name: 'FRD.docx',
+      content_base64: 'QUJD',
+      document_type: 'FRD',
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`/api/v1/projects/${PROJECT_ID}/documents/extract-text`);
+    expect(JSON.parse(init.body as string)).toEqual({ file_name: 'FRD.docx', content_base64: 'QUJD', document_type: 'FRD' });
+    expect(res.requirements_document).toEqual(summary);
+  });
+
+  it('requirements.list asks for the whole project with no query, or for the named documents only', async () => {
+    setApiKey('aiqa_phase3test000000');
+    const fetchMock = vi.fn().mockImplementation(async () => jsonResponse(200, { documents: [], requirements: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await aiqaApi.requirements.list(PROJECT_ID);
+    await aiqaApi.requirements.list(PROJECT_ID, { documentIds: [] });
+    await aiqaApi.requirements.list(PROJECT_ID, { documentIds: [DOC_A, DOC_B] });
+
+    const urls = fetchMock.mock.calls.map((c) => (c as [string, RequestInit])[0]);
+    expect(urls[0]).toBe(`/api/v1/projects/${PROJECT_ID}/requirements`);
+    expect(urls[1]).toBe(`/api/v1/projects/${PROJECT_ID}/requirements`);
+    const named = new URL(urls[2], 'http://localhost');
+    expect(named.pathname).toBe(`/api/v1/projects/${PROJECT_ID}/requirements`);
+    expect(named.searchParams.get('document_ids')).toBe(`${DOC_A},${DOC_B}`);
+  });
+
+  it('planGenerateAi POSTs the skills and documents to the plan path and returns the plan as sent', async () => {
+    setApiKey('aiqa_phase3test000000');
+    const plan = {
+      requirements_total: 140,
+      by_kind: { functional: 100, security: 40 },
+      offered: 140,
+      not_offered_keys: [],
+      calls: 6,
+      max_calls: 150,
+      within_limit: true,
+      skills: [{ skill_name: 'Functional Testing', wave: 'Base', requirements: 140, batches: 3 }],
+      budget_chars: 12_000,
+      provider_name: 'Ollama',
+      model: 'llama3',
+      prompt_window_tokens: 4096,
+      estimated_prompt_tokens: 20_000,
+      estimated_completion_tokens: 6_000,
+    };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, plan));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await aiqaApi.testCases.planGenerateAi(PROJECT_ID, {
+      skills: [{ id: 'functional', name: 'Functional Testing' }],
+      requirement_document_ids: [DOC_A],
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`/api/v1/projects/${PROJECT_ID}/test-cases/generate-ai/plan`);
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({
+      skills: [{ id: 'functional', name: 'Functional Testing' }],
+      requirement_document_ids: [DOC_A],
+    });
+    expect(res).toEqual(plan);
+  });
+
+  it('generateAi sends requirement_document_ids only when the caller gives them', async () => {
+    setApiKey('aiqa_phase3test000000');
+    const fetchMock = vi.fn().mockImplementation(async () => jsonResponse(200, { test_cases: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await aiqaApi.testCases.generateAi(PROJECT_ID, { requirement_text: 'x', skills: [] });
+    await aiqaApi.testCases.generateAi(PROJECT_ID, { requirement_text: 'x', skills: [], requirement_document_ids: [DOC_A] });
+
+    const bodies = fetchMock.mock.calls.map((c) => JSON.parse((c as [string, RequestInit])[1].body as string));
+    expect(bodies[0]).not.toHaveProperty('requirement_document_ids');
+    expect(bodies[1].requirement_document_ids).toEqual([DOC_A]);
+  });
+});
+
 describe('No hardcoded credential in source (FE-2 §6, §18 item 11)', () => {
   it('API_BASE contains no embedded secret and defaults to the contract-shaped path', async () => {
     const mod = await import('./aiqaApi');

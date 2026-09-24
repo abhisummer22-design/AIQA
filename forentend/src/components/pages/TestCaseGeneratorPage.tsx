@@ -34,6 +34,8 @@ import { useProject } from '../../context/ProjectContext';
 import { DocumentUploadSection } from '../test-generator/DocumentUploadSection';
 import { ApplicationSourceSection } from '../test-generator/ApplicationSourceSection';
 import { CrawlGroundingSection } from '../test-generator/CrawlGroundingSection';
+import { RequirementCoverageSummary } from '../test-generator/RequirementCoverageSummary';
+import { RequirementGenerationSection } from '../test-generator/RequirementGenerationSection';
 import { GenerationConfigSection, TEST_CATEGORIES } from '../test-generator/GenerationConfigSection';
 import { GeneratedTestCasesView } from '../test-generator/GeneratedTestCasesView';
 import { GenerationWaveResults } from '../test-generator/GenerationWaveResults';
@@ -62,6 +64,7 @@ import type {
   AiRoutingMode,
   CompilationOutcome,
   OrchestratorLogEntry,
+  RequirementRecord,
 } from '../../types/contract';
 
 /** The default test-category selection — a fresh generation for a project
@@ -245,6 +248,14 @@ export const TestCaseGeneratorPage: React.FC = () => {
     activeGenerationSession?.depth || 'STANDARD'
   );
 
+  // 5. Phase 3 — opt-in: generate from the numbered requirements read out of
+  // the uploaded documents (`RequirementGenerationSection`) instead of
+  // pasting the documents into every AI call. Off unless the user turned it
+  // on, and kept in the project's own session like the rest of the setup.
+  const [requirementMode, setRequirementMode] = useState<boolean>(
+    activeGenerationSession?.requirementMode ?? false
+  );
+
   // 6. Generation State Machine: IDLE | VALIDATING | PROCESSING | GENERATING | COMPLETED | FAILED | PARTIAL
   const [generationState, setGenerationState] = useState<GenerationExecutionState>(
     activeGenerationSession?.generationState || 'IDLE'
@@ -393,6 +404,26 @@ export const TestCaseGeneratorPage: React.FC = () => {
     () => [...new Set([...selectedSkillIds, ...autoMatchedSkillIds.keys()])],
     [selectedSkillIds, autoMatchedSkillIds],
   );
+  // The skills exactly as a generation sends them — and what the requirement
+  // plan below is worked out for, so the plan can never describe a different
+  // set than the request that follows.
+  const requestSkills: GenerateAiSkillInput[] = useMemo(
+    () =>
+      effectiveSkillIds
+        .map((id) => skills.find((s) => s.id === id))
+        .filter((s): s is (typeof skills)[number] => Boolean(s))
+        .map((s) => ({ id: s.id, name: s.name, description: s.description })),
+    [effectiveSkillIds, skills],
+  );
+  // Phase 3 — the uploaded documents that have numbered requirements read
+  // from them, and whether this generation is to use those: the user opted in
+  // AND there is at least one such document. Otherwise (the default) the
+  // documents are pasted into the request as they always were.
+  const requirementDocIds = useMemo(
+    () => documents.map((d) => d.requirementsDocumentId).filter((id): id is string => Boolean(id)),
+    [documents],
+  );
+  const useRequirements = requirementMode && requirementDocIds.length > 0;
   const isGeneratingNow = ['VALIDATING', 'PROCESSING', 'GENERATING'].includes(generationState);
 
   // The controller for each project's own `generate-ai` call currently in
@@ -467,6 +498,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
     setCrawlRunId(null); // see this state's own declaration — never restored from a session yet, for any project
     setSelectedCategories(session?.selectedCategories || DEFAULT_SELECTED_CATEGORIES);
     setDepth(session?.depth || 'STANDARD');
+    setRequirementMode(session?.requirementMode ?? false);
     setGenerationState(session?.generationState || 'IDLE');
     setGenerationError(session?.generationError ?? null);
     setLastGenerationResult(session?.lastGenerationResult ?? null);
@@ -515,6 +547,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
       appSources,
       depth,
       selectedSkillIds,
+      requirementMode,
       generatedCases,
       createdAt: prev?.createdAt ?? new Date().toISOString(),
     }));
@@ -522,7 +555,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
     // below; `isGeneratingNow` is derived from `generationState`, already
     // listed. Neither needs its own entry.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [documents, appSources, selectedCategories, depth, generationState, generationError, lastGenerationResult, generatedCases, selectedSkillIds]);
+  }, [documents, appSources, selectedCategories, depth, generationState, generationError, lastGenerationResult, generatedCases, selectedSkillIds, requirementMode]);
 
   // The call that started a generation this page is showing as in flight can
   // belong to an *earlier instance* of this page (left and re-entered while
@@ -848,6 +881,13 @@ export const TestCaseGeneratorPage: React.FC = () => {
     }
     parts.push(`Requested generation depth: ${depth}.`);
     for (const doc of documents) {
+      // Phase 3 — generating from numbered requirements: a document read
+      // into them is sent by its id (never pasted as well, which is what
+      // would overflow every call), and one with text but no requirements
+      // cannot be sent in this mode at all (`RequirementGenerationSection`
+      // names it). Only the notes about content that could not be analyzed
+      // stay.
+      if (useRequirements && (doc.requirementsDocumentId || doc.extractedText)) continue;
       if (doc.extractedText) {
         const truncatedNote = doc.extractedTruncated ? ' (truncated to the first 20,000 characters)' : '';
         parts.push(`=== ${doc.label} — ${doc.fileName}${truncatedNote} ===\n${doc.extractedText}`);
@@ -877,16 +917,28 @@ export const TestCaseGeneratorPage: React.FC = () => {
     draft: GeneratedTestCaseDraft,
     index: number,
     meta: { method: 'ai' | 'fallback'; provider: string | null; model: string | null },
+    /** Requirement-driven generation only: the numbered requirements the
+     *  request was generated from, by id (`null` for an id two documents
+     *  share, which cannot be told apart). */
+    requirements?: Map<string, RequirementRecord | null>,
   ): GeneratedTestCase => {
     const skill = skills.find((s) => s.id === draft.skill_id);
     const tcId = `AI-${(index + 1).toString().padStart(3, '0')}`;
-    const docLabels = documents.map((d) => d.slotId).join(' + ') || undefined;
+    // The requirement a case was generated for, when the response names one
+    // and its text could be read back: that requirement is then the case's
+    // source — its own document, its own text — rather than every document
+    // and every setting of the request together.
+    const linked = draft.requirement_id ? requirements?.get(draft.requirement_id) ?? null : null;
+    const linkedSlot = linked ? documents.find((d) => d.requirementsDocumentId === linked.document_id)?.slotId : undefined;
+    const docLabels = linkedSlot ?? (documents.map((d) => d.slotId).join(' + ') || undefined);
     const reqText = buildRequirementText();
     const aiAnalysis =
       meta.method === 'ai'
         ? `Generated by ${meta.provider ?? 'an AI provider'}/${meta.model ?? 'an unreported model'}${
             skill ? ` (skill: ${skill.name})` : ''
-          } — evidence: ${draft.evidence}${draft.source_reference ? `, cites: "${draft.source_reference}"` : ''}.`
+          } — evidence: ${draft.evidence}${draft.requirement_id ? `, requirement: ${draft.requirement_id}` : ''}${
+            draft.source_reference ? `, cites: "${draft.source_reference}"` : ''
+          }.`
         : 'AI generation did not produce this case.';
 
     return {
@@ -897,12 +949,17 @@ export const TestCaseGeneratorPage: React.FC = () => {
       priority: draft.priority as GeneratedTestCase['priority'],
       severity: draft.severity as GeneratedTestCase['severity'],
       sourceDocument: docLabels,
-      requirementReference: draft.source_reference ?? undefined,
-      sourceRequirement: reqText || undefined,
+      // The requirement's own id (what the quality graph's requirement
+      // impact is looked up by) when the case is tied to one; otherwise the
+      // quoted phrase, as it always was.
+      requirementReference: draft.requirement_id ?? draft.source_reference ?? undefined,
+      sourceRequirement: linked?.text ?? (reqText || undefined),
       traceability: {
         sourceDoc: docLabels ?? 'Configuration & Skills (no document attached)',
-        requirementRef: draft.source_reference ?? `Not cited (${draft.evidence})`,
-        requirementText: reqText,
+        requirementRef: draft.requirement_id
+          ? `${draft.requirement_id}${draft.source_reference ? ` — cites: "${draft.source_reference}"` : ''}`
+          : draft.source_reference ?? `Not cited (${draft.evidence})`,
+        requirementText: linked?.text ?? reqText,
         aiAnalysis,
         testCaseId: tcId,
         testCategory: draft.category,
@@ -912,7 +969,12 @@ export const TestCaseGeneratorPage: React.FC = () => {
       },
       preconditions: draft.preconditions,
       testData: JSON.stringify(
-        { skill_id: draft.skill_id, evidence: draft.evidence, source_reference: draft.source_reference },
+        {
+          skill_id: draft.skill_id,
+          evidence: draft.evidence,
+          source_reference: draft.source_reference,
+          ...(draft.requirement_id ? { requirement_id: draft.requirement_id } : {}),
+        },
         null,
         2
       ),
@@ -963,10 +1025,10 @@ export const TestCaseGeneratorPage: React.FC = () => {
     const controller = new AbortController();
     generationAbortControllersRef.current[generatingForProjectId] = controller;
 
-    const requestSkills: GenerateAiSkillInput[] = effectiveSkillIds
-      .map((id) => skills.find((s) => s.id === id))
-      .filter((s): s is (typeof skills)[number] => Boolean(s))
-      .map((s) => ({ id: s.id, name: s.name, description: s.description }));
+    // Phase 3 — frozen for this call like `generatingForProjectId` above:
+    // the documents whose numbered requirements this request is generated
+    // from, or none (the default) for a request that pastes them.
+    const requirementDocumentIds = useRequirements ? requirementDocIds : [];
 
     // Best-effort, non-blocking: real routing mode for the "Generation
     // Details" panel (brief §10). A failure here must never block or fail
@@ -986,6 +1048,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
           requirement_text: reqText,
           skills: requestSkills,
           crawl_run_id: crawlRunId,
+          ...(requirementDocumentIds.length > 0 ? { requirement_document_ids: requirementDocumentIds } : {}),
         },
         controller.signal,
       );
@@ -993,8 +1056,27 @@ export const TestCaseGeneratorPage: React.FC = () => {
       // cleanup above to cancel for this project.
       delete generationAbortControllersRef.current[generatingForProjectId];
 
+      // Phase 3 — a requirement-driven run's cases each name a requirement;
+      // reading the requirements back is what lets a case show that
+      // requirement's own text and document as its source. Best-effort: if
+      // they cannot be read, the cases still carry the requirement's id and
+      // simply fall back to the request's own text as their source.
+      let requirementsById: Map<string, RequirementRecord | null> | undefined;
+      if (response.requirements && requirementDocumentIds.length > 0) {
+        try {
+          const read = await aiqaApi.requirements.list(generatingForProjectId, { documentIds: requirementDocumentIds });
+          requirementsById = new Map();
+          for (const r of read.requirements) {
+            // An id two documents share cannot be told apart by id alone.
+            requirementsById.set(r.key, requirementsById.has(r.key) ? null : r);
+          }
+        } catch {
+          requirementsById = undefined;
+        }
+      }
+
       const meta = { method: response.generation_method, provider: response.provider, model: response.model };
-      const mapped = response.test_cases.map((draft, i) => aiDraftToDisplay(draft, i, meta));
+      const mapped = response.test_cases.map((draft, i) => aiDraftToDisplay(draft, i, meta, requirementsById));
 
       let finalState: GenerationExecutionState;
       let finalError: string | null;
@@ -1064,6 +1146,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
         generatedCases: mapped,
         createdAt: prev?.createdAt ?? new Date().toISOString(),
         selectedSkillIds,
+        requirementMode,
       }));
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') {
@@ -1303,6 +1386,9 @@ export const TestCaseGeneratorPage: React.FC = () => {
               )}
             </div>
           )}
+          {lastGenerationResult?.requirements && (
+            <RequirementCoverageSummary coverage={lastGenerationResult.requirements} />
+          )}
           {lastGenerationResult?.waves && (
             <GenerationWaveResults waves={lastGenerationResult.waves.filter((w) => !w.skipped)} providerName={providerName} />
           )}
@@ -1436,6 +1522,20 @@ export const TestCaseGeneratorPage: React.FC = () => {
                 projectId={realProjectId}
                 crawlRunId={crawlRunId}
                 onCrawlRunIdChange={setCrawlRunId}
+                disabled={isGeneratingNow}
+              />
+            </div>
+
+            {/* 2c. Requirement-driven generation (Phase 3) — opt-in, off by
+                default: generate from the numbered requirements read out of
+                the uploaded documents instead of pasting them. */}
+            <div className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm">
+              <RequirementGenerationSection
+                projectId={realProjectId}
+                enabled={requirementMode}
+                onEnabledChange={setRequirementMode}
+                documents={documents}
+                skills={requestSkills}
                 disabled={isGeneratingNow}
               />
             </div>
