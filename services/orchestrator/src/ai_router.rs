@@ -2455,6 +2455,18 @@ pub struct AiInfrastructure {
     last_discovered: RwLock<Option<Instant>>,
     settings: RwLock<AiSettings>,
     health_ttl: Duration,
+    breakers: std::sync::Mutex<HashMap<String, Breaker>>,
+    breaker_threshold: u32,
+    breaker_cooldown: Duration,
+}
+
+/// Consecutive "could not reach it at all" failures (timeout, cannot connect) of one provider. After
+/// `AI_BREAKER_THRESHOLD` (default 2) in a row the provider is skipped for `AI_BREAKER_COOLDOWN_SECS` (default 60),
+/// so a host that went away is not asked, and waited on, again for every remaining skill call of a run.
+#[derive(Default)]
+struct Breaker {
+    unreachable_in_a_row: u32,
+    open_until: Option<Instant>,
 }
 
 impl AiInfrastructure {
@@ -2466,6 +2478,15 @@ impl AiInfrastructure {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(60);
+        let breaker_threshold: u32 = std::env::var("AI_BREAKER_THRESHOLD")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .filter(|n| *n > 0)
+            .unwrap_or(2);
+        let breaker_cooldown_secs: u64 = std::env::var("AI_BREAKER_COOLDOWN_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(60);
         Self {
             discoveries,
             executors,
@@ -2474,7 +2495,71 @@ impl AiInfrastructure {
             last_discovered: RwLock::new(None),
             settings: RwLock::new(AiSettings::default()),
             health_ttl: Duration::from_secs(ttl_secs),
+            breakers: std::sync::Mutex::new(HashMap::new()),
+            breaker_threshold,
+            breaker_cooldown: Duration::from_secs(breaker_cooldown_secs),
         }
+    }
+
+    #[cfg(test)]
+    fn with_breaker(mut self, threshold: u32, cooldown: Duration) -> Self {
+        self.breaker_threshold = threshold;
+        self.breaker_cooldown = cooldown;
+        self
+    }
+
+    /// Counts a failure to reach `provider_id` at all; any other outcome (an answer, even a refusal) proves it is
+    /// reachable and resets the count.
+    fn record_outcome(&self, provider_id: &str, result: &Result<ExecutionOutput, ExecutionError>) {
+        let unreachable = matches!(
+            result,
+            Err(ExecutionError::Timeout | ExecutionError::ProviderUnavailable(_))
+        );
+        let mut breakers = self.breakers.lock().unwrap_or_else(|e| e.into_inner());
+        let breaker = breakers.entry(provider_id.to_string()).or_default();
+        if unreachable {
+            breaker.unreachable_in_a_row += 1;
+            if breaker.unreachable_in_a_row >= self.breaker_threshold {
+                breaker.open_until = Some(Instant::now() + self.breaker_cooldown);
+            }
+        } else {
+            *breaker = Breaker::default();
+        }
+    }
+
+    /// `providers` without those whose breaker is open right now, and a note saying which were left out and for how
+    /// long. Once a cooldown ends the provider is tried again; one more failure to reach it re-opens the breaker.
+    fn without_open_breakers(
+        &self,
+        providers: Vec<AiProviderInfo>,
+    ) -> (Vec<AiProviderInfo>, Option<String>) {
+        let now = Instant::now();
+        let breakers = self.breakers.lock().unwrap_or_else(|e| e.into_inner());
+        let mut skipped = Vec::new();
+        let kept = providers
+            .into_iter()
+            .filter(|p| {
+                let left = breakers
+                    .get(&p.id)
+                    .and_then(|b| b.open_until)
+                    .and_then(|t| t.checked_duration_since(now));
+                if let Some(left) = left {
+                    skipped.push(format!(
+                        "{} (retrying in ~{}s)",
+                        p.name,
+                        left.as_secs().max(1)
+                    ));
+                }
+                left.is_none()
+            })
+            .collect();
+        let note = (!skipped.is_empty()).then(|| {
+            format!(
+                "skipped after repeated connection failures: {}",
+                skipped.join(", ")
+            )
+        });
+        (kept, note)
     }
 
     /// Real construction wired for this deployment: Ollama (local), the MJ
@@ -2560,6 +2645,18 @@ impl AiInfrastructure {
     /// attempt and its fallback loop call through, so a custom provider
     /// participates in both exactly like every built-in one already does.
     async fn execute_for(
+        &self,
+        provider_id: &str,
+        model_id: &str,
+        prompt: &str,
+        task: AiTask,
+    ) -> Result<ExecutionOutput, ExecutionError> {
+        let result = self.run_executor(provider_id, model_id, prompt, task).await;
+        self.record_outcome(provider_id, &result);
+        result
+    }
+
+    async fn run_executor(
         &self,
         provider_id: &str,
         model_id: &str,
@@ -2705,7 +2802,7 @@ impl AiInfrastructure {
     /// failure. Every result honestly states which model actually produced
     /// it; a fallback is never silently relabeled as the original choice.
     pub async fn generate(&self, request: AiRequest) -> GenerationOutcome2 {
-        let providers = self.ensure_fresh().await;
+        let (providers, skipped_note) = self.without_open_breakers(self.ensure_fresh().await);
         let settings = self.settings().await;
 
         // Preference precedence:
@@ -2742,7 +2839,10 @@ impl AiInfrastructure {
             Ok(d) => d,
             Err(e) => {
                 return GenerationOutcome2::Failed {
-                    reason: format!("{e:?}"),
+                    reason: match &skipped_note {
+                        Some(note) => format!("{e:?} — {note}"),
+                        None => format!("{e:?}"),
+                    },
                 }
             }
         };
@@ -5918,6 +6018,176 @@ mod tests {
         assert!(
             matches!(&err, ExecutionError::ProviderUnavailable(m) if m.contains("could not connect")),
             "{err}"
+        );
+    }
+
+    // ------------------------------------------------------------- circuit breaker
+
+    fn ok_output(text: &str) -> Result<ExecutionOutput, ExecutionError> {
+        Ok(ExecutionOutput {
+            text: text.to_string(),
+            usage: TokenUsage::default(),
+        })
+    }
+
+    /// "down" scores higher (strong structured output), so it is always the primary; "up" is the fallback.
+    fn down_and_up(down: Arc<RecordingExecutor>, up: Arc<RecordingExecutor>) -> AiInfrastructure {
+        let mut executors: HashMap<&'static str, Arc<dyn AiExecutor>> = HashMap::new();
+        executors.insert("down", down as Arc<dyn AiExecutor>);
+        executors.insert("up", up as Arc<dyn AiExecutor>);
+        AiInfrastructure::new(
+            vec![
+                Arc::new(FakeDiscovery(healthy_provider(
+                    "down",
+                    vec![healthy_model("m-down", "down", CapabilityLevel::Strong)],
+                ))),
+                Arc::new(FakeDiscovery(healthy_provider(
+                    "up",
+                    vec![healthy_model("m-up", "up", CapabilityLevel::Basic)],
+                ))),
+            ],
+            executors,
+        )
+    }
+
+    fn general_request() -> AiRequest {
+        AiRequest {
+            task: AiTask::GeneralAi,
+            prompt: "hi".to_string(),
+            preferred_provider: None,
+            preferred_model: None,
+        }
+    }
+
+    fn served_by(outcome: GenerationOutcome2) -> (String, bool) {
+        match outcome {
+            GenerationOutcome2::Ok(r) => (r.provider, r.fallback_used),
+            GenerationOutcome2::Failed { reason } => {
+                panic!("expected a served request, got Failed: {reason}")
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_provider_that_cannot_be_reached_twice_in_a_row_is_skipped_until_its_cooldown_ends() {
+        let down = Arc::new(RecordingExecutor::sequence(vec![
+            Err(ExecutionError::Timeout),
+            Err(ExecutionError::ProviderUnavailable(
+                "connection refused".to_string(),
+            )),
+            ok_output("back again"),
+        ]));
+        let up = Arc::new(RecordingExecutor::sequence(vec![
+            ok_output("up 1"),
+            ok_output("up 2"),
+            ok_output("up 3"),
+        ]));
+        let infra =
+            down_and_up(down.clone(), up.clone()).with_breaker(2, Duration::from_millis(300));
+
+        // Two calls in a row cannot reach "down"; each is still answered by "up" as a fallback.
+        assert_eq!(
+            served_by(infra.generate(general_request()).await),
+            ("up".to_string(), true)
+        );
+        assert_eq!(
+            served_by(infra.generate(general_request()).await),
+            ("up".to_string(), true)
+        );
+        assert_eq!(down.prompts.lock().unwrap().len(), 2);
+
+        // The breaker is open now: "down" is not asked at all, and "up" is simply the primary.
+        assert_eq!(
+            served_by(infra.generate(general_request()).await),
+            ("up".to_string(), false)
+        );
+        assert_eq!(
+            down.prompts.lock().unwrap().len(),
+            2,
+            "an open breaker must not call the provider"
+        );
+
+        // After the cooldown "down" is tried again, and its answer closes the breaker for good.
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        assert_eq!(
+            served_by(infra.generate(general_request()).await),
+            ("down".to_string(), false)
+        );
+        assert_eq!(down.prompts.lock().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_refusal_proves_the_provider_is_reachable_so_it_never_opens_the_breaker() {
+        let refused = || {
+            Err(ExecutionError::ProviderRejected {
+                status: 429,
+                message: "Rate limit reached".to_string(),
+            })
+        };
+        let down = Arc::new(RecordingExecutor::sequence(vec![
+            refused(),
+            refused(),
+            refused(),
+            refused(),
+        ]));
+        let up = Arc::new(RecordingExecutor::sequence(vec![
+            ok_output("1"),
+            ok_output("2"),
+            ok_output("3"),
+            ok_output("4"),
+        ]));
+        let infra = down_and_up(down.clone(), up).with_breaker(2, Duration::from_secs(60));
+
+        for _ in 0..4 {
+            assert_eq!(
+                served_by(infra.generate(general_request()).await),
+                ("up".to_string(), true)
+            );
+        }
+        assert_eq!(
+            down.prompts.lock().unwrap().len(),
+            4,
+            "a rate-limited provider is still asked every time"
+        );
+    }
+
+    #[tokio::test]
+    async fn when_the_only_provider_is_skipped_the_failure_says_so() {
+        let mut executors: HashMap<&'static str, Arc<dyn AiExecutor>> = HashMap::new();
+        let solo = Arc::new(RecordingExecutor::sequence(vec![
+            Err(ExecutionError::Timeout),
+            Err(ExecutionError::Timeout),
+        ]));
+        executors.insert("solo", solo.clone() as Arc<dyn AiExecutor>);
+        let infra = AiInfrastructure::new(
+            vec![Arc::new(FakeDiscovery(healthy_provider(
+                "solo",
+                vec![healthy_model("m", "solo", CapabilityLevel::Strong)],
+            )))],
+            executors,
+        )
+        .with_breaker(2, Duration::from_secs(60));
+
+        for _ in 0..2 {
+            assert!(matches!(
+                infra.generate(general_request()).await,
+                GenerationOutcome2::Failed { .. }
+            ));
+        }
+        match infra.generate(general_request()).await {
+            GenerationOutcome2::Failed { reason } => {
+                assert!(reason.contains("NoCompatibleModel"), "{reason}");
+                assert!(
+                    reason.contains("skipped after repeated connection failures: solo"),
+                    "{reason}"
+                );
+            }
+            GenerationOutcome2::Ok(_) => panic!("the only provider is being skipped"),
+        }
+        assert_eq!(
+            solo.prompts.lock().unwrap().len(),
+            2,
+            "the third call never reached the provider"
         );
     }
 
