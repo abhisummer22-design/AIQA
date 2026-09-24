@@ -407,6 +407,19 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/projects/:project_id/documents/extract-text",
             post(extract_document_text_scoped),
         )
+        // Phase 3 — the requirements read out of the uploaded documents
+        // (`requirements.rs`), listed for review and for choosing what a
+        // generation request is built from.
+        .route(
+            "/api/v1/projects/:project_id/requirements",
+            get(list_requirements_scoped),
+        )
+        // Phase 3 — what a requirement-driven generation would do, without
+        // calling any model: how many AI calls, what each skill is shown.
+        .route(
+            "/api/v1/projects/:project_id/test-cases/generate-ai/plan",
+            post(plan_generate_ai_scoped),
+        )
         // Phase 6 — Performance Testing: real Load/Stress/Spike/Volume
         // workload generation (`performance_testing.rs`). Reuses the exact
         // Phase 4 per-request execution core (`executor::execute_plan_once`,
@@ -2292,6 +2305,12 @@ struct GenerateAiTestCasesBody {
     /// exactly as generation always has — this is purely additive.
     #[serde(default)]
     crawl_run_id: Option<Uuid>,
+    /// Phase 3: generate from the numbered requirements read out of these
+    /// documents (`POST .../documents/extract-text` returns each one's id)
+    /// instead of from pasted document text — see `requirement_generation.rs`.
+    /// Omitted or empty, the request is generated exactly as it always was.
+    #[serde(default)]
+    requirement_document_ids: Vec<Uuid>,
 }
 
 /// `generation_method` is always exactly `"ai"` or `"fallback"` — never
@@ -2343,6 +2362,10 @@ struct GenerateAiTestCasesResponse {
     total_completion_tokens: Option<u32>,
     total_estimated_cost_usd: Option<f64>,
     total_latency_ms: u64,
+    /// Requirement-driven generation only: how much of the requirement set
+    /// the run reached. Absent for a request that named no documents.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    requirements: Option<crate::requirement_generation::RequirementCoverage>,
 }
 
 /// Loads this project's real feedback signal (risk/flakiness scores +
@@ -2766,6 +2789,21 @@ async fn generate_ai_test_cases_scoped(
         )
         .await;
 
+    // Phase 3 — the numbered requirements this request is to be generated
+    // from, when it names documents.
+    let requirement_items = if body.requirement_document_ids.is_empty() {
+        None
+    } else {
+        Some(load_requirement_items(&state, project_id, &body.requirement_document_ids).await?)
+    };
+    // What similar past cases/documents are looked up by: the request's own
+    // text, plus — when it carries no document text itself — the start of the
+    // requirements it will be generated from.
+    let retrieval_query = match &requirement_items {
+        Some(items) => requirement_retrieval_query(&body.requirement_text, items),
+        None => body.requirement_text.clone(),
+    };
+
     let mut feedback = load_feedback_context_for_generation(&state, project_id).await;
     // Vector Store + RAG Retrieval v1 — additive, fails open (see the
     // function's own doc comment): a project with nothing embedded yet, or
@@ -2775,13 +2813,13 @@ async fn generate_ai_test_cases_scoped(
     // comment for the one boundary that's still separate (crawl-run
     // grounding, not yet wired there).
     feedback.similar_cases =
-        find_similar_approved_test_cases(&state, project_id, &body.requirement_text).await;
+        find_similar_approved_test_cases(&state, project_id, &retrieval_query).await;
     let similar_cases_used = feedback.similar_cases.len();
     // Phase 2 gap-closing — document-level RAG, same fails-open contract:
     // a project with nothing embedded yet, or no embedding provider
     // configured, generates exactly as it did before this feature existed.
     feedback.similar_documents =
-        find_similar_documents(&state, project_id, &body.requirement_text).await;
+        find_similar_documents(&state, project_id, &retrieval_query).await;
     let similar_documents_used = feedback.similar_documents.len();
 
     // Real, optional crawl grounding — resolved with the exact same
@@ -2813,15 +2851,56 @@ async fn generate_ai_test_cases_scoped(
     // ("... started"), no new schema. `project_id_str` is bound here so the
     // reference handed to `generate_test_cases` outlives the call.
     let project_id_str = project_id.to_string();
-    let outcome = crate::ai_generation::generate_test_cases(
-        &state.ai_infra,
-        &body.requirement_text,
-        &skills,
-        &feedback,
-        crawl_output.as_ref(),
-        Some((state.log_bus.as_ref(), project_id_str.as_str())),
-    )
-    .await;
+    let (outcome, requirement_coverage) = match &requirement_items {
+        Some(items) => {
+            let budget = requirement_batch_budget(&state).await;
+            let planned = crate::requirement_generation::plan_calls(items, &skills, budget).calls.len();
+            let max_calls = requirement_max_calls();
+            if planned > max_calls {
+                return Err(ApiError::validation(format!(
+                    "this would take {planned} AI calls (more than the {max_calls} a single request may make): select fewer skills or documents, or ask for the plan first (POST .../test-cases/generate-ai/plan)"
+                )));
+            }
+            state
+                .log_bus
+                .emit(
+                    "INFO",
+                    "generation",
+                    &format!(
+                        "Generating from {} requirement(s) in {planned} AI call(s)",
+                        items.len()
+                    ),
+                    None,
+                    Some(&project_id.to_string()),
+                    None,
+                )
+                .await;
+            let run = crate::requirement_generation::generate_from_requirements(
+                &state.ai_infra,
+                &body.requirement_text,
+                items,
+                &skills,
+                &feedback,
+                crawl_output.as_ref(),
+                budget,
+                Some((state.log_bus.as_ref(), project_id_str.as_str())),
+            )
+            .await;
+            (run.outcome, Some(run.coverage))
+        }
+        None => (
+            crate::ai_generation::generate_test_cases(
+                &state.ai_infra,
+                &body.requirement_text,
+                &skills,
+                &feedback,
+                crawl_output.as_ref(),
+                Some((state.log_bus.as_ref(), project_id_str.as_str())),
+            )
+            .await,
+            None,
+        ),
+    };
 
     let response = match outcome {
         crate::ai_generation::GenerationOutcome::Ai {
@@ -2947,6 +3026,7 @@ async fn generate_ai_test_cases_scoped(
                 total_completion_tokens: usage.completion_tokens,
                 total_estimated_cost_usd: usage.estimated_cost_usd,
                 total_latency_ms: usage.latency_ms,
+                requirements: requirement_coverage,
             }
         }
         crate::ai_generation::GenerationOutcome::Failed { reason } => {
@@ -2984,11 +3064,188 @@ async fn generate_ai_test_cases_scoped(
                 total_completion_tokens: None,
                 total_estimated_cost_usd: None,
                 total_latency_ms: 0,
+                requirements: requirement_coverage,
             }
         }
     };
 
     Ok(Json(response))
+}
+
+/// The requirements of `document_ids` as generation items. A document that is
+/// not this project's, or that has none, contributes nothing; if nothing at
+/// all is left, that is refused (400) rather than generated from an empty set.
+async fn load_requirement_items(
+    state: &AppState,
+    project_id: Uuid,
+    document_ids: &[Uuid],
+) -> Result<Vec<crate::requirement_generation::RequirementItem>, ApiError> {
+    let rows = state
+        .store
+        .list_requirements(&project_id.to_string(), document_ids)
+        .await
+        .map_err(to_500)?;
+    if rows.is_empty() {
+        return Err(ApiError::validation(
+            "none of the selected documents has any requirements — upload them again to have them read",
+        ));
+    }
+    Ok(rows
+        .into_iter()
+        .map(|r| crate::requirement_generation::RequirementItem {
+            key: r.key,
+            section: r.section,
+            kind: crate::requirements::RequirementKind::from_db(&r.kind),
+            text: r.text,
+        })
+        .collect())
+}
+
+/// The text a request is matched against similar past cases and documents by
+/// when it is generated from requirements: its own text plus the start of the
+/// requirements (the first 2,000 characters — enough to say what the
+/// documents are about, without embedding all of them).
+pub(crate) fn requirement_retrieval_query(
+    request_text: &str,
+    items: &[crate::requirement_generation::RequirementItem],
+) -> String {
+    let mut query = request_text.to_string();
+    let mut room = 2_000usize;
+    for item in items {
+        if room == 0 {
+            break;
+        }
+        let piece: String = item.text.chars().take(room).collect();
+        room -= piece.chars().count();
+        query.push('\n');
+        query.push_str(&piece);
+    }
+    query
+}
+
+/// How much requirement text one call may carry: what the provider that would
+/// serve it can take (`AiInfrastructure::prompt_window_tokens_for`), unless
+/// `REQUIREMENT_BATCH_CHARS` says otherwise.
+async fn requirement_batch_budget(state: &AppState) -> crate::requirement_generation::BatchBudget {
+    let window = state
+        .ai_infra
+        .prompt_window_tokens_for(crate::ai_router::AiTask::TestCaseGeneration)
+        .await;
+    crate::requirement_generation::BatchBudget::from_prompt_window(
+        window,
+        std::env::var("REQUIREMENT_BATCH_CHARS")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok()),
+    )
+}
+
+/// The most AI calls one requirement-driven request may make
+/// (`REQUIREMENT_MAX_CALLS`, default 150) — a guard against a request that
+/// would run for hours or cost far more than anyone meant.
+fn requirement_max_calls() -> usize {
+    std::env::var("REQUIREMENT_MAX_CALLS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(150)
+}
+
+#[derive(Debug, Deserialize)]
+struct GeneratePlanBody {
+    #[serde(default)]
+    skills: Vec<SkillInputBody>,
+    #[serde(default)]
+    requirement_document_ids: Vec<Uuid>,
+}
+
+#[derive(Serialize)]
+struct GeneratePlanResponse {
+    requirements_total: usize,
+    by_kind: std::collections::BTreeMap<String, usize>,
+    /// Requirements at least one selected skill will be shown.
+    offered: usize,
+    /// Of a kind no selected skill tests (at most 100 ids).
+    not_offered_keys: Vec<String>,
+    /// AI calls the request would make, and the most one request may make.
+    calls: usize,
+    max_calls: usize,
+    within_limit: bool,
+    skills: Vec<crate::requirement_generation::SkillPlan>,
+    budget_chars: usize,
+    /// Where the calls would go right now, and how many input tokens one of
+    /// them can carry there; absent when no provider can serve generation.
+    provider_name: Option<String>,
+    model: Option<String>,
+    prompt_window_tokens: Option<u32>,
+    /// Rough sizes, not a quote: what the calls carry and a typical answer.
+    estimated_prompt_tokens: u64,
+    estimated_completion_tokens: u64,
+}
+
+/// POST /api/v1/projects/:project_id/test-cases/generate-ai/plan — what a
+/// requirement-driven generation of these documents with these skills would
+/// do, worked out by the same planning the run uses and without calling any
+/// model. Operator+, like the generation it previews.
+async fn plan_generate_ai_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiJson(body): ApiJson<GeneratePlanBody>,
+) -> Result<Json<GeneratePlanResponse>, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    require_scoped_project(&state, &ctx, project_id).await?;
+    if body.requirement_document_ids.is_empty() {
+        return Err(ApiError::validation(
+            "requirement_document_ids must name at least one document",
+        ));
+    }
+    let items = load_requirement_items(&state, project_id, &body.requirement_document_ids).await?;
+    let skills: Vec<crate::ai_generation::SkillInput> = body
+        .skills
+        .into_iter()
+        .map(|s| crate::ai_generation::SkillInput {
+            id: s.id,
+            name: s.name,
+            description: s.description,
+        })
+        .collect();
+
+    let budget = requirement_batch_budget(&state).await;
+    let plan = crate::requirement_generation::plan_calls(&items, &skills, budget);
+    let (prompt_tokens, completion_tokens) =
+        crate::requirement_generation::estimate_tokens(&plan, &items);
+    let mut by_kind = std::collections::BTreeMap::new();
+    for item in &items {
+        *by_kind.entry(item.kind.as_str().to_string()).or_insert(0) += 1;
+    }
+    let not_offered_keys: Vec<String> = items
+        .iter()
+        .zip(&plan.offered)
+        .filter(|(_, offered)| !**offered)
+        .map(|(item, _)| item.key.clone())
+        .take(100)
+        .collect();
+    let route = state
+        .ai_infra
+        .route_and_window_for(crate::ai_router::AiTask::TestCaseGeneration)
+        .await;
+    let max_calls = requirement_max_calls();
+    Ok(Json(GeneratePlanResponse {
+        requirements_total: items.len(),
+        by_kind,
+        offered: plan.offered_count(),
+        not_offered_keys,
+        calls: plan.calls.len(),
+        max_calls,
+        within_limit: plan.calls.len() <= max_calls,
+        skills: plan.skills.clone(),
+        budget_chars: budget.max_chars,
+        provider_name: route.as_ref().map(|(_, name, _)| name.clone()),
+        model: route.as_ref().map(|(d, _, _)| d.model_id.clone()),
+        prompt_window_tokens: route.as_ref().map(|(_, _, w)| *w),
+        estimated_prompt_tokens: prompt_tokens,
+        estimated_completion_tokens: completion_tokens,
+    }))
 }
 
 // ---------------------------------------------------------- Custom Testing
@@ -3361,6 +3618,38 @@ struct ExtractDocumentTextBody {
     /// the exact same `ApiJson` request path every other endpoint in this
     /// API already does, instead of a second, one-off upload mechanism.
     content_base64: String,
+    /// Which slot the file was uploaded to (BRD / PRD / FRD / SRD /
+    /// ADDITIONAL). It only prefixes the ids given to the document's
+    /// requirements; omitted, the file name is used instead.
+    #[serde(default)]
+    document_type: Option<String>,
+}
+
+/// `POST .../documents/extract-text`'s response: exactly the bounded text it
+/// has always returned, plus — when the whole document could be read and
+/// stored — what was found in it.
+#[derive(Serialize)]
+struct ExtractDocumentTextResponse {
+    #[serde(flatten)]
+    extracted: crate::doc_extract::ExtractedDocument,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    requirements_document: Option<RequirementDocumentSummary>,
+}
+
+/// What reading a whole document produced (`requirements.rs`).
+#[derive(Serialize)]
+struct RequirementDocumentSummary {
+    document_id: Uuid,
+    /// Characters of the whole document that were read; the `text` beside
+    /// this stops at 20,000.
+    full_char_count: usize,
+    /// True only for a document over the 3,000,000-character safety ceiling.
+    full_truncated: bool,
+    sections_count: usize,
+    requirements_count: usize,
+    /// Sections left out on purpose (a table of contents, a revision history).
+    skipped_sections: Vec<String>,
+    by_kind: std::collections::BTreeMap<String, usize>,
 }
 
 /// Base64 text length before decoding, not the decoded byte count — a
@@ -3381,7 +3670,7 @@ async fn extract_document_text_scoped(
     Extension(ctx): Extension<AuthContext>,
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<ExtractDocumentTextBody>,
-) -> Result<Json<crate::doc_extract::ExtractedDocument>, ApiError> {
+) -> Result<Json<ExtractDocumentTextResponse>, ApiError> {
     auth::require_role(&ctx, Role::Operator)?;
     require_scoped_project(&state, &ctx, project_id).await?;
 
@@ -3396,7 +3685,23 @@ async fn extract_document_text_scoped(
         .decode(body.content_base64.as_bytes())
         .map_err(|e| ApiError::validation(format!("content_base64 is not valid base64: {e}")))?;
 
-    let result = crate::doc_extract::extract_text(&body.file_name, &bytes);
+    // Reading a large PDF or splitting a long document into requirements is
+    // real CPU work: done off the async workers.
+    let file_name = body.file_name.clone();
+    let doc_label = body.document_type.clone().unwrap_or_default();
+    let read = tokio::task::spawn_blocking(move || {
+        crate::doc_extract::extract_both(&file_name, &bytes).map(|(bounded, whole)| {
+            let parsed = crate::requirements::parse_document(&doc_label, &file_name, &whole.text);
+            (bounded, whole, parsed)
+        })
+    })
+    .await
+    .map_err(to_500)?;
+
+    let result = read
+        .as_ref()
+        .map(|(bounded, _, _)| bounded.clone())
+        .map_err(|e| e.clone());
     audit(
         &state,
         &ctx,
@@ -3418,11 +3723,143 @@ async fn extract_document_text_scoped(
     // `persist_and_embed_document`'s own doc comment. Fails open, same as
     // that function's own contract: this never turns a successful
     // extraction into a failed response.
-    if let Ok(extracted) = &result {
-        persist_and_embed_document(&state, project_id, &body.file_name, extracted).await;
+    let mut requirements_document = None;
+    if let Ok((bounded, whole, parsed)) = &read {
+        persist_and_embed_document(&state, project_id, &body.file_name, bounded).await;
+        requirements_document = persist_requirements(
+            &state,
+            project_id,
+            &body.file_name,
+            body.document_type.as_deref(),
+            whole,
+            parsed,
+        )
+        .await;
     }
 
-    result.map(Json).map_err(ApiError::validation)
+    result
+        .map(|extracted| {
+            Json(ExtractDocumentTextResponse {
+                extracted,
+                requirements_document,
+            })
+        })
+        .map_err(ApiError::validation)
+}
+
+/// Phase 3 — stores the whole document and the requirements read out of it
+/// (`requirements.rs`, `0020_requirements.sql`). Fails open like
+/// `persist_and_embed_document`: the extraction response is the core of the
+/// endpoint, so a database problem here is a warning in the log and an absent
+/// `requirements_document`, never a failed upload.
+async fn persist_requirements(
+    state: &AppState,
+    project_id: Uuid,
+    file_name: &str,
+    doc_type: Option<&str>,
+    whole: &crate::doc_extract::FullDocument,
+    parsed: &crate::requirements::ParsedDocument,
+) -> Option<RequirementDocumentSummary> {
+    let mut hasher = Sha256::new();
+    hasher.update(whole.text.as_bytes());
+    let content_hash = hex::encode(hasher.finalize());
+    let doc_type = doc_type.map(str::trim).filter(|t| !t.is_empty());
+    match state
+        .store
+        .upsert_requirement_document(
+            &project_id.to_string(),
+            file_name,
+            doc_type,
+            &content_hash,
+            &whole.text,
+            parsed,
+        )
+        .await
+    {
+        Ok(document_id) => {
+            let mut by_kind = std::collections::BTreeMap::new();
+            for r in &parsed.requirements {
+                *by_kind.entry(r.kind.as_str().to_string()).or_insert(0) += 1;
+            }
+            Some(RequirementDocumentSummary {
+                document_id,
+                full_char_count: whole.char_count,
+                full_truncated: whole.truncated,
+                sections_count: parsed.sections_count,
+                requirements_count: parsed.requirements.len(),
+                skipped_sections: parsed.skipped_sections.clone(),
+                by_kind,
+            })
+        }
+        Err(e) => {
+            state
+                .log_bus
+                .emit(
+                    "WARN",
+                    "generation",
+                    &format!(
+                        "Could not store this document's requirements, it can only be used the way it always was: {e}"
+                    ),
+                    None,
+                    Some(&project_id.to_string()),
+                    None,
+                )
+                .await;
+            None
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct ListRequirementsQuery {
+    /// Comma-separated document ids to restrict the list to.
+    #[serde(default)]
+    document_ids: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ListRequirementsResponse {
+    documents: Vec<crate::store::RequirementDocumentRow>,
+    requirements: Vec<crate::store::RequirementRow>,
+}
+
+/// GET /api/v1/projects/:project_id/requirements — the documents that have
+/// been read for their requirements and the requirements themselves (all of
+/// the project's, or only those of `?document_ids=a,b`). Viewer+: reading
+/// what a project's documents say is not a privileged action.
+async fn list_requirements_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiQuery(q): ApiQuery<ListRequirementsQuery>,
+) -> Result<Json<ListRequirementsResponse>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let mut ids = Vec::new();
+    if let Some(list) = q.document_ids.as_deref() {
+        for part in list.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+            ids.push(Uuid::parse_str(part).map_err(|_| {
+                ApiError::validation(format!("document_ids must be UUIDs, got '{part}'"))
+            })?);
+        }
+    }
+    let pid = project_id.to_string();
+    let mut documents = state
+        .store
+        .list_requirement_documents(&pid)
+        .await
+        .map_err(to_500)?;
+    if !ids.is_empty() {
+        documents.retain(|d| ids.contains(&d.id));
+    }
+    let requirements = state
+        .store
+        .list_requirements(&pid, &ids)
+        .await
+        .map_err(to_500)?;
+    Ok(Json(ListRequirementsResponse {
+        documents,
+        requirements,
+    }))
 }
 
 // ---------------------------------------------------- Phase 6 — Performance Testing

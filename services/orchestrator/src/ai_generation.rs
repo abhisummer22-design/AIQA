@@ -587,7 +587,7 @@ pub enum Wave {
 }
 
 impl Wave {
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Wave::Base => "base",
             Wave::Dependent => "dependent",
@@ -646,7 +646,7 @@ pub fn partition_skills_into_waves(
 /// get extra scrutiny, but a test case it inspires still answers to the
 /// EVIDENCE RULES in `build_prompt` below — this section deliberately never
 /// introduces a second, looser evidence path.
-fn build_feedback_block(feedback: &FeedbackContext) -> String {
+pub(crate) fn build_feedback_block(feedback: &FeedbackContext) -> String {
     if feedback.risky_areas.is_empty()
         && feedback.confirmed_defect_patterns.is_empty()
         && feedback.similar_cases.is_empty()
@@ -736,7 +736,7 @@ fn build_feedback_block(feedback: &FeedbackContext) -> String {
 /// `build_feedback_block` — a Dependent/NonFunctional-wave case inspired by
 /// this section is still a variant grounded in the requirement text, not a
 /// license to invent one because an earlier wave merely mentioned a flow.
-fn build_prior_wave_block(prior_wave_cases: &[GeneratedTestCaseDraft]) -> String {
+pub(crate) fn build_prior_wave_block(prior_wave_cases: &[GeneratedTestCaseDraft]) -> String {
     if prior_wave_cases.is_empty() {
         return String::new();
     }
@@ -781,7 +781,7 @@ const MAX_VISIBILITY_ENTRIES: usize = 6;
 ///   scenario. The same real data `GET .../crawl/:run_id/result` already
 ///   returns to a direct caller; this is the one place it also feeds
 ///   forward into generation.
-fn build_crawl_context_block(crawl: Option<&crate::crawler::CrawlOutput>) -> String {
+pub(crate) fn build_crawl_context_block(crawl: Option<&crate::crawler::CrawlOutput>) -> String {
     let Some(crawl) = crawl else {
         return String::new();
     };
@@ -979,6 +979,11 @@ pub struct GeneratedTestCaseDraft {
     pub evidence: EvidenceKind,
     #[serde(default)]
     pub source_reference: Option<String>,
+    /// Requirement-driven generation only (`requirement_generation.rs`): the
+    /// id of the requirement this case tests. Absent from every other case,
+    /// and left out of the JSON when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requirement_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1054,7 +1059,7 @@ fn validate_and_clean(cases: Vec<GeneratedTestCaseDraft>) -> Vec<GeneratedTestCa
 /// that does not actually appear there, rather than trusting the model's
 /// own say-so. This is the concrete, code-enforced difference between
 /// "the prompt asked for honesty" and "honesty is verified".
-fn enforce_traceability(
+pub(crate) fn enforce_traceability(
     mut cases: Vec<GeneratedTestCaseDraft>,
     requirement_text: &str,
 ) -> Vec<GeneratedTestCaseDraft> {
@@ -1084,7 +1089,7 @@ fn enforce_traceability(
 /// other's core words — enough to catch a model repeating the same
 /// scenario under near-identical titles across skills without requiring
 /// an embedding model this codebase has no infrastructure for.
-fn normalize_title(title: &str) -> String {
+pub(crate) fn normalize_title(title: &str) -> String {
     title
         .to_lowercase()
         .chars()
@@ -1263,6 +1268,13 @@ pub struct WaveSummary {
     pub latency_ms: Option<u64>,
     pub failure_reason: Option<String>,
     pub skipped: bool,
+    /// Requirement-driven generation only: which batch of this skill's
+    /// requirements the call carried (`"2/5"`) and how many requirements
+    /// were in it. Absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub batch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requirements: Option<usize>,
 }
 
 impl WaveSummary {
@@ -1290,10 +1302,12 @@ impl WaveSummary {
             latency_ms: None,
             failure_reason: None,
             skipped: true,
+            batch: None,
+            requirements: None,
         }
     }
 
-    fn succeeded(&self) -> bool {
+    pub(crate) fn succeeded(&self) -> bool {
         !self.skipped && self.failure_reason.is_none()
     }
 }
@@ -1429,6 +1443,8 @@ async fn run_wave(
                 latency_ms: Some(latency_ms),
                 failure_reason: None,
                 skipped: false,
+                batch: None,
+                requirements: None,
             };
             (summary, cases)
         }
@@ -1448,6 +1464,8 @@ async fn run_wave(
                 latency_ms: None,
                 failure_reason: Some(reason),
                 skipped: false,
+                batch: None,
+                requirements: None,
             };
             (summary, Vec::new())
         }
@@ -1565,6 +1583,18 @@ pub async fn generate_test_cases(
         }
     }
 
+    finish_waves(waves, all_cases, deduplicate)
+}
+
+/// Turns the calls a generation made into its outcome: `Ai` when any call
+/// produced real cases (its top-level fields describe the LAST call that
+/// did), `Failed` — each distinct reason once — when every call failed.
+/// `dedupe` is the final, whole-run de-duplication of the merged cases.
+pub(crate) fn finish_waves(
+    waves: Vec<WaveSummary>,
+    all_cases: Vec<GeneratedTestCaseDraft>,
+    dedupe: fn(Vec<GeneratedTestCaseDraft>) -> Vec<GeneratedTestCaseDraft>,
+) -> GenerationOutcome {
     let Some(last_success) = waves.iter().rev().find(|w| w.succeeded()) else {
         // Every skill call usually fails for the same reason (one provider is down or refusing), so say each
         // distinct reason once instead of once per skill.
@@ -1615,7 +1645,7 @@ pub async fn generate_test_cases(
     // it not to — this is the same real, rule-based `deduplicate` every
     // single wave's own `validate_structured_output` already applies,
     // applied once more across the full merged set.
-    let deduped = deduplicate(all_cases);
+    let deduped = dedupe(all_cases);
 
     GenerationOutcome::Ai {
         cases: deduped,
@@ -1638,6 +1668,42 @@ fn validate_structured_output(
     result: &crate::ai_router::GenerationResult,
     requirement_text: &str,
 ) -> Result<GenerationOutcome, String> {
+    let cleaned = parse_and_clean(result)?;
+    let traced = enforce_traceability(cleaned, requirement_text);
+    let deduped = deduplicate(traced);
+
+    Ok(GenerationOutcome::Ai {
+        cases: deduped,
+        provider: result.provider.clone(),
+        model: result.model.clone(),
+        routing_score: result.routing_score,
+        fallback_used: result.fallback_used,
+        routing_mode: routing_mode_label(result),
+        prompt_tokens: result.prompt_tokens,
+        completion_tokens: result.completion_tokens,
+        latency_ms: result.latency_ms,
+        estimated_cost_usd: result.estimated_cost_usd,
+        // A single wave call has no sub-waves of its own to report —
+        // `generate_test_cases` is the only place that ever populates this.
+        waves: Vec::new(),
+    })
+}
+
+/// `"AUTO"` / `"MANUAL"`: the routing mode a result was produced under.
+pub(crate) fn routing_mode_label(result: &crate::ai_router::GenerationResult) -> String {
+    match result.routing_mode {
+        crate::ai_router::RoutingMode::Manual => "MANUAL".to_string(),
+        crate::ai_router::RoutingMode::Auto => "AUTO".to_string(),
+    }
+}
+
+/// The JSON out of a raw model response, parsed into drafts and stripped of
+/// the structurally unusable ones (a real failure reason when nothing usable
+/// is left). What every generation path does before it checks the cases
+/// against the text they were generated from.
+pub(crate) fn parse_and_clean(
+    result: &crate::ai_router::GenerationResult,
+) -> Result<Vec<GeneratedTestCaseDraft>, String> {
     let payload = match extract_json_payload(&result.text) {
         Some(p) => p,
         None => {
@@ -1666,27 +1732,7 @@ fn validate_structured_output(
     if cleaned.is_empty() {
         return Err("AI response contained no structurally valid test cases".to_string());
     }
-    let traced = enforce_traceability(cleaned, requirement_text);
-    let deduped = deduplicate(traced);
-
-    Ok(GenerationOutcome::Ai {
-        cases: deduped,
-        provider: result.provider.clone(),
-        model: result.model.clone(),
-        routing_score: result.routing_score,
-        fallback_used: result.fallback_used,
-        routing_mode: match result.routing_mode {
-            crate::ai_router::RoutingMode::Manual => "MANUAL".to_string(),
-            crate::ai_router::RoutingMode::Auto => "AUTO".to_string(),
-        },
-        prompt_tokens: result.prompt_tokens,
-        completion_tokens: result.completion_tokens,
-        latency_ms: result.latency_ms,
-        estimated_cost_usd: result.estimated_cost_usd,
-        // A single wave call has no sub-waves of its own to report —
-        // `generate_test_cases` is the only place that ever populates this.
-        waves: Vec::new(),
-    })
+    Ok(cleaned)
 }
 
 #[cfg(test)]
@@ -2296,6 +2342,7 @@ mod tests {
             severity: "MAJOR".to_string(),
             evidence: EvidenceKind::Evidenced,
             source_reference: None,
+            requirement_id: None,
         }
     }
 
@@ -2542,6 +2589,7 @@ mod tests {
             severity: "MAJOR".to_string(),
             evidence: EvidenceKind::Evidenced,
             source_reference: Some("must be at least 8 characters".to_string()),
+            requirement_id: None,
         }
     }
 
@@ -3527,6 +3575,8 @@ mod tests {
             latency_ms: Some(latency_ms),
             failure_reason: None,
             skipped: false,
+            batch: None,
+            requirements: None,
         }
     }
 
@@ -3546,6 +3596,8 @@ mod tests {
             latency_ms: None,
             failure_reason: Some("timeout".to_string()),
             skipped: false,
+            batch: None,
+            requirements: None,
         }
     }
 

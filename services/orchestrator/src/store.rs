@@ -220,6 +220,33 @@ fn document_from_row(r: sqlx::sqlite::SqliteRow) -> Result<DocumentRow> {
     })
 }
 
+fn requirement_document_from_row(r: sqlx::sqlite::SqliteRow) -> Result<RequirementDocumentRow> {
+    Ok(RequirementDocumentRow {
+        id: Uuid::parse_str(&r.get::<String, _>("id"))?,
+        file_name: r.get("file_name"),
+        doc_type: r.get("doc_type"),
+        char_count: r.get("char_count"),
+        requirements_count: r.get("requirements_count"),
+        sections_count: r.get("sections_count"),
+        skipped_sections: serde_json::from_str(&r.get::<String, _>("skipped_sections"))
+            .unwrap_or_default(),
+        furniture_lines: r.get("furniture_lines"),
+        created_at: parse_ts(&r.get::<String, _>("created_at")),
+        updated_at: parse_ts(&r.get::<String, _>("updated_at")),
+    })
+}
+
+fn requirement_from_row(r: sqlx::sqlite::SqliteRow) -> Result<RequirementRow> {
+    Ok(RequirementRow {
+        document_id: Uuid::parse_str(&r.get::<String, _>("document_id"))?,
+        key: r.get("req_key"),
+        ordinal: r.get("ordinal"),
+        section: r.get("section"),
+        kind: r.get("kind"),
+        text: r.get("text"),
+    })
+}
+
 fn test_plan_from_row(r: sqlx::sqlite::SqliteRow) -> Result<TestPlanRow> {
     Ok(TestPlanRow {
         id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap_or_default(),
@@ -1183,6 +1210,17 @@ impl Store {
             .execute(&mut *tx)
             .await?;
 
+        // 8d. Delete requirement documents and the requirements read out of
+        // them (Phase 3) — no FK on `project_id`, same convention as above.
+        sqlx::query("DELETE FROM requirements WHERE project_id = ?")
+            .bind(&pid_str)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM requirement_documents WHERE project_id = ?")
+            .bind(&pid_str)
+            .execute(&mut *tx)
+            .await?;
+
         // 9. Delete the project itself
         let result = sqlx::query("DELETE FROM projects WHERE id = ?")
             .bind(&pid_str)
@@ -1662,6 +1700,171 @@ impl Store {
         .fetch_one(&self.pool)
         .await?;
         Ok(row.get::<i64, _>("c"))
+    }
+
+    // -------------------------------------------- requirements (Phase 3)
+
+    /// Stores a document's whole extracted text and the requirements
+    /// `requirements.rs` read out of it (see `0020_requirements.sql`). Keyed by
+    /// `(project_id, content_hash)`: the same content uploaded again refreshes
+    /// the file name and type of the existing row and leaves its requirements
+    /// alone — unless they were produced by older parsing rules
+    /// (`parser_version`), in which case they are replaced. Returns the
+    /// document's id either way.
+    pub async fn upsert_requirement_document(
+        &self,
+        project_id: &str,
+        file_name: &str,
+        doc_type: Option<&str>,
+        content_hash: &str,
+        text: &str,
+        parsed: &crate::requirements::ParsedDocument,
+    ) -> Result<Uuid> {
+        let mut tx = self.pool.begin().await?;
+        let now = now_rfc3339();
+        let skipped = serde_json::to_string(&parsed.skipped_sections)?;
+
+        let existing = sqlx::query(
+            "SELECT id, parser_version FROM requirement_documents WHERE project_id = ? AND content_hash = ?",
+        )
+        .bind(project_id)
+        .bind(content_hash)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        let (id, rewrite) = match existing {
+            Some(row) => {
+                let id: String = row.get("id");
+                let version: i64 = row.get("parser_version");
+                sqlx::query(
+                    "UPDATE requirement_documents SET file_name = ?, doc_type = ?, updated_at = ? WHERE id = ?",
+                )
+                .bind(file_name)
+                .bind(doc_type)
+                .bind(&now)
+                .bind(&id)
+                .execute(&mut *tx)
+                .await?;
+                (id, version != crate::requirements::PARSER_VERSION)
+            }
+            None => {
+                let id = Uuid::new_v4().to_string();
+                sqlx::query(
+                    "INSERT INTO requirement_documents (id, project_id, file_name, doc_type, content_hash, char_count, text, parser_version, sections_count, skipped_sections, furniture_lines, created_at, updated_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                )
+                .bind(&id)
+                .bind(project_id)
+                .bind(file_name)
+                .bind(doc_type)
+                .bind(content_hash)
+                .bind(text.chars().count() as i64)
+                .bind(text)
+                .bind(crate::requirements::PARSER_VERSION)
+                .bind(parsed.sections_count as i64)
+                .bind(&skipped)
+                .bind(parsed.furniture_lines as i64)
+                .bind(&now)
+                .bind(&now)
+                .execute(&mut *tx)
+                .await?;
+                (id, true)
+            }
+        };
+
+        if rewrite {
+            sqlx::query(
+                "UPDATE requirement_documents SET parser_version = ?, sections_count = ?, skipped_sections = ?, furniture_lines = ? WHERE id = ?",
+            )
+            .bind(crate::requirements::PARSER_VERSION)
+            .bind(parsed.sections_count as i64)
+            .bind(&skipped)
+            .bind(parsed.furniture_lines as i64)
+            .bind(&id)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query("DELETE FROM requirements WHERE document_id = ?")
+                .bind(&id)
+                .execute(&mut *tx)
+                .await?;
+            for r in &parsed.requirements {
+                sqlx::query(
+                    "INSERT INTO requirements (id, project_id, document_id, req_key, ordinal, section, kind, text)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                )
+                .bind(Uuid::new_v4().to_string())
+                .bind(project_id)
+                .bind(&id)
+                .bind(&r.key)
+                .bind(r.ordinal as i64)
+                .bind(r.section.as_deref())
+                .bind(r.kind.as_str())
+                .bind(&r.text)
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
+
+        tx.commit().await?;
+        Ok(Uuid::parse_str(&id)?)
+    }
+
+    /// A project's requirement documents in the order they were first
+    /// uploaded, each with how many requirements it holds.
+    pub async fn list_requirement_documents(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<RequirementDocumentRow>> {
+        let rows = sqlx::query(
+            "SELECT d.id, d.file_name, d.doc_type, d.char_count, d.sections_count, d.skipped_sections,
+                    d.furniture_lines, d.created_at, d.updated_at,
+                    (SELECT COUNT(*) FROM requirements r WHERE r.document_id = d.id) AS requirements_count
+             FROM requirement_documents d WHERE d.project_id = ? ORDER BY d.created_at, d.id",
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(requirement_document_from_row).collect()
+    }
+
+    /// The requirements of `document_ids` in that order (each document's own
+    /// in document order); every document of the project, oldest first, when
+    /// `document_ids` is empty. A document that belongs to another project
+    /// simply contributes nothing.
+    pub async fn list_requirements(
+        &self,
+        project_id: &str,
+        document_ids: &[Uuid],
+    ) -> Result<Vec<RequirementRow>> {
+        let mut out = Vec::new();
+        if document_ids.is_empty() {
+            let rows = sqlx::query(
+                "SELECT r.document_id, r.req_key, r.ordinal, r.section, r.kind, r.text
+                 FROM requirements r JOIN requirement_documents d ON d.id = r.document_id
+                 WHERE r.project_id = ? ORDER BY d.created_at, d.id, r.ordinal",
+            )
+            .bind(project_id)
+            .fetch_all(&self.pool)
+            .await?;
+            for row in rows {
+                out.push(requirement_from_row(row)?);
+            }
+            return Ok(out);
+        }
+        for id in document_ids {
+            let rows = sqlx::query(
+                "SELECT document_id, req_key, ordinal, section, kind, text
+                 FROM requirements WHERE project_id = ? AND document_id = ? ORDER BY ordinal",
+            )
+            .bind(project_id)
+            .bind(id.to_string())
+            .fetch_all(&self.pool)
+            .await?;
+            for row in rows {
+                out.push(requirement_from_row(row)?);
+            }
+        }
+        Ok(out)
     }
 
     /// Phase 5 (Output maturity) — the one place a case's suite membership
@@ -3831,6 +4034,34 @@ pub struct DocumentRow {
     pub text: String,
     pub char_count: i64,
     pub truncated: bool,
+}
+
+/// A document read for its requirements (`0020_requirements.sql`).
+/// `requirements_count` is counted when the row is read, not stored.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RequirementDocumentRow {
+    pub id: Uuid,
+    pub file_name: String,
+    pub doc_type: Option<String>,
+    pub char_count: i64,
+    pub requirements_count: i64,
+    pub sections_count: i64,
+    pub skipped_sections: Vec<String>,
+    pub furniture_lines: i64,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// One requirement read out of a document (`0020_requirements.sql`).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RequirementRow {
+    pub document_id: Uuid,
+    /// The id people see and a generated test case carries.
+    pub key: String,
+    pub ordinal: i64,
+    pub section: Option<String>,
+    pub kind: String,
+    pub text: String,
 }
 
 /// Phase 5 (Output maturity). `suite_count` is real, computed at query

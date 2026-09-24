@@ -7832,6 +7832,717 @@ async fn extract_document_text_project_isolation_enforced() {
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
 }
 
+// ============================================ Phase 3 — requirements read out of documents
+
+/// A minimal but genuine one-page text PDF, same construction as
+/// `doc_extract.rs`'s own test helper.
+fn build_test_pdf_bytes(lines: &[&str]) -> Vec<u8> {
+    let mut content = String::from("BT\n/F1 12 Tf\n14 TL\n72 720 Td\n");
+    for l in lines {
+        content.push_str(&format!("({l}) Tj T*\n"));
+    }
+    content.push_str("ET\n");
+    let objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>".to_string(),
+        format!("<< /Length {} >>\nstream\n{content}endstream", content.len()),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+    ];
+    let mut out = b"%PDF-1.4\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, obj) in objects.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend(format!("{} 0 obj\n{obj}\nendobj\n", i + 1).as_bytes());
+    }
+    let xref_pos = out.len();
+    out.extend(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes());
+    for off in offsets {
+        out.extend(format!("{off:010} 00000 n \n").as_bytes());
+    }
+    out.extend(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_pos}\n%%EOF\n",
+            objects.len() + 1
+        )
+        .as_bytes(),
+    );
+    out
+}
+
+/// A .docx whose paragraphs may carry a Word style (`Heading1`, ...).
+fn build_styled_docx_bytes(paragraphs: &[(Option<&str>, &str)]) -> Vec<u8> {
+    use std::io::Write;
+    let body: String = paragraphs
+        .iter()
+        .map(|(style, text)| match style {
+            Some(st) => format!(
+                r#"<w:p><w:pPr><w:pStyle w:val="{st}"/></w:pPr><w:r><w:t>{text}</w:t></w:r></w:p>"#
+            ),
+            None => format!("<w:p><w:r><w:t>{text}</w:t></w:r></w:p>"),
+        })
+        .collect();
+    let document_xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>{body}</w:body></w:document>"#
+    );
+    let mut buf = Vec::new();
+    {
+        let cursor = std::io::Cursor::new(&mut buf);
+        let mut zip = zip::ZipWriter::new(cursor);
+        let options: zip::write::FileOptions<'_, ()> =
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        zip.start_file("word/document.xml", options).unwrap();
+        zip.write_all(document_xml.as_bytes()).unwrap();
+        zip.finish().unwrap();
+    }
+    buf
+}
+
+async fn upload_document(
+    state: &AppState,
+    key: &str,
+    project: Uuid,
+    file_name: &str,
+    bytes: &[u8],
+    document_type: Option<&str>,
+) -> (StatusCode, Value) {
+    let mut body = serde_json::json!({"file_name": file_name, "content_base64": b64(bytes)});
+    if let Some(t) = document_type {
+        body["document_type"] = Value::String(t.to_string());
+    }
+    send(
+        state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/documents/extract-text"),
+            Some(key),
+            Some(body),
+        ),
+    )
+    .await
+}
+
+const SAMPLE_FRD: &str = "# Login\n\n## 3.2 Login\n\nFR-012: The system shall lock an account after 5 failed login attempts.\n\nFR-013: A locked account shall be unlocked automatically after 15 minutes.\n\n## 3.3 Reports\n\nThe system shall export any report as a CSV file.\n";
+
+#[tokio::test]
+async fn an_uploaded_document_is_also_read_for_its_requirements_and_the_old_response_is_unchanged() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Requirements - Upload").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, body) = upload_document(&state, &owner, project, "FRD.md", SAMPLE_FRD.as_bytes(), Some("FRD")).await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    // What this endpoint has always answered.
+    assert_eq!(body["text"], SAMPLE_FRD.trim());
+    assert_eq!(body["truncated"], false);
+    assert_eq!(body["char_count"], SAMPLE_FRD.trim().chars().count());
+    // What it now also says.
+    let summary = &body["requirements_document"];
+    assert_eq!(summary["requirements_count"], 3, "body={body}");
+    assert_eq!(summary["sections_count"], 3, "body={body}");
+    assert_eq!(summary["full_truncated"], false);
+    assert_eq!(summary["full_char_count"], SAMPLE_FRD.trim().chars().count());
+    assert!(summary["document_id"].as_str().is_some(), "body={body}");
+    assert_eq!(summary["by_kind"]["security"], 2, "body={body}");
+
+    let (status, listed) = send(
+        &state,
+        req("GET", &format!("/api/v1/projects/{project}/requirements"), Some(&owner), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={listed}");
+    assert_eq!(listed["documents"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["documents"][0]["file_name"], "FRD.md");
+    assert_eq!(listed["documents"][0]["doc_type"], "FRD");
+    assert_eq!(listed["documents"][0]["requirements_count"], 3);
+    let reqs = listed["requirements"].as_array().unwrap();
+    let keys: Vec<&str> = reqs.iter().map(|r| r["key"].as_str().unwrap()).collect();
+    assert_eq!(keys, ["FR-012", "FR-013", "FRD-3.3-01"]);
+    assert_eq!(reqs[0]["section"], "3.2 Login");
+    assert_eq!(reqs[0]["kind"], "security");
+    assert_eq!(reqs[2]["text"], "The system shall export any report as a CSV file.");
+    assert_eq!(reqs[0]["document_id"], summary["document_id"]);
+}
+
+#[tokio::test]
+async fn nothing_past_the_old_20000_character_mark_is_lost() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Requirements - Long").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    // ~60,000 characters of filler paragraphs, then a requirement at the very end.
+    let mut doc = String::from("## 1 Filler\n\n");
+    for i in 0..600 {
+        doc.push_str(&format!(
+            "The system shall support filler scenario number {i} in the portal today.\n\n"
+        ));
+    }
+    doc.push_str("## 2 The end\n\nFR-9999: The system shall still read this last requirement.\n");
+    assert!(doc.chars().count() > 40_000);
+
+    let (status, body) = upload_document(&state, &owner, project, "long.md", doc.as_bytes(), Some("FRD")).await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    // The bounded text the single-prompt path uses is still cut, and says so.
+    assert_eq!(body["truncated"], true);
+    assert_eq!(body["char_count"], 20_000);
+    // The whole document was read all the same.
+    assert_eq!(body["requirements_document"]["full_char_count"], doc.trim().chars().count());
+    assert_eq!(body["requirements_document"]["requirements_count"], 601, "body={body}");
+    let (_, listed) = send(
+        &state,
+        req("GET", &format!("/api/v1/projects/{project}/requirements"), Some(&owner), None),
+    )
+    .await;
+    let last = listed["requirements"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!(last["key"], "FR-9999");
+    assert_eq!(last["text"], "The system shall still read this last requirement.");
+}
+
+#[tokio::test]
+async fn a_docx_keeps_its_headings_so_requirements_know_their_section() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Requirements - Docx").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let docx = build_styled_docx_bytes(&[
+        (Some("Heading1"), "3. Authentication"),
+        (Some("Heading2"), "3.2 Login"),
+        (None, "Users shall sign in with an email address and a password."),
+        (None, "A session shall expire after 30 minutes of inactivity."),
+    ]);
+
+    let (status, body) = upload_document(&state, &owner, project, "BRD.docx", &docx, Some("BRD")).await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["requirements_document"]["sections_count"], 2, "body={body}");
+    let (_, listed) = send(
+        &state,
+        req("GET", &format!("/api/v1/projects/{project}/requirements"), Some(&owner), None),
+    )
+    .await;
+    let reqs = listed["requirements"].as_array().unwrap();
+    assert_eq!(reqs.len(), 2, "{listed}");
+    assert_eq!(reqs[0]["section"], "3.2 Login");
+    assert_eq!(reqs[0]["key"], "BRD-3.2-01");
+    assert_eq!(reqs[1]["key"], "BRD-3.2-02");
+    // The old, bounded reading of a docx is exactly what it was: bare lines.
+    assert_eq!(
+        body["text"],
+        "3. Authentication\n3.2 Login\nUsers shall sign in with an email address and a password.\nA session shall expire after 30 minutes of inactivity."
+    );
+}
+
+#[tokio::test]
+async fn a_text_pdf_is_read_and_split_into_requirements() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Requirements - Pdf").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let pdf = build_test_pdf_bytes(&[
+        "FR-1: The system shall lock an account after 5 failed attempts.",
+        "FR-2: The system shall email a reset link.",
+    ]);
+
+    let (status, body) = upload_document(&state, &owner, project, "spec.pdf", &pdf, Some("PRD")).await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert!(body["text"].as_str().unwrap().contains("lock an account"), "body={body}");
+    assert_eq!(body["requirements_document"]["requirements_count"], 2, "body={body}");
+}
+
+#[tokio::test]
+async fn the_document_type_prefixes_generated_ids_and_the_file_name_does_when_it_is_absent() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Requirements - Prefix").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let text = b"The system shall show a dashboard.\n";
+
+    upload_document(&state, &owner, project, "a.md", text, Some("SRD")).await;
+    upload_document(&state, &owner, project, "checkout-flow.md", b"The system shall take a payment.\n", None).await;
+
+    let (_, listed) = send(
+        &state,
+        req("GET", &format!("/api/v1/projects/{project}/requirements"), Some(&owner), None),
+    )
+    .await;
+    let keys: Vec<&str> = listed["requirements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["key"].as_str().unwrap())
+        .collect();
+    assert_eq!(keys, ["SRD-S0-01", "CHECKO-S0-01"]);
+}
+
+#[tokio::test]
+async fn uploading_the_same_content_again_reuses_the_document_and_a_different_version_is_a_new_one() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Requirements - Reupload").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (_, first) = upload_document(&state, &owner, project, "FRD.md", SAMPLE_FRD.as_bytes(), Some("FRD")).await;
+    let (_, again) = upload_document(&state, &owner, project, "FRD-final.md", SAMPLE_FRD.as_bytes(), Some("FRD")).await;
+    assert_eq!(
+        first["requirements_document"]["document_id"], again["requirements_document"]["document_id"],
+        "same content, same document"
+    );
+
+    let changed = format!("{SAMPLE_FRD}\n## 3.4 Audit\n\nThe system shall record every login.\n");
+    let (_, third) = upload_document(&state, &owner, project, "FRD-v2.md", changed.as_bytes(), Some("FRD")).await;
+    assert_ne!(first["requirements_document"]["document_id"], third["requirements_document"]["document_id"]);
+    assert_eq!(third["requirements_document"]["requirements_count"], 4);
+
+    let (_, listed) = send(
+        &state,
+        req("GET", &format!("/api/v1/projects/{project}/requirements"), Some(&owner), None),
+    )
+    .await;
+    let docs = listed["documents"].as_array().unwrap();
+    assert_eq!(docs.len(), 2);
+    assert_eq!(docs[0]["file_name"], "FRD-final.md", "the name is the latest upload's");
+    assert_eq!(docs[0]["requirements_count"], 3, "not doubled by the second upload");
+    assert_eq!(listed["requirements"].as_array().unwrap().len(), 7);
+}
+
+#[tokio::test]
+async fn two_versions_that_differ_only_after_the_first_20000_characters_are_two_documents() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Requirements - Versions").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let filler = "The system shall support filler scenario in the portal today.\n\n".repeat(400);
+    let v1 = format!("{filler}FR-1: The old last requirement.\n");
+    let v2 = format!("{filler}FR-1: The new last requirement, edited later.\n");
+
+    let (_, a) = upload_document(&state, &owner, project, "big.md", v1.as_bytes(), None).await;
+    let (_, b) = upload_document(&state, &owner, project, "big.md", v2.as_bytes(), None).await;
+
+    assert_ne!(a["requirements_document"]["document_id"], b["requirements_document"]["document_id"]);
+    let (_, listed) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/requirements?document_ids={}", b["requirements_document"]["document_id"].as_str().unwrap()),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    let last = listed["requirements"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!(last["text"], "The new last requirement, edited later.");
+    assert_eq!(listed["documents"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_file_that_cannot_be_read_stores_no_requirements() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Requirements - Unreadable").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, _) = upload_document(&state, &owner, project, "RTM.doc", b"anything", Some("FRD")).await;
+    assert_ne!(status, StatusCode::OK);
+    let (status, _) = upload_document(&state, &owner, project, "broken.pdf", b"%PDF-1.4 not really", Some("FRD")).await;
+    assert_ne!(status, StatusCode::OK);
+
+    let (_, listed) = send(
+        &state,
+        req("GET", &format!("/api/v1/projects/{project}/requirements"), Some(&owner), None),
+    )
+    .await;
+    assert!(listed["documents"].as_array().unwrap().is_empty());
+    assert!(listed["requirements"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_failure_to_store_the_requirements_never_fails_the_upload() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Requirements - Fail Open").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    sqlx::query("DROP TABLE requirements").execute(&state.store.pool).await.unwrap();
+
+    let (status, body) = upload_document(&state, &owner, project, "FRD.md", SAMPLE_FRD.as_bytes(), Some("FRD")).await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["text"], SAMPLE_FRD.trim());
+    assert!(body.get("requirements_document").is_none(), "nothing was stored, so nothing is claimed: {body}");
+}
+
+#[tokio::test]
+async fn listing_requirements_is_project_scoped_readable_by_a_viewer_and_validates_its_filter() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project_a = make_project(&state, "Requirements - A").await;
+    let project_b = make_project(&state, "Requirements - B").await;
+    let owner_a = mint_key(&state, "operator", Some(&project_a.to_string())).await;
+    let viewer_a = mint_key(&state, "viewer", Some(&project_a.to_string())).await;
+    let owner_b = mint_key(&state, "operator", Some(&project_b.to_string())).await;
+    upload_document(&state, &owner_a, project_a, "FRD.md", SAMPLE_FRD.as_bytes(), Some("FRD")).await;
+    upload_document(&state, &owner_b, project_b, "Other.md", b"The system shall do the other project's thing.\n", Some("FRD")).await;
+
+    // A viewer may read.
+    let (status, body) = send(
+        &state,
+        req("GET", &format!("/api/v1/projects/{project_a}/requirements"), Some(&viewer_a), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["requirements"].as_array().unwrap().len(), 3);
+
+    // Another project's key may not.
+    let (status, _) = send(
+        &state,
+        req("GET", &format!("/api/v1/projects/{project_a}/requirements"), Some(&owner_b), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // Another project's document id contributes nothing, and a malformed id is refused.
+    let (_, b_list) = send(
+        &state,
+        req("GET", &format!("/api/v1/projects/{project_b}/requirements"), Some(&owner_b), None),
+    )
+    .await;
+    let b_doc = b_list["documents"][0]["id"].as_str().unwrap().to_string();
+    let (status, body) = send(
+        &state,
+        req("GET", &format!("/api/v1/projects/{project_a}/requirements?document_ids={b_doc}"), Some(&owner_a), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["requirements"].as_array().unwrap().is_empty(), "body={body}");
+    assert!(body["documents"].as_array().unwrap().is_empty(), "body={body}");
+
+    let (status, body) = send(
+        &state,
+        req("GET", &format!("/api/v1/projects/{project_a}/requirements?document_ids=not-a-uuid"), Some(&owner_a), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+}
+
+#[tokio::test]
+async fn deleting_a_project_removes_its_documents_and_requirements() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Requirements - Delete").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    upload_document(&state, &owner, project, "FRD.md", SAMPLE_FRD.as_bytes(), Some("FRD")).await;
+
+    assert!(state.store.delete_project(project).await.unwrap());
+
+    let documents: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM requirement_documents")
+        .fetch_one(&state.store.pool)
+        .await
+        .unwrap();
+    let requirements: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM requirements")
+        .fetch_one(&state.store.pool)
+        .await
+        .unwrap();
+    assert_eq!(documents, 0);
+    assert_eq!(requirements, 0);
+}
+
+// ============================= Phase 3 — generation from the requirements of documents
+
+/// The generate/plan endpoints read `REQUIREMENT_BATCH_CHARS` and
+/// `REQUIREMENT_MAX_CALLS` from the environment, so the tests that go through
+/// them (and the two that set them) take turns.
+static REQUIREMENT_ENV: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+fn ai_infra_with_executor(executor: Arc<dyn AiExecutor>) -> Arc<AiInfrastructure> {
+    let mut executors: std::collections::HashMap<&'static str, Arc<dyn AiExecutor>> =
+        std::collections::HashMap::new();
+    executors.insert("mock", executor);
+    Arc::new(AiInfrastructure::new(
+        vec![Arc::new(FakeDiscovery(healthy_provider(
+            "mock",
+            vec![healthy_model("mock-model", "mock", CapabilityLevel::Strong)],
+        )))],
+        executors,
+    ))
+}
+
+const PASSWORD_FRD: &str = "## 2 Passwords\n\nA password must be at least 8 characters long.\n\nUsers shall sign in with an email address.\n";
+
+fn generate_ai_body(document_ids: &[&str], skills: &[&str]) -> Value {
+    serde_json::json!({
+        "requirement_text": "Requested generation depth: Standard.",
+        "skills": skills.iter().map(|n| serde_json::json!({"id": format!("skill-{n}"), "name": n})).collect::<Vec<_>>(),
+        "requirement_document_ids": document_ids,
+    })
+}
+
+async fn post_generate(state: &AppState, key: &str, project: Uuid, body: Value) -> (StatusCode, Value) {
+    send(
+        state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/generate-ai"),
+            Some(key),
+            Some(body),
+        ),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn generating_from_a_documents_requirements_shows_the_model_them_and_ties_the_cases_to_them() {
+    let _env = REQUIREMENT_ENV.lock().await;
+    let executor = Arc::new(RecordingExecutor::ok_sequence(vec![valid_ai_response()]));
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
+    let project = make_project(&state, "ReqGen - Basic").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let (_, uploaded) = upload_document(&state, &owner, project, "FRD.md", PASSWORD_FRD.as_bytes(), Some("FRD")).await;
+    let doc_id = uploaded["requirements_document"]["document_id"].as_str().unwrap().to_string();
+
+    let (status, body) = post_generate(&state, &owner, project, generate_ai_body(&[&doc_id], &["Functional Testing"])).await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["generation_method"], "ai", "body={body}");
+    // The case quotes the password rule, so it is tied to the requirement that says it.
+    assert_eq!(body["test_cases"][0]["requirement_id"], "FRD-2-01", "body={body}");
+    assert_eq!(body["waves"][0]["batch"], "1/1");
+    assert_eq!(body["waves"][0]["requirements"], 2);
+    let coverage = &body["requirements"];
+    assert_eq!(coverage["total"], 2, "body={body}");
+    assert_eq!(coverage["offered"], 2);
+    assert_eq!(coverage["covered"], 1);
+    assert_eq!(coverage["uncovered_keys"], serde_json::json!(["FRD-2-02"]));
+    assert_eq!(coverage["calls"], 1);
+
+    // What the model was actually asked: numbered requirements and the settings, not the document text.
+    let prompts = executor.prompts.lock().unwrap().clone();
+    assert_eq!(prompts.len(), 1);
+    assert!(prompts[0].contains("[FRD-2-01] (2 Passwords · security) A password must be at least 8 characters long."), "{}", prompts[0]);
+    assert!(prompts[0].contains("[FRD-2-02] "));
+    assert!(prompts[0].contains("Requested generation depth: Standard."));
+    assert!(!prompts[0].contains("## 2 Passwords"), "the raw document must not be pasted in");
+}
+
+#[tokio::test]
+async fn a_request_that_names_no_documents_is_generated_exactly_as_before() {
+    let _env = REQUIREMENT_ENV.lock().await;
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    let project = make_project(&state, "ReqGen - Old Path").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, body) = post_generate(
+        &state,
+        &owner,
+        project,
+        serde_json::json!({"requirement_text": "Password must be at least 8 characters.", "skills": []}),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert!(body.get("requirements").is_none(), "no coverage claim for a request that named no documents: {body}");
+    assert!(body["test_cases"][0].get("requirement_id").is_none(), "body={body}");
+    assert!(body["waves"][0].get("batch").is_none(), "body={body}");
+}
+
+#[tokio::test]
+async fn documents_with_no_requirements_or_of_another_project_are_refused() {
+    let _env = REQUIREMENT_ENV.lock().await;
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    let project_a = make_project(&state, "ReqGen - Refuse A").await;
+    let project_b = make_project(&state, "ReqGen - Refuse B").await;
+    let owner_a = mint_key(&state, "operator", Some(&project_a.to_string())).await;
+    let owner_b = mint_key(&state, "operator", Some(&project_b.to_string())).await;
+    let (_, b_upload) = upload_document(&state, &owner_b, project_b, "FRD.md", PASSWORD_FRD.as_bytes(), Some("FRD")).await;
+    let b_doc = b_upload["requirements_document"]["document_id"].as_str().unwrap().to_string();
+
+    for doc in [Uuid::new_v4().to_string(), b_doc] {
+        let (status, body) = post_generate(&state, &owner_a, project_a, generate_ai_body(&[&doc], &["Functional Testing"])).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "doc={doc} body={body}");
+        assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+        assert!(body["error"]["message"].as_str().unwrap().contains("none of the selected documents"), "body={body}");
+    }
+}
+
+#[tokio::test]
+async fn when_the_model_cannot_answer_the_response_says_so_and_still_reports_what_was_not_reached() {
+    let _env = REQUIREMENT_ENV.lock().await;
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Err(crate::ai_router::ExecutionError::Timeout))).await;
+    let project = make_project(&state, "ReqGen - Failure").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let (_, uploaded) = upload_document(&state, &owner, project, "FRD.md", PASSWORD_FRD.as_bytes(), Some("FRD")).await;
+    let doc_id = uploaded["requirements_document"]["document_id"].as_str().unwrap().to_string();
+
+    let (status, body) = post_generate(&state, &owner, project, generate_ai_body(&[&doc_id], &["Functional Testing"])).await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["generation_method"], "fallback");
+    assert!(body["fallback_reason"].as_str().unwrap().contains("TIMEOUT"), "body={body}");
+    assert_eq!(body["requirements"]["covered"], 0);
+    assert_eq!(body["requirements"]["uncovered_keys"], serde_json::json!(["FRD-2-01", "FRD-2-02"]));
+}
+
+#[tokio::test]
+async fn a_smaller_batch_budget_makes_more_calls_each_carrying_its_own_requirements() {
+    let _env = REQUIREMENT_ENV.lock().await;
+    let mut doc = String::from("## 1 Scope\n\n");
+    for i in 1..=6 {
+        doc.push_str(&format!("The system shall handle scenario number {i} exactly as the specification describes it.\n\n"));
+    }
+    // Every call gets a usable answer; a batch may legitimately produce nothing.
+    let empty = r#"{"test_cases":[]}"#;
+    let mut answers = vec![valid_ai_response()];
+    answers.extend(std::iter::repeat(valid_ai_response()).take(5));
+    answers.extend([empty, empty]);
+    let executor = Arc::new(RecordingExecutor::ok_sequence(answers));
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
+    let project = make_project(&state, "ReqGen - Budget").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let (_, uploaded) = upload_document(&state, &owner, project, "FRD.md", doc.as_bytes(), Some("FRD")).await;
+    let doc_id = uploaded["requirements_document"]["document_id"].as_str().unwrap().to_string();
+
+    std::env::set_var("REQUIREMENT_BATCH_CHARS", "300");
+    let (status, body) = post_generate(&state, &owner, project, generate_ai_body(&[&doc_id], &["Functional Testing"])).await;
+    std::env::remove_var("REQUIREMENT_BATCH_CHARS");
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let calls = body["requirements"]["calls"].as_u64().unwrap();
+    assert!(calls >= 3, "300 characters cannot hold six requirements: body={body}");
+    assert_eq!(body["requirements"]["budget_chars"], 300);
+    let prompts = executor.prompts.lock().unwrap().clone();
+    assert_eq!(prompts.len() as u64, calls);
+    // Each requirement appears in exactly one prompt.
+    for i in 1..=6 {
+        let id = format!("[FRD-1-0{i}]");
+        assert_eq!(prompts.iter().filter(|p| p.contains(&id)).count(), 1, "{id}");
+    }
+}
+
+#[tokio::test]
+async fn a_request_that_would_make_too_many_calls_is_refused_before_any_is_made() {
+    let _env = REQUIREMENT_ENV.lock().await;
+    let executor = Arc::new(RecordingExecutor::ok_sequence(vec![]));
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
+    let project = make_project(&state, "ReqGen - Too Many").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let (_, uploaded) = upload_document(&state, &owner, project, "FRD.md", PASSWORD_FRD.as_bytes(), Some("FRD")).await;
+    let doc_id = uploaded["requirements_document"]["document_id"].as_str().unwrap().to_string();
+
+    std::env::set_var("REQUIREMENT_MAX_CALLS", "1");
+    let (status, body) = post_generate(
+        &state,
+        &owner,
+        project,
+        generate_ai_body(&[&doc_id], &["Functional Testing", "Negative Testing"]),
+    )
+    .await;
+    std::env::remove_var("REQUIREMENT_MAX_CALLS");
+
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert!(body["error"]["message"].as_str().unwrap().contains("2 AI calls"), "body={body}");
+    assert!(executor.prompts.lock().unwrap().is_empty(), "no model may be called");
+}
+
+#[tokio::test]
+async fn the_plan_says_what_a_generation_would_do_without_calling_a_model() {
+    let _env = REQUIREMENT_ENV.lock().await;
+    let executor = Arc::new(RecordingExecutor::ok_sequence(vec![]));
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
+    let project = make_project(&state, "ReqGen - Plan").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let frd = "## 1 Rules\n\nThe system shall let a user sign in with a password.\n\nThe dashboard shall load within two seconds for a user.\n";
+    let (_, uploaded) = upload_document(&state, &owner, project, "FRD.md", frd.as_bytes(), Some("FRD")).await;
+    let doc_id = uploaded["requirements_document"]["document_id"].as_str().unwrap().to_string();
+
+    let (status, plan) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/generate-ai/plan"),
+            Some(&owner),
+            Some(generate_ai_body(&[&doc_id], &["Functional Testing", "Performance Testing", "Security Testing"])),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "plan={plan}");
+    assert_eq!(plan["requirements_total"], 2);
+    assert_eq!(plan["by_kind"]["performance"], 1, "plan={plan}");
+    assert_eq!(plan["by_kind"]["security"], 1, "plan={plan}");
+    assert_eq!(plan["offered"], 2);
+    assert_eq!(plan["calls"], 3, "functional, performance and security each see something");
+    assert_eq!(plan["within_limit"], true);
+    assert_eq!(plan["max_calls"], 150);
+    let skills = plan["skills"].as_array().unwrap();
+    assert_eq!(skills.len(), 3);
+    assert_eq!(skills[0]["skill_name"], "Functional Testing");
+    assert_eq!(skills[0]["requirements"], 1);
+    assert_eq!(plan["provider_name"], "mock");
+    assert_eq!(plan["model"], "mock-model");
+    assert_eq!(plan["prompt_window_tokens"], 16_384, "no window reported: the modest default");
+    assert_eq!(plan["budget_chars"], 12_000);
+    assert!(plan["estimated_prompt_tokens"].as_u64().unwrap() > 0);
+    assert_eq!(plan["estimated_completion_tokens"], 6_000);
+    assert!(executor.prompts.lock().unwrap().is_empty(), "planning must never call a model");
+}
+
+#[tokio::test]
+async fn the_plan_says_when_a_request_is_over_the_call_limit() {
+    let _env = REQUIREMENT_ENV.lock().await;
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    let project = make_project(&state, "ReqGen - Plan Limit").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let (_, uploaded) = upload_document(&state, &owner, project, "FRD.md", PASSWORD_FRD.as_bytes(), Some("FRD")).await;
+    let doc_id = uploaded["requirements_document"]["document_id"].as_str().unwrap().to_string();
+    let path = format!("/api/v1/projects/{project}/test-cases/generate-ai/plan");
+    let body = generate_ai_body(&[&doc_id], &["Functional Testing", "Negative Testing"]);
+
+    let (_, within) = send(&state, req("POST", &path, Some(&owner), Some(body.clone()))).await;
+    std::env::set_var("REQUIREMENT_MAX_CALLS", "1");
+    let (_, over) = send(&state, req("POST", &path, Some(&owner), Some(body))).await;
+    std::env::remove_var("REQUIREMENT_MAX_CALLS");
+
+    assert_eq!((within["calls"].as_u64(), within["within_limit"].as_bool()), (Some(2), Some(true)));
+    assert_eq!((over["calls"].as_u64(), over["max_calls"].as_u64(), over["within_limit"].as_bool()), (Some(2), Some(1), Some(false)));
+}
+
+#[test]
+fn the_retrieval_query_is_the_request_text_plus_the_start_of_the_requirements() {
+    let item = |text: &str| crate::requirement_generation::RequirementItem {
+        key: "R".to_string(),
+        section: None,
+        kind: crate::requirements::RequirementKind::Functional,
+        text: text.to_string(),
+    };
+    let long = "x".repeat(1_500);
+    let items = vec![item("first requirement"), item(&long), item(&long)];
+
+    let query = crate::api::requirement_retrieval_query("Depth: Standard.", &items);
+
+    assert!(query.starts_with("Depth: Standard.\nfirst requirement\n"), "{query}");
+    let requirement_part = query.trim_start_matches("Depth: Standard.\n").chars().count();
+    assert!(requirement_part <= 2_000 + 3, "at most about 2,000 characters of requirements: {requirement_part}");
+    assert_eq!(
+        query.matches('x').count(),
+        2_000 - "first requirement".len(),
+        "the second requirement fits, the third is cut at the room that is left"
+    );
+    assert_eq!(crate::api::requirement_retrieval_query("Only text.", &[]), "Only text.");
+}
+
+#[tokio::test]
+async fn the_plan_is_operator_only_project_scoped_and_needs_documents() {
+    let _env = REQUIREMENT_ENV.lock().await;
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    let project = make_project(&state, "ReqGen - Plan Auth").await;
+    let other = make_project(&state, "ReqGen - Plan Other").await;
+    let operator = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let viewer = mint_key(&state, "viewer", Some(&project.to_string())).await;
+    let other_owner = mint_key(&state, "operator", Some(&other.to_string())).await;
+    let path = format!("/api/v1/projects/{project}/test-cases/generate-ai/plan");
+
+    let (status, _) = send(&state, req("POST", &path, Some(&viewer), Some(generate_ai_body(&[], &[])))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = send(&state, req("POST", &path, Some(&other_owner), Some(generate_ai_body(&[], &[])))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, body) = send(&state, req("POST", &path, Some(&operator), Some(generate_ai_body(&[], &["Functional Testing"])))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert!(body["error"]["message"].as_str().unwrap().contains("requirement_document_ids"));
+}
+
 // ================================== Phase 6 ERROR-fix — run-level supervision
 //
 // These deliberately do NOT go through the real `POST .../performance-testing/
