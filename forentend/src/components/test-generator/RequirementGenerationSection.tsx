@@ -170,7 +170,10 @@ export const RequirementGenerationSection: React.FC<RequirementGenerationSection
         <input
           type="checkbox"
           id="requirement-mode-toggle"
-          checked={enabled}
+          // Shown off while there is nothing to generate from — that is what a
+          // generation would then do — though the choice itself is kept, so a
+          // document uploaded again finds it as it was left.
+          checked={enabled && !nothingToUse}
           onChange={(e) => onEnabledChange(e.target.checked)}
           disabled={disabled || nothingToUse}
           className="accent-violet-600"
