@@ -893,6 +893,26 @@ export interface GeneratedTestCaseDraft {
   source_reference: string | null;
 }
 
+/** `ai_generation::WaveSummary` — one selected skill's real generation call.
+ *  `failure_reason` is set (and `case_count` is 0) when that call failed; the
+ *  other skills' cases are still returned. */
+export interface GenerationWaveSummary {
+  wave: string;
+  skill_names: string[];
+  case_count: number;
+  provider: string | null;
+  model: string | null;
+  routing_score: number | null;
+  fallback_used: boolean | null;
+  routing_mode: string | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  estimated_cost_usd: number | null;
+  latency_ms: number | null;
+  failure_reason: string | null;
+  skipped: boolean;
+}
+
 /** `api.rs::GenerateAiTestCasesResponse`. `generation_method` is always
  *  exactly `"ai"` or `"fallback"` — `provider`/`model` are only ever
  *  present alongside `"ai"`; `fallback_reason` only alongside `"fallback"`.
@@ -905,6 +925,8 @@ export interface GenerateAiTestCasesResponse {
   provider: string | null;
   model: string | null;
   fallback_reason: string | null;
+  /** The real per-skill breakdown, one entry per skill call that was made. */
+  waves?: GenerationWaveSummary[];
   /** How many real, distinct pages from `crawl_run_id`'s crawl actually
    *  reached the prompt (0 when no `crawl_run_id` was supplied) — an honest
    *  confirmation of real grounding, not a claim to take on faith. */

@@ -22,7 +22,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppShell } from '../../App';
 import { setApiKey } from '../../services/aiqaApi';
 import { parseWaveStartedSkillNames } from './TestCaseGeneratorPage';
-import type { GenerateAiTestCasesResponse, Project, TestCaseRow, RunDetail, CrawlOutput } from '../../types/contract';
+import type { GenerateAiTestCasesResponse, GenerationWaveSummary, Project, TestCaseRow, RunDetail, CrawlOutput } from '../../types/contract';
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -2449,4 +2449,220 @@ describe('TestCaseGeneratorPage — surviving a project switch', () => {
     // mistaken for "switched away from some other project".
     expect(screen.getAllByText('Reject login with an expired session token').length).toBeGreaterThan(0);
   }, 15000);
+});
+
+// ============================================== per-skill generation results
+//
+// One Generate click is one real AI call per selected skill. A skill whose
+// call fails (a provider rate limit, no compatible model, ...) contributes no
+// cases, but the run still reports "Completed" as long as any other skill
+// produced some — so the Generation Details panel lists each skill call.
+
+function waveSummary(overrides: Partial<GenerationWaveSummary> = {}): GenerationWaveSummary {
+  return {
+    wave: 'base',
+    skill_names: ['Functional Testing'],
+    case_count: 1,
+    provider: 'groq',
+    model: 'openai/gpt-oss-120b',
+    routing_score: 270,
+    fallback_used: false,
+    routing_mode: 'AUTO',
+    prompt_tokens: 6100,
+    completion_tokens: 1400,
+    estimated_cost_usd: 0,
+    latency_ms: 12300,
+    failure_reason: null,
+    skipped: false,
+    ...overrides,
+  };
+}
+
+const FAILED_NEGATIVE_WAVE = waveSummary({
+  skill_names: ['Negative Testing'],
+  case_count: 0,
+  provider: null,
+  model: null,
+  routing_score: null,
+  fallback_used: null,
+  routing_mode: null,
+  prompt_tokens: null,
+  completion_tokens: null,
+  estimated_cost_usd: null,
+  latency_ms: null,
+  failure_reason: 'PROVIDER_ERROR: HTTP 429: Rate limit reached for model on tokens per minute (TPM)',
+});
+
+const PARTIAL_RESPONSE = () => aiGenerateResponse({ waves: [waveSummary(), FAILED_NEGATIVE_WAVE] });
+
+describe('TestCaseGeneratorPage — per-skill generation results', () => {
+  it('lists which skill calls succeeded and which failed, with the reason, even though the run completed', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') return jsonResponse(200, PARTIAL_RESPONSE());
+        if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+        return jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+    await generate();
+
+    // The run itself still reads as completed — the panel is what says a skill is missing.
+    expect(screen.getByText('Test Cases Generated')).toBeTruthy();
+    const results = document.getElementById('generation-wave-results')!;
+    expect(within(results).getByText('Per-skill results: 1 of 2 succeeded')).toBeTruthy();
+    expect(within(results).getByText('Functional Testing')).toBeTruthy();
+    expect(within(results).getByText('groq / openai/gpt-oss-120b')).toBeTruthy();
+    expect(within(results).getByText('6100 in / 1400 out')).toBeTruthy();
+    expect(within(results).getByText('12.3s')).toBeTruthy();
+    expect(within(results).getByText(/Rate limit reached for model/)).toBeTruthy();
+    const warning = document.getElementById('generation-wave-warning')!;
+    expect(warning.textContent).toContain('1 skill call failed');
+    expect(warning.textContent).toContain('Negative Testing');
+  }, 15000);
+
+  it('shows no warning when every skill call succeeded, and no per-skill section for a response without waves', async () => {
+    const responses = [
+      aiGenerateResponse({ waves: [waveSummary(), waveSummary({ skill_names: ['Edge Case Analysis'] })] }),
+      aiGenerateResponse(),
+    ];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') return jsonResponse(200, responses.shift());
+        if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+        return jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+    await generate();
+
+    expect(within(document.getElementById('generation-wave-results')!).getByText('Per-skill results: 2 of 2 succeeded')).toBeTruthy();
+    expect(document.getElementById('generation-wave-warning')).toBeNull();
+
+    // A response from a backend that predates `waves` must still render exactly as before.
+    await goToSourcesBranch();
+    await generate();
+    expect(document.getElementById('generation-wave-results')).toBeNull();
+  }, 20000);
+
+  it('still shows the per-skill results after navigating away and back, for a generation that finished while the page was gone', async () => {
+    let resolveFetch: (value: Response) => void;
+    const pending = new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') return pending;
+        if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+        return dashboardResponseFor(url) ?? jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+    await act(async () => {
+      document.getElementById('btn-generate-test-cases-primary')!.click();
+    });
+    await waitFor(() => expect(screen.getByText('Generating Test Cases...')).toBeTruthy());
+
+    await goToDashboard();
+    await act(async () => {
+      resolveFetch(jsonResponse(200, PARTIAL_RESPONSE()));
+    });
+    await goToGenerator();
+
+    await waitFor(() => expect(document.getElementById('generation-wave-results')).toBeTruthy());
+    const results = document.getElementById('generation-wave-results')!;
+    expect(within(results).getByText('Per-skill results: 1 of 2 succeeded')).toBeTruthy();
+    expect(document.getElementById('generation-wave-warning')!.textContent).toContain('Negative Testing');
+  }, 15000);
+
+  it('keeps each project\'s own per-skill results — a fresh project shows none, and going back restores them', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') return jsonResponse(200, PARTIAL_RESPONSE());
+        if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A, PROJECT_B]);
+        return jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+    await generate();
+    expect(document.getElementById('generation-wave-results')).toBeTruthy();
+
+    await openAndSelectProject(PROJECT_B);
+    expect(document.getElementById('generation-wave-results')).toBeNull();
+    expect(document.getElementById('generation-details-panel')).toBeNull();
+
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(document.getElementById('generation-wave-results')).toBeTruthy());
+    expect(within(document.getElementById('generation-wave-results')!).getByText('Per-skill results: 1 of 2 succeeded')).toBeTruthy();
+  }, 20000);
+
+  it('drops the previous run\'s per-skill results when a later run fails while the page is gone', async () => {
+    let resolveSecond: (value: Response) => void;
+    const secondRun = new Promise<Response>((resolve) => {
+      resolveSecond = resolve;
+    });
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') {
+          calls += 1;
+          return calls === 1 ? jsonResponse(200, PARTIAL_RESPONSE()) : secondRun;
+        }
+        if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+        return dashboardResponseFor(url) ?? jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+    await generate();
+    expect(document.getElementById('generation-wave-results')).toBeTruthy();
+
+    await goToSourcesBranch();
+    await act(async () => {
+      document.getElementById('btn-generate-test-cases-primary')!.click();
+    });
+    await waitFor(() => expect(screen.getByText('Generating Test Cases...')).toBeTruthy());
+
+    await goToDashboard();
+    await act(async () => {
+      resolveSecond(
+        jsonResponse(500, { error: { code: 'INTERNAL_ERROR', message: 'An internal error occurred.', details: null, request_id: 'r-wave-1' } }),
+      );
+    });
+    await goToGenerator();
+
+    // The second run failed: its own reason is shown, and the first run's
+    // per-skill results no longer describe the latest attempt.
+    await waitFor(() => expect(screen.getByText(/An internal error occurred/)).toBeTruthy());
+    expect(document.getElementById('generation-wave-results')).toBeNull();
+  }, 20000);
 });

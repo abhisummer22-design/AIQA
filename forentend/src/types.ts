@@ -3,6 +3,8 @@
  * Core Domain Types & Data Models
  */
 
+import type { GenerateAiTestCasesResponse } from './types/contract';
+
 export type NavPage =
   | 'dashboard'
   | 'generator'
@@ -241,6 +243,11 @@ export interface GenerationSession {
    *  badge. `undefined`/`null` for `COMPLETED`/`IDLE`, or when the reason
    *  is not yet known. */
   generationError?: string | null;
+  /** The last real `generate-ai` response for this project, kept so a return
+   *  to it still shows which provider/model served each skill and which
+   *  skill calls failed. `null`/absent when the last attempt failed or none
+   *  has completed yet. */
+  lastGenerationResult?: GenerateAiTestCasesResponse | null;
   selectedCategories?: TestGenerationCategory[];
   documents?: UploadedRequirementDoc[];
   appSources?: Record<AppSourceType, AppSourceConnection>;

@@ -36,6 +36,7 @@ import { ApplicationSourceSection } from '../test-generator/ApplicationSourceSec
 import { CrawlGroundingSection } from '../test-generator/CrawlGroundingSection';
 import { GenerationConfigSection, TEST_CATEGORIES } from '../test-generator/GenerationConfigSection';
 import { GeneratedTestCasesView } from '../test-generator/GeneratedTestCasesView';
+import { GenerationWaveResults } from '../test-generator/GenerationWaveResults';
 import { SkillsAndMcpPanel } from '../test-generator/SkillsAndMcpPanel';
 import { TestGenerationFlow } from '../test-generator/TestGenerationFlow';
 import { useSkillSelection } from '../../hooks/useSkillSelection';
@@ -254,18 +255,17 @@ export const TestCaseGeneratorPage: React.FC = () => {
   // is a real, human-readable reason whenever generation did not produce
   // reviewable cases (network/auth failure, no compatible AI model, or a
   // real AI response that produced zero cases passing validation).
-  // `lastGenerationResult` always starts `null` on a fresh mount even when
-  // a session is restored below — it is the real backend response for a
-  // completed call *this page instance made*, never reconstructed from a
-  // prior visit's session. `generationError` is restored, because unlike
-  // that response, it is exactly what a resumed page needs to show why the
-  // last attempt didn't produce cases, with no false claim of a fresh
-  // response to go with it (see the "Generation Details" panel's own
-  // `lastGenerationResult`-gated fields further down).
+  // Both live in the project's session too, so a return to it — after a
+  // page switch or a project switch, including a generation that finished
+  // while it was off screen — still shows the real provider/model, the
+  // per-skill results and the failure reason of its last attempt. A failed
+  // attempt clears the response (nothing real is left to show for it).
   const [generationError, setGenerationError] = useState<string | null>(
     activeGenerationSession?.generationError ?? null
   );
-  const [lastGenerationResult, setLastGenerationResult] = useState<GenerateAiTestCasesResponse | null>(null);
+  const [lastGenerationResult, setLastGenerationResult] = useState<GenerateAiTestCasesResponse | null>(
+    activeGenerationSession?.lastGenerationResult ?? null
+  );
   const [lastRoutingMode, setLastRoutingMode] = useState<AiRoutingMode | null>(null);
 
   // Real, in-flight "which skill is running right now" signal — a
@@ -466,7 +466,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
     setDepth(session?.depth || 'STANDARD');
     setGenerationState(session?.generationState || 'IDLE');
     setGenerationError(session?.generationError ?? null);
-    setLastGenerationResult(null); // see its own declaration — a real response *this page instance* received, never restored
+    setLastGenerationResult(session?.lastGenerationResult ?? null);
     setLastRoutingMode(null);
     setActiveWaveSkillNames([]);
     setGeneratedCases(session?.generatedCases || []);
@@ -506,6 +506,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
       currentStep: generatedCases.length > 0 ? 'GENERATED_CASES' : isGeneratingNow ? 'AI_PLANNING' : 'REQUIREMENT_INPUT',
       generationState,
       generationError,
+      lastGenerationResult,
       selectedCategories,
       documents,
       appSources,
@@ -518,7 +519,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
     // below; `isGeneratingNow` is derived from `generationState`, already
     // listed. Neither needs its own entry.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [documents, appSources, selectedCategories, depth, generationState, generationError, generatedCases, selectedSkillIds]);
+  }, [documents, appSources, selectedCategories, depth, generationState, generationError, lastGenerationResult, generatedCases, selectedSkillIds]);
 
   // The call that started a generation this page is showing as in flight can
   // belong to an *earlier instance* of this page (left and re-entered while
@@ -1037,14 +1038,12 @@ export const TestCaseGeneratorPage: React.FC = () => {
       // necessarily "whichever project is selected right now" —
       // `setActiveGenerationSession` above means that, this does not): this
       // completion can genuinely arrive after the page has moved on to a
-      // different project, or been left entirely (no `AbortController`
-      // cancels this specific call on either of those — a real page
-      // navigate-away does still cancel it, but only via the unmount
-      // cleanup's own effect, see its doc comment). An effect keyed on this
-      // page's own state never runs again once that state stops changing
-      // for the project in question, but this setter belongs to the
-      // still-mounted `AIQAProvider`, so it still reaches that project's own
-      // session regardless of what this page is currently showing.
+      // different project, or been left entirely (nothing cancels this call
+      // on either of those). An effect keyed on this page's own state never
+      // runs again once that state stops changing for the project in
+      // question, but this setter belongs to the still-mounted
+      // `AIQAProvider`, so it still reaches that project's own session
+      // regardless of what this page is currently showing.
       setGenerationSessionFor(generatingForProjectId, (prev) => ({
         id: prev?.id ?? `gen-${Date.now()}`,
         requirementText: reqText,
@@ -1053,6 +1052,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
         currentStep: mapped.length > 0 ? 'GENERATED_CASES' : 'REQUIREMENT_INPUT',
         generationState: finalState,
         generationError: finalError,
+        lastGenerationResult: response,
         selectedCategories,
         documents,
         appSources,
@@ -1063,14 +1063,10 @@ export const TestCaseGeneratorPage: React.FC = () => {
       }));
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') {
-        // Cancelled by the unmount cleanup above because the page was left
-        // entirely before this finished (never by a project switch — see
-        // the reseed effect's own doc comment) — that cleanup already
-        // corrected that project's own session directly; this page
-        // instance is gone, so there is no local state left to update, and
-        // this must not be reported as a real generation failure (the
-        // AI/backend never actually failed — this page just stopped
-        // waiting for it).
+        // Nothing in this page aborts a generation call any more (leaving
+        // the page or switching project lets it finish); a genuine abort
+        // from elsewhere must still never be reported as a real failure of
+        // the AI/backend.
         return;
       }
       delete generationAbortControllersRef.current[generatingForProjectId];
@@ -1082,12 +1078,13 @@ export const TestCaseGeneratorPage: React.FC = () => {
         setActiveWaveSkillNames([]);
       }
       // Same reasoning and the same explicit-project-id targeting as the
-      // success path above. Only `generationState`/`generationError` are
-      // patched: an attempt that failed produced no new cases, so whatever
-      // was already in that project's session (from an earlier successful
-      // attempt, if any) is left exactly as it was.
+      // success path above. Only the state, the error and the stored
+      // response are patched: an attempt that failed produced no new cases,
+      // so whatever was already in that project's session (from an earlier
+      // successful attempt, if any) is left exactly as it was — except the
+      // response, which no longer describes the latest attempt.
       setGenerationSessionFor(generatingForProjectId, (prev) =>
-        prev ? { ...prev, generationState: 'FAILED', generationError: message } : prev,
+        prev ? { ...prev, generationState: 'FAILED', generationError: message, lastGenerationResult: null } : prev,
       );
     }
   };
@@ -1301,6 +1298,9 @@ export const TestCaseGeneratorPage: React.FC = () => {
                 </>
               )}
             </div>
+          )}
+          {lastGenerationResult?.waves && (
+            <GenerationWaveResults waves={lastGenerationResult.waves.filter((w) => !w.skipped)} />
           )}
         </div>
       )}
