@@ -568,18 +568,35 @@ fn split_sentences(text: &str) -> Vec<String> {
     out
 }
 
+/// A sentence that only annotates the requirement before it ("Rationale: ...",
+/// "Note: ...", "Acceptance criteria: ..."). Whatever it says — an explanation
+/// is full of "can" and "may" — it is part of that requirement, not another one.
+fn is_annotation(sentence: &str) -> bool {
+    regex!(
+        r"(?i)^(rationale|reason|justification|notes?|remarks?|comments?|examples?|explanation|description|source|priority|acceptance criteria|acceptance criterion|see also)\s*:"
+    )
+    .is_match(sentence.trim_start())
+}
+
 /// One paragraph as one or more requirement texts: split so that no piece
 /// carries more than one obligation, and none is longer than `MAX_ITEM_CHARS`.
 fn split_paragraph(text: &str) -> Vec<String> {
+    split_text(text, true)
+}
+
+/// `split_paragraph`, or — with `by_obligation` false — only the size limit: an
+/// item the document itself numbers is one requirement however many
+/// obligations its text has, since that number is what people refer to.
+fn split_text(text: &str, by_obligation: bool) -> Vec<String> {
     let sentences = split_sentences(text);
     let modal_sentences = sentences.iter().filter(|s| has_modal(s)).count();
     let mut groups: Vec<String> = Vec::new();
-    if modal_sentences >= 2 {
+    if by_obligation && modal_sentences >= 2 {
         let mut current = String::new();
         let mut current_has_modal = false;
         for s in &sentences {
             let s_modal = has_modal(s);
-            if s_modal && current_has_modal {
+            if s_modal && current_has_modal && !is_annotation(s) {
                 groups.push(std::mem::take(&mut current));
                 current_has_modal = false;
             }
@@ -814,7 +831,7 @@ fn parse_prose(label: &str, text: &str) -> ParsedDocument {
                 }
                 Pending::Item { key, text, .. } => {
                     if !b.skipping() {
-                        for (i, piece) in split_paragraph(&collapse_spaces(&text))
+                        for (i, piece) in split_text(&collapse_spaces(&text), key.is_none())
                             .into_iter()
                             .enumerate()
                         {
@@ -1196,6 +1213,82 @@ mod tests {
         );
         assert_eq!(doc.requirements[0].kind, RequirementKind::Context);
         assert_eq!(doc.requirements[1].kind, RequirementKind::Functional);
+    }
+
+    #[test]
+    fn a_rationale_or_note_stays_with_the_requirement_it_explains_even_when_it_says_may_or_can() {
+        let doc = parse(
+            "- The system shall show the account balance.\n  Rationale: Customers can then decide what to pay.\n\n\
+             The system shall show the payment history. Note: A customer may hide it.\n",
+        );
+        assert_eq!(
+            texts(&doc),
+            [
+                "The system shall show the account balance. Rationale: Customers can then decide what to pay.",
+                "The system shall show the payment history. Note: A customer may hide it."
+            ]
+        );
+    }
+
+    #[test]
+    fn a_second_real_obligation_after_a_rationale_is_still_its_own_requirement() {
+        let doc = parse(
+            "The system shall show the balance. Rationale: Customers may want to check it. The system shall show the history.\n",
+        );
+        assert_eq!(
+            texts(&doc),
+            [
+                "The system shall show the balance. Rationale: Customers may want to check it.",
+                "The system shall show the history."
+            ]
+        );
+    }
+
+    #[test]
+    fn a_label_in_the_middle_of_a_sentence_does_not_make_it_an_annotation() {
+        let doc = parse(
+            "The system shall save the order. The system shall attach the customer's note: it is shown to the packer.\n",
+        );
+        assert_eq!(
+            texts(&doc),
+            [
+                "The system shall save the order.",
+                "The system shall attach the customer's note: it is shown to the packer."
+            ]
+        );
+    }
+
+    #[test]
+    fn an_item_with_the_documents_own_id_stays_one_requirement_however_many_obligations_it_has() {
+        let doc = parse(
+            "- FR-7: The system shall lock the account. The system shall also email the owner.\n\
+             - FR-8: The system shall unlock it after 30 minutes.\n",
+        );
+        assert_eq!(keys(&doc), ["FR-7", "FR-8"]);
+        assert_eq!(
+            doc.requirements[0].text,
+            "The system shall lock the account. The system shall also email the owner."
+        );
+    }
+
+    #[test]
+    fn a_numbered_item_is_still_cut_when_it_is_longer_than_the_limit() {
+        let sentence =
+            "The system shall keep an audit record of every administrative change made by a user. ";
+        let doc = parse(&format!("FR-9: {}\n", sentence.repeat(40).trim()));
+        assert!(doc.requirements.len() > 1);
+        assert_eq!(doc.requirements[0].key, "FR-9");
+        assert!(doc
+            .requirements
+            .iter()
+            .all(|r| r.text.chars().count() <= MAX_ITEM_CHARS));
+        let all: String = doc
+            .requirements
+            .iter()
+            .map(|r| r.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(all.matches("audit record").count(), 40);
     }
 
     #[test]
