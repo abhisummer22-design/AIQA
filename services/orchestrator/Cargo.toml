@@ -27,6 +27,9 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # shelling out to an external converter. See `doc_extract.rs`.
 zip = { version = "2", default-features = false, features = ["deflate"] }
 base64 = "0.22"
+# Text-based PDFs are read directly too (a scanned, image-only PDF has no text
+# to read and is reported as such). See `doc_extract.rs`.
+pdf-extract = "0.7"
 
 # Critical-finding remediation (Architecture Audit "PRIORITY 1" — executor
 # isolation). No container runtime is available in this dev environment
