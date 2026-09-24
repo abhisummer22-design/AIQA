@@ -469,6 +469,9 @@ OLLAMA_NUM_CTX=
 GROQ_BASE_URL=https://api.groq.com/openai/v1
 GROQ_API_KEY=<configure-this-value>
 GROQ_TIMEOUT_SECS=60
+# Optional — the most tokens Groq accepts in one request (its per-minute limit for the
+# model in use). A generation call is sized to fit it. Unset = 8000.
+GROQ_REQUEST_TOKEN_LIMIT=
 
 # Google Gemini Configuration
 GEMINI_BASE_URL=https://generativelanguage.googleapis.com
@@ -484,6 +487,17 @@ AIQA_BLOCKED_EXECUTORS=
 # failing. On by default; set to off (or 0 / false / no / disabled) to disable.
 AIQA_AUTONOMOUS_HEALING=
 AIQA_CORS_ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+
+# Generating test cases from numbered requirements (Test Case Generator, opt-in)
+# Each uploaded document is read whole and split into numbered requirements; a
+# generation can then be given those instead of the pasted documents.
+# Optional — characters of requirements one AI call may carry. Unset = worked out
+# from the window of the model that would serve the call (for Ollama, OLLAMA_NUM_CTX,
+# else 4096 tokens), which is what to raise for fewer, larger calls.
+REQUIREMENT_BATCH_CHARS=
+# Optional — the most AI calls one such request may make (one per skill per batch).
+# A larger request is refused before any call is made. Unset = 150.
+REQUIREMENT_MAX_CALLS=
 
 # Planning Schema Files (POST /api/v1/projects/:id/planning/test-plan)
 # The one directory a request's `schema_file_path` may point into (symlinks,
