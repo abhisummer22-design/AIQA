@@ -841,6 +841,26 @@ pub struct OllamaExecutor {
     pub num_ctx: Option<u32>,
 }
 
+/// How many input tokens one call can really carry on `model`. It is not always
+/// the model's own context window: Ollama serves only `num_ctx` tokens (its own
+/// default is 4096 unless `OLLAMA_NUM_CTX` was set, and a longer prompt is cut
+/// from the start without a word), and Groq's free tier refuses a request over
+/// its per-minute token limit (8000 unless `GROQ_REQUEST_TOKEN_LIMIT` says the
+/// account has more). Anywhere else it is the context window the provider
+/// reported, or a modest 16,384 when it reported none.
+pub fn effective_prompt_window(
+    provider: &AiProviderInfo,
+    model: &ModelDefinition,
+    ollama_num_ctx: Option<u32>,
+    groq_request_limit: Option<u32>,
+) -> u32 {
+    match provider.id.as_str() {
+        "ollama" => ollama_num_ctx.unwrap_or(4096),
+        "groq" => groq_request_limit.unwrap_or(8000),
+        _ => model.context_window.unwrap_or(16_384),
+    }
+}
+
 /// A positive whole number, else `None` (unset, blank, zero or not a number).
 fn parse_num_ctx(raw: Option<&str>) -> Option<u32> {
     raw.and_then(|s| s.trim().parse::<u32>().ok())
@@ -2910,6 +2930,35 @@ impl AiInfrastructure {
                 }),
             None => Self::route_among(providers, task, settings, None, None).ok(),
         }
+    }
+
+    /// How many input tokens one call for `task` can carry on the provider and
+    /// model that would serve it right now (`preview_route`), or `None` when
+    /// nothing can serve it. See `effective_prompt_window` for what "carry"
+    /// means per provider.
+    pub async fn prompt_window_tokens_for(&self, task: AiTask) -> Option<u32> {
+        self.route_and_window_for(task).await.map(|(_, _, w)| w)
+    }
+
+    /// What `preview_route` picks for `task`, the name of that provider, and
+    /// how many input tokens one call to it can carry.
+    pub async fn route_and_window_for(
+        &self,
+        task: AiTask,
+    ) -> Option<(RoutingDecision, String, u32)> {
+        let providers = self.ensure_fresh().await;
+        let settings = self.settings().await;
+        let decision = Self::preview_route(&providers, task, &settings)?;
+        let provider = providers.iter().find(|p| p.id == decision.provider_id)?;
+        let model = provider.models.iter().find(|m| m.id == decision.model_id)?;
+        let window = effective_prompt_window(
+            provider,
+            model,
+            parse_num_ctx(std::env::var("OLLAMA_NUM_CTX").ok().as_deref()),
+            parse_num_ctx(std::env::var("GROQ_REQUEST_TOKEN_LIMIT").ok().as_deref()),
+        );
+        let provider_name = provider.name.clone();
+        Some((decision, provider_name, window))
     }
 
     /// Answers `request` from its task's `chain`: each entry in order, the first that answers wins, and nothing
@@ -5960,6 +6009,103 @@ mod tests {
             .expect("execute_task");
         assert_eq!(output.usage.prompt_tokens, None);
         assert_eq!(output.usage.completion_tokens, None);
+    }
+
+    fn window_provider(id: &str) -> AiProviderInfo {
+        AiProviderInfo {
+            id: id.to_string(),
+            name: id.to_string(),
+            provider_type: ProviderType::Custom,
+            endpoint: None,
+            configured: true,
+            reachable: true,
+            status: ProviderStatus::Healthy,
+            models: Vec::new(),
+            pricing: ProviderPricing::Unmetered,
+        }
+    }
+
+    fn window_model(context_window: Option<u32>) -> ModelDefinition {
+        ModelDefinition {
+            id: "m".to_string(),
+            provider_id: "p".to_string(),
+            display_name: "m".to_string(),
+            family: None,
+            parameter_size: None,
+            context_window,
+            capabilities: ModelCapabilities::default(),
+            status: ModelStatus::Available,
+        }
+    }
+
+    #[test]
+    fn ollama_carries_only_its_num_ctx_whatever_the_model_could_take() {
+        let p = window_provider("ollama");
+        let m = window_model(Some(131_072));
+        assert_eq!(
+            effective_prompt_window(&p, &m, None, None),
+            4096,
+            "Ollama's own default"
+        );
+        assert_eq!(effective_prompt_window(&p, &m, Some(16_384), None), 16_384);
+    }
+
+    #[test]
+    fn groq_carries_its_per_request_limit_not_the_models_huge_window() {
+        let p = window_provider("groq");
+        let m = window_model(Some(131_072));
+        assert_eq!(effective_prompt_window(&p, &m, None, None), 8000);
+        assert_eq!(
+            effective_prompt_window(&p, &m, Some(99), Some(30_000)),
+            30_000
+        );
+    }
+
+    #[test]
+    fn other_providers_carry_the_window_they_reported_or_a_modest_guess() {
+        let p = window_provider("gemini");
+        assert_eq!(
+            effective_prompt_window(&p, &window_model(Some(1_048_576)), None, None),
+            1_048_576
+        );
+        assert_eq!(
+            effective_prompt_window(&p, &window_model(None), None, None),
+            16_384
+        );
+        // Neither Ollama's nor Groq's setting applies to another provider.
+        assert_eq!(
+            effective_prompt_window(&p, &window_model(Some(32_000)), Some(4096), Some(8000)),
+            32_000
+        );
+    }
+
+    #[tokio::test]
+    async fn the_window_is_that_of_the_model_that_would_serve_the_task() {
+        let mut model = healthy_model("big", "gemini", CapabilityLevel::Strong);
+        model.context_window = Some(1_000_000);
+        let infra = AiInfrastructure::new(
+            vec![Arc::new(FakeDiscovery(healthy_provider(
+                "gemini",
+                vec![model],
+            )))],
+            HashMap::new(),
+        );
+        infra.discover_all().await;
+        assert_eq!(
+            infra
+                .prompt_window_tokens_for(AiTask::TestCaseGeneration)
+                .await,
+            Some(1_000_000)
+        );
+
+        // Nothing discovered, nothing to serve the task: no answer, not a guess.
+        let nothing = AiInfrastructure::new(vec![], HashMap::new());
+        assert_eq!(
+            nothing
+                .prompt_window_tokens_for(AiTask::TestCaseGeneration)
+                .await,
+            None
+        );
     }
 
     #[test]

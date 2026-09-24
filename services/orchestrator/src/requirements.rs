@@ -483,7 +483,7 @@ fn classify(text: &str, section: Option<&str>) -> RequirementKind {
         return RequirementKind::Security;
     }
     if regex!(
-        r"\b(within \d+(?:\.\d+)?\s*(?:ms|milliseconds?|seconds?|secs?|minutes?|mins?|hours?)|no more than \d+(?:\.\d+)?\s*(?:ms|milliseconds?|seconds?|secs?)|response times?|latency|throughput|concurrent\w*|simultaneous\w*|per second|tps|rps|load tests?|stress tests?|scalab\w*|performance|capacity|uptime|availability|sla|peak load|benchmark\w*|time[- ]?outs?)\b"
+        r"\b(within (?:\d+(?:\.\d+)?|a|one|two|three|four|five|six|seven|eight|nine|ten|twelve|fifteen|twenty|thirty|forty|sixty|ninety|a few|several)\s*(?:ms|milliseconds?|seconds?|secs?|minutes?|mins?|hours?)|no more than (?:\d+(?:\.\d+)?|a|one|two|three|four|five|six|seven|eight|nine|ten|twelve|fifteen|twenty|thirty|forty|sixty|ninety|a few|several)\s*(?:ms|milliseconds?|seconds?|secs?)|response times?|latency|throughput|concurrent\w*|simultaneous\w*|per second|tps|rps|load tests?|stress tests?|scalab\w*|performance|capacity|uptime|availability|sla|peak load|benchmark\w*|time[- ]?outs?)\b"
     )
     .is_match(&both)
     {
@@ -1389,6 +1389,14 @@ mod tests {
             ),
             (
                 "The page shall load within 2 seconds for 500 concurrent users.",
+                RequirementKind::Performance,
+            ),
+            (
+                "The dashboard shall load within two seconds for a user.",
+                RequirementKind::Performance,
+            ),
+            (
+                "Search results shall appear in no more than a few seconds.",
                 RequirementKind::Performance,
             ),
             (

@@ -8240,6 +8240,309 @@ async fn deleting_a_project_removes_its_documents_and_requirements() {
     assert_eq!(requirements, 0);
 }
 
+// ============================= Phase 3 — generation from the requirements of documents
+
+/// The generate/plan endpoints read `REQUIREMENT_BATCH_CHARS` and
+/// `REQUIREMENT_MAX_CALLS` from the environment, so the tests that go through
+/// them (and the two that set them) take turns.
+static REQUIREMENT_ENV: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+fn ai_infra_with_executor(executor: Arc<dyn AiExecutor>) -> Arc<AiInfrastructure> {
+    let mut executors: std::collections::HashMap<&'static str, Arc<dyn AiExecutor>> =
+        std::collections::HashMap::new();
+    executors.insert("mock", executor);
+    Arc::new(AiInfrastructure::new(
+        vec![Arc::new(FakeDiscovery(healthy_provider(
+            "mock",
+            vec![healthy_model("mock-model", "mock", CapabilityLevel::Strong)],
+        )))],
+        executors,
+    ))
+}
+
+const PASSWORD_FRD: &str = "## 2 Passwords\n\nA password must be at least 8 characters long.\n\nUsers shall sign in with an email address.\n";
+
+fn generate_ai_body(document_ids: &[&str], skills: &[&str]) -> Value {
+    serde_json::json!({
+        "requirement_text": "Requested generation depth: Standard.",
+        "skills": skills.iter().map(|n| serde_json::json!({"id": format!("skill-{n}"), "name": n})).collect::<Vec<_>>(),
+        "requirement_document_ids": document_ids,
+    })
+}
+
+async fn post_generate(state: &AppState, key: &str, project: Uuid, body: Value) -> (StatusCode, Value) {
+    send(
+        state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/generate-ai"),
+            Some(key),
+            Some(body),
+        ),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn generating_from_a_documents_requirements_shows_the_model_them_and_ties_the_cases_to_them() {
+    let _env = REQUIREMENT_ENV.lock().await;
+    let executor = Arc::new(RecordingExecutor::ok_sequence(vec![valid_ai_response()]));
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
+    let project = make_project(&state, "ReqGen - Basic").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let (_, uploaded) = upload_document(&state, &owner, project, "FRD.md", PASSWORD_FRD.as_bytes(), Some("FRD")).await;
+    let doc_id = uploaded["requirements_document"]["document_id"].as_str().unwrap().to_string();
+
+    let (status, body) = post_generate(&state, &owner, project, generate_ai_body(&[&doc_id], &["Functional Testing"])).await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["generation_method"], "ai", "body={body}");
+    // The case quotes the password rule, so it is tied to the requirement that says it.
+    assert_eq!(body["test_cases"][0]["requirement_id"], "FRD-2-01", "body={body}");
+    assert_eq!(body["waves"][0]["batch"], "1/1");
+    assert_eq!(body["waves"][0]["requirements"], 2);
+    let coverage = &body["requirements"];
+    assert_eq!(coverage["total"], 2, "body={body}");
+    assert_eq!(coverage["offered"], 2);
+    assert_eq!(coverage["covered"], 1);
+    assert_eq!(coverage["uncovered_keys"], serde_json::json!(["FRD-2-02"]));
+    assert_eq!(coverage["calls"], 1);
+
+    // What the model was actually asked: numbered requirements and the settings, not the document text.
+    let prompts = executor.prompts.lock().unwrap().clone();
+    assert_eq!(prompts.len(), 1);
+    assert!(prompts[0].contains("[FRD-2-01] (2 Passwords · security) A password must be at least 8 characters long."), "{}", prompts[0]);
+    assert!(prompts[0].contains("[FRD-2-02] "));
+    assert!(prompts[0].contains("Requested generation depth: Standard."));
+    assert!(!prompts[0].contains("## 2 Passwords"), "the raw document must not be pasted in");
+}
+
+#[tokio::test]
+async fn a_request_that_names_no_documents_is_generated_exactly_as_before() {
+    let _env = REQUIREMENT_ENV.lock().await;
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    let project = make_project(&state, "ReqGen - Old Path").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, body) = post_generate(
+        &state,
+        &owner,
+        project,
+        serde_json::json!({"requirement_text": "Password must be at least 8 characters.", "skills": []}),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert!(body.get("requirements").is_none(), "no coverage claim for a request that named no documents: {body}");
+    assert!(body["test_cases"][0].get("requirement_id").is_none(), "body={body}");
+    assert!(body["waves"][0].get("batch").is_none(), "body={body}");
+}
+
+#[tokio::test]
+async fn documents_with_no_requirements_or_of_another_project_are_refused() {
+    let _env = REQUIREMENT_ENV.lock().await;
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    let project_a = make_project(&state, "ReqGen - Refuse A").await;
+    let project_b = make_project(&state, "ReqGen - Refuse B").await;
+    let owner_a = mint_key(&state, "operator", Some(&project_a.to_string())).await;
+    let owner_b = mint_key(&state, "operator", Some(&project_b.to_string())).await;
+    let (_, b_upload) = upload_document(&state, &owner_b, project_b, "FRD.md", PASSWORD_FRD.as_bytes(), Some("FRD")).await;
+    let b_doc = b_upload["requirements_document"]["document_id"].as_str().unwrap().to_string();
+
+    for doc in [Uuid::new_v4().to_string(), b_doc] {
+        let (status, body) = post_generate(&state, &owner_a, project_a, generate_ai_body(&[&doc], &["Functional Testing"])).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "doc={doc} body={body}");
+        assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+        assert!(body["error"]["message"].as_str().unwrap().contains("none of the selected documents"), "body={body}");
+    }
+}
+
+#[tokio::test]
+async fn when_the_model_cannot_answer_the_response_says_so_and_still_reports_what_was_not_reached() {
+    let _env = REQUIREMENT_ENV.lock().await;
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Err(crate::ai_router::ExecutionError::Timeout))).await;
+    let project = make_project(&state, "ReqGen - Failure").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let (_, uploaded) = upload_document(&state, &owner, project, "FRD.md", PASSWORD_FRD.as_bytes(), Some("FRD")).await;
+    let doc_id = uploaded["requirements_document"]["document_id"].as_str().unwrap().to_string();
+
+    let (status, body) = post_generate(&state, &owner, project, generate_ai_body(&[&doc_id], &["Functional Testing"])).await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["generation_method"], "fallback");
+    assert!(body["fallback_reason"].as_str().unwrap().contains("TIMEOUT"), "body={body}");
+    assert_eq!(body["requirements"]["covered"], 0);
+    assert_eq!(body["requirements"]["uncovered_keys"], serde_json::json!(["FRD-2-01", "FRD-2-02"]));
+}
+
+#[tokio::test]
+async fn a_smaller_batch_budget_makes_more_calls_each_carrying_its_own_requirements() {
+    let _env = REQUIREMENT_ENV.lock().await;
+    let mut doc = String::from("## 1 Scope\n\n");
+    for i in 1..=6 {
+        doc.push_str(&format!("The system shall handle scenario number {i} exactly as the specification describes it.\n\n"));
+    }
+    // Every call gets a usable answer; a batch may legitimately produce nothing.
+    let empty = r#"{"test_cases":[]}"#;
+    let mut answers = vec![valid_ai_response()];
+    answers.extend(std::iter::repeat(valid_ai_response()).take(5));
+    answers.extend([empty, empty]);
+    let executor = Arc::new(RecordingExecutor::ok_sequence(answers));
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
+    let project = make_project(&state, "ReqGen - Budget").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let (_, uploaded) = upload_document(&state, &owner, project, "FRD.md", doc.as_bytes(), Some("FRD")).await;
+    let doc_id = uploaded["requirements_document"]["document_id"].as_str().unwrap().to_string();
+
+    std::env::set_var("REQUIREMENT_BATCH_CHARS", "300");
+    let (status, body) = post_generate(&state, &owner, project, generate_ai_body(&[&doc_id], &["Functional Testing"])).await;
+    std::env::remove_var("REQUIREMENT_BATCH_CHARS");
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let calls = body["requirements"]["calls"].as_u64().unwrap();
+    assert!(calls >= 3, "300 characters cannot hold six requirements: body={body}");
+    assert_eq!(body["requirements"]["budget_chars"], 300);
+    let prompts = executor.prompts.lock().unwrap().clone();
+    assert_eq!(prompts.len() as u64, calls);
+    // Each requirement appears in exactly one prompt.
+    for i in 1..=6 {
+        let id = format!("[FRD-1-0{i}]");
+        assert_eq!(prompts.iter().filter(|p| p.contains(&id)).count(), 1, "{id}");
+    }
+}
+
+#[tokio::test]
+async fn a_request_that_would_make_too_many_calls_is_refused_before_any_is_made() {
+    let _env = REQUIREMENT_ENV.lock().await;
+    let executor = Arc::new(RecordingExecutor::ok_sequence(vec![]));
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
+    let project = make_project(&state, "ReqGen - Too Many").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let (_, uploaded) = upload_document(&state, &owner, project, "FRD.md", PASSWORD_FRD.as_bytes(), Some("FRD")).await;
+    let doc_id = uploaded["requirements_document"]["document_id"].as_str().unwrap().to_string();
+
+    std::env::set_var("REQUIREMENT_MAX_CALLS", "1");
+    let (status, body) = post_generate(
+        &state,
+        &owner,
+        project,
+        generate_ai_body(&[&doc_id], &["Functional Testing", "Negative Testing"]),
+    )
+    .await;
+    std::env::remove_var("REQUIREMENT_MAX_CALLS");
+
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert!(body["error"]["message"].as_str().unwrap().contains("2 AI calls"), "body={body}");
+    assert!(executor.prompts.lock().unwrap().is_empty(), "no model may be called");
+}
+
+#[tokio::test]
+async fn the_plan_says_what_a_generation_would_do_without_calling_a_model() {
+    let _env = REQUIREMENT_ENV.lock().await;
+    let executor = Arc::new(RecordingExecutor::ok_sequence(vec![]));
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
+    let project = make_project(&state, "ReqGen - Plan").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let frd = "## 1 Rules\n\nThe system shall let a user sign in with a password.\n\nThe dashboard shall load within two seconds for a user.\n";
+    let (_, uploaded) = upload_document(&state, &owner, project, "FRD.md", frd.as_bytes(), Some("FRD")).await;
+    let doc_id = uploaded["requirements_document"]["document_id"].as_str().unwrap().to_string();
+
+    let (status, plan) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/generate-ai/plan"),
+            Some(&owner),
+            Some(generate_ai_body(&[&doc_id], &["Functional Testing", "Performance Testing", "Security Testing"])),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "plan={plan}");
+    assert_eq!(plan["requirements_total"], 2);
+    assert_eq!(plan["by_kind"]["performance"], 1, "plan={plan}");
+    assert_eq!(plan["by_kind"]["security"], 1, "plan={plan}");
+    assert_eq!(plan["offered"], 2);
+    assert_eq!(plan["calls"], 3, "functional, performance and security each see something");
+    assert_eq!(plan["within_limit"], true);
+    assert_eq!(plan["max_calls"], 150);
+    let skills = plan["skills"].as_array().unwrap();
+    assert_eq!(skills.len(), 3);
+    assert_eq!(skills[0]["skill_name"], "Functional Testing");
+    assert_eq!(skills[0]["requirements"], 1);
+    assert_eq!(plan["provider_name"], "mock");
+    assert_eq!(plan["model"], "mock-model");
+    assert_eq!(plan["prompt_window_tokens"], 16_384, "no window reported: the modest default");
+    assert_eq!(plan["budget_chars"], 12_000);
+    assert!(plan["estimated_prompt_tokens"].as_u64().unwrap() > 0);
+    assert_eq!(plan["estimated_completion_tokens"], 6_000);
+    assert!(executor.prompts.lock().unwrap().is_empty(), "planning must never call a model");
+}
+
+#[tokio::test]
+async fn the_plan_says_when_a_request_is_over_the_call_limit() {
+    let _env = REQUIREMENT_ENV.lock().await;
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    let project = make_project(&state, "ReqGen - Plan Limit").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let (_, uploaded) = upload_document(&state, &owner, project, "FRD.md", PASSWORD_FRD.as_bytes(), Some("FRD")).await;
+    let doc_id = uploaded["requirements_document"]["document_id"].as_str().unwrap().to_string();
+    let path = format!("/api/v1/projects/{project}/test-cases/generate-ai/plan");
+    let body = generate_ai_body(&[&doc_id], &["Functional Testing", "Negative Testing"]);
+
+    let (_, within) = send(&state, req("POST", &path, Some(&owner), Some(body.clone()))).await;
+    std::env::set_var("REQUIREMENT_MAX_CALLS", "1");
+    let (_, over) = send(&state, req("POST", &path, Some(&owner), Some(body))).await;
+    std::env::remove_var("REQUIREMENT_MAX_CALLS");
+
+    assert_eq!((within["calls"].as_u64(), within["within_limit"].as_bool()), (Some(2), Some(true)));
+    assert_eq!((over["calls"].as_u64(), over["max_calls"].as_u64(), over["within_limit"].as_bool()), (Some(2), Some(1), Some(false)));
+}
+
+#[test]
+fn the_retrieval_query_is_the_request_text_plus_the_start_of_the_requirements() {
+    let item = |text: &str| crate::requirement_generation::RequirementItem {
+        key: "R".to_string(),
+        section: None,
+        kind: crate::requirements::RequirementKind::Functional,
+        text: text.to_string(),
+    };
+    let long = "x".repeat(1_500);
+    let items = vec![item("first requirement"), item(&long), item(&long)];
+
+    let query = crate::api::requirement_retrieval_query("Depth: Standard.", &items);
+
+    assert!(query.starts_with("Depth: Standard.\nfirst requirement\n"), "{query}");
+    let requirement_part = query.trim_start_matches("Depth: Standard.\n").chars().count();
+    assert!(requirement_part <= 2_000 + 3, "at most about 2,000 characters of requirements: {requirement_part}");
+    assert_eq!(
+        query.matches('x').count(),
+        2_000 - "first requirement".len(),
+        "the second requirement fits, the third is cut at the room that is left"
+    );
+    assert_eq!(crate::api::requirement_retrieval_query("Only text.", &[]), "Only text.");
+}
+
+#[tokio::test]
+async fn the_plan_is_operator_only_project_scoped_and_needs_documents() {
+    let _env = REQUIREMENT_ENV.lock().await;
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    let project = make_project(&state, "ReqGen - Plan Auth").await;
+    let other = make_project(&state, "ReqGen - Plan Other").await;
+    let operator = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let viewer = mint_key(&state, "viewer", Some(&project.to_string())).await;
+    let other_owner = mint_key(&state, "operator", Some(&other.to_string())).await;
+    let path = format!("/api/v1/projects/{project}/test-cases/generate-ai/plan");
+
+    let (status, _) = send(&state, req("POST", &path, Some(&viewer), Some(generate_ai_body(&[], &[])))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = send(&state, req("POST", &path, Some(&other_owner), Some(generate_ai_body(&[], &[])))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, body) = send(&state, req("POST", &path, Some(&operator), Some(generate_ai_body(&[], &["Functional Testing"])))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert!(body["error"]["message"].as_str().unwrap().contains("requirement_document_ids"));
+}
+
 // ================================== Phase 6 ERROR-fix — run-level supervision
 //
 // These deliberately do NOT go through the real `POST .../performance-testing/
