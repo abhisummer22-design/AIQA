@@ -34,6 +34,7 @@ import { useProject } from '../../context/ProjectContext';
 import { DocumentUploadSection } from '../test-generator/DocumentUploadSection';
 import { ApplicationSourceSection } from '../test-generator/ApplicationSourceSection';
 import { CrawlGroundingSection } from '../test-generator/CrawlGroundingSection';
+import { RequirementCoverageSummary } from '../test-generator/RequirementCoverageSummary';
 import { RequirementGenerationSection } from '../test-generator/RequirementGenerationSection';
 import { GenerationConfigSection, TEST_CATEGORIES } from '../test-generator/GenerationConfigSection';
 import { GeneratedTestCasesView } from '../test-generator/GeneratedTestCasesView';
@@ -1384,6 +1385,9 @@ export const TestCaseGeneratorPage: React.FC = () => {
                 </>
               )}
             </div>
+          )}
+          {lastGenerationResult?.requirements && (
+            <RequirementCoverageSummary coverage={lastGenerationResult.requirements} />
           )}
           {lastGenerationResult?.waves && (
             <GenerationWaveResults waves={lastGenerationResult.waves.filter((w) => !w.skipped)} providerName={providerName} />

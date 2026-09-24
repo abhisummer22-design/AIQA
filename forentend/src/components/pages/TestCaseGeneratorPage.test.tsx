@@ -2873,8 +2873,14 @@ describe('TestCaseGeneratorPage — Phase 3, generating from numbered requiremen
           return jsonResponse(200, planFor());
         }
         if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') {
-          seen.generate.push(JSON.parse(String(init.body)));
-          return (opts.generation ?? (() => jsonResponse(200, requirementResponse())))();
+          const body = JSON.parse(String(init.body));
+          seen.generate.push(body);
+          // Like the backend: only a request that names documents is answered
+          // from requirements (cases tied to them, and a coverage report).
+          return (
+            opts.generation ??
+            (() => jsonResponse(200, body.requirement_document_ids ? requirementResponse() : aiGenerateResponse()))
+          )();
         }
         if (url.includes('/requirements')) {
           seen.lists.push(url);
@@ -2938,6 +2944,8 @@ describe('TestCaseGeneratorPage — Phase 3, generating from numbered requiremen
     expect(seen.generate[0]).not.toHaveProperty('requirement_document_ids');
     expect(seen.generate[0].requirement_text).toContain(FRD_TEXT);
     expect(seen.plans).toHaveLength(0);
+    // A run from pasted text has no requirement set to report on.
+    expect(document.getElementById('requirement-coverage')).toBeNull();
   }, 20000);
 
   it('turned on: shows the plan, then names the documents in the request instead of pasting them, for exactly the skills the plan was worked out for', async () => {
@@ -3067,6 +3075,20 @@ describe('TestCaseGeneratorPage — Phase 3, generating from numbered requiremen
     expect(linked.requirement_reference).toBe('FR-012');
     expect(linked.source_requirement).not.toBe(LOCKOUT);
     expect(linked.source_requirement).not.toBe('A different rule.');
+  }, 30000);
+
+  it('shows, in Generation Details, what the run reached of the requirement set — and which requirements got no case', async () => {
+    serve();
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+    await turnOn();
+    await generate();
+
+    const coverage = document.getElementById('requirement-coverage')!;
+    expect(document.getElementById('generation-details-panel')!.contains(coverage)).toBe(true);
+    expect(coverage.textContent).toContain('Requirements: 1 of 2 has a case');
+    expect(coverage.textContent).toContain('1 requirement was shown to a skill but got no case');
+    expect(coverage.textContent).toContain('FR-013');
   }, 30000);
 
   it('an older backend that reports no requirements: the option cannot be turned on and the document is pasted as always', async () => {

@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { GenerationWaveResults } from './GenerationWaveResults';
 import type { GenerationWaveSummary } from '../../types/contract';
@@ -94,5 +94,88 @@ describe('GenerationWaveResults', () => {
     expect(within(row).getByText('fallback')).toBeTruthy();
     expect(within(row).getByText('Tokens not reported')).toBeTruthy();
     expect(within(row).getByText('Time not reported')).toBeTruthy();
+  });
+
+  it('says which batch of requirements a call carried, and how many, only for a call from requirements', () => {
+    render(
+      <GenerationWaveResults
+        waves={[
+          wave({ batch: '2/5', requirements: 14 }),
+          wave({ skill_names: ['Edge Case Analysis'], batch: '1/1', requirements: 1 }),
+          wave({ skill_names: ['Negative Testing'] }),
+        ]}
+      />,
+    );
+
+    expect(within(screen.getByText('Functional Testing').closest('li')!).getByText('batch 2/5 · 14 requirements')).toBeTruthy();
+    expect(within(screen.getByText('Edge Case Analysis').closest('li')!).getByText('batch 1/1 · 1 requirement')).toBeTruthy();
+    expect(screen.getByText('Negative Testing').closest('li')!.textContent).not.toContain('batch');
+  });
+
+  it('names the batch that failed in the warning, so it is clear which requirements got nothing from that skill', () => {
+    render(
+      <GenerationWaveResults
+        waves={[
+          wave({ batch: '1/3', requirements: 10 }),
+          { ...failed('Functional Testing', 'HTTP 429: Rate limit reached'), batch: '2/3', requirements: 10 },
+          failed('Negative Testing', 'HTTP 500'),
+        ]}
+      />,
+    );
+
+    const warning = screen.getByText(/2 skill calls failed/);
+    expect(warning.textContent).toContain('Functional Testing (batch 2/3); Negative Testing');
+  });
+
+  describe('a run with many calls (one per skill per batch)', () => {
+    const many = (n: number, failedAt: number[] = []) =>
+      Array.from({ length: n }, (_, i) =>
+        failedAt.includes(i)
+          ? { ...failed(`Skill ${i + 1}`, `reason ${i + 1}`), batch: `${i + 1}/${n}`, requirements: 5 }
+          : wave({ skill_names: [`Skill ${i + 1}`], batch: `${i + 1}/${n}`, requirements: 5 }),
+      );
+
+    it('lists every call, with nothing folded away, up to twelve of them', () => {
+      render(<GenerationWaveResults waves={many(12)} />);
+      expect(within(document.getElementById('generation-wave-results')!).getAllByRole('listitem')).toHaveLength(12);
+      expect(document.getElementById('btn-toggle-wave-rows')).toBeNull();
+    });
+
+    it('keeps the calls in the order they ran while they all fit, a failed one included', () => {
+      render(<GenerationWaveResults waves={many(12, [5])} />);
+
+      const items = within(document.getElementById('generation-wave-results')!).getAllByRole('listitem');
+      expect(items[0].textContent).toContain('Skill 1');
+      expect(items[5].textContent).toContain('Skill 6');
+      expect(items[5].textContent).toContain('FAILED');
+    });
+
+    it('folds a longer list to twelve, failed calls first, and says how many there are altogether', () => {
+      render(<GenerationWaveResults waves={many(30, [25, 28])} />);
+
+      const items = within(document.getElementById('generation-wave-results')!).getAllByRole('listitem');
+      expect(items).toHaveLength(12);
+      // The two failures are shown though they are far down the run.
+      expect(items[0].textContent).toContain('Skill 26');
+      expect(items[1].textContent).toContain('Skill 29');
+      expect(items[2].textContent).toContain('Skill 1');
+      // The overall figures still count every call.
+      expect(screen.getByText('Per-skill results: 28 of 30 succeeded')).toBeTruthy();
+      expect(document.getElementById('btn-toggle-wave-rows')!.textContent).toBe('Show all 30 calls');
+    });
+
+    it('shows all of them, in the order they ran, when asked, and folds them again', () => {
+      render(<GenerationWaveResults waves={many(30, [25, 28])} />);
+
+      fireEvent.click(document.getElementById('btn-toggle-wave-rows')!);
+      const items = within(document.getElementById('generation-wave-results')!).getAllByRole('listitem');
+      expect(items).toHaveLength(30);
+      expect(items[0].textContent).toContain('Skill 1');
+      expect(items[25].textContent).toContain('Skill 26');
+      expect(document.getElementById('btn-toggle-wave-rows')!.textContent).toBe('Show fewer calls');
+
+      fireEvent.click(document.getElementById('btn-toggle-wave-rows')!);
+      expect(within(document.getElementById('generation-wave-results')!).getAllByRole('listitem')).toHaveLength(12);
+    });
   });
 });
