@@ -534,3 +534,170 @@ describe('SettingsPage — task-wise routing chains', () => {
     expect(document.getElementById('ai-intelligence-panel')).toBeTruthy();
   });
 });
+
+describe('SettingsPage — custom provider price and environment key', () => {
+  const VIEW = {
+    created_by: 'test-key',
+    created_at: '2026-01-01T00:00:00Z',
+  };
+
+  /** Serves the given providers for GET /ai/providers/custom and records the body of every POST. */
+  function serve(providers: unknown[] = []) {
+    const created: any[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.endsWith('/ai/providers/custom') && init?.method === 'POST') {
+          const body = JSON.parse(String(init.body));
+          created.push(body);
+          return jsonResponse(201, { id: 'custom-ai-new', name: body.name, base_url: body.base_url, ...VIEW });
+        }
+        if (url.endsWith('/ai/providers/custom')) return jsonResponse(200, providers);
+        if (url.endsWith('/ai/status')) return jsonResponse(200, statusResponse());
+        return jsonResponse(200, []);
+      }),
+    );
+    return created;
+  }
+
+  async function openForm() {
+    renderApp();
+    await waitFor(() => expect(screen.getByText('System Settings & Governance')).toBeTruthy());
+    await openAiTab();
+    await waitFor(() => expect(document.getElementById('new-custom-provider-name')).toBeTruthy());
+  }
+
+  const type = async (id: string, value: string) => {
+    await act(async () => {
+      fireEvent.change(document.getElementById(id)!, { target: { value } });
+    });
+  };
+  const fillBasics = async () => {
+    await type('new-custom-provider-name', 'My Paid API');
+    await type('new-custom-provider-base-url', 'https://api.example.com');
+    await type('new-custom-provider-api-key', 'sk-real-secret-value');
+  };
+  const addButton = () => document.getElementById('btn-add-custom-ai-provider') as HTMLButtonElement;
+  const clickAdd = async () => {
+    await act(async () => {
+      addButton().click();
+    });
+  };
+
+  it('sends the entered prices as numbers with the provider, and clears them afterwards', async () => {
+    const created = serve();
+    await openForm();
+    await fillBasics();
+    await type('new-custom-provider-input-price', '0.5');
+    await type('new-custom-provider-output-price', '1.5');
+
+    await clickAdd();
+
+    await waitFor(() => expect(created).toHaveLength(1));
+    expect(created[0]).toEqual({
+      name: 'My Paid API',
+      base_url: 'https://api.example.com',
+      api_key: 'sk-real-secret-value',
+      input_usd_per_1k: 0.5,
+      output_usd_per_1k: 1.5,
+    });
+    await waitFor(() => expect((document.getElementById('new-custom-provider-input-price') as HTMLInputElement).value).toBe(''));
+    expect((document.getElementById('new-custom-provider-output-price') as HTMLInputElement).value).toBe('');
+  });
+
+  it('without a price it sends exactly what it always did — no price keys at all', async () => {
+    const created = serve();
+    await openForm();
+    await fillBasics();
+
+    await clickAdd();
+
+    await waitFor(() => expect(created).toHaveLength(1));
+    expect(created[0]).toEqual({ name: 'My Paid API', base_url: 'https://api.example.com', api_key: 'sk-real-secret-value' });
+  });
+
+  it('accepts a price of zero as a real price', async () => {
+    const created = serve();
+    await openForm();
+    await fillBasics();
+    await type('new-custom-provider-input-price', '0');
+    await type('new-custom-provider-output-price', '0');
+    expect(addButton().disabled).toBe(false);
+
+    await clickAdd();
+
+    await waitFor(() => expect(created).toHaveLength(1));
+    expect(created[0].input_usd_per_1k).toBe(0);
+    expect(created[0].output_usd_per_1k).toBe(0);
+  });
+
+  it('will not add with only one of the two prices, or a negative one, and says why', async () => {
+    serve();
+    await openForm();
+    await fillBasics();
+    expect(addButton().disabled).toBe(false);
+
+    await type('new-custom-provider-input-price', '0.5');
+    expect(addButton().disabled).toBe(true);
+    expect(screen.getByText('Enter both prices, or leave both empty.')).toBeTruthy();
+
+    await type('new-custom-provider-output-price', '-1');
+    expect(addButton().disabled).toBe(true);
+    expect(screen.getByText('Prices must be zero or more.')).toBeTruthy();
+
+    await type('new-custom-provider-output-price', '1.5');
+    expect(addButton().disabled).toBe(false);
+    expect(screen.queryByText(/Enter both prices/)).toBeNull();
+    expect(screen.queryByText(/Prices must be zero/)).toBeNull();
+
+    await type('new-custom-provider-input-price', '');
+    await type('new-custom-provider-output-price', '');
+    expect(addButton().disabled).toBe(false);
+  });
+
+  it('lists each provider with its price, or says none was entered and its cost shows as Free', async () => {
+    serve([
+      { id: 'custom-ai-1', name: 'Priced One', base_url: 'https://a.example.com', input_usd_per_1k: 0.5, output_usd_per_1k: 1.5, ...VIEW },
+      { id: 'custom-ai-2', name: 'Unpriced One', base_url: 'https://b.example.com', input_usd_per_1k: null, output_usd_per_1k: null, ...VIEW },
+      { id: 'custom-ai-3', name: 'From An Older Backend', base_url: 'https://c.example.com', ...VIEW },
+    ]);
+    renderApp();
+    await waitFor(() => expect(screen.getByText('System Settings & Governance')).toBeTruthy());
+    await openAiTab();
+    await waitFor(() => expect(screen.getByText('Priced One')).toBeTruthy());
+
+    expect(screen.getByText('$0.5 in / $1.5 out per 1K tokens')).toBeTruthy();
+    expect(screen.getAllByText('No price entered — its cost shows as Free')).toHaveLength(2);
+  });
+
+  it('shows which environment variable a key comes from, and warns only when it is not set on the server', async () => {
+    serve([
+      { id: 'custom-ai-1', name: 'Env Set', base_url: 'https://a.example.com', api_key_env: 'OPENAI_API_KEY', api_key_env_set: true, ...VIEW },
+      { id: 'custom-ai-2', name: 'Env Missing', base_url: 'https://b.example.com', api_key_env: 'OTHER_KEY', api_key_env_set: false, ...VIEW },
+      { id: 'custom-ai-3', name: 'Stored Key', base_url: 'https://c.example.com', api_key_env: null, api_key_env_set: null, ...VIEW },
+    ]);
+    renderApp();
+    await waitFor(() => expect(screen.getByText('System Settings & Governance')).toBeTruthy());
+    await openAiTab();
+    await waitFor(() => expect(screen.getByText('Env Set')).toBeTruthy());
+
+    const section = document.getElementById('custom-ai-providers-section')!;
+    expect(section.textContent).toContain('Key from env:OPENAI_API_KEY');
+    expect(section.textContent).toContain('Key from env:OTHER_KEY — not set on the server yet');
+    expect(section.textContent).not.toContain('Key from env:OPENAI_API_KEY — not set');
+    expect(section.textContent?.match(/Key from env:/g)).toHaveLength(2);
+  });
+
+  it('an env:NAME key is sent exactly as typed — the page never tries to resolve it', async () => {
+    const created = serve();
+    await openForm();
+    await type('new-custom-provider-name', 'My Paid API');
+    await type('new-custom-provider-base-url', 'https://api.example.com');
+    await type('new-custom-provider-api-key', 'env:OPENAI_API_KEY');
+
+    await clickAdd();
+
+    await waitFor(() => expect(created).toHaveLength(1));
+    expect(created[0].api_key).toBe('env:OPENAI_API_KEY');
+  });
+});
