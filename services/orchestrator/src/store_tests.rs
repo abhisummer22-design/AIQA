@@ -1096,3 +1096,163 @@ async fn deleting_a_project_removes_its_test_plans_and_suites_too() {
         .expect("list")
         .is_empty());
 }
+
+// ---------------------------------------------------------- Phase 3 — requirements
+
+fn parsed_doc(items: &[(&str, &str)]) -> crate::requirements::ParsedDocument {
+    crate::requirements::ParsedDocument {
+        requirements: items
+            .iter()
+            .enumerate()
+            .map(|(i, (key, text))| crate::requirements::ParsedRequirement {
+                key: key.to_string(),
+                ordinal: i,
+                section: Some("3.2 Login".to_string()),
+                kind: crate::requirements::RequirementKind::Functional,
+                text: text.to_string(),
+            })
+            .collect(),
+        sections_count: 1,
+        skipped_sections: vec!["Revision History".to_string()],
+        furniture_lines: 4,
+    }
+}
+
+async fn upsert_doc(
+    store: &Store,
+    project: &str,
+    file_name: &str,
+    hash: &str,
+    parsed: &crate::requirements::ParsedDocument,
+) -> Uuid {
+    store
+        .upsert_requirement_document(project, file_name, Some("FRD"), hash, "full text", parsed)
+        .await
+        .expect("upsert")
+}
+
+#[tokio::test]
+async fn a_requirement_document_is_stored_with_its_requirements_in_document_order() {
+    let (store, _dir) = temp_store().await;
+    let parsed = parsed_doc(&[("FR-1", "First."), ("FR-2", "Second."), ("FR-3", "Third.")]);
+
+    let id = upsert_doc(&store, "p1", "FRD.md", "h1", &parsed).await;
+
+    let docs = store.list_requirement_documents("p1").await.unwrap();
+    assert_eq!(docs.len(), 1);
+    assert_eq!(docs[0].id, id);
+    assert_eq!(docs[0].file_name, "FRD.md");
+    assert_eq!(docs[0].doc_type.as_deref(), Some("FRD"));
+    assert_eq!(docs[0].requirements_count, 3);
+    assert_eq!(docs[0].sections_count, 1);
+    assert_eq!(docs[0].skipped_sections, ["Revision History"]);
+    assert_eq!(docs[0].furniture_lines, 4);
+    assert_eq!(docs[0].char_count, "full text".chars().count() as i64);
+
+    let reqs = store.list_requirements("p1", &[]).await.unwrap();
+    let keys: Vec<&str> = reqs.iter().map(|r| r.key.as_str()).collect();
+    assert_eq!(keys, ["FR-1", "FR-2", "FR-3"]);
+    assert_eq!(reqs[1].text, "Second.");
+    assert_eq!(reqs[1].kind, "functional");
+    assert_eq!(reqs[1].section.as_deref(), Some("3.2 Login"));
+    assert_eq!(reqs[1].document_id, id);
+}
+
+#[tokio::test]
+async fn the_same_content_again_refreshes_the_document_and_leaves_its_requirements_alone() {
+    let (store, _dir) = temp_store().await;
+    let id = upsert_doc(&store, "p1", "FRD.md", "h1", &parsed_doc(&[("FR-1", "First."), ("FR-2", "Second.")])).await;
+    sqlx::query("UPDATE requirements SET text = 'EDITED' WHERE ordinal = 1")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+    // Same hash, different file name, and (hypothetically) different parse output.
+    let again = upsert_doc(&store, "p1", "FRD-final.md", "h1", &parsed_doc(&[("X-1", "Other.")])).await;
+
+    assert_eq!(again, id);
+    let docs = store.list_requirement_documents("p1").await.unwrap();
+    assert_eq!(docs.len(), 1);
+    assert_eq!(docs[0].file_name, "FRD-final.md");
+    let reqs = store.list_requirements("p1", &[]).await.unwrap();
+    let texts: Vec<&str> = reqs.iter().map(|r| r.text.as_str()).collect();
+    assert_eq!(texts, ["First.", "EDITED"], "unchanged content is not parsed into the table twice");
+}
+
+#[tokio::test]
+async fn requirements_written_by_older_parsing_rules_are_replaced_on_the_next_upload() {
+    let (store, _dir) = temp_store().await;
+    let id = upsert_doc(&store, "p1", "FRD.md", "h1", &parsed_doc(&[("FR-1", "Old one."), ("FR-2", "Old two.")])).await;
+    sqlx::query("UPDATE requirement_documents SET parser_version = 0")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+    let again = upsert_doc(&store, "p1", "FRD.md", "h1", &parsed_doc(&[("FR-1", "New one.")])).await;
+
+    assert_eq!(again, id);
+    let reqs = store.list_requirements("p1", &[]).await.unwrap();
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(reqs[0].text, "New one.");
+    let version: i64 = sqlx::query_scalar("SELECT parser_version FROM requirement_documents")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(version, crate::requirements::PARSER_VERSION);
+}
+
+#[tokio::test]
+async fn requirements_are_listed_in_the_order_the_documents_were_asked_for() {
+    let (store, _dir) = temp_store().await;
+    let a = upsert_doc(&store, "p1", "A.md", "ha", &parsed_doc(&[("A-1", "a one"), ("A-2", "a two")])).await;
+    let b = upsert_doc(&store, "p1", "B.md", "hb", &parsed_doc(&[("B-1", "b one")])).await;
+
+    let asked_b_first: Vec<String> = store
+        .list_requirements("p1", &[b, a])
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|r| r.key)
+        .collect();
+    assert_eq!(asked_b_first, ["B-1", "A-1", "A-2"]);
+
+    let only_a: Vec<String> = store
+        .list_requirements("p1", &[a])
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|r| r.key)
+        .collect();
+    assert_eq!(only_a, ["A-1", "A-2"]);
+
+    let everything: Vec<String> = store
+        .list_requirements("p1", &[])
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|r| r.key)
+        .collect();
+    assert_eq!(everything, ["A-1", "A-2", "B-1"], "upload order when no ids are given");
+}
+
+#[tokio::test]
+async fn another_projects_documents_and_requirements_are_never_returned() {
+    let (store, _dir) = temp_store().await;
+    let theirs = upsert_doc(&store, "p2", "Other.md", "h1", &parsed_doc(&[("O-1", "theirs")])).await;
+    upsert_doc(&store, "p1", "Mine.md", "h2", &parsed_doc(&[("M-1", "mine")])).await;
+
+    assert_eq!(store.list_requirement_documents("p1").await.unwrap().len(), 1);
+    assert!(store.list_requirements("p1", &[theirs]).await.unwrap().is_empty());
+    let mine: Vec<String> = store
+        .list_requirements("p1", &[])
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|r| r.key)
+        .collect();
+    assert_eq!(mine, ["M-1"]);
+
+    // The same content in two projects is two documents, not one shared row.
+    let same_in_p1 = upsert_doc(&store, "p1", "Other.md", "h1", &parsed_doc(&[("O-1", "theirs")])).await;
+    assert_ne!(same_in_p1, theirs);
+}

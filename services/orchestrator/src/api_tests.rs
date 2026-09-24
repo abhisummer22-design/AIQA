@@ -7832,6 +7832,414 @@ async fn extract_document_text_project_isolation_enforced() {
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
 }
 
+// ============================================ Phase 3 — requirements read out of documents
+
+/// A minimal but genuine one-page text PDF, same construction as
+/// `doc_extract.rs`'s own test helper.
+fn build_test_pdf_bytes(lines: &[&str]) -> Vec<u8> {
+    let mut content = String::from("BT\n/F1 12 Tf\n14 TL\n72 720 Td\n");
+    for l in lines {
+        content.push_str(&format!("({l}) Tj T*\n"));
+    }
+    content.push_str("ET\n");
+    let objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>".to_string(),
+        format!("<< /Length {} >>\nstream\n{content}endstream", content.len()),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+    ];
+    let mut out = b"%PDF-1.4\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, obj) in objects.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend(format!("{} 0 obj\n{obj}\nendobj\n", i + 1).as_bytes());
+    }
+    let xref_pos = out.len();
+    out.extend(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes());
+    for off in offsets {
+        out.extend(format!("{off:010} 00000 n \n").as_bytes());
+    }
+    out.extend(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_pos}\n%%EOF\n",
+            objects.len() + 1
+        )
+        .as_bytes(),
+    );
+    out
+}
+
+/// A .docx whose paragraphs may carry a Word style (`Heading1`, ...).
+fn build_styled_docx_bytes(paragraphs: &[(Option<&str>, &str)]) -> Vec<u8> {
+    use std::io::Write;
+    let body: String = paragraphs
+        .iter()
+        .map(|(style, text)| match style {
+            Some(st) => format!(
+                r#"<w:p><w:pPr><w:pStyle w:val="{st}"/></w:pPr><w:r><w:t>{text}</w:t></w:r></w:p>"#
+            ),
+            None => format!("<w:p><w:r><w:t>{text}</w:t></w:r></w:p>"),
+        })
+        .collect();
+    let document_xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>{body}</w:body></w:document>"#
+    );
+    let mut buf = Vec::new();
+    {
+        let cursor = std::io::Cursor::new(&mut buf);
+        let mut zip = zip::ZipWriter::new(cursor);
+        let options: zip::write::FileOptions<'_, ()> =
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        zip.start_file("word/document.xml", options).unwrap();
+        zip.write_all(document_xml.as_bytes()).unwrap();
+        zip.finish().unwrap();
+    }
+    buf
+}
+
+async fn upload_document(
+    state: &AppState,
+    key: &str,
+    project: Uuid,
+    file_name: &str,
+    bytes: &[u8],
+    document_type: Option<&str>,
+) -> (StatusCode, Value) {
+    let mut body = serde_json::json!({"file_name": file_name, "content_base64": b64(bytes)});
+    if let Some(t) = document_type {
+        body["document_type"] = Value::String(t.to_string());
+    }
+    send(
+        state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/documents/extract-text"),
+            Some(key),
+            Some(body),
+        ),
+    )
+    .await
+}
+
+const SAMPLE_FRD: &str = "# Login\n\n## 3.2 Login\n\nFR-012: The system shall lock an account after 5 failed login attempts.\n\nFR-013: A locked account shall be unlocked automatically after 15 minutes.\n\n## 3.3 Reports\n\nThe system shall export any report as a CSV file.\n";
+
+#[tokio::test]
+async fn an_uploaded_document_is_also_read_for_its_requirements_and_the_old_response_is_unchanged() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Requirements - Upload").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, body) = upload_document(&state, &owner, project, "FRD.md", SAMPLE_FRD.as_bytes(), Some("FRD")).await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    // What this endpoint has always answered.
+    assert_eq!(body["text"], SAMPLE_FRD.trim());
+    assert_eq!(body["truncated"], false);
+    assert_eq!(body["char_count"], SAMPLE_FRD.trim().chars().count());
+    // What it now also says.
+    let summary = &body["requirements_document"];
+    assert_eq!(summary["requirements_count"], 3, "body={body}");
+    assert_eq!(summary["sections_count"], 3, "body={body}");
+    assert_eq!(summary["full_truncated"], false);
+    assert_eq!(summary["full_char_count"], SAMPLE_FRD.trim().chars().count());
+    assert!(summary["document_id"].as_str().is_some(), "body={body}");
+    assert_eq!(summary["by_kind"]["security"], 2, "body={body}");
+
+    let (status, listed) = send(
+        &state,
+        req("GET", &format!("/api/v1/projects/{project}/requirements"), Some(&owner), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={listed}");
+    assert_eq!(listed["documents"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["documents"][0]["file_name"], "FRD.md");
+    assert_eq!(listed["documents"][0]["doc_type"], "FRD");
+    assert_eq!(listed["documents"][0]["requirements_count"], 3);
+    let reqs = listed["requirements"].as_array().unwrap();
+    let keys: Vec<&str> = reqs.iter().map(|r| r["key"].as_str().unwrap()).collect();
+    assert_eq!(keys, ["FR-012", "FR-013", "FRD-3.3-01"]);
+    assert_eq!(reqs[0]["section"], "3.2 Login");
+    assert_eq!(reqs[0]["kind"], "security");
+    assert_eq!(reqs[2]["text"], "The system shall export any report as a CSV file.");
+    assert_eq!(reqs[0]["document_id"], summary["document_id"]);
+}
+
+#[tokio::test]
+async fn nothing_past_the_old_20000_character_mark_is_lost() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Requirements - Long").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    // ~60,000 characters of filler paragraphs, then a requirement at the very end.
+    let mut doc = String::from("## 1 Filler\n\n");
+    for i in 0..600 {
+        doc.push_str(&format!(
+            "The system shall support filler scenario number {i} in the portal today.\n\n"
+        ));
+    }
+    doc.push_str("## 2 The end\n\nFR-9999: The system shall still read this last requirement.\n");
+    assert!(doc.chars().count() > 40_000);
+
+    let (status, body) = upload_document(&state, &owner, project, "long.md", doc.as_bytes(), Some("FRD")).await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    // The bounded text the single-prompt path uses is still cut, and says so.
+    assert_eq!(body["truncated"], true);
+    assert_eq!(body["char_count"], 20_000);
+    // The whole document was read all the same.
+    assert_eq!(body["requirements_document"]["full_char_count"], doc.trim().chars().count());
+    assert_eq!(body["requirements_document"]["requirements_count"], 601, "body={body}");
+    let (_, listed) = send(
+        &state,
+        req("GET", &format!("/api/v1/projects/{project}/requirements"), Some(&owner), None),
+    )
+    .await;
+    let last = listed["requirements"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!(last["key"], "FR-9999");
+    assert_eq!(last["text"], "The system shall still read this last requirement.");
+}
+
+#[tokio::test]
+async fn a_docx_keeps_its_headings_so_requirements_know_their_section() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Requirements - Docx").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let docx = build_styled_docx_bytes(&[
+        (Some("Heading1"), "3. Authentication"),
+        (Some("Heading2"), "3.2 Login"),
+        (None, "Users shall sign in with an email address and a password."),
+        (None, "A session shall expire after 30 minutes of inactivity."),
+    ]);
+
+    let (status, body) = upload_document(&state, &owner, project, "BRD.docx", &docx, Some("BRD")).await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["requirements_document"]["sections_count"], 2, "body={body}");
+    let (_, listed) = send(
+        &state,
+        req("GET", &format!("/api/v1/projects/{project}/requirements"), Some(&owner), None),
+    )
+    .await;
+    let reqs = listed["requirements"].as_array().unwrap();
+    assert_eq!(reqs.len(), 2, "{listed}");
+    assert_eq!(reqs[0]["section"], "3.2 Login");
+    assert_eq!(reqs[0]["key"], "BRD-3.2-01");
+    assert_eq!(reqs[1]["key"], "BRD-3.2-02");
+    // The old, bounded reading of a docx is exactly what it was: bare lines.
+    assert_eq!(
+        body["text"],
+        "3. Authentication\n3.2 Login\nUsers shall sign in with an email address and a password.\nA session shall expire after 30 minutes of inactivity."
+    );
+}
+
+#[tokio::test]
+async fn a_text_pdf_is_read_and_split_into_requirements() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Requirements - Pdf").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let pdf = build_test_pdf_bytes(&[
+        "FR-1: The system shall lock an account after 5 failed attempts.",
+        "FR-2: The system shall email a reset link.",
+    ]);
+
+    let (status, body) = upload_document(&state, &owner, project, "spec.pdf", &pdf, Some("PRD")).await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert!(body["text"].as_str().unwrap().contains("lock an account"), "body={body}");
+    assert_eq!(body["requirements_document"]["requirements_count"], 2, "body={body}");
+}
+
+#[tokio::test]
+async fn the_document_type_prefixes_generated_ids_and_the_file_name_does_when_it_is_absent() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Requirements - Prefix").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let text = b"The system shall show a dashboard.\n";
+
+    upload_document(&state, &owner, project, "a.md", text, Some("SRD")).await;
+    upload_document(&state, &owner, project, "checkout-flow.md", b"The system shall take a payment.\n", None).await;
+
+    let (_, listed) = send(
+        &state,
+        req("GET", &format!("/api/v1/projects/{project}/requirements"), Some(&owner), None),
+    )
+    .await;
+    let keys: Vec<&str> = listed["requirements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["key"].as_str().unwrap())
+        .collect();
+    assert_eq!(keys, ["SRD-S0-01", "CHECKO-S0-01"]);
+}
+
+#[tokio::test]
+async fn uploading_the_same_content_again_reuses_the_document_and_a_different_version_is_a_new_one() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Requirements - Reupload").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (_, first) = upload_document(&state, &owner, project, "FRD.md", SAMPLE_FRD.as_bytes(), Some("FRD")).await;
+    let (_, again) = upload_document(&state, &owner, project, "FRD-final.md", SAMPLE_FRD.as_bytes(), Some("FRD")).await;
+    assert_eq!(
+        first["requirements_document"]["document_id"], again["requirements_document"]["document_id"],
+        "same content, same document"
+    );
+
+    let changed = format!("{SAMPLE_FRD}\n## 3.4 Audit\n\nThe system shall record every login.\n");
+    let (_, third) = upload_document(&state, &owner, project, "FRD-v2.md", changed.as_bytes(), Some("FRD")).await;
+    assert_ne!(first["requirements_document"]["document_id"], third["requirements_document"]["document_id"]);
+    assert_eq!(third["requirements_document"]["requirements_count"], 4);
+
+    let (_, listed) = send(
+        &state,
+        req("GET", &format!("/api/v1/projects/{project}/requirements"), Some(&owner), None),
+    )
+    .await;
+    let docs = listed["documents"].as_array().unwrap();
+    assert_eq!(docs.len(), 2);
+    assert_eq!(docs[0]["file_name"], "FRD-final.md", "the name is the latest upload's");
+    assert_eq!(docs[0]["requirements_count"], 3, "not doubled by the second upload");
+    assert_eq!(listed["requirements"].as_array().unwrap().len(), 7);
+}
+
+#[tokio::test]
+async fn two_versions_that_differ_only_after_the_first_20000_characters_are_two_documents() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Requirements - Versions").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let filler = "The system shall support filler scenario in the portal today.\n\n".repeat(400);
+    let v1 = format!("{filler}FR-1: The old last requirement.\n");
+    let v2 = format!("{filler}FR-1: The new last requirement, edited later.\n");
+
+    let (_, a) = upload_document(&state, &owner, project, "big.md", v1.as_bytes(), None).await;
+    let (_, b) = upload_document(&state, &owner, project, "big.md", v2.as_bytes(), None).await;
+
+    assert_ne!(a["requirements_document"]["document_id"], b["requirements_document"]["document_id"]);
+    let (_, listed) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/requirements?document_ids={}", b["requirements_document"]["document_id"].as_str().unwrap()),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    let last = listed["requirements"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!(last["text"], "The new last requirement, edited later.");
+    assert_eq!(listed["documents"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_file_that_cannot_be_read_stores_no_requirements() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Requirements - Unreadable").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, _) = upload_document(&state, &owner, project, "RTM.doc", b"anything", Some("FRD")).await;
+    assert_ne!(status, StatusCode::OK);
+    let (status, _) = upload_document(&state, &owner, project, "broken.pdf", b"%PDF-1.4 not really", Some("FRD")).await;
+    assert_ne!(status, StatusCode::OK);
+
+    let (_, listed) = send(
+        &state,
+        req("GET", &format!("/api/v1/projects/{project}/requirements"), Some(&owner), None),
+    )
+    .await;
+    assert!(listed["documents"].as_array().unwrap().is_empty());
+    assert!(listed["requirements"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_failure_to_store_the_requirements_never_fails_the_upload() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Requirements - Fail Open").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    sqlx::query("DROP TABLE requirements").execute(&state.store.pool).await.unwrap();
+
+    let (status, body) = upload_document(&state, &owner, project, "FRD.md", SAMPLE_FRD.as_bytes(), Some("FRD")).await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["text"], SAMPLE_FRD.trim());
+    assert!(body.get("requirements_document").is_none(), "nothing was stored, so nothing is claimed: {body}");
+}
+
+#[tokio::test]
+async fn listing_requirements_is_project_scoped_readable_by_a_viewer_and_validates_its_filter() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project_a = make_project(&state, "Requirements - A").await;
+    let project_b = make_project(&state, "Requirements - B").await;
+    let owner_a = mint_key(&state, "operator", Some(&project_a.to_string())).await;
+    let viewer_a = mint_key(&state, "viewer", Some(&project_a.to_string())).await;
+    let owner_b = mint_key(&state, "operator", Some(&project_b.to_string())).await;
+    upload_document(&state, &owner_a, project_a, "FRD.md", SAMPLE_FRD.as_bytes(), Some("FRD")).await;
+    upload_document(&state, &owner_b, project_b, "Other.md", b"The system shall do the other project's thing.\n", Some("FRD")).await;
+
+    // A viewer may read.
+    let (status, body) = send(
+        &state,
+        req("GET", &format!("/api/v1/projects/{project_a}/requirements"), Some(&viewer_a), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["requirements"].as_array().unwrap().len(), 3);
+
+    // Another project's key may not.
+    let (status, _) = send(
+        &state,
+        req("GET", &format!("/api/v1/projects/{project_a}/requirements"), Some(&owner_b), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // Another project's document id contributes nothing, and a malformed id is refused.
+    let (_, b_list) = send(
+        &state,
+        req("GET", &format!("/api/v1/projects/{project_b}/requirements"), Some(&owner_b), None),
+    )
+    .await;
+    let b_doc = b_list["documents"][0]["id"].as_str().unwrap().to_string();
+    let (status, body) = send(
+        &state,
+        req("GET", &format!("/api/v1/projects/{project_a}/requirements?document_ids={b_doc}"), Some(&owner_a), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["requirements"].as_array().unwrap().is_empty(), "body={body}");
+    assert!(body["documents"].as_array().unwrap().is_empty(), "body={body}");
+
+    let (status, body) = send(
+        &state,
+        req("GET", &format!("/api/v1/projects/{project_a}/requirements?document_ids=not-a-uuid"), Some(&owner_a), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+}
+
+#[tokio::test]
+async fn deleting_a_project_removes_its_documents_and_requirements() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Requirements - Delete").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    upload_document(&state, &owner, project, "FRD.md", SAMPLE_FRD.as_bytes(), Some("FRD")).await;
+
+    assert!(state.store.delete_project(project).await.unwrap());
+
+    let documents: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM requirement_documents")
+        .fetch_one(&state.store.pool)
+        .await
+        .unwrap();
+    let requirements: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM requirements")
+        .fetch_one(&state.store.pool)
+        .await
+        .unwrap();
+    assert_eq!(documents, 0);
+    assert_eq!(requirements, 0);
+}
+
 // ================================== Phase 6 ERROR-fix — run-level supervision
 //
 // These deliberately do NOT go through the real `POST .../performance-testing/

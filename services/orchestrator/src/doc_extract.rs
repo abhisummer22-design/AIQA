@@ -102,17 +102,11 @@ fn no_text_error(ext: &str) -> String {
     }
 }
 
-/// Extracts real text from `bytes`, dispatching on `file_name`'s
-/// extension. Returns a real, specific `Err` for anything not genuinely
-/// supported — never a partially-guessed result, because that would be
-/// sent to the AI model as if it were the document's real content.
-pub fn extract_text(file_name: &str, bytes: &[u8]) -> Result<ExtractedDocument, String> {
-    let ext = extension_of(file_name);
-    let raw = read_source(&ext, bytes, false)?;
-
+/// The bounded reading of `raw` (see `extract_text`).
+fn bounded(ext: &str, raw: &str) -> Result<ExtractedDocument, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err(no_text_error(&ext));
+        return Err(no_text_error(ext));
     }
 
     let total_chars = trimmed.chars().count();
@@ -131,17 +125,11 @@ pub fn extract_text(file_name: &str, bytes: &[u8]) -> Result<ExtractedDocument, 
     })
 }
 
-/// Like `extract_text`, but for a consumer that splits the document up
-/// instead of pasting it into one prompt: nothing is cut at the
-/// 20,000-character mark, and a `.docx` keeps its headings (`# Title`), list
-/// items (`- item`) and table rows (`cell | cell`).
-pub fn extract_full_text(file_name: &str, bytes: &[u8]) -> Result<FullDocument, String> {
-    let ext = extension_of(file_name);
-    let raw = read_source(&ext, bytes, true)?;
-
+/// The whole-document reading of `raw` (see `extract_full_text`).
+fn whole(ext: &str, raw: &str) -> Result<FullDocument, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err(no_text_error(&ext));
+        return Err(no_text_error(ext));
     }
 
     let total_chars = trimmed.chars().count();
@@ -158,6 +146,43 @@ pub fn extract_full_text(file_name: &str, bytes: &[u8]) -> Result<FullDocument, 
         char_count,
         truncated,
     })
+}
+
+/// Extracts real text from `bytes`, dispatching on `file_name`'s
+/// extension. Returns a real, specific `Err` for anything not genuinely
+/// supported — never a partially-guessed result, because that would be
+/// sent to the AI model as if it were the document's real content.
+pub fn extract_text(file_name: &str, bytes: &[u8]) -> Result<ExtractedDocument, String> {
+    let ext = extension_of(file_name);
+    let raw = read_source(&ext, bytes, false)?;
+    bounded(&ext, &raw)
+}
+
+/// Like `extract_text`, but for a consumer that splits the document up
+/// instead of pasting it into one prompt: nothing is cut at the
+/// 20,000-character mark, and a `.docx` keeps its headings (`# Title`), list
+/// items (`- item`) and table rows (`cell | cell`).
+pub fn extract_full_text(file_name: &str, bytes: &[u8]) -> Result<FullDocument, String> {
+    let ext = extension_of(file_name);
+    let raw = read_source(&ext, bytes, true)?;
+    whole(&ext, &raw)
+}
+
+/// Both readings of one file. Only a `.docx` reads differently for the two
+/// (structure marked or not); every other format is read once and used for
+/// both, so a large PDF is not parsed twice.
+pub fn extract_both(
+    file_name: &str,
+    bytes: &[u8],
+) -> Result<(ExtractedDocument, FullDocument), String> {
+    let ext = extension_of(file_name);
+    let plain = read_source(&ext, bytes, false)?;
+    let structured = if ext == "docx" {
+        read_source(&ext, bytes, true)?
+    } else {
+        plain.clone()
+    };
+    Ok((bounded(&ext, &plain)?, whole(&ext, &structured)?))
 }
 
 /// A text-based PDF, read with `pdf-extract`. A malformed file can make that
@@ -276,14 +301,26 @@ fn paragraph_style_regex() -> &'static regex::Regex {
     RE.get_or_init(|| regex::Regex::new(r#"<w:pStyle\s+w:val="([^"]*)""#).unwrap())
 }
 
+/// What a line of `structured_docx_text` is, which decides whether a blank
+/// line separates it from the one before: consecutive list items and
+/// consecutive table rows stay together, everything else is a paragraph of
+/// its own.
+#[derive(Clone, Copy, PartialEq)]
+enum Block {
+    Text,
+    ListItem,
+    TableRow,
+}
+
 /// A `.docx` body as lines that keep its structure: a heading paragraph
 /// becomes `# Title` (as many `#` as its level), a list paragraph `- item`,
-/// a table row `cell | cell`, anything else its bare text. Same runs, same
+/// a table row `cell | cell`, anything else its bare text; paragraphs are
+/// separated by a blank line, as Markdown separates them. Same runs, same
 /// entity decoding as `paragraphs_from_document_xml`; only what surrounds
 /// the text differs, so a requirement parser can tell a section title from a
 /// requirement, and a row of a requirements table from a paragraph.
 fn structured_docx_text(xml: &str) -> String {
-    let mut lines: Vec<String> = Vec::new();
+    let mut lines: Vec<(Block, String)> = Vec::new();
     let mut depth = 0usize;
     let mut cells: Vec<String> = Vec::new();
     let mut cell: Vec<String> = Vec::new();
@@ -309,7 +346,7 @@ fn structured_docx_text(xml: &str) -> String {
         } else if caps.name("tr_close").is_some() {
             if depth == 1 {
                 if cells.iter().any(|c| !c.is_empty()) {
-                    lines.push(cells.join(" | "));
+                    lines.push((Block::TableRow, cells.join(" | ")));
                 }
                 cells.clear();
             }
@@ -328,15 +365,27 @@ fn structured_docx_text(xml: &str) -> String {
                 .captures(paragraph_xml)
                 .and_then(|c| heading_level(c.get(1).map(|m| m.as_str()).unwrap_or("")));
             if let Some(level) = heading {
-                lines.push(format!("{} {text}", "#".repeat(level)));
+                lines.push((Block::Text, format!("{} {text}", "#".repeat(level))));
             } else if paragraph_xml.contains("<w:numPr>") {
-                lines.push(format!("- {text}"));
+                lines.push((Block::ListItem, format!("- {text}")));
             } else {
-                lines.push(text.to_string());
+                lines.push((Block::Text, text.to_string()));
             }
         }
     }
-    lines.join("\n")
+    let mut out = String::new();
+    let mut previous: Option<Block> = None;
+    for (block, line) in lines {
+        if let Some(p) = previous {
+            out.push('\n');
+            if p != block || block == Block::Text {
+                out.push('\n');
+            }
+        }
+        out.push_str(&line);
+        previous = Some(block);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -604,6 +653,28 @@ mod tests {
     }
 
     #[test]
+    fn both_readings_of_a_file_are_the_same_as_reading_it_twice() {
+        let docx = docx_from_body(&format!(
+            "{}{}",
+            styled("Heading1", "3. Authentication"),
+            "<w:p><w:r><w:t>Users sign in.</w:t></w:r></w:p>"
+        ));
+        let pdf = build_test_pdf(&["3.2 Login", "The system shall lock an account."]);
+        let files: [(&str, &[u8]); 3] = [
+            ("FRD.docx", &docx),
+            ("FRD.pdf", &pdf),
+            ("notes.md", b"# Notes\n\nJust markdown."),
+        ];
+        for (name, bytes) in files {
+            let (bounded, whole) = extract_both(name, bytes).unwrap();
+            assert_eq!(bounded, extract_text(name, bytes).unwrap(), "{name}");
+            assert_eq!(whole, extract_full_text(name, bytes).unwrap(), "{name}");
+        }
+        assert!(extract_both("RTM.doc", b"x").is_err());
+        assert!(extract_both("empty.md", b"   ").is_err());
+    }
+
+    #[test]
     fn a_non_zip_docx_is_a_real_specific_error_not_a_panic() {
         let err = extract_text("corrupt.docx", b"not a zip file at all").unwrap_err();
         assert!(err.contains("zip"), "expected a zip-open error, got: {err}");
@@ -640,11 +711,16 @@ mod tests {
             full.text,
             [
                 "# 3. Authentication",
+                "",
                 "## 3.2 Login",
+                "",
                 "Users sign in with an email address.",
+                "",
                 "- Five failed attempts lock the account.",
+                "",
                 "ID | Requirement",
                 "FR-1 | Passwords are hashed.",
+                "",
                 "After the table.",
             ]
             .join("\n")

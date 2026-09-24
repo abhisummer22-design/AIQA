@@ -27,6 +27,7 @@ pub mod operations;
 pub mod performance_testing;
 pub mod plan_validator;
 pub mod policy;
+pub mod requirements;
 pub mod scheduler;
 pub mod skill_files;
 pub mod state;

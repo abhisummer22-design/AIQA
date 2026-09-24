@@ -407,6 +407,13 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/projects/:project_id/documents/extract-text",
             post(extract_document_text_scoped),
         )
+        // Phase 3 — the requirements read out of the uploaded documents
+        // (`requirements.rs`), listed for review and for choosing what a
+        // generation request is built from.
+        .route(
+            "/api/v1/projects/:project_id/requirements",
+            get(list_requirements_scoped),
+        )
         // Phase 6 — Performance Testing: real Load/Stress/Spike/Volume
         // workload generation (`performance_testing.rs`). Reuses the exact
         // Phase 4 per-request execution core (`executor::execute_plan_once`,
@@ -3361,6 +3368,38 @@ struct ExtractDocumentTextBody {
     /// the exact same `ApiJson` request path every other endpoint in this
     /// API already does, instead of a second, one-off upload mechanism.
     content_base64: String,
+    /// Which slot the file was uploaded to (BRD / PRD / FRD / SRD /
+    /// ADDITIONAL). It only prefixes the ids given to the document's
+    /// requirements; omitted, the file name is used instead.
+    #[serde(default)]
+    document_type: Option<String>,
+}
+
+/// `POST .../documents/extract-text`'s response: exactly the bounded text it
+/// has always returned, plus — when the whole document could be read and
+/// stored — what was found in it.
+#[derive(Serialize)]
+struct ExtractDocumentTextResponse {
+    #[serde(flatten)]
+    extracted: crate::doc_extract::ExtractedDocument,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    requirements_document: Option<RequirementDocumentSummary>,
+}
+
+/// What reading a whole document produced (`requirements.rs`).
+#[derive(Serialize)]
+struct RequirementDocumentSummary {
+    document_id: Uuid,
+    /// Characters of the whole document that were read; the `text` beside
+    /// this stops at 20,000.
+    full_char_count: usize,
+    /// True only for a document over the 3,000,000-character safety ceiling.
+    full_truncated: bool,
+    sections_count: usize,
+    requirements_count: usize,
+    /// Sections left out on purpose (a table of contents, a revision history).
+    skipped_sections: Vec<String>,
+    by_kind: std::collections::BTreeMap<String, usize>,
 }
 
 /// Base64 text length before decoding, not the decoded byte count — a
@@ -3381,7 +3420,7 @@ async fn extract_document_text_scoped(
     Extension(ctx): Extension<AuthContext>,
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<ExtractDocumentTextBody>,
-) -> Result<Json<crate::doc_extract::ExtractedDocument>, ApiError> {
+) -> Result<Json<ExtractDocumentTextResponse>, ApiError> {
     auth::require_role(&ctx, Role::Operator)?;
     require_scoped_project(&state, &ctx, project_id).await?;
 
@@ -3396,7 +3435,23 @@ async fn extract_document_text_scoped(
         .decode(body.content_base64.as_bytes())
         .map_err(|e| ApiError::validation(format!("content_base64 is not valid base64: {e}")))?;
 
-    let result = crate::doc_extract::extract_text(&body.file_name, &bytes);
+    // Reading a large PDF or splitting a long document into requirements is
+    // real CPU work: done off the async workers.
+    let file_name = body.file_name.clone();
+    let doc_label = body.document_type.clone().unwrap_or_default();
+    let read = tokio::task::spawn_blocking(move || {
+        crate::doc_extract::extract_both(&file_name, &bytes).map(|(bounded, whole)| {
+            let parsed = crate::requirements::parse_document(&doc_label, &file_name, &whole.text);
+            (bounded, whole, parsed)
+        })
+    })
+    .await
+    .map_err(to_500)?;
+
+    let result = read
+        .as_ref()
+        .map(|(bounded, _, _)| bounded.clone())
+        .map_err(|e| e.clone());
     audit(
         &state,
         &ctx,
@@ -3418,11 +3473,143 @@ async fn extract_document_text_scoped(
     // `persist_and_embed_document`'s own doc comment. Fails open, same as
     // that function's own contract: this never turns a successful
     // extraction into a failed response.
-    if let Ok(extracted) = &result {
-        persist_and_embed_document(&state, project_id, &body.file_name, extracted).await;
+    let mut requirements_document = None;
+    if let Ok((bounded, whole, parsed)) = &read {
+        persist_and_embed_document(&state, project_id, &body.file_name, bounded).await;
+        requirements_document = persist_requirements(
+            &state,
+            project_id,
+            &body.file_name,
+            body.document_type.as_deref(),
+            whole,
+            parsed,
+        )
+        .await;
     }
 
-    result.map(Json).map_err(ApiError::validation)
+    result
+        .map(|extracted| {
+            Json(ExtractDocumentTextResponse {
+                extracted,
+                requirements_document,
+            })
+        })
+        .map_err(ApiError::validation)
+}
+
+/// Phase 3 — stores the whole document and the requirements read out of it
+/// (`requirements.rs`, `0020_requirements.sql`). Fails open like
+/// `persist_and_embed_document`: the extraction response is the core of the
+/// endpoint, so a database problem here is a warning in the log and an absent
+/// `requirements_document`, never a failed upload.
+async fn persist_requirements(
+    state: &AppState,
+    project_id: Uuid,
+    file_name: &str,
+    doc_type: Option<&str>,
+    whole: &crate::doc_extract::FullDocument,
+    parsed: &crate::requirements::ParsedDocument,
+) -> Option<RequirementDocumentSummary> {
+    let mut hasher = Sha256::new();
+    hasher.update(whole.text.as_bytes());
+    let content_hash = hex::encode(hasher.finalize());
+    let doc_type = doc_type.map(str::trim).filter(|t| !t.is_empty());
+    match state
+        .store
+        .upsert_requirement_document(
+            &project_id.to_string(),
+            file_name,
+            doc_type,
+            &content_hash,
+            &whole.text,
+            parsed,
+        )
+        .await
+    {
+        Ok(document_id) => {
+            let mut by_kind = std::collections::BTreeMap::new();
+            for r in &parsed.requirements {
+                *by_kind.entry(r.kind.as_str().to_string()).or_insert(0) += 1;
+            }
+            Some(RequirementDocumentSummary {
+                document_id,
+                full_char_count: whole.char_count,
+                full_truncated: whole.truncated,
+                sections_count: parsed.sections_count,
+                requirements_count: parsed.requirements.len(),
+                skipped_sections: parsed.skipped_sections.clone(),
+                by_kind,
+            })
+        }
+        Err(e) => {
+            state
+                .log_bus
+                .emit(
+                    "WARN",
+                    "generation",
+                    &format!(
+                        "Could not store this document's requirements, it can only be used the way it always was: {e}"
+                    ),
+                    None,
+                    Some(&project_id.to_string()),
+                    None,
+                )
+                .await;
+            None
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct ListRequirementsQuery {
+    /// Comma-separated document ids to restrict the list to.
+    #[serde(default)]
+    document_ids: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ListRequirementsResponse {
+    documents: Vec<crate::store::RequirementDocumentRow>,
+    requirements: Vec<crate::store::RequirementRow>,
+}
+
+/// GET /api/v1/projects/:project_id/requirements — the documents that have
+/// been read for their requirements and the requirements themselves (all of
+/// the project's, or only those of `?document_ids=a,b`). Viewer+: reading
+/// what a project's documents say is not a privileged action.
+async fn list_requirements_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiQuery(q): ApiQuery<ListRequirementsQuery>,
+) -> Result<Json<ListRequirementsResponse>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let mut ids = Vec::new();
+    if let Some(list) = q.document_ids.as_deref() {
+        for part in list.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+            ids.push(Uuid::parse_str(part).map_err(|_| {
+                ApiError::validation(format!("document_ids must be UUIDs, got '{part}'"))
+            })?);
+        }
+    }
+    let pid = project_id.to_string();
+    let mut documents = state
+        .store
+        .list_requirement_documents(&pid)
+        .await
+        .map_err(to_500)?;
+    if !ids.is_empty() {
+        documents.retain(|d| ids.contains(&d.id));
+    }
+    let requirements = state
+        .store
+        .list_requirements(&pid, &ids)
+        .await
+        .map_err(to_500)?;
+    Ok(Json(ListRequirementsResponse {
+        documents,
+        requirements,
+    }))
 }
 
 // ---------------------------------------------------- Phase 6 — Performance Testing
