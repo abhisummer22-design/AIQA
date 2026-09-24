@@ -536,6 +536,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
     setGeneratedCases(finished.generatedCases || []);
     setGenerationState(finished.generationState);
     setGenerationError(finished.generationError ?? null);
+    setLastGenerationResult(finished.lastGenerationResult ?? null);
     setActiveWaveSkillNames([]);
     if (finished.generationState === 'COMPLETED') setActiveBranch('GENERATED_CASES');
     // eslint-disable-next-line react-hooks/exhaustive-deps

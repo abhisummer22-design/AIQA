@@ -2593,6 +2593,45 @@ describe('TestCaseGeneratorPage — per-skill generation results', () => {
     expect(document.getElementById('generation-wave-warning')!.textContent).toContain('Negative Testing');
   }, 15000);
 
+  it('shows the per-skill results the moment a generation finishes that an earlier instance of the page started', async () => {
+    let resolveFetch: (value: Response) => void;
+    const pending = new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') return pending;
+        if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+        return dashboardResponseFor(url) ?? jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+    await act(async () => {
+      document.getElementById('btn-generate-test-cases-primary')!.click();
+    });
+    await waitFor(() => expect(screen.getByText('Generating Test Cases...')).toBeTruthy());
+
+    // Back on a new instance of the page while the call is still running.
+    await goToDashboard();
+    await goToGenerator();
+    expect(screen.getByText('Generating Test Cases...')).toBeTruthy();
+    expect(document.getElementById('generation-wave-results')).toBeNull();
+
+    await act(async () => {
+      resolveFetch(jsonResponse(200, PARTIAL_RESPONSE()));
+    });
+
+    await waitFor(() => expect(document.getElementById('generation-wave-results')).toBeTruthy());
+    expect(within(document.getElementById('generation-wave-results')!).getByText('Per-skill results: 1 of 2 succeeded')).toBeTruthy();
+    expect(document.getElementById('generation-wave-warning')!.textContent).toContain('Negative Testing');
+  }, 15000);
+
   it('keeps each project\'s own per-skill results — a fresh project shows none, and going back restores them', async () => {
     vi.stubGlobal(
       'fetch',
