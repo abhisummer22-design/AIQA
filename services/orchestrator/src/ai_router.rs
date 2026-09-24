@@ -2252,10 +2252,24 @@ pub enum RoutingMode {
 /// of its models) or just the model (whichever provider serves it) for
 /// this one task, matching `AiSettings`' own `preferred_provider`/
 /// `preferred_model` split.
+///
+/// `chain` is the stronger form: an ordered list of exact provider/model pairs. When it is not empty, this task is
+/// answered by the first entry that is available and answers, in that order, and by nothing else — automatic
+/// scoring and the automatic fallback are not used for it. That is what keeps a paid provider out of a task
+/// unless it is listed. Empty (the default) leaves routing exactly as before.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TaskProviderPreference {
     pub provider: Option<String>,
     pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chain: Vec<TaskTarget>,
+}
+
+/// One exact provider/model pair in a task's `chain`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TaskTarget {
+    pub provider: String,
+    pub model: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2797,6 +2811,98 @@ impl AiInfrastructure {
         best.ok_or(RoutingError::NoCompatibleModel { task })
     }
 
+    /// The provider, model and score of a chain entry, if it is discovered, usable for `task` and not skipped by an
+    /// open breaker (`providers` already leaves those out).
+    fn find_chain_target<'a>(
+        providers: &'a [AiProviderInfo],
+        task: AiTask,
+        target: &TaskTarget,
+    ) -> Option<(&'a AiProviderInfo, &'a ModelDefinition, f64)> {
+        let provider = providers.iter().find(|p| p.id == target.provider)?;
+        let model = provider.models.iter().find(|m| m.id == target.model)?;
+        let score = score_model(model, provider, &required_capabilities(task), None)?;
+        Some((provider, model, score))
+    }
+
+    /// What `generate` would pick right now for `task`: the first usable entry of its chain when it has one, else the
+    /// usual routing. Never runs anything.
+    pub fn preview_route(
+        providers: &[AiProviderInfo],
+        task: AiTask,
+        settings: &AiSettings,
+    ) -> Option<RoutingDecision> {
+        match settings
+            .task_overrides
+            .get(&task)
+            .map(|o| o.chain.as_slice())
+            .filter(|c| !c.is_empty())
+        {
+            Some(chain) => chain
+                .iter()
+                .find_map(|t| Self::find_chain_target(providers, task, t))
+                .map(|(provider, model, score)| RoutingDecision {
+                    provider_id: provider.id.clone(),
+                    model_id: model.id.clone(),
+                    routing_score: score,
+                    reason: format!("Task chain: first available model for {task:?}"),
+                }),
+            None => Self::route_among(providers, task, settings, None, None).ok(),
+        }
+    }
+
+    /// Answers `request` from its task's `chain`: each entry in order, the first that answers wins, and nothing
+    /// outside the chain is ever tried. `fallback_used` is true for any entry after the first.
+    async fn generate_from_chain(
+        &self,
+        providers: &[AiProviderInfo],
+        chain: &[TaskTarget],
+        request: &AiRequest,
+        settings: &AiSettings,
+        skipped_note: Option<&str>,
+    ) -> GenerationOutcome2 {
+        let mut attempts: Vec<String> = Vec::new();
+        for (index, target) in chain.iter().enumerate() {
+            let Some((provider, model, score)) =
+                Self::find_chain_target(providers, request.task, target)
+            else {
+                attempts.push(format!(
+                    "{} / {}: not available",
+                    target.provider, target.model
+                ));
+                continue;
+            };
+            let started = Instant::now();
+            match self
+                .execute_for(&provider.id, &model.id, &request.prompt, request.task)
+                .await
+            {
+                Ok(output) => {
+                    return GenerationOutcome2::Ok(GenerationResult {
+                        provider: provider.id.clone(),
+                        model: model.id.clone(),
+                        routing_mode: settings.mode,
+                        routing_score: score,
+                        fallback_used: index > 0,
+                        prompt_tokens: output.usage.prompt_tokens,
+                        completion_tokens: output.usage.completion_tokens,
+                        latency_ms: started.elapsed().as_millis() as u64,
+                        estimated_cost_usd: estimate_cost(&output.usage, provider.pricing),
+                        text: output.text,
+                    });
+                }
+                Err(e) => attempts.push(format!("{} / {}: {e}", provider.name, model.id)),
+            }
+        }
+        let mut reason = format!(
+            "no model in this task's chain answered — {}",
+            attempts.join("; ")
+        );
+        if let Some(note) = skipped_note {
+            reason.push_str(&format!(" ({note})"));
+        }
+        GenerationOutcome2::Failed { reason }
+    }
+
     /// The full pipeline: route, execute, and — only in AUTO mode with
     /// fallback enabled — retry against the next-best candidate on
     /// failure. Every result honestly states which model actually produced
@@ -2804,6 +2910,27 @@ impl AiInfrastructure {
     pub async fn generate(&self, request: AiRequest) -> GenerationOutcome2 {
         let (providers, skipped_note) = self.without_open_breakers(self.ensure_fresh().await);
         let settings = self.settings().await;
+
+        // A task's explicit chain answers it on its own (a per-request
+        // preference, being a hard demand by the caller, still wins).
+        if request.preferred_provider.is_none() && request.preferred_model.is_none() {
+            if let Some(chain) = settings
+                .task_overrides
+                .get(&request.task)
+                .map(|o| o.chain.as_slice())
+                .filter(|c| !c.is_empty())
+            {
+                return self
+                    .generate_from_chain(
+                        &providers,
+                        chain,
+                        &request,
+                        &settings,
+                        skipped_note.as_deref(),
+                    )
+                    .await;
+            }
+        }
 
         // Preference precedence:
         // - A per-request preference is a HARD filter (the caller asked
@@ -3684,6 +3811,7 @@ mod tests {
             TaskProviderPreference {
                 provider: Some("gemini".to_string()),
                 model: Some("gemini-heavy-model".to_string()),
+                ..Default::default()
             },
         );
         let settings = AiSettings {
@@ -3726,6 +3854,7 @@ mod tests {
             TaskProviderPreference {
                 provider: Some("gemini".to_string()),
                 model: Some("gemini-heavy-model".to_string()),
+                ..Default::default()
             },
         );
         let settings = AiSettings {
@@ -3761,6 +3890,7 @@ mod tests {
             TaskProviderPreference {
                 provider: Some("gemini".to_string()),
                 model: None, // deliberately unset — must fall through to the global model
+                ..Default::default()
             },
         );
         let settings = AiSettings {
@@ -3821,6 +3951,7 @@ mod tests {
             TaskProviderPreference {
                 provider: None,
                 model: Some("gemini-model".to_string()),
+                ..Default::default()
             },
         );
         infra
@@ -6059,6 +6190,13 @@ mod tests {
         }
     }
 
+    fn generation_request() -> AiRequest {
+        AiRequest {
+            task: AiTask::TestCaseGeneration,
+            ..general_request()
+        }
+    }
+
     fn served_by(outcome: GenerationOutcome2) -> (String, bool) {
         match outcome {
             GenerationOutcome2::Ok(r) => (r.provider, r.fallback_used),
@@ -6188,6 +6326,331 @@ mod tests {
             solo.prompts.lock().unwrap().len(),
             2,
             "the third call never reached the provider"
+        );
+    }
+
+    // ------------------------------------------------------------------ task chains
+
+    /// Adds provider `id` (one model, `<id>-model`) answering from `responses`, and returns its discovery and its
+    /// executor so a test can see how often it was asked.
+    fn chain_provider(
+        executors: &mut HashMap<&'static str, Arc<dyn AiExecutor>>,
+        id: &'static str,
+        structured: CapabilityLevel,
+        responses: Vec<Result<ExecutionOutput, ExecutionError>>,
+    ) -> (Arc<dyn ProviderDiscovery>, Arc<RecordingExecutor>) {
+        let executor = Arc::new(RecordingExecutor::sequence(responses));
+        executors.insert(id, executor.clone() as Arc<dyn AiExecutor>);
+        let model = healthy_model(&format!("{id}-model"), id, structured);
+        let discovery = Arc::new(FakeDiscovery(healthy_provider(id, vec![model])));
+        (discovery, executor)
+    }
+
+    fn chain_settings(chain: &[(&str, &str)]) -> AiSettings {
+        let mut task_overrides = HashMap::new();
+        task_overrides.insert(
+            AiTask::TestCaseGeneration,
+            TaskProviderPreference {
+                chain: chain
+                    .iter()
+                    .map(|(provider, model)| TaskTarget {
+                        provider: provider.to_string(),
+                        model: model.to_string(),
+                    })
+                    .collect(),
+                ..Default::default()
+            },
+        );
+        AiSettings {
+            mode: RoutingMode::Auto,
+            preferred_provider: None,
+            preferred_model: None,
+            fallback_enabled: true,
+            task_overrides,
+        }
+    }
+
+    fn calls(executor: &RecordingExecutor) -> usize {
+        executor.prompts.lock().unwrap().len()
+    }
+
+    #[tokio::test]
+    async fn a_task_chain_is_tried_in_order_and_nothing_outside_it_is_ever_used() {
+        let mut executors = HashMap::new();
+        let (a, a_exec) = chain_provider(
+            &mut executors,
+            "a",
+            CapabilityLevel::Basic,
+            vec![Err(ExecutionError::Timeout)],
+        );
+        let (b, b_exec) = chain_provider(
+            &mut executors,
+            "b",
+            CapabilityLevel::Basic,
+            vec![ok_output("from b")],
+        );
+        // "paid" scores highest, so it would win automatic routing and the automatic fallback — but it is not listed.
+        let (paid, paid_exec) = chain_provider(
+            &mut executors,
+            "paid",
+            CapabilityLevel::Strong,
+            vec![ok_output("paid")],
+        );
+        let infra = AiInfrastructure::new(vec![a, b, paid], executors);
+        infra
+            .set_settings(chain_settings(&[("a", "a-model"), ("b", "b-model")]))
+            .await;
+
+        assert_eq!(
+            served_by(infra.generate(generation_request()).await),
+            ("b".to_string(), true)
+        );
+        assert_eq!(
+            (calls(&a_exec), calls(&b_exec), calls(&paid_exec)),
+            (1, 1, 0)
+        );
+    }
+
+    #[tokio::test]
+    async fn the_first_entry_of_a_task_chain_is_the_primary_even_when_something_else_scores_higher()
+    {
+        let mut executors = HashMap::new();
+        let (a, a_exec) = chain_provider(
+            &mut executors,
+            "a",
+            CapabilityLevel::Basic,
+            vec![ok_output("from a")],
+        );
+        let (paid, paid_exec) = chain_provider(
+            &mut executors,
+            "paid",
+            CapabilityLevel::Strong,
+            vec![ok_output("paid")],
+        );
+        let infra = AiInfrastructure::new(vec![a, paid], executors);
+        infra
+            .set_settings(chain_settings(&[("a", "a-model")]))
+            .await;
+
+        assert_eq!(
+            served_by(infra.generate(generation_request()).await),
+            ("a".to_string(), false)
+        );
+        assert_eq!((calls(&a_exec), calls(&paid_exec)), (1, 0));
+    }
+
+    #[tokio::test]
+    async fn when_every_entry_of_a_task_chain_fails_the_failure_lists_each_reason_and_stays_inside_the_chain(
+    ) {
+        let mut executors = HashMap::new();
+        let (a, _) = chain_provider(
+            &mut executors,
+            "a",
+            CapabilityLevel::Basic,
+            vec![Err(ExecutionError::Timeout)],
+        );
+        let (b, _) = chain_provider(
+            &mut executors,
+            "b",
+            CapabilityLevel::Basic,
+            vec![Err(ExecutionError::ProviderRejected {
+                status: 429,
+                message: "Rate limit reached".to_string(),
+            })],
+        );
+        let (paid, paid_exec) = chain_provider(
+            &mut executors,
+            "paid",
+            CapabilityLevel::Strong,
+            vec![ok_output("paid")],
+        );
+        let infra = AiInfrastructure::new(vec![a, b, paid], executors);
+        infra
+            .set_settings(chain_settings(&[("a", "a-model"), ("b", "b-model")]))
+            .await;
+
+        match infra.generate(generation_request()).await {
+            GenerationOutcome2::Failed { reason } => {
+                assert!(
+                    reason.contains("no model in this task's chain answered"),
+                    "{reason}"
+                );
+                assert!(reason.contains("a / a-model: TIMEOUT"), "{reason}");
+                assert!(
+                    reason.contains("b / b-model: PROVIDER_ERROR: HTTP 429: Rate limit reached"),
+                    "{reason}"
+                );
+            }
+            GenerationOutcome2::Ok(_) => panic!("every listed model failed"),
+        }
+        assert_eq!(
+            calls(&paid_exec),
+            0,
+            "the automatic fallback must not reach outside the chain"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_chain_entry_that_is_not_available_is_skipped_and_named() {
+        let mut executors = HashMap::new();
+        let (b, _) = chain_provider(
+            &mut executors,
+            "b",
+            CapabilityLevel::Basic,
+            vec![ok_output("from b")],
+        );
+        let infra = AiInfrastructure::new(vec![b], executors);
+
+        infra
+            .set_settings(chain_settings(&[
+                ("ghost", "ghost-model"),
+                ("b", "b-model"),
+            ]))
+            .await;
+        assert_eq!(
+            served_by(infra.generate(generation_request()).await),
+            ("b".to_string(), true)
+        );
+
+        infra
+            .set_settings(chain_settings(&[("ghost", "ghost-model")]))
+            .await;
+        match infra.generate(generation_request()).await {
+            GenerationOutcome2::Failed { reason } => assert!(
+                reason.contains("ghost / ghost-model: not available"),
+                "{reason}"
+            ),
+            GenerationOutcome2::Ok(_) => panic!("nothing in the chain exists"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_request_level_preference_still_wins_over_the_task_chain() {
+        let mut executors = HashMap::new();
+        let (a, a_exec) = chain_provider(
+            &mut executors,
+            "a",
+            CapabilityLevel::Basic,
+            vec![ok_output("from a")],
+        );
+        let (paid, _) = chain_provider(
+            &mut executors,
+            "paid",
+            CapabilityLevel::Strong,
+            vec![ok_output("paid")],
+        );
+        let infra = AiInfrastructure::new(vec![a, paid], executors);
+        infra
+            .set_settings(chain_settings(&[("a", "a-model")]))
+            .await;
+
+        let request = AiRequest {
+            preferred_provider: Some("paid".to_string()),
+            ..generation_request()
+        };
+        assert_eq!(
+            served_by(infra.generate(request).await),
+            ("paid".to_string(), false)
+        );
+        assert_eq!(calls(&a_exec), 0);
+    }
+
+    #[tokio::test]
+    async fn a_task_chain_applies_in_manual_mode_and_with_the_automatic_fallback_off_and_only_to_its_own_task(
+    ) {
+        let mut executors = HashMap::new();
+        let (a, _) = chain_provider(
+            &mut executors,
+            "a",
+            CapabilityLevel::Basic,
+            vec![Err(ExecutionError::Timeout)],
+        );
+        let (b, _) = chain_provider(
+            &mut executors,
+            "b",
+            CapabilityLevel::Basic,
+            vec![ok_output("from b")],
+        );
+        let (paid, _) = chain_provider(
+            &mut executors,
+            "paid",
+            CapabilityLevel::Strong,
+            vec![ok_output("paid")],
+        );
+        let infra = AiInfrastructure::new(vec![a, b, paid], executors);
+        let mut settings = chain_settings(&[("a", "a-model"), ("b", "b-model")]);
+        settings.mode = RoutingMode::Manual;
+        settings.fallback_enabled = false;
+        infra.set_settings(settings).await;
+
+        assert_eq!(
+            served_by(infra.generate(generation_request()).await),
+            ("b".to_string(), true)
+        );
+
+        // The chain belongs to TestCaseGeneration only. MANUAL mode with no global pin has nothing to route another task to,
+        // so this failing (instead of being answered by the chain) shows the chain is not used for it.
+        let other = general_request();
+        assert!(matches!(
+            infra.generate(other).await,
+            GenerationOutcome2::Failed { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn preview_route_shows_the_first_usable_chain_entry_and_the_usual_routing_without_one() {
+        let mut executors = HashMap::new();
+        let (b, _) = chain_provider(&mut executors, "b", CapabilityLevel::Basic, vec![]);
+        let (paid, _) = chain_provider(&mut executors, "paid", CapabilityLevel::Strong, vec![]);
+        let infra = AiInfrastructure::new(vec![b, paid], executors);
+        let providers = infra.discover_all().await;
+
+        let chained = chain_settings(&[("ghost", "ghost-model"), ("b", "b-model")]);
+        let preview =
+            AiInfrastructure::preview_route(&providers, AiTask::TestCaseGeneration, &chained)
+                .expect("b is usable");
+        assert_eq!(preview.model_id, "b-model");
+        assert!(preview.reason.contains("Task chain"), "{}", preview.reason);
+
+        let automatic = AiInfrastructure::preview_route(
+            &providers,
+            AiTask::TestCaseGeneration,
+            &AiSettings::default(),
+        )
+        .expect("something is usable");
+        assert_eq!(
+            automatic.model_id, "paid-model",
+            "no chain: the best-scoring model, as before"
+        );
+    }
+
+    #[test]
+    fn a_task_chain_round_trips_and_an_absent_one_leaves_the_stored_json_unchanged() {
+        let without = TaskProviderPreference {
+            provider: Some("gemini".to_string()),
+            model: Some("m".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            serde_json::to_string(&without).unwrap(),
+            r#"{"provider":"gemini","model":"m"}"#
+        );
+        let parsed: TaskProviderPreference =
+            serde_json::from_str(r#"{"provider":"gemini","model":"m"}"#).unwrap();
+        assert!(
+            parsed.chain.is_empty(),
+            "a row saved before chains existed must still load"
+        );
+
+        let with: TaskProviderPreference = serde_json::from_str(
+            r#"{"provider":null,"model":null,"chain":[{"provider":"ollama","model":"qwen3:14b"},{"provider":"gemini","model":"gemini-2.5-flash"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(with.chain.len(), 2);
+        let text = serde_json::to_string(&with).unwrap();
+        assert_eq!(
+            serde_json::from_str::<TaskProviderPreference>(&text).unwrap(),
+            with
         );
     }
 

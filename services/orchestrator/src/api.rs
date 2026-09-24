@@ -3956,14 +3956,11 @@ async fn get_ai_status(
 ) -> Json<serde_json::Value> {
     let providers = state.ai_infra.providers_snapshot().await;
     let settings = state.ai_infra.settings().await;
-    let routing_preview = crate::ai_router::AiInfrastructure::route_among(
+    let routing_preview = crate::ai_router::AiInfrastructure::preview_route(
         &providers,
         crate::ai_router::AiTask::TestCaseGeneration,
         &settings,
-        None,
-        None,
-    )
-    .ok();
+    );
     Json(
         serde_json::json!({ "providers": providers, "settings": settings, "routing_preview": routing_preview }),
     )
@@ -3987,6 +3984,23 @@ async fn put_ai_settings_handler(
     ApiJson(body): ApiJson<crate::ai_router::AiSettings>,
 ) -> Result<Json<crate::ai_router::AiSettings>, ApiError> {
     auth::require_role(&ctx, Role::Operator)?;
+    const MAX_TASK_CHAIN: usize = 8;
+    for (task, preference) in &body.task_overrides {
+        if preference.chain.len() > MAX_TASK_CHAIN {
+            return Err(ApiError::validation(format!(
+                "the chain for {task:?} may have at most {MAX_TASK_CHAIN} entries"
+            )));
+        }
+        if preference
+            .chain
+            .iter()
+            .any(|t| t.provider.trim().is_empty() || t.model.trim().is_empty())
+        {
+            return Err(ApiError::validation(format!(
+                "every chain entry for {task:?} needs a provider and a model"
+            )));
+        }
+    }
     let mode_str = match body.mode {
         crate::ai_router::RoutingMode::Auto => "AUTO",
         crate::ai_router::RoutingMode::Manual => "MANUAL",

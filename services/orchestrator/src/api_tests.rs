@@ -8447,6 +8447,41 @@ async fn ai_status_returns_real_provider_snapshot_and_settings() {
 }
 
 #[tokio::test]
+async fn ai_status_routing_preview_follows_the_test_generation_chain() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    state.ai_infra.discover_all().await;
+    let operator = mint_key(&state, "operator", None).await;
+    let preview = |chain: serde_json::Value| {
+        req(
+            "PUT",
+            "/api/v1/ai/settings",
+            Some(&operator),
+            Some(serde_json::json!({
+                "mode": "AUTO",
+                "fallback_enabled": true,
+                "task_overrides": {"TEST_CASE_GENERATION": {"provider": null, "model": null, "chain": chain}}
+            })),
+        )
+    };
+
+    let (_, body) = send(&state, req("GET", "/api/v1/ai/status", Some(&operator), None)).await;
+    assert_eq!(body["routing_preview"]["model_id"], "mock-model", "body={body}");
+    assert!(!body["routing_preview"]["reason"].as_str().unwrap().contains("Task chain"));
+
+    let (status, _) = send(&state, preview(serde_json::json!([{"provider": "mock", "model": "mock-model"}]))).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, body) = send(&state, req("GET", "/api/v1/ai/status", Some(&operator), None)).await;
+    assert_eq!(body["routing_preview"]["model_id"], "mock-model", "body={body}");
+    assert!(body["routing_preview"]["reason"].as_str().unwrap().contains("Task chain"), "body={body}");
+
+    // A chain whose only entry is unavailable must not silently preview some other model.
+    let (status, _) = send(&state, preview(serde_json::json!([{"provider": "gone", "model": "nope"}]))).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, body) = send(&state, req("GET", "/api/v1/ai/status", Some(&operator), None)).await;
+    assert!(body["routing_preview"].is_null(), "body={body}");
+}
+
+#[tokio::test]
 async fn ai_settings_put_persists_for_real_and_changes_routing_behavior() {
     let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
     state.ai_infra.discover_all().await;
@@ -8568,6 +8603,83 @@ async fn ai_settings_task_overrides_survive_a_fresh_store_reload_real_durable_pe
         .expect("the saved override must be readable back through the real AiSettings type");
     assert_eq!(entry.provider.as_deref(), Some("gemini"));
     assert_eq!(entry.model.as_deref(), Some("gemini-2.5-pro"));
+}
+
+#[tokio::test]
+async fn ai_settings_task_chain_is_persisted_read_back_and_live_in_the_router() {
+    let (state, dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    let operator = mint_key(&state, "operator", None).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "PUT",
+            "/api/v1/ai/settings",
+            Some(&operator),
+            Some(serde_json::json!({
+                "mode": "AUTO",
+                "preferred_provider": null,
+                "preferred_model": null,
+                "fallback_enabled": true,
+                "task_overrides": {
+                    "TEST_CASE_GENERATION": {"provider": null, "model": null, "chain": [
+                        {"provider": "ollama", "model": "qwen3:14b"},
+                        {"provider": "gemini", "model": "gemini-2.5-flash"}
+                    ]}
+                }
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+
+    let (_, refetched) = send(&state, req("GET", "/api/v1/ai/settings", Some(&operator), None)).await;
+    let chain = &refetched["task_overrides"]["TEST_CASE_GENERATION"]["chain"];
+    assert_eq!(chain[0]["provider"], "ollama", "body={refetched}");
+    assert_eq!(chain[1]["model"], "gemini-2.5-flash", "body={refetched}");
+
+    // Durable, on-disk persistence (same independent-connection proof the plain overrides use).
+    let reloaded = crate::store::Store::connect(&dir.path().join("api.sqlite3"))
+        .await
+        .expect("reconnect");
+    let (_, _, _, _, task_overrides) = reloaded.get_ai_settings().await.expect("query").expect("a row must exist");
+    let parsed: serde_json::Value = serde_json::from_str(&task_overrides.expect("persisted as JSON text")).unwrap();
+    assert_eq!(parsed["TEST_CASE_GENERATION"]["chain"][1]["provider"], "gemini");
+
+    let live = state.ai_infra.settings().await;
+    let entry = live
+        .task_overrides
+        .get(&crate::ai_router::AiTask::TestCaseGeneration)
+        .expect("the chain must be live in the in-memory router");
+    assert_eq!(entry.chain.len(), 2);
+}
+
+#[tokio::test]
+async fn ai_settings_put_rejects_a_task_chain_that_is_malformed_or_too_long() {
+    let (state, _dir) = test_state_with_ai_router(inert_ai_router()).await;
+    let operator = mint_key(&state, "operator", None).await;
+    let put = |chain: serde_json::Value| {
+        req(
+            "PUT",
+            "/api/v1/ai/settings",
+            Some(&operator),
+            Some(serde_json::json!({
+                "mode": "AUTO",
+                "fallback_enabled": true,
+                "task_overrides": {"TEST_CASE_GENERATION": {"provider": null, "model": null, "chain": chain}}
+            })),
+        )
+    };
+
+    let (status, body) = send(&state, put(serde_json::json!([{"provider": "ollama", "model": "  "}]))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+
+    let nine: Vec<_> = (0..9).map(|i| serde_json::json!({"provider": "p", "model": format!("m{i}")})).collect();
+    let (status, body) = send(&state, put(serde_json::Value::Array(nine))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+
+    // Nothing was saved by either rejected request.
+    assert!(state.ai_infra.settings().await.task_overrides.is_empty());
 }
 
 #[tokio::test]
