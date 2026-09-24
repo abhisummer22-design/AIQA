@@ -264,6 +264,44 @@ fn is_known_reasoning_model(name: &str, family: Option<&str>) -> bool {
         .any(|f| haystack.contains(f))
 }
 
+/// Whole-word id parts of speech, embedding, image, ranking and safety-classifier models, which cannot do chat generation.
+const NON_CHAT_MODEL_TOKENS: &[&str] = &[
+    "whisper",
+    "tts",
+    "transcribe",
+    "realtime",
+    "orpheus",
+    "embed",
+    "embedding",
+    "embeddings",
+    "rerank",
+    "reranker",
+    "moderation",
+    "guard",
+    "safeguard",
+    "imagen",
+    "image",
+    "dall",
+    "veo",
+    "sora",
+    "ocr",
+];
+
+fn is_non_chat_model_id(id: &str) -> bool {
+    id.to_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|part| NON_CHAT_MODEL_TOKENS.contains(&part))
+}
+
+/// `None` disqualifies a model in `score_model`, so AUTO routing and fallback never pick a non-chat model.
+fn text_generation_level(id: &str) -> CapabilityLevel {
+    if is_non_chat_model_id(id) {
+        CapabilityLevel::None
+    } else {
+        CapabilityLevel::Strong
+    }
+}
+
 /// Parses Ollama's own `capabilities` array (from `/api/tags`, confirmed
 /// real during this unit's own manual verification — a running instance
 /// returned `"capabilities":["completion"]`) into this module's
@@ -784,6 +822,20 @@ pub trait AiExecutor: Send + Sync {
 pub struct OllamaExecutor {
     pub base_url: String,
     pub timeout: Duration,
+    /// Context window sent as `options.num_ctx`; `None` leaves Ollama's own default, which can silently cut a long prompt.
+    pub num_ctx: Option<u32>,
+}
+
+/// A positive whole number, else `None` (unset, blank, zero or not a number).
+fn parse_num_ctx(raw: Option<&str>) -> Option<u32> {
+    raw.and_then(|s| s.trim().parse::<u32>().ok())
+        .filter(|n| *n > 0)
+}
+
+fn apply_num_ctx(body: &mut serde_json::Value, num_ctx: Option<u32>) {
+    if let Some(n) = num_ctx {
+        body["options"] = serde_json::json!({ "num_ctx": n });
+    }
 }
 
 impl OllamaExecutor {
@@ -794,9 +846,11 @@ impl OllamaExecutor {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(180);
+        let num_ctx = parse_num_ctx(std::env::var("OLLAMA_NUM_CTX").ok().as_deref());
         Self {
             base_url,
             timeout: Duration::from_secs(timeout_secs),
+            num_ctx,
         }
     }
 
@@ -844,7 +898,8 @@ impl AiExecutor for OllamaExecutor {
         }
         let client = reqwest::Client::new();
         let url = format!("{}/api/generate", self.base_url.trim_end_matches('/'));
-        let body = Self::build_generate_body(model_id, prompt, Some(task));
+        let mut body = Self::build_generate_body(model_id, prompt, Some(task));
+        apply_num_ctx(&mut body, self.num_ctx);
         let resp = client
             .post(&url)
             .json(&body)
@@ -1162,6 +1217,7 @@ impl ProviderDiscovery for GroqDiscovery {
             } else {
                 CapabilityLevel::Basic // real text models reason to some degree; not benchmarked here
             };
+            let text_generation = text_generation_level(&id);
             info.models.push(ModelDefinition {
                 provider_id: Self::PROVIDER_ID.to_string(),
                 id: id.clone(),
@@ -1170,7 +1226,7 @@ impl ProviderDiscovery for GroqDiscovery {
                 parameter_size: None, // never guessed; the routing score simply forgoes that proxy
                 context_window,
                 capabilities: ModelCapabilities {
-                    text_generation: Some(CapabilityLevel::Strong),
+                    text_generation: Some(text_generation),
                     // Groq's real, documented `response_format` support
                     // (`json_object`/`json_schema`) is real, evidenced
                     // structured-output discipline — not merely
@@ -1617,6 +1673,7 @@ impl ProviderDiscovery for GeminiDiscovery {
             } else {
                 CapabilityLevel::Basic // real text models reason to some degree; not benchmarked here
             };
+            let text_generation = text_generation_level(&id);
             info.models.push(ModelDefinition {
                 provider_id: Self::PROVIDER_ID.to_string(),
                 id: id.clone(),
@@ -1625,7 +1682,7 @@ impl ProviderDiscovery for GeminiDiscovery {
                 parameter_size: None,
                 context_window: None,
                 capabilities: ModelCapabilities {
-                    text_generation: Some(CapabilityLevel::Strong),
+                    text_generation: Some(text_generation),
                     // Gemini's real, documented response_format support
                     // for structured JSON output (verified against
                     // Google's own API reference).
@@ -2034,6 +2091,7 @@ async fn discover_custom_provider(cfg: &CustomProviderConfig, timeout: Duration)
         } else {
             CapabilityLevel::Basic
         };
+        let text_generation = text_generation_level(&id);
         info.models.push(ModelDefinition {
             provider_id: cfg.id.clone(),
             id: id.clone(),
@@ -2042,7 +2100,7 @@ async fn discover_custom_provider(cfg: &CustomProviderConfig, timeout: Duration)
             parameter_size: None,
             context_window: None,
             capabilities: ModelCapabilities {
-                text_generation: Some(CapabilityLevel::Strong),
+                text_generation: Some(text_generation),
                 structured_output: Some(CapabilityLevel::Basic), // unverified for an arbitrary custom endpoint
                 reasoning: Some(reasoning),
                 vision: Some(CapabilityLevel::Unknown),
@@ -5366,6 +5424,7 @@ mod tests {
         let executor = OllamaExecutor {
             base_url,
             timeout: Duration::from_secs(2),
+            num_ctx: None,
         };
         let output = executor
             .execute_task("ollama", "gemma3:12b", "hi", AiTask::GeneralAi)
@@ -5400,6 +5459,7 @@ mod tests {
         let executor = OllamaExecutor {
             base_url: format!("http://{addr}"),
             timeout: Duration::from_secs(2),
+            num_ctx: None,
         };
         let output = executor
             .execute_task("ollama", "gemma3:12b", "hi", AiTask::GeneralAi)
@@ -5407,6 +5467,194 @@ mod tests {
             .expect("execute_task");
         assert_eq!(output.usage.prompt_tokens, None);
         assert_eq!(output.usage.completion_tokens, None);
+    }
+
+    #[test]
+    fn parse_num_ctx_accepts_only_a_positive_whole_number() {
+        assert_eq!(parse_num_ctx(None), None);
+        assert_eq!(parse_num_ctx(Some("16384")), Some(16384));
+        assert_eq!(parse_num_ctx(Some(" 8192 ")), Some(8192));
+        for bad in ["", "0", "-5", "abc", "12.5"] {
+            assert_eq!(parse_num_ctx(Some(bad)), None, "{bad:?} must be ignored");
+        }
+    }
+
+    #[tokio::test]
+    async fn ollama_executor_sends_num_ctx_only_when_configured() {
+        use std::sync::{Arc, Mutex};
+        type Captured = Arc<Mutex<Option<serde_json::Value>>>;
+
+        async fn generate(
+            axum::extract::State(captured): axum::extract::State<Captured>,
+            axum::Json(body): axum::Json<serde_json::Value>,
+        ) -> axum::Json<serde_json::Value> {
+            *captured.lock().unwrap() = Some(body);
+            axum::Json(serde_json::json!({ "response": "{\"test_cases\":[]}", "done": true }))
+        }
+
+        let captured: Captured = Arc::new(Mutex::new(None));
+        let app = axum::Router::new()
+            .route("/api/generate", axum::routing::post(generate))
+            .with_state(captured.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
+        let base_url = format!("http://{addr}");
+
+        for (num_ctx, expected) in [(Some(16384_u32), Some(16384_u64)), (None, None)] {
+            let executor = OllamaExecutor {
+                base_url: base_url.clone(),
+                timeout: Duration::from_secs(2),
+                num_ctx,
+            };
+            executor
+                .execute_task("ollama", "gemma3:12b", "hi", AiTask::GeneralAi)
+                .await
+                .expect("execute_task");
+            let sent = captured
+                .lock()
+                .unwrap()
+                .take()
+                .expect("a request reached the mock server");
+            assert_eq!(sent["options"]["num_ctx"].as_u64(), expected, "sent={sent}");
+        }
+    }
+
+    // ------------------------------------------------------------ non-chat models
+
+    #[test]
+    fn non_chat_model_ids_are_recognised_and_chat_models_are_not() {
+        for id in [
+            "whisper-large-v3",
+            "playai-tts",
+            "canopylabs/orpheus-v1-english",
+            "meta-llama/llama-guard-4-12b",
+            "meta-llama/llama-prompt-guard-2-86m",
+            "openai/gpt-oss-safeguard-20b",
+            "text-embedding-3-large",
+            "models/gemini-embedding-001",
+            "models/imagen-4.0-generate-001",
+            "models/gemini-2.5-flash-image",
+            "models/gemini-2.5-flash-preview-tts",
+            "gpt-image-1",
+            "dall-e-3",
+            "omni-moderation-latest",
+            "gpt-4o-transcribe",
+            "gpt-4o-realtime-preview",
+            "models/veo-3.0-generate-preview",
+            "mistral-ocr-latest",
+        ] {
+            assert!(is_non_chat_model_id(id), "{id} is not a chat model");
+        }
+        for id in [
+            "openai/gpt-oss-120b",
+            "openai/gpt-oss-20b",
+            "llama-3.3-70b-versatile",
+            "qwen/qwen3-32b",
+            "models/gemini-2.5-flash",
+            "models/gemini-2.5-pro",
+            "gpt-4o",
+            "gpt-4.1-mini",
+            "mistral-large-latest",
+            "deepseek-chat",
+            "custom-model-1",
+        ] {
+            assert!(!is_non_chat_model_id(id), "{id} is a chat model");
+        }
+    }
+
+    /// Serves one fixed model list at `/v1/models` (Groq, custom providers) and `/models` (Gemini).
+    async fn spawn_mock_model_list(ids: &'static [&'static str]) -> String {
+        async fn list(
+            axum::extract::State(ids): axum::extract::State<&'static [&'static str]>,
+        ) -> axum::Json<serde_json::Value> {
+            let data: Vec<_> = ids
+                .iter()
+                .map(|id| serde_json::json!({ "id": id, "object": "model" }))
+                .collect();
+            axum::Json(serde_json::json!({ "object": "list", "data": data }))
+        }
+
+        let app = axum::Router::new()
+            .route("/v1/models", axum::routing::get(list))
+            .route("/models", axum::routing::get(list))
+            .with_state(ids);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn discovery_marks_non_chat_models_and_routing_never_picks_them() {
+        // The non-chat models are listed first, so a router that ignored the marker would take one of them.
+        const IDS: &[&str] = &[
+            "whisper-large-v3",
+            "openai/gpt-oss-safeguard-20b",
+            "text-embedding-3-large",
+            "llama-3.3-70b-versatile",
+        ];
+        let base_url = spawn_mock_model_list(IDS).await;
+
+        let groq = GroqDiscovery {
+            base_url: base_url.clone(),
+            api_key: Some("k".to_string()),
+            timeout: Duration::from_secs(2),
+        }
+        .discover()
+        .await;
+        let gemini = GeminiDiscovery {
+            base_url: base_url.clone(),
+            api_key: Some("k".to_string()),
+            timeout: Duration::from_secs(2),
+        }
+        .discover()
+        .await;
+        let custom = discover_custom_provider(
+            &CustomProviderConfig {
+                id: "custom-ai-test".to_string(),
+                name: "My Custom Provider".to_string(),
+                base_url: base_url.clone(),
+                api_key: "k".to_string(),
+            },
+            Duration::from_secs(2),
+        )
+        .await;
+
+        for info in [&groq, &gemini, &custom] {
+            assert_eq!(info.models.len(), IDS.len(), "provider {}", info.id);
+            for m in &info.models {
+                let expected = if m.id == "llama-3.3-70b-versatile" {
+                    CapabilityLevel::Strong
+                } else {
+                    CapabilityLevel::None
+                };
+                assert_eq!(
+                    m.capabilities.text_generation,
+                    Some(expected),
+                    "{}/{}",
+                    info.id,
+                    m.id
+                );
+            }
+            let decision = AiInfrastructure::route_among(
+                std::slice::from_ref(info),
+                AiTask::TestCaseGeneration,
+                &AiSettings::default(),
+                None,
+                None,
+            )
+            .expect("the one chat model is routable");
+            assert_eq!(
+                decision.model_id, "llama-3.3-70b-versatile",
+                "provider {}",
+                info.id
+            );
+        }
     }
 
     #[test]
