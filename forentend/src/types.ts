@@ -279,6 +279,11 @@ export interface GenerationSession {
    *  use these to vary generated content (see `TestCaseGeneratorPage.tsx`'s
    *  own doc comment on `handleTriggerGenerate`). */
   selectedSkillIds?: string[];
+  /** Phase 3 — whether the next generation is to use the numbered
+   *  requirements read out of the uploaded documents instead of pasting the
+   *  documents. Off unless the user turned it on, and absent on any session
+   *  from before it existed (which reads as off). */
+  requirementMode?: boolean;
   generatedCases: GeneratedTestCase[];
   createdAt: string;
 }
