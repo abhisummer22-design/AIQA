@@ -2705,3 +2705,64 @@ describe('TestCaseGeneratorPage — per-skill generation results', () => {
     expect(document.getElementById('generation-wave-results')).toBeNull();
   }, 20000);
 });
+
+// ============================================== provider names in Generation Details
+
+describe('TestCaseGeneratorPage — provider names', () => {
+  const CUSTOM_ID = 'custom-ai-3f2a9c1e-77d0-4a51-9b1f-0d2b6c5e8a10';
+  const CUSTOM_RESPONSE = () =>
+    aiGenerateResponse({
+      provider: CUSTOM_ID,
+      model: 'gpt-4o',
+      waves: [waveSummary({ provider: CUSTOM_ID, model: 'gpt-4o' })],
+    });
+
+  function serve(status: () => Response) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') return jsonResponse(200, CUSTOM_RESPONSE());
+        if (url.endsWith('/ai/status')) return status();
+        if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+        return jsonResponse(200, []);
+      }),
+    );
+  }
+
+  async function generateOnce() {
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+    await generate();
+  }
+
+  it('shows a provider added in Settings by the name it was given — in Generation Details, the flow, and each skill row — not its internal id', async () => {
+    serve(() =>
+      jsonResponse(200, {
+        providers: [{ id: CUSTOM_ID, name: 'My Paid API' }],
+        settings: { mode: 'AUTO', preferred_provider: null, preferred_model: null, fallback_enabled: true },
+        routing_preview: null,
+      }),
+    );
+
+    await generateOnce();
+
+    await waitFor(() => expect(document.getElementById('generation-details-panel')!.textContent).toContain('Provider: My Paid API'));
+    expect(within(document.getElementById('generation-wave-results')!).getByText('My Paid API / gpt-4o')).toBeTruthy();
+    await goToSourcesBranch();
+    expect(document.getElementById('test-generation-flow')!.textContent).toContain('My Paid API / gpt-4o');
+    expect(page().textContent).not.toContain(CUSTOM_ID);
+  }, 20000);
+
+  it('falls back to the id when the names cannot be read, and the result is still shown in full', async () => {
+    serve(() => jsonResponse(500, { error: { code: 'INTERNAL_ERROR', message: 'boom', details: null, request_id: 'r1' } }));
+
+    await generateOnce();
+
+    expect(document.getElementById('generation-details-panel')!.textContent).toContain(`Provider: ${CUSTOM_ID}`);
+    expect(within(document.getElementById('generation-wave-results')!).getByText(`${CUSTOM_ID} / gpt-4o`)).toBeTruthy();
+    expect(screen.getByText('Test Cases Generated')).toBeTruthy();
+  }, 20000);
+});

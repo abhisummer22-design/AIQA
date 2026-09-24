@@ -3,6 +3,8 @@ import type { GenerationWaveSummary } from '../../types/contract';
 
 interface GenerationWaveResultsProps {
   waves: GenerationWaveSummary[];
+  /** Turns a provider id into the name to show; the id itself when not given. */
+  providerName?: (id: string) => string;
 }
 
 const skillLabel = (w: GenerationWaveSummary): string =>
@@ -19,7 +21,7 @@ const latencyLabel = (w: GenerationWaveSummary): string =>
 /** One row per skill call of the last generation: which provider/model served
  *  it, or why it failed. A failed call means that skill contributed no cases
  *  to the run, which the overall "Completed" state alone does not say. */
-export const GenerationWaveResults: React.FC<GenerationWaveResultsProps> = ({ waves }) => {
+export const GenerationWaveResults: React.FC<GenerationWaveResultsProps> = ({ waves, providerName = (id) => id }) => {
   if (waves.length === 0) return null;
   const failed = waves.filter((w) => w.failure_reason !== null);
 
@@ -54,7 +56,7 @@ export const GenerationWaveResults: React.FC<GenerationWaveResultsProps> = ({ wa
                 <span>
                   {w.case_count} {w.case_count === 1 ? 'case' : 'cases'}
                 </span>
-                <span>{[w.provider, w.model].filter(Boolean).join(' / ') || 'Provider not reported'}</span>
+                <span>{[w.provider ? providerName(w.provider) : null, w.model].filter(Boolean).join(' / ') || 'Provider not reported'}</span>
                 {w.fallback_used === true && <span className="text-amber-300">fallback</span>}
                 <span>{tokensLabel(w)}</span>
                 <span>{latencyLabel(w)}</span>
