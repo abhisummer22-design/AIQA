@@ -1566,11 +1566,15 @@ pub async fn generate_test_cases(
     }
 
     let Some(last_success) = waves.iter().rev().find(|w| w.succeeded()) else {
-        let reason = waves
-            .iter()
-            .filter_map(|w| w.failure_reason.as_deref())
-            .collect::<Vec<_>>()
-            .join("; ");
+        // Every skill call usually fails for the same reason (one provider is down or refusing), so say each
+        // distinct reason once instead of once per skill.
+        let mut reasons: Vec<&str> = Vec::new();
+        for reason in waves.iter().filter_map(|w| w.failure_reason.as_deref()) {
+            if !reasons.contains(&reason) {
+                reasons.push(reason);
+            }
+        }
+        let reason = reasons.join("; ");
         return GenerationOutcome::Failed {
             reason: if reason.is_empty() {
                 "no wave produced any output".to_string()
@@ -3135,6 +3139,96 @@ mod tests {
             GenerationOutcome::Ai { .. } => {
                 panic!("a refusing provider must never produce a fabricated Ai outcome")
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failure_every_skill_shares_is_reported_once_not_once_per_skill() {
+        let infra = infra_with_executor_error(ExecutionError::ProviderRejected {
+            status: 500,
+            message: "the provider is broken".to_string(),
+        });
+        let outcome = generate_test_cases(
+            &infra,
+            "Anything.",
+            &[
+                skill("s1", "Functional Testing", ""),
+                skill("s2", "Edge Case Analysis", ""),
+                skill("s3", "Security Testing", ""),
+            ],
+            &FeedbackContext::default(),
+            None,
+            None,
+        )
+        .await;
+        match outcome {
+            GenerationOutcome::Failed { reason } => {
+                assert_eq!(
+                    reason.matches("the provider is broken").count(),
+                    1,
+                    "the same reason from three skills must be said once: {reason}"
+                );
+            }
+            GenerationOutcome::Ai { .. } => {
+                panic!("a failing provider must never produce an Ai outcome")
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn different_failures_of_different_skills_are_all_still_reported() {
+        // Two skills fail differently (the first call times out, the next is refused), so both reasons must survive
+        // the de-duplication.
+        struct TimeoutThenRefusal(std::sync::atomic::AtomicUsize);
+        #[async_trait::async_trait]
+        impl crate::ai_router::AiExecutor for TimeoutThenRefusal {
+            async fn execute(
+                &self,
+                _provider_id: &str,
+                _model_id: &str,
+                _prompt: &str,
+            ) -> Result<crate::ai_router::ExecutionOutput, ExecutionError> {
+                if self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    Err(ExecutionError::Timeout)
+                } else {
+                    Err(ExecutionError::ProviderRejected {
+                        status: 429,
+                        message: "rate limited".to_string(),
+                    })
+                }
+            }
+        }
+        let mut executors: HashMap<&'static str, Arc<dyn crate::ai_router::AiExecutor>> =
+            HashMap::new();
+        executors.insert(
+            "mock",
+            Arc::new(TimeoutThenRefusal(std::sync::atomic::AtomicUsize::new(0))),
+        );
+        let infra = AiInfrastructure::new(
+            vec![Arc::new(FakeDiscovery(healthy_provider(
+                "mock",
+                vec![healthy_model("mock-model", "mock", CapabilityLevel::Strong)],
+            )))],
+            executors,
+        );
+        let outcome = generate_test_cases(
+            &infra,
+            "Anything.",
+            &[
+                skill("s1", "Functional Testing", ""),
+                skill("s2", "Edge Case Analysis", ""),
+            ],
+            &FeedbackContext::default(),
+            None,
+            None,
+        )
+        .await;
+        match outcome {
+            GenerationOutcome::Failed { reason } => {
+                assert!(reason.contains("TIMEOUT"), "{reason}");
+                assert!(reason.contains("rate limited"), "{reason}");
+            }
+            GenerationOutcome::Ai { .. } => panic!("no skill produced output"),
         }
     }
 
