@@ -496,8 +496,14 @@ AIQA_CORS_ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 # else 4096 tokens), which is what to raise for fewer, larger calls.
 REQUIREMENT_BATCH_CHARS=
 # Optional — the most AI calls one such request may make (one per skill per batch).
-# A larger request is refused before any call is made. Unset = 150.
+# A larger request is refused before any call is made. Unset = 150. A coverage
+# top-up (below) shares this limit with the first pass: it stops when it is reached.
 REQUIREMENT_MAX_CALLS=
+# Optional — the most rounds of gap-filling one coverage top-up makes (1 to 5).
+# Unset = 2. A top-up asks, technique by technique, for the cases a requirement is
+# short of at the chosen depth (a negative case, an edge case, ...), and stops when
+# every target is met, a round adds nothing, or the call limit is reached.
+COVERAGE_TOP_UP_ROUNDS=
 
 # Planning Schema Files (POST /api/v1/projects/:id/planning/test-plan)
 # The one directory a request's `schema_file_path` may point into (symlinks,

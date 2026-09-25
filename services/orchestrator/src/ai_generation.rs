@@ -214,6 +214,19 @@ fn builtin_instruction(name: &str) -> Option<&'static str> {
              only where the requirement text actually describes a user-facing interface or interaction, \
              not a purely backend/API behavior.",
         ),
+        // Non-Functional: the category of that name previously had no skill
+        // at all (`forentend/src/services/skillRegistry.ts`'s own comment on
+        // `categoryMatchedSkillIds` names this kind of gap), so ticking it
+        // generated nothing of the kind. It covers what the requirement text
+        // says about how the system must be, rather than what it must do.
+        "non-functional testing" => Some(
+            "Identify the quality-attribute scenarios the requirement text actually describes: performance \
+             (response time, throughput, capacity), reliability and availability (failure, recovery, uptime), \
+             security of data and access, usability and accessibility (keyboard, screen reader, contrast, \
+             responsive layout), compatibility (browsers, devices, platforms), and auditability or logging — \
+             using only the figures and limits the text states; where it gives none, describe the scenario \
+             qualitatively instead of inventing a number.",
+        ),
         // Negative and Positive are a deliberate, real QA-convention pair —
         // each is a genuine narrowing of what Functional Testing already
         // covers broadly, not a duplicate of it: Positive isolates only the
@@ -611,7 +624,9 @@ impl Wave {
 fn wave_for_skill_name(name: &str) -> Wave {
     match name.trim().to_lowercase().as_str() {
         "rbac testing" | "business case testing" => Wave::Dependent,
-        "security testing" | "performance testing" => Wave::NonFunctional,
+        "security testing" | "performance testing" | "non-functional testing" => {
+            Wave::NonFunctional
+        }
         _ => Wave::Base,
     }
 }
@@ -984,6 +999,12 @@ pub struct GeneratedTestCaseDraft {
     /// and left out of the JSON when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requirement_id: Option<String>,
+    /// Requirement-driven generation only: the technique the case tests with
+    /// (`coverage::Technique`: positive, negative, edge, security, performance,
+    /// accessibility). The model is asked for it; when it is missing or not
+    /// one of those, the technique of the skill that wrote the case is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub technique: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1275,6 +1296,9 @@ pub struct WaveSummary {
     pub batch: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub requirements: Option<usize>,
+    /// Coverage top-up calls only: the technique the call was asked for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub technique: Option<String>,
 }
 
 impl WaveSummary {
@@ -1304,6 +1328,7 @@ impl WaveSummary {
             skipped: true,
             batch: None,
             requirements: None,
+            technique: None,
         }
     }
 
@@ -1445,6 +1470,7 @@ async fn run_wave(
                 skipped: false,
                 batch: None,
                 requirements: None,
+                technique: None,
             };
             (summary, cases)
         }
@@ -1466,6 +1492,7 @@ async fn run_wave(
                 skipped: false,
                 batch: None,
                 requirements: None,
+                technique: None,
             };
             (summary, Vec::new())
         }
@@ -1804,6 +1831,39 @@ mod tests {
         // Real, distinct text — Spike and Load must never collapse into
         // the same instruction despite both being load-sensitive scenarios.
         assert_ne!(resolved[3].instruction, resolved[4].instruction);
+    }
+
+    /// The "Non-Functional" category had no skill at all, so ticking it
+    /// generated nothing of the kind.
+    #[test]
+    fn the_non_functional_skill_has_its_own_instruction_and_wave() {
+        let resolved = resolve_skill_instructions(&[skill("s-nf", "Non-Functional Testing", "")]);
+        let text = resolved[0].instruction.to_lowercase();
+        for word in [
+            "performance",
+            "reliability",
+            "usability",
+            "accessibility",
+            "compatibility",
+        ] {
+            assert!(text.contains(word), "{word}: {text}");
+        }
+        assert!(
+            text.contains("only the figures and limits the text states"),
+            "it must not invent numbers: {text}"
+        );
+        assert!(
+            !text.contains("custom skill"),
+            "it is a built-in, not the fallback text"
+        );
+        assert_eq!(
+            wave_for_skill_name("Non-Functional Testing"),
+            Wave::NonFunctional
+        );
+        assert_eq!(
+            wave_for_skill_name(" non-functional testing "),
+            Wave::NonFunctional
+        );
     }
 
     #[test]
@@ -2343,6 +2403,7 @@ mod tests {
             evidence: EvidenceKind::Evidenced,
             source_reference: None,
             requirement_id: None,
+            technique: None,
         }
     }
 
@@ -2590,6 +2651,7 @@ mod tests {
             evidence: EvidenceKind::Evidenced,
             source_reference: Some("must be at least 8 characters".to_string()),
             requirement_id: None,
+            technique: None,
         }
     }
 
@@ -3577,6 +3639,7 @@ mod tests {
             skipped: false,
             batch: None,
             requirements: None,
+            technique: None,
         }
     }
 
@@ -3598,6 +3661,7 @@ mod tests {
             skipped: false,
             batch: None,
             requirements: None,
+            technique: None,
         }
     }
 
