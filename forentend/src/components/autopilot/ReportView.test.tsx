@@ -233,6 +233,10 @@ describe('ReportView — the requirements table', () => {
     fireEvent.click(button('report-filter-PASSED'));
     expect(rowKeys()).toEqual(['FR-002']);
     expect(button('report-filter-PASSED').getAttribute('aria-pressed')).toBe('true');
+    // The filter that is on looks it, and the others do not.
+    expect(button('report-filter-PASSED').className).toContain('bg-violet-950');
+    expect(button('report-filter-ALL').className).not.toContain('bg-violet-950');
+    expect(button('report-filter-FAILED').className).not.toContain('bg-violet-950');
     fireEvent.click(button('report-filter-ALL'));
     expect(rowKeys()).toHaveLength(3);
   });

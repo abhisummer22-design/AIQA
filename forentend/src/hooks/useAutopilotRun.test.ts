@@ -275,11 +275,11 @@ describe('useAutopilotRuns', () => {
   it('never shows one project’s runs under another, not even for the render before it has read the other’s', async () => {
     const fetchMock = vi.fn().mockImplementation(async (url: string) => jsonResponse(200, { runs: [run('COMPLETED', { name: url.includes('proj-b') ? 'B run' : 'A run' })] }));
     vi.stubGlobal('fetch', fetchMock);
-    const rendered: Array<{ id: string | null; names: string[] | null }> = [];
+    const rendered: Array<{ id: string | null; names: string[] | null; loading: boolean }> = [];
     const { rerender } = renderHook(
       ({ id }) => {
         const list = useAutopilotRuns(id);
-        rendered.push({ id, names: list.runs?.map((r) => r.name) ?? null });
+        rendered.push({ id, names: list.runs?.map((r) => r.name) ?? null, loading: list.loading });
         return list;
       },
       { initialProps: { id: 'proj-a' as string | null } },
@@ -288,7 +288,9 @@ describe('useAutopilotRuns', () => {
     rerender({ id: 'proj-b' });
     await settle();
     expect(rendered.filter((r) => r.id === 'proj-b' && r.names?.includes('A run'))).toEqual([]);
-    expect(rendered.at(-1)).toEqual({ id: 'proj-b', names: ['B run'] });
+    // Every render for the other project that has no runs yet says it is still loading them.
+    expect(rendered.filter((r) => r.id === 'proj-b' && r.names === null).every((r) => r.loading)).toBe(true);
+    expect(rendered.at(-1)).toEqual({ id: 'proj-b', names: ['B run'], loading: false });
   });
 
   it('never shows one run under another, not even for the render before the other has been read', async () => {

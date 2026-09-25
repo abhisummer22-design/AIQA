@@ -5,7 +5,7 @@
  */
 import React from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { MemoryRouter, useLocation } from 'react-router-dom';
+import { MemoryRouter, useLocation, useNavigationType } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppShell } from '../../App';
 import { setApiKey } from '../../services/aiqaApi';
@@ -69,7 +69,8 @@ function mockBackend({ runs = [], details = {}, routes = {}, projects = [PROJECT
 
 const LocationProbe: React.FC = () => {
   const location = useLocation();
-  return <div data-testid="location-probe" data-pathname={location.pathname} data-search={location.search} />;
+  const action = useNavigationType();
+  return <div data-testid="location-probe" data-pathname={location.pathname} data-search={location.search} data-action={action} />;
 };
 
 function renderApp(initialEntries: string[] = ['/autopilot']) {
@@ -84,6 +85,8 @@ function renderApp(initialEntries: string[] = ['/autopilot']) {
 const probe = () => screen.getByTestId('location-probe');
 const currentPath = () => probe().getAttribute('data-pathname') ?? '';
 const currentSearch = () => probe().getAttribute('data-search') ?? '';
+/** How the address last changed: PUSH (a page of its own in the history), REPLACE (it took the place of the last), or POP. */
+const lastAction = () => probe().getAttribute('data-action') ?? '';
 const el = (id: string) => document.getElementById(id);
 const text = (id: string) => el(id)?.textContent ?? '';
 const button = (id: string) => el(id) as HTMLButtonElement;
@@ -254,6 +257,27 @@ describe('AutopilotPage — coming back to runs', () => {
     expect(text('run-running')).toContain('Working on: Crawl');
   });
 
+  it('takes the place of the address it landed from, so Back does not come back to a page that lands again', async () => {
+    mockBackend({ runs: [run('RUNNING')], details: { [RUN_ID]: detail('RUNNING') } });
+    await openPage();
+    await waitFor(() => expect(el('run-running')).toBeTruthy());
+    expect(currentSearch()).toBe(`?run=${RUN_ID}`);
+    expect(lastAction()).toBe('REPLACE');
+  });
+
+  it('marks the run chosen in the list, and only that one', async () => {
+    mockBackend({
+      runs: [run('COMPLETED', { id: OTHER_RUN, name: 'Older run' }), run('COMPLETED')],
+      details: { [RUN_ID]: detail('COMPLETED'), [OTHER_RUN]: detail('COMPLETED', {}, { run: { id: OTHER_RUN, name: 'Older run' } }) },
+    });
+    await openPage(PROJECT_A, [`/autopilot?run=${OTHER_RUN}`]);
+    await waitFor(() => expect(text('run-header')).toContain('Older run'));
+    expect(button(`autopilot-run-${OTHER_RUN}`).className).toContain('border-violet-700');
+    expect(button(`autopilot-run-${RUN_ID}`).className).not.toContain('border-violet-700');
+    expect(button(`autopilot-run-${OTHER_RUN}`).getAttribute('aria-current')).toBe('true');
+    expect(button(`autopilot-run-${RUN_ID}`).getAttribute('aria-current')).toBeNull();
+  });
+
   it('lands on the form, not on an old run, when every run has ended', async () => {
     mockBackend({ runs: [run('COMPLETED')], details: { [RUN_ID]: detail('COMPLETED') } });
     await openPage();
@@ -282,6 +306,7 @@ describe('AutopilotPage — coming back to runs', () => {
     });
     await waitFor(() => expect(text('run-header')).toContain('Older run'));
     expect(currentSearch()).toBe(`?run=${OTHER_RUN}`);
+    expect(lastAction()).toBe('PUSH'); // a page of its own in the history: Back returns to the form
     expect(button(`autopilot-run-${OTHER_RUN}`).getAttribute('aria-current')).toBe('true');
     expect(button('autopilot-new').getAttribute('aria-pressed')).toBe('false');
 
@@ -339,6 +364,7 @@ describe('AutopilotPage — coming back to runs', () => {
     await openAndSelectProject(PROJECT_B);
     await waitFor(() => expect(el('autopilot-wizard')).toBeTruthy());
     expect(currentSearch()).toBe('');
+    expect(lastAction()).toBe('REPLACE');
     expect(screen.queryByText(/Couldn't load the run/)).toBeNull();
   });
 
@@ -352,6 +378,49 @@ describe('AutopilotPage — coming back to runs', () => {
     await openAndSelectProject(PROJECT_B);
     await waitFor(() => expect(text('autopilot-runs')).toContain('No run yet.'));
     expect(text('autopilot-runs')).not.toContain('Alpha run');
+  });
+});
+
+describe('AutopilotPage — while it reads', () => {
+  it('says it is loading the project’s runs until they arrive', async () => {
+    let release: (r: unknown) => void = () => {};
+    mockBackend({ routes: { 'GET /autopilot/runs$': () => new Promise((resolve) => (release = resolve)) } });
+    await openPage();
+    await waitFor(() => expect(screen.getByText('Loading autopilot runs')).toBeTruthy());
+    expect(el('autopilot-wizard')).toBeNull();
+    await act(async () => release({ runs: [] }));
+    await waitFor(() => expect(el('autopilot-wizard')).toBeTruthy());
+    expect(screen.queryByText('Loading autopilot runs')).toBeNull();
+  });
+
+  it('says it is loading the run until it arrives', async () => {
+    let release: (r: unknown) => void = () => {};
+    mockBackend({ runs: [run('COMPLETED')], routes: { [`GET /autopilot/runs/${RUN_ID}$`]: () => new Promise((resolve) => (release = resolve)) } });
+    await openPage(PROJECT_A, [`/autopilot?run=${RUN_ID}`]);
+    await waitFor(() => expect(screen.getByText('Loading the run')).toBeTruthy());
+    expect(el('autopilot-run')).toBeNull();
+    await act(async () => release(detail('COMPLETED')));
+    await waitFor(() => expect(el('autopilot-run')).toBeTruthy());
+    expect(screen.queryByText('Loading the run')).toBeNull();
+  });
+
+  it('keeps showing the runs it has when reading the list again fails, rather than replacing them with an error', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let lists = 0;
+    let looks = 0;
+    mockBackend({
+      routes: {
+        'GET /autopilot/runs$': () => (++lists === 1 ? { runs: [run('RUNNING')] } : failure(500, 'INTERNAL_ERROR', 'the list is busy')),
+        [`GET /autopilot/runs/${RUN_ID}$`]: () => (++looks < 2 ? detail('RUNNING') : detail('COMPLETED')),
+      },
+    });
+    await openPage();
+    await waitFor(() => expect(el('run-running')).toBeTruthy());
+    await act(async () => void (await vi.advanceTimersByTimeAsync(2_000))); // the run ends: the list is read again, and fails
+    await waitFor(() => expect(text('run-state')).toBe('Completed'));
+    await waitFor(() => expect(lists).toBeGreaterThan(1));
+    expect(el(`autopilot-run-${RUN_ID}`)).toBeTruthy();
+    expect(screen.queryByText("Couldn't load the autopilot runs")).toBeNull();
   });
 });
 
