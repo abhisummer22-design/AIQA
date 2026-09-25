@@ -6564,7 +6564,8 @@ async fn gap_evidence_of_run(
 }
 
 /// The project's most recent crawl that left something to read (a crawl writes its result only when it has finished, so
-/// one still running is passed over).
+/// one still running is passed over). Whether a crawl can be used does not depend on the role asked for: a role it lacks,
+/// or one that reached no page, is reported by the crawl the check would have used, not passed over for an older one.
 async fn latest_crawl_run(
     state: &AppState,
     project_id: Uuid,
@@ -6582,7 +6583,8 @@ async fn latest_crawl_run(
         if !summary.name.starts_with("Crawl:") {
             continue;
         }
-        if let Ok(evidence) = gap_evidence_of_run(state, project_id, id, role).await {
+        if gap_evidence_of_run(state, project_id, id, None).await.is_ok() {
+            let evidence = gap_evidence_of_run(state, project_id, id, role).await?;
             return Ok((id, evidence));
         }
     }

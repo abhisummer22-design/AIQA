@@ -11930,6 +11930,12 @@ async fn phase6a_a_role_can_be_chosen_and_an_unknown_one_lists_the_roles() {
         Some(serde_json::json!({"crawl_run_id": run_id, "role": "auditor"})),
     )
     .await;
+    // With no crawl named, the newest one is used, and a role it lacks is the same 400 that lists the roles: not a
+    // "no crawl" 404, and not a reason to look for an older crawl.
+    let (default_status, default_admin) =
+        gap_check(&state, project, &owner, Some(serde_json::json!({"role": "ADMIN"}))).await;
+    let (default_bad_status, default_unknown) =
+        gap_check(&state, project, &owner, Some(serde_json::json!({"role": "auditor"}))).await;
     std::fs::remove_file(file).ok();
 
     // The admin's crawl reached one page (the login page) and found nothing else.
@@ -11939,6 +11945,11 @@ async fn phase6a_a_role_can_be_chosen_and_an_unknown_one_lists_the_roles() {
     assert_eq!(finding_of(&only_admin, "FR-002")["status"], "MISSING", "body={only_admin}");
     assert_eq!(bad_status, StatusCode::BAD_REQUEST, "body={unknown}");
     assert!(unknown.to_string().contains("standard, admin"), "body={unknown}");
+    assert_eq!(default_status, StatusCode::OK, "body={default_admin}");
+    assert_eq!(default_admin["crawl"]["run_id"], run_id);
+    assert_eq!(default_admin["crawl"]["role"], "ADMIN");
+    assert_eq!(default_bad_status, StatusCode::BAD_REQUEST, "body={default_unknown}");
+    assert!(default_unknown.to_string().contains("standard, admin"), "body={default_unknown}");
 }
 
 #[tokio::test]
