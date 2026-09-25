@@ -25,6 +25,8 @@ impl StepRunner for ApiSteps {
             Step::Generate => crate::autopilot_generate::generate(ctx).await,
             Step::Validate => crate::autopilot_generate::validate(ctx).await,
             Step::Approve => crate::autopilot_generate::approve(ctx).await,
+            Step::Execute => crate::autopilot_execute::execute(ctx).await,
+            Step::Report => crate::autopilot_report::report(ctx).await,
         }
     }
 }
@@ -542,6 +544,7 @@ mod tests {
         assert!(!skipped);
         assert_eq!(detail["crawl_run_id"], "crawl-1");
         assert_eq!(detail["pages"], 5);
+        assert_eq!(detail["reused"], false, "this crawl was made for the run");
         assert_eq!(detail["roles"][1]["role"], "admin");
         assert_eq!(detail["roles"][1]["pages"], 2);
         assert_eq!(detail["roles"][1]["login_succeeded"], true);
@@ -576,6 +579,7 @@ mod tests {
             .find(|s| s.name == "CRAWL")
             .unwrap();
         assert_eq!(step.detail["crawl_run_id"], "crawl-1");
+        assert_eq!(step.detail["reused"], false, "what is saved while it is going says it was not an earlier crawl");
         assert!(timeline(&f)
             .await
             .iter()
@@ -808,6 +812,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_role_whose_result_does_not_say_its_login_worked_is_counted_as_one_that_did_not() {
+        let f = fixture(Step::Crawl, config(json!({})), |p| {
+            ScriptedApi::new()
+                .on("POST", &p("crawl"), vec![Reply::new(202, json!({"run_id": "c"}))])
+                .on("GET", &p("executions/c"), vec![run_reply("COMPLETED", "Crawl: x")])
+                .on("GET", &p("crawl/c/result"), vec![result_body(json!([{"role": "anonymous", "pages": [{}]}]))])
+        })
+        .await;
+        let (detail, _) = detail_of_done(crawl(&f.ctx).await);
+        assert_eq!(detail["roles"][0]["login_succeeded"], false);
+        assert_eq!(detail["roles"][0]["pages"], 1);
+        assert!(timeline(&f)
+            .await
+            .iter()
+            .any(|m| m == "The crawl could not log in as anonymous: no reason was recorded"));
+    }
+
+    #[tokio::test]
     async fn a_crawl_that_takes_too_long_is_given_up_on_with_where_to_find_it() {
         let mut f = fixture(Step::Crawl, config(json!({})), |p| {
             ScriptedApi::new()
@@ -963,6 +985,34 @@ mod tests {
         let f = fixture(Step::GapCheck, config(json!({})), |_| ScriptedApi::new()).await;
         assert!(failed(gap_check(&f.ctx).await).contains("the crawl step did not record one"));
         assert!(f.api.seen().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_gap_check_says_so_when_only_some_requirements_show_no_sign_or_only_a_weak_one() {
+        for (missing, weak, note) in [
+            (3u64, 0u64, "3 requirement(s) show no sign in the crawl and 0 only a weak one: cases for them may not be able to run"),
+            (0, 2, "0 requirement(s) show no sign in the crawl and 2 only a weak one: cases for them may not be able to run"),
+        ] {
+            let f = fixture(Step::GapCheck, config(json!({})), |p| {
+                ScriptedApi::new().on("POST", &p("gap-check"), vec![gap_reply(missing, weak)])
+            })
+            .await;
+            with_crawl_recorded(&f).await;
+            detail_of_done(gap_check(&f.ctx).await);
+            assert!(timeline(&f).await.iter().any(|m| m == note), "{missing} missing, {weak} weak");
+        }
+        // A summary that says neither: no warning, and no count made up.
+        let f = fixture(Step::GapCheck, config(json!({})), |p| {
+            ScriptedApi::new().on(
+                "POST",
+                &p("gap-check"),
+                vec![ok(json!({"summary": {"requirements": 10}, "notes": [], "method": {}}))],
+            )
+        })
+        .await;
+        with_crawl_recorded(&f).await;
+        detail_of_done(gap_check(&f.ctx).await);
+        assert!(timeline(&f).await.iter().all(|m| !m.contains("show no sign")));
     }
 
     #[tokio::test]

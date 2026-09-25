@@ -35,7 +35,7 @@ fn suite_of(detail: &Value) -> Option<Uuid> {
 }
 
 /// The cases of the run's suite, as the API lists them.
-async fn cases_of_suite(ctx: &StepCtx, suite: Uuid) -> Result<Vec<Value>, StepError> {
+pub(crate) async fn cases_of_suite(ctx: &StepCtx, suite: Uuid) -> Result<Vec<Value>, StepError> {
     let reply = ctx
         .api
         .get(&ctx.path(&format!("test-cases?suite_id={suite}")))
@@ -50,7 +50,7 @@ async fn cases_of_suite(ctx: &StepCtx, suite: Uuid) -> Result<Vec<Value>, StepEr
 }
 
 /// The suite the generate step made, from the saved detail of that step.
-async fn suite_of_run(ctx: &StepCtx) -> Result<Uuid, StepError> {
+pub(crate) async fn suite_of_run(ctx: &StepCtx) -> Result<Uuid, StepError> {
     suite_of(&ctx.detail_of(Step::Generate).await).ok_or_else(|| {
         StepError::failed("there is no suite of test cases: the generate step did not record one")
     })
@@ -1549,6 +1549,30 @@ mod tests {
             lines.iter().any(|l| l == "Approved 1 validated case(s), because the run was made with automatic approval"),
             "{lines:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn automatic_approval_that_approves_nothing_says_nothing_about_approving() {
+        let mut f = fixture(
+            Step::Approve,
+            config(json!({"approval": "auto_validated"})),
+            |p| {
+                ScriptedApi::new().on(
+                    "GET",
+                    &p(&format!("test-cases?suite_id={SUITE}")),
+                    vec![ok(json!([case("c", "GENERATED")])), ok(json!([case("c", "GENERATED")]))],
+                )
+            },
+        )
+        .await;
+        with_suite(&f).await;
+        f.ctx.detail = json!({});
+        let (detail, _) = detail_of_done(approve(&f.ctx).await);
+        assert_eq!(detail["automatic"], true);
+        assert_eq!(detail["approved_by_run"], 0);
+        assert_eq!(detail["pending"], 1, "the case that never validated is not run");
+        let lines = timeline(&f).await;
+        assert!(lines.iter().all(|l| !l.contains("Approved")), "{lines:?}");
     }
 
     #[tokio::test]

@@ -504,6 +504,10 @@ fn protected_routes() -> Router<AppState> {
             "/api/v1/projects/:project_id/autopilot/runs/:run_id/events",
             get(crate::autopilot_api::list_events),
         )
+        .route(
+            "/api/v1/projects/:project_id/autopilot/runs/:run_id/report",
+            get(crate::autopilot_api::get_report),
+        )
         // Phase 3 — what a requirement-driven generation would do, without
         // calling any model: how many AI calls, what each skill is shown.
         .route(

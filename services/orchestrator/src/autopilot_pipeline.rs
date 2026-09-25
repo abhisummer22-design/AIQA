@@ -71,7 +71,7 @@ pub trait PipelineApi: Send + Sync {
     async fn send(&self, method: &str, path: &str, body: Option<Value>) -> Reply;
 }
 
-impl dyn PipelineApi {
+impl<'a> dyn PipelineApi + 'a {
     pub async fn get(&self, path: &str) -> Reply {
         self.send("GET", path, None).await
     }

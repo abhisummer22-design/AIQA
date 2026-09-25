@@ -1366,6 +1366,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_step_waiting_at_a_gate_is_skipped_when_its_run_ends_and_a_step_that_failed_keeps_its_own_reason() {
+        let (store, _dir) = temp_store().await;
+        let id = make_run(&store, "p1").await;
+        store.begin_autopilot_step(id, "REQUIREMENTS").await.unwrap();
+        store
+            .settle_autopilot_step(id, "REQUIREMENTS", StepState::Failed, None, Some("no requirements"))
+            .await
+            .unwrap();
+        store.begin_autopilot_step(id, "CRAWL").await.unwrap();
+        store
+            .settle_autopilot_step(id, "CRAWL", StepState::Waiting, None, None)
+            .await
+            .unwrap();
+        // GAP_CHECK was never started.
+        store
+            .skip_unfinished_autopilot_steps(id, "the run was cancelled")
+            .await
+            .unwrap();
+        let steps = store.list_autopilot_steps(id).await.unwrap();
+        let states: Vec<&str> = steps.iter().map(|s| s.state.as_str()).collect();
+        assert_eq!(states, ["FAILED", "SKIPPED", "SKIPPED"]);
+        assert_eq!(steps[0].error.as_deref(), Some("no requirements"), "a step that failed keeps its reason");
+        assert_eq!(steps[1].error.as_deref(), Some("the run was cancelled"));
+        assert!(steps[1].finished_at.is_some(), "the run's end finishes a step that waited");
+    }
+
+    #[tokio::test]
     async fn the_timeline_is_read_oldest_first_from_the_latest_or_from_where_the_reader_was() {
         let (store, _dir) = temp_store().await;
         let id = make_run(&store, "p1").await;
