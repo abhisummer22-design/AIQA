@@ -60,6 +60,14 @@ describe('EstimatePanel', () => {
     expect(task.textContent).toContain('assumed 20 tokens a second (nothing measured yet)');
   });
 
+  it('says in words whether the provider a task would go to is free or charges', () => {
+    const { rerender } = render(<EstimatePanel estimate={estimate(false)} />);
+    const provider = () => document.querySelector('#estimate-task-TEST_CASE_GENERATION span.font-mono')!.textContent;
+    expect(provider()).toBe('Ollama/qwen3:14b · local · free');
+    rerender(<EstimatePanel estimate={estimate(true)} />);
+    expect(provider()).toBe('Paid API/gpt-x · api · charges');
+  });
+
   it('says a task that no provider can serve has none', () => {
     const e = estimate(false);
     const none: AutopilotEstimate = {
@@ -90,6 +98,31 @@ describe('EstimatePanel', () => {
     const details = document.getElementById('estimate-assumptions') as HTMLDetailsElement;
     expect(details.open).toBe(false);
     expect(details.textContent).toContain('A group of ten requirements is one call.');
+  });
+
+  it('shows the note under a tile only for a tile that has one', () => {
+    render(<EstimatePanel estimate={estimate(false)} />);
+    // A tile is its label and its value; the ones with a note (the cases, the time) have a third line.
+    expect(document.getElementById('estimate-calls')!.children).toHaveLength(2);
+    expect(document.getElementById('estimate-cost')!.children).toHaveLength(2);
+    expect(document.getElementById('estimate-cases')!.children).toHaveLength(3);
+    expect(document.getElementById('estimate-time')!.children).toHaveLength(3);
+  });
+
+  it('colours the figure of a cost that is real amber, and that of a free one plain', () => {
+    const { rerender } = render(<EstimatePanel estimate={estimate(true)} />);
+    const figure = () => document.getElementById('estimate-cost')!.children[1] as HTMLElement;
+    expect(figure().className).toContain('text-amber-200');
+    expect(document.getElementById('estimate-cost')!.className).toContain('border-amber-800');
+    rerender(<EstimatePanel estimate={estimate(false)} />);
+    expect(figure().className).toContain('text-slate-100');
+    expect(document.getElementById('estimate-cost')!.className).not.toContain('amber');
+  });
+
+  it('shows no list of where the calls would go when no task calls a provider', () => {
+    render(<EstimatePanel estimate={{ ...estimate(false), tasks: [] }} />);
+    expect(document.getElementById('estimate-tasks')).toBeNull();
+    expect(document.getElementById('estimate-steps')).toBeTruthy();
   });
 
   it('says one requirement in the singular', () => {

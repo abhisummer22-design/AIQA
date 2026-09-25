@@ -143,7 +143,8 @@ export function stepSummary(step: Pick<AutopilotStep, 'name' | 'state' | 'detail
 // ------------------------------------------------------------------------------------------------ run state
 
 export const RUN_STATE_LABEL: Record<AutopilotRunState, string> = {
-  AWAITING_APPROVAL: 'Awaiting approval',
+  // The run is made and stored; what it waits for is the person's OK of its cost (the cases are approved later, at the gate).
+  AWAITING_APPROVAL: 'Awaiting cost approval',
   RUNNING: 'Running',
   WAITING: 'Waiting for you',
   COMPLETED: 'Completed',

@@ -136,13 +136,26 @@ describe('LoginRolesEditor — writing the steps by hand', () => {
     const seen: RoleDraft[][] = [];
     render(<Harness initial={[role('admin'), { localId: 2, name: 'customer', steps: [] }]} onRoles={(r) => seen.push(r)} />);
     fireEvent.click(button('role-0-add-click'));
-    fireEvent.click(button('role-0-add-click'));
-    expect(seen.at(-1)![0].steps).toHaveLength(2);
+    fireEvent.click(button('role-0-add-fill'));
+    expect(seen.at(-1)![0].steps.map((s) => s.type)).toEqual(['CLICK', 'FILL']);
     fireEvent.click(screen.getByLabelText('Remove step 1 of role 1'));
-    expect(seen.at(-1)![0].steps).toHaveLength(1);
+    expect(seen.at(-1)![0].steps.map((s) => s.type)).toEqual(['FILL']); // the one asked for went, the other stayed
     fireEvent.click(screen.getByLabelText('Remove role 1'));
     expect(seen.at(-1)!.map((r) => r.name)).toEqual(['customer']);
     expect(el('role-1')).toBeNull();
+  });
+
+  it('starts a new step at the application’s address without the spaces it was typed with', () => {
+    render(<Harness initial={[role('admin')]} baseUrl="  https://shop.example.test/  " />);
+    fireEvent.click(button('role-0-add-navigate'));
+    expect(input('Role 1 step 1 address').value).toBe('https://shop.example.test/');
+  });
+
+  it('names each kind of step it can add', () => {
+    render(<Harness initial={[role('admin')]} />);
+    expect(button('role-0-add-navigate').textContent!.trim()).toBe('open page');
+    expect(button('role-0-add-fill').textContent!.trim()).toBe('fill field');
+    expect(button('role-0-add-click').textContent!.trim()).toBe('click');
   });
 
   it('allows no more roles than a run may have, the visitor counted', () => {
@@ -164,6 +177,21 @@ describe('LoginRolesEditor — proposing the steps', () => {
     expect(button('role-0-suggest').disabled).toBe(true);
     fireEvent.change(input('Role 1 name'), { target: { value: 'admin' } });
     expect(button('role-0-suggest').disabled).toBe(false);
+  });
+
+  it('cannot ask for a suggestion for a role named only with spaces, with no project, or when the editor is switched off', () => {
+    const { unmount } = render(<Harness initial={[role('   ')]} />);
+    expect(button('role-0-suggest').disabled).toBe(true);
+    unmount();
+    render(<LoginRolesEditor projectId={null} baseUrl={BASE} roles={[role('admin')]} onChange={() => {}} nextId={() => 1} />);
+    expect(button('role-0-suggest').disabled).toBe(true);
+    cleanup();
+    render(<LoginRolesEditor projectId={PROJECT_ID} baseUrl={BASE} roles={[role('admin')]} onChange={() => {}} nextId={() => 1} disabled />);
+    expect(button('role-0-suggest').disabled).toBe(true);
+    expect(button('roles-add').disabled).toBe(true);
+    expect(button('role-0-add-click').disabled).toBe(true);
+    expect((screen.getByLabelText('Role 1 name') as HTMLInputElement).disabled).toBe(true);
+    expect((el('roles-use-ai') as HTMLInputElement).disabled).toBe(true);
   });
 
   it('asks for the role’s steps, with the AI allowed by default', async () => {
@@ -238,6 +266,15 @@ describe('LoginRolesEditor — proposing the steps', () => {
     fireEvent.click(button('role-0-suggest'));
     await waitFor(() => expect(el('role-0-suggestion')).toBeTruthy());
     expect(text('role-0-suggestion')).toContain('AI: no provider is available for this task');
+  });
+
+  it('shows no list of reasons for a proposal that gives none', async () => {
+    backend({ 'POST /login-suggestion': () => ({ ...RESPONSE, suggestion: { ...SUGGESTION, reasons: [] } }) });
+    render(<Harness initial={[role('admin')]} />);
+    fireEvent.click(button('role-0-suggest'));
+    await waitFor(() => expect(el('role-0-suggestion-0')).toBeTruthy());
+    expect(el('role-0-suggestion-0')!.querySelector('ul')).toBeNull();
+    expect(el('role-0-suggestion-0')!.querySelector('ol')).toBeTruthy(); // the steps are still there
   });
 
   it('names the variables that are not set yet, and never asks for the values', async () => {
@@ -353,9 +390,9 @@ describe('LoginRolesEditor — with no crawl to propose from', () => {
     expect(el('role-0-suggestion')).toBeNull();
   });
 
-  it('gives up waiting for a crawl that does not finish', async () => {
+  it('gives up waiting for a crawl that does not finish, after forty-five looks two seconds apart', async () => {
     vi.useFakeTimers();
-    backend({
+    const fetchMock = backend({
       'POST /login-suggestion': NO_CRAWL,
       'POST /crawl': () => ({ run_id: 'crawl-9', task_id: 't1', state: 'PENDING_APPROVAL' }),
       'GET /executions/crawl-9': () => ({ run_id: 'crawl-9', name: 'Crawl', state: 'RUNNING', tasks: [] }),
@@ -364,8 +401,46 @@ describe('LoginRolesEditor — with no crawl to propose from', () => {
     fireEvent.click(button('role-0-suggest'));
     await act(async () => void (await vi.advanceTimersByTimeAsync(0)));
     fireEvent.click(button('role-0-crawl'));
-    await act(async () => void (await vi.advanceTimersByTimeAsync(2_000 * 46)));
+    await act(async () => void (await vi.advanceTimersByTimeAsync(2_000 * 44)));
+    expect(el('role-0-error')).toBeNull(); // still looking
+    expect(requests(fetchMock, 'GET /executions/crawl-9')).toHaveLength(44);
+    await act(async () => void (await vi.advanceTimersByTimeAsync(2_000)));
     expect(text('role-0-error')).toContain('did not finish in time');
+    expect(requests(fetchMock, 'GET /executions/crawl-9')).toHaveLength(45);
+    await act(async () => void (await vi.advanceTimersByTimeAsync(20_000)));
+    expect(requests(fetchMock, 'GET /executions/crawl-9')).toHaveLength(45); // and it looked no more
+  });
+
+  it('stops looking at a crawl when the editor goes away', async () => {
+    vi.useFakeTimers();
+    const fetchMock = backend({
+      'POST /login-suggestion': NO_CRAWL,
+      'POST /crawl': () => ({ run_id: 'crawl-9', task_id: 't1', state: 'PENDING_APPROVAL' }),
+      'GET /executions/crawl-9': () => ({ run_id: 'crawl-9', name: 'Crawl', state: 'RUNNING', tasks: [] }),
+    });
+    const { unmount } = render(<Harness initial={[role('admin')]} />);
+    fireEvent.click(button('role-0-suggest'));
+    await act(async () => void (await vi.advanceTimersByTimeAsync(0)));
+    fireEvent.click(button('role-0-crawl'));
+    await act(async () => void (await vi.advanceTimersByTimeAsync(4_000)));
+    const looked = requests(fetchMock, 'GET /executions/crawl-9').length;
+    expect(looked).toBe(2);
+    unmount();
+    await act(async () => void (await vi.advanceTimersByTimeAsync(20_000)));
+    expect(requests(fetchMock, 'GET /executions/crawl-9').length).toBeLessThanOrEqual(looked + 1); // at most the look already on its way
+  });
+
+  it('crawls the address without the spaces it was typed with', async () => {
+    const fetchMock = backend({
+      'POST /login-suggestion': NO_CRAWL,
+      'POST /crawl': () => failure(400, 'VALIDATION_ERROR', 'stop here'),
+    });
+    render(<Harness initial={[role('admin')]} baseUrl="  https://shop.example.test  " />);
+    fireEvent.click(button('role-0-suggest'));
+    await waitFor(() => expect(el('role-0-no-crawl')).toBeTruthy());
+    fireEvent.click(button('role-0-crawl'));
+    await waitFor(() => expect(el('role-0-error')).toBeTruthy());
+    expect(requests(fetchMock, 'POST /crawl')[0].body.base_url).toBe('https://shop.example.test');
   });
 
   it('says why the crawl could not be started', async () => {

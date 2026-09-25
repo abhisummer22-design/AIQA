@@ -3,7 +3,7 @@
  * `fetch` is mocked at the transport boundary only, so what is asserted is what the wizard really sends and shows.
  */
 import type { ComponentProps } from 'react';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setApiKey } from '../../services/aiqaApi';
 import { DEFAULT_SELECTED_SKILL_IDS } from '../../services/skillRegistry';
@@ -118,6 +118,31 @@ describe('NewRunWizard — the form', () => {
     renderWizard({ documents: 'error' });
     await waitFor(() => expect(text('wizard-documents')).toContain('the requirements could not be read'));
     expect(el('wizard-no-documents')).toBeNull();
+    expect(text('wizard-documents')).not.toContain('Reading the project');
+  });
+
+  it('says it is reading the documents until they arrive, and shows no error while it does', async () => {
+    let release: (r: unknown) => void = () => {};
+    renderWizard({ routes: { 'GET /requirements': () => new Promise((resolve) => (release = resolve)) } });
+    await waitFor(() => expect(text('wizard-documents')).toContain('Reading the project’s documents…'));
+    expect(within(el('wizard-documents')!).queryByRole('alert')).toBeNull();
+    await act(async () => release({ documents: DOCS, requirements: [] }));
+    await waitFor(() => expect(el('wizard-doc-doc-1')).toBeTruthy());
+    expect(text('wizard-documents')).not.toContain('Reading the project');
+  });
+
+  it('shows no error where the documents were read, and a hint only under the cards that have one', async () => {
+    renderWizard();
+    await waitForDocuments();
+    expect(within(el('wizard-documents')!).queryByRole('alert')).toBeNull();
+    expect(el('wizard-roles')!.querySelector(':scope > div:first-child p')).toBeTruthy();
+    expect(el('wizard-generation')!.querySelector(':scope > div:first-child p')).toBeNull();
+  });
+
+  it('looks at the project’s fifty latest runs for a crawl to reuse', async () => {
+    const { fetchMock } = renderWizard({ executions: CRAWLS });
+    await waitFor(() => expect(el('wizard-reuse-crawl')).toBeTruthy());
+    expect(requests(fetchMock, 'GET /executions')[0].query).toEqual({ limit: '50' });
   });
 
   it('offers the standard skills, with the default ones ticked', async () => {
@@ -233,6 +258,47 @@ describe('NewRunWizard — the estimate beside it', () => {
     change('wizard-depth', '');
     await settled(fetchMock, before);
     expect(lastEstimate(fetchMock)).not.toHaveProperty('depth');
+  });
+
+  it('says it is working the estimate out until the first one arrives, and dims the last one while the next is awaited', async () => {
+    const pending: Array<(value: unknown) => void> = [];
+    renderWizard({ routes: { 'POST /autopilot/estimate': () => new Promise((resolve) => pending.push(resolve)) } });
+    await waitFor(() => expect(pending).toHaveLength(1), { timeout: 3000 });
+    expect(text('wizard-estimate')).toContain('Working it out…');
+    expect(el('autopilot-estimate')).toBeNull();
+    await act(async () => pending[0](estimate()));
+    await waitFor(() => expect(el('autopilot-estimate')).toBeTruthy());
+    expect(text('wizard-estimate')).not.toContain('Working it out');
+    expect(document.querySelector('#wizard-estimate [aria-busy]')!.getAttribute('aria-busy')).toBe('false');
+
+    change('wizard-depth', 'EXHAUSTIVE');
+    await waitFor(() => expect(pending).toHaveLength(2), { timeout: 3000 });
+    expect(el('autopilot-estimate')).toBeTruthy(); // the last one stays, dimmed, until the next is there
+    expect(text('wizard-estimate')).not.toContain('Working it out');
+    expect(document.querySelector('#wizard-estimate [aria-busy]')!.getAttribute('aria-busy')).toBe('true');
+    await act(async () => pending[1](estimate()));
+    await waitFor(() => expect(document.querySelector('#wizard-estimate [aria-busy]')!.getAttribute('aria-busy')).toBe('false'));
+  });
+
+  it('follows a document that is ticked and unticked again', async () => {
+    const { fetchMock } = renderWizard();
+    await waitForDocuments();
+    await settled(fetchMock, 0);
+    let before = estimateRequests(fetchMock).length;
+    check('wizard-doc-doc-1');
+    check('wizard-doc-doc-2');
+    await settled(fetchMock, before);
+    expect(lastEstimate(fetchMock).requirement_document_ids).toEqual(['doc-1', 'doc-2']);
+
+    before = estimateRequests(fetchMock).length;
+    check('wizard-doc-doc-1'); // unticked: the other stays
+    await settled(fetchMock, before);
+    expect(lastEstimate(fetchMock).requirement_document_ids).toEqual(['doc-2']);
+
+    before = estimateRequests(fetchMock).length;
+    check('wizard-doc-doc-2');
+    await settled(fetchMock, before);
+    expect(lastEstimate(fetchMock).requirement_document_ids).toEqual([]);
   });
 
   it('follows the options that change how many calls are made', async () => {

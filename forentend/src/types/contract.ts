@@ -2287,6 +2287,8 @@ export interface AutopilotReport {
     done: boolean;
     cases: number | null;
     finished: number | null;
+    /** The cases that were really run: those that reached an outcome except the ones refused before they could run. */
+    ran?: number | null;
     counts: Record<string, number> | null;
     passed: number;
     failed: number;

@@ -129,7 +129,7 @@ export const LoginRolesEditor: React.FC<Props> = ({ projectId, baseUrl, roles, o
       const response = await aiqaApi.loginSuggestion.suggest(projectId, { role: role.name.trim(), use_ai: useAi });
       setSuggestion(role.localId, { status: 'done', response });
     } catch (e) {
-      if (e instanceof ApiError && (e.kind === 'not_found' || e.status === 404)) {
+      if (e instanceof ApiError && e.kind === 'not_found') {
         setSuggestion(role.localId, { status: 'no-crawl', message: e.detail ?? e.message });
       } else if (e instanceof ApiError && e.kind === 'validation_error' && /password|login page/i.test(e.detail ?? '')) {
         setSuggestion(role.localId, { status: 'no-crawl', message: e.detail ?? e.message });

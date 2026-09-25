@@ -185,7 +185,7 @@ export function report(extra: Partial<AutopilotReport> = {}): AutopilotReport {
     },
     validation: { validated: 5, invalid: [] },
     approval: { approved: 4, rejected: 1, undecided: 0, automatic: false, released: true },
-    execution: { enabled: true, done: true, cases: 4, finished: 4, counts: { PASSED: 3, FAILED: 1 }, passed: 3, failed: 1, role: null },
+    execution: { enabled: true, done: true, cases: 4, finished: 4, ran: 4, counts: { PASSED: 3, FAILED: 1 }, passed: 3, failed: 1, role: null },
     findings: [
       {
         case_id: 'case-2',

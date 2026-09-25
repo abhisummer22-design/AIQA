@@ -100,6 +100,17 @@ describe('ReportView — what it says', () => {
     expect(text('report-tile-failed')).toContain('1');
   });
 
+  it('counts the cases that were really run, not those that only reached an outcome because the compiler refused them', async () => {
+    await showReport(report({ execution: { ...report().execution, cases: 11, finished: 11, ran: 10 } }));
+    expect(text('report-tile-run')).toContain('10 of 11');
+  });
+
+  it('falls back to the cases that finished when the report does not say how many ran', async () => {
+    const { ran: _ran, ...noRan } = report().execution;
+    await showReport(report({ execution: { ...noRan, cases: 11, finished: 9 } }));
+    expect(text('report-tile-run')).toContain('9 of 11');
+  });
+
   it('says the cases were not run when the run was not asked to run them', async () => {
     await showReport(report({ execution: { ...report().execution, enabled: false, finished: null, cases: null } }));
     expect(text('report-tile-run')).toContain('not asked for');

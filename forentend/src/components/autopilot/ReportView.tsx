@@ -224,7 +224,7 @@ export const ReportView: React.FC<Props> = ({ projectId, runId, autoLoad, versio
         <Tile
           id="report-tile-run"
           label="cases run"
-          value={execution.enabled ? `${execution.finished ?? 0} of ${execution.cases ?? 0}` : 'not asked for'}
+          value={execution.enabled ? `${execution.ran ?? execution.finished ?? 0} of ${execution.cases ?? 0}` : 'not asked for'}
         />
         <Tile id="report-tile-passed" label="passed" value={String(execution.passed)} />
         <Tile id="report-tile-failed" label="failed" value={String(execution.failed)} />

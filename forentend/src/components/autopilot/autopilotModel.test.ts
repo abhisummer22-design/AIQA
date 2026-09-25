@@ -187,7 +187,7 @@ describe('the steps', () => {
 describe('a run’s state', () => {
   it('is worded, and only completed, failed and cancelled are ended', () => {
     expect(RUN_STATE_LABEL.WAITING).toBe('Waiting for you');
-    expect(RUN_STATE_LABEL.AWAITING_APPROVAL).toBe('Awaiting approval');
+    expect(RUN_STATE_LABEL.AWAITING_APPROVAL).toBe('Awaiting cost approval');
     for (const [state, ended] of [['AWAITING_APPROVAL', false], ['RUNNING', false], ['WAITING', false], ['COMPLETED', true], ['FAILED', true], ['CANCELLED', true]] as const) {
       expect(isEnded(state), state).toBe(ended);
     }
@@ -274,6 +274,10 @@ describe('the estimate in words', () => {
     expect(formatUsd(0.364)).toBe('$0.364');
     expect(formatUsd(0.0081)).toBe('$0.0081');
     expect(formatUsd(1.0063)).toBe('$1.0063');
+    // Never finer than the hundredth of a cent, and rounded there.
+    expect(formatUsd(0.00123)).toBe('$0.0012');
+    expect(formatUsd(0.00006)).toBe('$0.0001');
+    expect(formatUsd(0.00001)).toBe('$0.00');
   });
 
   it('says a free run is free, and that a cost nobody can state is not zero', () => {
@@ -292,6 +296,8 @@ describe('the estimate in words', () => {
     expect(formatTokens(9_999)).toBe('10.0k');
     expect(formatTokens(10_000)).toBe('10k');
     expect(formatTokens(132_000)).toBe('132k');
+    expect(formatTokens(1_234_000)).toBe('1234k');
+    expect(formatTokens(20_499)).toBe('20k');
   });
 
   it('says what a task’s speed rests on', () => {
@@ -680,5 +686,41 @@ describe('small things', () => {
     expect(suiteIdOf([step('GENERATE', 'DONE', { suite_id: 7 })])).toBeNull();
     expect(suiteIdOf([step('REQUIREMENTS', 'DONE', { suite_id: 's-1' })])).toBeNull();
     expect(suiteIdOf([])).toBeNull();
+  });
+});
+
+describe('what a person typed with spaces around it', () => {
+  const role = (name: string, steps: RoleDraft['steps']): RoleDraft => ({ localId: 1, name, steps });
+
+  it('trims the address and the selectors of a login step, and leaves the value as it was typed', () => {
+    const steps: RoleDraft['steps'] = [
+      { localId: 1, type: 'NAVIGATE', url: '  https://shop.example.test/login  ', selector: '', value: '' },
+      { localId: 2, type: 'FILL', url: '', selector: '  #password ', value: ' env:AIQA_LOGIN_ADMIN_PASSWORD ' },
+      { localId: 3, type: 'CLICK', url: '', selector: ' #go  ', value: '' },
+    ];
+    expect(toCrawlRole(role('admin', steps)).login_actions).toEqual([
+      { type: 'NAVIGATE', url: 'https://shop.example.test/login' },
+      { type: 'FILL', selector: '#password', value: ' env:AIQA_LOGIN_ADMIN_PASSWORD ' },
+      { type: 'CLICK', selector: '#go' },
+    ]);
+  });
+
+  it('runs the cases as a role whose name was typed with spaces around it', () => {
+    const steps: RoleDraft['steps'] = [{ localId: 1, type: 'NAVIGATE', url: 'https://shop.example.test/login', selector: '', value: '' }];
+    const base = { ...emptyDraft(), baseUrl: 'https://shop.example.test', roles: [role(' admin ', steps)] };
+    expect(draftProblems({ ...base, executionRole: 'admin' })).toEqual([]);
+    expect(draftProblems({ ...base, executionRole: ' admin ' })).toEqual([]);
+  });
+});
+
+describe('counting cases and time', () => {
+  it('counts cases that have been run, and only those, as run', () => {
+    expect(tallyCases([{ status: 'EXECUTED' }, { status: 'EXECUTED' }])).toEqual({ undecided: 0, validated: 0, approved: 0, rejected: 0, executed: 2 });
+    expect(tallyCases([{ status: 'APPROVED' }, { status: 'SOMETHING_NEW' }])).toEqual({ undecided: 0, validated: 0, approved: 1, rejected: 0, executed: 0 });
+  });
+
+  it('counts the seconds of a long interval exactly', () => {
+    expect(secondsBetween('2026-09-26T10:00:00Z', '2026-09-26T11:00:00Z')).toBe(3600);
+    expect(secondsBetween('2026-09-26T10:00:00Z', '2026-09-27T10:00:00Z')).toBe(86_400);
   });
 });

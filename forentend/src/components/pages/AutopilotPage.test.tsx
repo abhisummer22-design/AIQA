@@ -213,7 +213,7 @@ describe('AutopilotPage — a project with no run yet', () => {
     expect(currentSearch()).toBe(`?run=${RUN_ID}`);
     expect(requests(fetchMock, `POST /autopilot/runs/${RUN_ID}/start`)).toHaveLength(0);
     await waitFor(() => expect(text('autopilot-runs')).toContain('Autopilot: https://shop.example.test'));
-    expect(text('autopilot-runs')).toContain('Awaiting approval');
+    expect(text('autopilot-runs')).toContain('Awaiting cost approval');
     expect(el('autopilot-wizard')).toBeNull();
 
     const body = requests(fetchMock, 'POST /autopilot/runs$')[0].body;
