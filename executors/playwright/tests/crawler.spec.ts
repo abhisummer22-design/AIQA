@@ -150,3 +150,62 @@ test("a login selector that does not exist is a real, honest loginSucceeded: fal
   expect(output.roles[0].loginSucceeded).toBe(false);
   expect(output.roles[0].loginError).toBeTruthy();
 });
+
+// Run-time secrets: a login written as `env:NAME` references reads its values from the environment when the crawl
+// runs (helpers/secrets.ts). The plan a spec embeds holds only the names.
+
+const SECRET_NAMES = ["AIQA_LOGIN_CRAWLTEST_USER", "AIQA_LOGIN_CRAWLTEST_PW"];
+
+test.afterEach(() => {
+  for (const name of SECRET_NAMES) delete process.env[name];
+});
+
+function referencedLogin() {
+  return [
+    { type: "NAVIGATE" as const, url: `${BASE_URL}/login` },
+    { type: "FILL" as const, selector: "#username", value: "env:AIQA_LOGIN_CRAWLTEST_USER" },
+    { type: "FILL" as const, selector: "#password", value: "env:AIQA_LOGIN_CRAWLTEST_PW" },
+    { type: "CLICK" as const, selector: "#submit-login" },
+  ];
+}
+
+test("a login written as env:NAME references logs in with the environment's values", async ({ browser }) => {
+  process.env.AIQA_LOGIN_CRAWLTEST_USER = "admin";
+  process.env.AIQA_LOGIN_CRAWLTEST_PW = "admin-pass";
+  const plan: CrawlPlan = { baseUrl: BASE_URL, roles: [{ name: "admin", loginActions: referencedLogin() }] };
+  const resultFile = "crawl-result-env-refs.json";
+  await runCrawl(browser, plan, resultFile);
+  const raw = fs.readFileSync(path.join(RESULT_DIR, resultFile), "utf-8");
+  const admin = JSON.parse(raw).roles[0];
+
+  expect(admin.loginSucceeded).toBe(true);
+  expect(pathsOf(admin.pages)).toContain("/settings");
+  // The result the crawl writes carries no credential.
+  expect(raw).not.toContain("admin-pass");
+});
+
+test("a login whose secret is not set fails honestly, naming the variable and never a value", async ({ browser }) => {
+  process.env.AIQA_LOGIN_CRAWLTEST_USER = "admin";
+  delete process.env.AIQA_LOGIN_CRAWLTEST_PW;
+  const plan: CrawlPlan = { baseUrl: BASE_URL, roles: [{ name: "admin", loginActions: referencedLogin() }] };
+  const resultFile = "crawl-result-env-missing.json";
+  await runCrawl(browser, plan, resultFile);
+  const admin = JSON.parse(fs.readFileSync(path.join(RESULT_DIR, resultFile), "utf-8")).roles[0];
+
+  expect(admin.loginSucceeded).toBe(false);
+  expect(admin.loginError).toContain("AIQA_LOGIN_CRAWLTEST_PW is not set");
+  expect(pathsOf(admin.pages)).not.toContain("/dashboard");
+});
+
+test("a wrong secret is a rejected login, and the value is in neither the result nor the error", async ({ browser }) => {
+  process.env.AIQA_LOGIN_CRAWLTEST_USER = "admin";
+  process.env.AIQA_LOGIN_CRAWLTEST_PW = "totally-wrong-password";
+  const plan: CrawlPlan = { baseUrl: BASE_URL, roles: [{ name: "admin", loginActions: referencedLogin() }] };
+  const resultFile = "crawl-result-env-wrong.json";
+  await runCrawl(browser, plan, resultFile);
+  const raw = fs.readFileSync(path.join(RESULT_DIR, resultFile), "utf-8");
+  const admin = JSON.parse(raw).roles[0];
+
+  expect(pathsOf(admin.pages)).not.toContain("/dashboard");
+  expect(raw).not.toContain("totally-wrong-password");
+});

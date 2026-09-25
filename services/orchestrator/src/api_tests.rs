@@ -4633,6 +4633,119 @@ async fn phase6_crawler_start_creates_a_real_run_through_the_existing_pipeline()
     assert_eq!(run["tasks"].as_array().unwrap().len(), 1, "run={run}");
 }
 
+fn crawl_body_logging_in_with(username: &str, password: &str) -> Value {
+    serde_json::json!({
+        "base_url": "http://127.0.0.1:8080/app",
+        "roles": [{"name": "admin", "login_actions": [
+            {"type": "NAVIGATE", "url": "http://127.0.0.1:8080/login"},
+            {"type": "FILL", "selector": "#username", "value": username},
+            {"type": "FILL", "selector": "#password", "value": password},
+            {"type": "CLICK", "selector": "#submit-login"}
+        ]}]
+    })
+}
+
+/// A login written as `env:NAME` references is stored as those names: the run's persisted plan (which is what a
+/// restart rebuilds it from) holds the variable names in `params.secrets` and the references in nothing but the
+/// generated spec — never the values themselves.
+#[tokio::test]
+async fn phase5a_crawl_start_stores_only_the_names_of_login_secrets_never_their_values() {
+    std::env::set_var("AIQA_LOGIN_T5A_API_USER", "api-user-value-1");
+    std::env::set_var("AIQA_LOGIN_T5A_API_PW", "api-pw-value-2");
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "Phase5A Crawl Secrets").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, started) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/crawl"),
+            Some(&owner),
+            Some(crawl_body_logging_in_with(
+                "env:AIQA_LOGIN_T5A_API_USER",
+                "env:AIQA_LOGIN_T5A_API_PW",
+            )),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={started}");
+    assert!(
+        !started.to_string().contains("api-pw-value-2"),
+        "started={started}"
+    );
+    let run_id: Uuid = started["run_id"].as_str().expect("run_id").parse().unwrap();
+
+    let (plan, ..) = state
+        .store
+        .get_run_for_rehydration(run_id)
+        .await
+        .expect("read the run")
+        .expect("the run is persisted");
+    let stored = serde_json::to_string(&plan).unwrap();
+    assert!(
+        !stored.contains("api-pw-value-2") && !stored.contains("api-user-value-1"),
+        "the persisted plan must hold no secret value: {stored}"
+    );
+    assert_eq!(
+        plan.tasks[0].params["secrets"],
+        serde_json::json!(["AIQA_LOGIN_T5A_API_PW", "AIQA_LOGIN_T5A_API_USER"]),
+        "stored={stored}"
+    );
+}
+
+#[tokio::test]
+async fn phase5a_crawl_start_refuses_a_login_whose_secret_is_not_set_and_names_only_the_variable() {
+    std::env::remove_var("AIQA_LOGIN_T5A_API_MISSING");
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "Phase5A Crawl Missing Secret").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/crawl"),
+            Some(&owner),
+            Some(crawl_body_logging_in_with(
+                "admin",
+                "env:AIQA_LOGIN_T5A_API_MISSING",
+            )),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert!(
+        body.to_string()
+            .contains("AIQA_LOGIN_T5A_API_MISSING is not set"),
+        "body={body}"
+    );
+}
+
+#[tokio::test]
+async fn phase5a_crawl_start_refuses_a_reference_to_a_variable_outside_the_reserved_names() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "Phase5A Crawl Reserved Names").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/crawl"),
+            Some(&owner),
+            Some(crawl_body_logging_in_with("admin", "env:GROQ_API_KEY")),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert!(body.to_string().contains("secret reference"), "body={body}");
+    assert!(
+        !body.to_string().contains("GROQ_API_KEY"),
+        "the message must not repeat what was written: {body}"
+    );
+}
+
 /// "playwright" has no registered executor in this test harness, so the
 /// crawl's one task can never actually run and no result file is ever
 /// written — the result endpoint must report a real, honest 404, never a

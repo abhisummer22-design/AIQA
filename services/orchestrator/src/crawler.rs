@@ -48,7 +48,11 @@
 //! exposure this module does not newly introduce (that directory is
 //! gitignored, but is not otherwise access-controlled; flagged here as an
 //! honest limitation, not solved here — the same limitation the brief's own
-//! §12 security posture section never covered either).
+//! §12 security posture section never covered either). A value written
+//! `env:NAME` is the way round it: it names an `AIQA_LOGIN_*` /
+//! `AIQA_SECRET_*` variable of the orchestrator's environment, the spec holds
+//! only that name, and `helpers/secrets.ts` reads the value when the crawl
+//! runs (`execution_plan::secret_name`).
 
 use crate::execution_plan::Action;
 use serde::{Deserialize, Serialize};
@@ -132,6 +136,11 @@ pub async fn validate_crawl_plan(plan: &CrawlPlan) -> Result<(), Vec<String>> {
                     role.name
                 ));
             }
+            if let Action::Fill { value, .. } = action {
+                if let Some(problem) = crate::execution_plan::secret_reference_problem(value) {
+                    reasons.push(format!("role '{}': {problem}", role.name));
+                }
+            }
         }
     }
 
@@ -140,6 +149,19 @@ pub async fn validate_crawl_plan(plan: &CrawlPlan) -> Result<(), Vec<String>> {
     } else {
         Err(reasons)
     }
+}
+
+/// The environment variables a crawl's login sequences read (`FILL` values written `env:NAME`), each once, in name
+/// order. Names only — never a value.
+pub fn crawl_secret_names(plan: &CrawlPlan) -> Vec<String> {
+    let mut names: Vec<String> = plan
+        .roles
+        .iter()
+        .flat_map(|role| crate::execution_plan::secret_names_of(&role.login_actions))
+        .collect();
+    names.sort();
+    names.dedup();
+    names
 }
 
 // --------------------------------------------------------- materialization
@@ -327,6 +349,97 @@ mod tests {
             err.iter().any(|r| r.contains("duplicate role name")),
             "err={err:?}"
         );
+    }
+
+    fn login_with_password(value: &str) -> Vec<Action> {
+        vec![
+            Action::Fill {
+                selector: "#username".to_string(),
+                value: "env:AIQA_LOGIN_ADMIN_USERNAME".to_string(),
+            },
+            Action::Fill {
+                selector: "#password".to_string(),
+                value: value.to_string(),
+            },
+        ]
+    }
+
+    #[tokio::test]
+    async fn validate_crawl_plan_accepts_secret_references_and_rejects_a_malformed_one() {
+        let plan = |value: &str| CrawlPlan {
+            base_url: crate::execution_plan::DEFAULT_TARGET.to_string(),
+            roles: vec![role("admin", login_with_password(value))],
+        };
+        assert!(validate_crawl_plan(&plan("env:AIQA_LOGIN_ADMIN_PASSWORD"))
+            .await
+            .is_ok());
+        // A literal password is still accepted — as it always was.
+        assert!(validate_crawl_plan(&plan("admin-pass")).await.is_ok());
+        // A variable that is not one of the reserved names is refused, and the message names the role.
+        let err = validate_crawl_plan(&plan("env:GROQ_API_KEY"))
+            .await
+            .expect_err("outside the reserved prefixes");
+        assert!(
+            err.iter()
+                .any(|r| r.contains("role 'admin'") && r.contains("secret reference")),
+            "err={err:?}"
+        );
+        assert!(
+            !err.iter().any(|r| r.contains("GROQ_API_KEY")),
+            "the message must not repeat what was written: {err:?}"
+        );
+    }
+
+    #[test]
+    fn crawl_secret_names_lists_each_variable_once_across_roles_in_order() {
+        let plan = CrawlPlan {
+            base_url: crate::execution_plan::DEFAULT_TARGET.to_string(),
+            roles: vec![
+                role(
+                    "admin",
+                    login_with_password("env:AIQA_LOGIN_ADMIN_PASSWORD"),
+                ),
+                role(
+                    "again",
+                    login_with_password("env:AIQA_LOGIN_ADMIN_PASSWORD"),
+                ),
+                role("anonymous", vec![]),
+            ],
+        };
+        assert_eq!(
+            crawl_secret_names(&plan),
+            vec![
+                "AIQA_LOGIN_ADMIN_PASSWORD".to_string(),
+                "AIQA_LOGIN_ADMIN_USERNAME".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn a_crawl_spec_holds_the_name_of_a_secret_and_never_its_value() {
+        std::env::set_var("AIQA_LOGIN_T5A_CRAWL_PW", "crawl-pw-value");
+        let plan = CrawlPlan {
+            base_url: "http://127.0.0.1:4174".to_string(),
+            roles: vec![role(
+                "admin",
+                vec![Action::Fill {
+                    selector: "#password".to_string(),
+                    value: "env:AIQA_LOGIN_T5A_CRAWL_PW".to_string(),
+                }],
+            )],
+        };
+        let rel_path = materialize_crawl_spec("test-5a-crawl-secret", &plan).expect("materialize");
+        let source = std::fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../executors/playwright")
+                .join(&rel_path),
+        )
+        .expect("read generated spec");
+        assert!(
+            source.contains("\"value\":\"env:AIQA_LOGIN_T5A_CRAWL_PW\""),
+            "{source}"
+        );
+        assert!(!source.contains("crawl-pw-value"), "{source}");
     }
 
     #[tokio::test]
