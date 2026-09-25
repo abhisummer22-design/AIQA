@@ -522,6 +522,7 @@ const WEIGHT_LINK_TARGET: f32 = 0.7;
 struct PageDoc {
     url: String,
     title: String,
+    headings: Vec<String>,
     roles: Vec<String>,
     /// Word (stem) -> how strongly the page carries it: the best of where it appears.
     terms: HashMap<String, f32>,
@@ -569,6 +570,7 @@ fn prepare(page: &PageEvidence) -> PageDoc {
     PageDoc {
         url: page.url.clone(),
         title: page.title.clone(),
+        headings: page.headings.clone(),
         roles: page.roles.clone(),
         terms,
         elements,
@@ -601,6 +603,30 @@ pub enum Basis {
     Embedding,
     /// The AI read the requirement and the page and agreed.
     Ai,
+}
+
+/// What the AI said about a requirement it was asked to check (`gap_verify.rs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum Verdict {
+    /// A page it was shown clearly shows the feature.
+    Confirmed,
+    /// None of the pages it was shown does.
+    NotFound,
+    /// A page shows something related, not enough to tell.
+    Unclear,
+    /// It could not be asked, or did not answer for this requirement.
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Verification {
+    pub verdict: Verdict,
+    /// The addresses of the pages it named — only ones it was shown.
+    pub pages: Vec<String>,
+    pub reason: String,
+    /// `provider/model` that answered.
+    pub by: String,
 }
 
 /// One page a requirement points at.
@@ -672,10 +698,27 @@ pub struct Finding {
     pub status: Status,
     pub basis: Option<Basis>,
     pub matches: Vec<PageMatch>,
+    pub verification: Option<Verification>,
     pub cases: CaseCoverage,
     /// The requirement's words, and how each page scored on them (best first): what later steps work from.
     pub(crate) terms: Vec<Term>,
     pub(crate) scored: Vec<Scored>,
+}
+
+impl Finding {
+    /// How much of the requirement the best page carries, by the words.
+    pub(crate) fn best_coverage(&self) -> f32 {
+        self.scored.first().map_or(0.0, |s| s.coverage)
+    }
+
+    /// The pages the words came nearest to (best first, at most [`MAX_MATCHES`]), whether or not they were enough.
+    pub(crate) fn candidate_pages(&self) -> Vec<usize> {
+        self.scored
+            .iter()
+            .take(MAX_MATCHES)
+            .map(|s| s.page)
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -737,6 +780,8 @@ pub struct RequirementFinding {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub basis: Option<Basis>,
     pub matches: Vec<PageMatch>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification: Option<Verification>,
     pub cases: CaseCoverage,
 }
 
@@ -747,7 +792,7 @@ pub struct Analysis {
     pages: Vec<PageDoc>,
 }
 
-const MAX_MATCHES: usize = 3;
+pub(crate) const MAX_MATCHES: usize = 3;
 const MAX_MATCH_ELEMENTS: usize = 3;
 const MAX_TEXT_CHARS: usize = 400;
 const MAX_UNDOCUMENTED_ELEMENTS: usize = 6;
@@ -760,6 +805,15 @@ const KEEP_SHARE: f32 = 0.6;
 
 fn round2(x: f32) -> f32 {
     (x * 100.0).round() / 100.0
+}
+
+/// An address without its origin: what tells two pages of one application apart.
+fn path_of(url: &str) -> String {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    match rest.split_once('/') {
+        Some((_, path)) => format!("/{path}"),
+        None => "/".to_string(),
+    }
 }
 
 fn truncate_chars(text: &str, limit: usize) -> String {
@@ -939,6 +993,96 @@ impl Analysis {
         }
     }
 
+    pub(crate) fn page_count(&self) -> usize {
+        self.pages.len()
+    }
+
+    pub(crate) fn page_url(&self, page: usize) -> &str {
+        &self.pages[page].url
+    }
+
+    pub(crate) fn element_count(&self, page: usize) -> usize {
+        self.pages[page].elements.len()
+    }
+
+    /// A page as an AI is shown it, one line: its path, its title and the labels of what is on it.
+    pub(crate) fn page_brief(&self, page: usize, max_chars: usize) -> String {
+        let p = &self.pages[page];
+        let mut line = path_of(&p.url);
+        if !p.title.trim().is_empty() {
+            line.push_str(&format!(" — {:?}", truncate_chars(p.title.trim(), 60)));
+        }
+        let mut seen = HashSet::new();
+        let labels: Vec<String> = p
+            .elements
+            .iter()
+            .filter(|e| seen.insert(e.text.to_lowercase()))
+            .map(|e| format!("{:?}", truncate_chars(&e.text, 40)))
+            .collect();
+        if !labels.is_empty() {
+            line.push_str(" — on it: ");
+            line.push_str(&labels.join(", "));
+        }
+        truncate_chars(&line, max_chars)
+    }
+
+    /// The text of a page an embedder compares: its address, title, headings and the labels of what is on it.
+    pub(crate) fn page_text(&self, page: usize, max_chars: usize) -> String {
+        let p = &self.pages[page];
+        let mut parts = vec![path_of(&p.url), p.title.trim().to_string()];
+        parts.extend(p.headings.iter().map(|h| h.trim().to_string()));
+        let mut seen = HashSet::new();
+        parts.extend(
+            p.elements
+                .iter()
+                .filter(|e| seen.insert(e.text.to_lowercase()))
+                .map(|e| e.text.clone()),
+        );
+        parts.retain(|s| !s.is_empty());
+        truncate_chars(&parts.join(". "), max_chars)
+    }
+
+    /// The match a page makes for a requirement when a step other than the words chose it: it still says which of the
+    /// requirement's words the page carries.
+    pub(crate) fn match_for_page(
+        &self,
+        finding: usize,
+        page: usize,
+        basis: Basis,
+        similarity: Option<f32>,
+    ) -> PageMatch {
+        let f = &self.findings[finding];
+        let scored = f
+            .scored
+            .iter()
+            .find(|s| s.page == page)
+            .cloned()
+            .unwrap_or(Scored {
+                page,
+                coverage: 0.0,
+                strength: 0.0,
+                stems: Vec::new(),
+            });
+        let mut m = self.page_match(f, &scored);
+        m.basis = basis;
+        m.similarity = similarity.map(round2);
+        m
+    }
+
+    /// Sets what a step that decided a finding says of it: its status, what that rests on, and the pages.
+    pub(crate) fn settle(
+        &mut self,
+        finding: usize,
+        status: Status,
+        basis: Basis,
+        matches: Vec<PageMatch>,
+    ) {
+        let f = &mut self.findings[finding];
+        f.status = status;
+        f.basis = Some(basis);
+        f.matches = matches;
+    }
+
     /// The report: the counts, each requirement's standing, and the pages no requirement points at.
     pub fn report(&self) -> GapReport {
         let mut documented: HashSet<&str> = HashSet::new();
@@ -1011,6 +1155,7 @@ impl Analysis {
                     status: f.status,
                     basis: f.basis,
                     matches: f.matches.clone(),
+                    verification: f.verification.clone(),
                     cases: f.cases.clone(),
                 })
                 .collect(),
@@ -1082,6 +1227,7 @@ pub fn analyze(
             status: Status::NotCheckable,
             basis: None,
             matches: Vec::new(),
+            verification: None,
             cases: case_coverage(
                 requirement.kind,
                 by_key
