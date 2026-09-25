@@ -356,6 +356,8 @@ describe('RequirementCoveragePage — the free check', () => {
     expect(tile('gap-tile-undocumented')).toContain('1');
     expect(tile('gap-tile-cases')).toContain('3');
     expect(document.getElementById('gap-summary')!.textContent).toMatch(/not proof that it works/);
+    // "No UI evidence" can mean the crawl never reached the page: the crawl follows links only.
+    expect(document.getElementById('gap-summary')!.textContent).toMatch(/No UI evidence.*means no page the crawl reached carries them.*follows links.*button or a form/);
     expect(document.getElementById('gap-shown-untested')!.textContent).toContain('1 shown by the application, no case tests it');
     expect(document.getElementById('gap-tested-unshown')!.textContent).toContain('1 with cases, but no sign of it in the crawl');
     expect(document.getElementById('gap-notes')!.textContent).toContain('"admin" could not log in');

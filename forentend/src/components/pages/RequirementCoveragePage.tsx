@@ -672,7 +672,9 @@ export const RequirementCoveragePage: React.FC = () => {
           </div>
           <p className="text-[10px] text-slate-500">
             &ldquo;Found&rdquo; is evidence that a feature has somewhere to live — a page carries the words the requirement is
-            about — not proof that it works. Open a row to see the words and the elements behind it.
+            about — not proof that it works. &ldquo;No UI evidence&rdquo; means no page the crawl reached carries them: the
+            crawl follows links, so a page that opens only from a button or a form is not among them. Open a row to see the
+            words and the elements behind it.
           </p>
           {report.notes.length > 0 && (
             <ul id="gap-notes" className="space-y-1">
