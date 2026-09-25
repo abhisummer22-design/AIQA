@@ -40,7 +40,8 @@ import { skillStem } from '../../services/skillRegistry';
 import { EXECUTOR_OPTIONS, SIMULATE_OUTCOMES } from '../pages/ExecutionHubPage';
 import type { HandoffChoice } from '../pages/TestCaseGeneratorPage';
 import { EditTestCaseModal, type EditTestCaseUpdates } from './EditTestCaseModal';
-import type { CompilationOutcome } from '../../types/contract';
+import type { CompilationOutcome, CompileRequest } from '../../types/contract';
+import type { GroundingCrawl } from './CrawlGroundingSection';
 
 /** Phase 2.1 — the one non-real-executor addition to the handoff dropdown:
  *  compiles this specific case's own actual content into a structured plan
@@ -118,11 +119,14 @@ interface GeneratedTestCasesViewProps {
    *  case `compilePreview`/`compilePreviewLoading`/`compilePreviewError`
    *  actually belong to, since the parent owns this as single shared
    *  state, not per-row state. */
-  onCompilePreview?: (id: string) => void;
+  onCompilePreview?: (id: string, grounding?: CompileRequest) => void;
   compilePreview?: CompilationOutcome | null;
   compilePreviewLoading?: boolean;
   compilePreviewForId?: string | null;
   compilePreviewError?: string | null;
+  /** Phase 5 — the finished crawl a case can be compiled against (its real selectors, its roles' logins). Absent, only
+   *  the compile that reads the case's prose alone is offered, as before. */
+  groundingCrawl?: GroundingCrawl | null;
 }
 
 export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
@@ -148,11 +152,24 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
   compilePreviewLoading = false,
   compilePreviewForId = null,
   compilePreviewError = null,
+  groundingCrawl = null,
 }) => {
   const [handoffOutcome, setHandoffOutcome] = useState<'pass' | 'fail' | 'timeout' | 'infra_error'>('pass');
   // Phase 2 — '' means Simulate (matches `EXECUTOR_OPTIONS`'s own '' entry),
   // any other value is a real, registered executor name.
   const [handoffExecutor, setHandoffExecutor] = useState<string>('');
+  // Phase 5 — compile against the crawl (off unless chosen: the compile that reads the case's prose is the default),
+  // and the crawl's role the case runs as ('' = without signing in).
+  const [compileGrounded, setCompileGrounded] = useState(false);
+  const [compileRole, setCompileRole] = useState('');
+  // What the last "Preview Compilation" asked for, so a READY preview is never used to hand off something else.
+  const [previewedGrounding, setPreviewedGrounding] = useState('null');
+  const compileGrounding: CompileRequest | undefined =
+    compileGrounded && groundingCrawl
+      ? { crawl_run_id: groundingCrawl.runId, ...(compileRole ? { role: compileRole } : {}) }
+      : undefined;
+  const compileGroundingKey = JSON.stringify(compileGrounding ?? null);
+  const compileRoleOptions = (groundingCrawl?.roles ?? []).filter((r) => r.name.toLowerCase() !== 'anonymous');
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
   // Self-contained modal-open state, same convention `SkillManagerModal`'s
   // own caller (`SkillsAndMcpPanel`) already uses — the real save logic
@@ -1138,7 +1155,10 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                               <button
                                 type="button"
                                 id="btn-preview-compilation"
-                                onClick={() => onCompilePreview?.(activeTestCase.id)}
+                                onClick={() => {
+                                  setPreviewedGrounding(compileGroundingKey);
+                                  onCompilePreview?.(activeTestCase.id, compileGrounding);
+                                }}
                                 disabled={compilePreviewLoading}
                                 className="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-200 font-mono text-[11px] font-bold cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                               >
@@ -1167,7 +1187,11 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                             {(() => {
                               const isCompileMode = handoffExecutor === COMPILE_OPTION_VALUE;
                               const previewIsForThisCase = compilePreviewForId === activeTestCase.id;
-                              const isReady = isCompileMode && previewIsForThisCase && compilePreview?.status === 'READY';
+                              const isReady =
+                                isCompileMode &&
+                                previewIsForThisCase &&
+                                compilePreview?.status === 'READY' &&
+                                previewedGrounding === compileGroundingKey;
                               const compileBlocked = isCompileMode && !isReady;
                               return (
                                 <button
@@ -1180,7 +1204,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                                       handoffExecutor === ''
                                         ? { mode: 'simulate', outcome: handoffOutcome }
                                         : isCompileMode
-                                          ? { mode: 'compile' }
+                                          ? { mode: 'compile', ...(compileGrounding ? { grounding: compileGrounding } : {}) }
                                           : { mode: 'executor', executor: handoffExecutor },
                                     )
                                   }
@@ -1201,6 +1225,53 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                               );
                             })()}
                           </div>
+                          {handoffExecutor === COMPILE_OPTION_VALUE && (
+                            <div id="compile-grounding-controls" className="max-w-md text-right space-y-1">
+                              {groundingCrawl ? (
+                                <div className="flex items-center justify-end gap-2 flex-wrap">
+                                  <label
+                                    htmlFor="compile-grounded-toggle"
+                                    className="flex items-center gap-1.5 text-[10px] font-mono text-slate-300 cursor-pointer"
+                                  >
+                                    <input
+                                      id="compile-grounded-toggle"
+                                      type="checkbox"
+                                      checked={compileGrounded}
+                                      onChange={(e) => setCompileGrounded(e.target.checked)}
+                                      className="accent-teal-600"
+                                    />
+                                    <span>Compile against the crawl (its real selectors, login first)</span>
+                                  </label>
+                                  {compileGrounded && (
+                                    <>
+                                      <label className="text-[10px] font-mono text-slate-400" htmlFor="compile-role-select">
+                                        Run as
+                                      </label>
+                                      <select
+                                        id="compile-role-select"
+                                        value={compileRole}
+                                        onChange={(e) => setCompileRole(e.target.value)}
+                                        className="px-2 py-1 rounded bg-[#020617] border border-slate-700 text-[11px] font-mono text-slate-200 cursor-pointer"
+                                      >
+                                        <option value="">No login</option>
+                                        {compileRoleOptions.map((r) => (
+                                          <option key={r.name} value={r.name}>
+                                            {r.name}
+                                            {r.loggedIn === false ? ' (login failed)' : ''}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </>
+                                  )}
+                                </div>
+                              ) : (
+                                <p className="text-[10px] font-mono text-slate-500">
+                                  Crawl the application (Crawl for Real UI Grounding) to compile against its real selectors and
+                                  log in first.
+                                </p>
+                              )}
+                            </div>
+                          )}
                           {handoffExecutor === COMPILE_OPTION_VALUE && compilePreviewForId === activeTestCase.id && (
                             <div id="compile-preview-panel" className="max-w-md text-right">
                               {compilePreviewLoading ? (
@@ -1216,6 +1287,23 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                                   <p className="text-slate-400">
                                     Compiled {compilePreview.compiler === 'AI' ? `by AI (${compilePreview.provider ?? 'unknown provider'}/${compilePreview.model ?? 'unknown model'})` : 'deterministically'} from this case's own steps/expected result.
                                   </p>
+                                  {compilePreview.grounding && (
+                                    <p id="compile-grounding-note" className="text-slate-400">
+                                      Grounded in the crawl
+                                      {compilePreview.grounding.role
+                                        ? `, signing in as ${compilePreview.grounding.role} first`
+                                        : ', without signing in'}
+                                      : {compilePreview.grounding.elements_offered} elements on {compilePreview.grounding.pages_offered} of{' '}
+                                      {compilePreview.grounding.pages_in_crawl} pages were shown to the compiler, and every selector
+                                      was found by the crawl.
+                                    </p>
+                                  )}
+                                  {compilePreview.grounding && compilePreview.grounding.secrets.length > 0 && (
+                                    <p id="compile-secrets-note" className="text-amber-300/90">
+                                      Reads {compilePreview.grounding.secrets.join(', ')} from the orchestrator's environment when it
+                                      runs — they must be set there, or the handoff is refused.
+                                    </p>
+                                  )}
                                 </div>
                               ) : compilePreview?.status === 'NOT_EXECUTABLE' ? (
                                 <div className="text-[10px] font-mono text-amber-300/90">

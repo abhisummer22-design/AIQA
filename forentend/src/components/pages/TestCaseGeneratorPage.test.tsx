@@ -2766,3 +2766,117 @@ describe('TestCaseGeneratorPage — provider names', () => {
     expect(screen.getByText('Test Cases Generated')).toBeTruthy();
   }, 20000);
 });
+
+// ============================================ Phase 5 — compile against the crawl
+
+describe('TestCaseGeneratorPage — compile and hand off against a finished crawl (Phase 5)', () => {
+  const GROUNDED_READY = {
+    status: 'READY',
+    test_case_id: 'case-approved',
+    execution_type: 'BROWSER',
+    target: 'https://target.example.com/dashboard',
+    actions: [
+      { type: 'NAVIGATE', url: 'https://target.example.com/login' },
+      { type: 'NAVIGATE', url: 'https://target.example.com/dashboard' },
+    ],
+    compiler: 'AI',
+    diagnostics: [],
+    provider: 'local',
+    model: 'qwen',
+    grounding: {
+      role: 'admin',
+      pages_in_crawl: 1,
+      pages_offered: 1,
+      elements_offered: 1,
+      login_steps: 4,
+      secrets: ['AIQA_LOGIN_ADMIN_PASSWORD', 'AIQA_LOGIN_ADMIN_USERNAME'],
+    },
+  };
+
+  /** A crawl that finishes with two roles, an approved case, and a record of what compile and handoff were sent. */
+  function setUp() {
+    const approved = testCaseRow({ id: 'case-approved', title: 'Ready for handoff', status: 'APPROVED' });
+    const compileBodies: unknown[] = [];
+    const handoffBodies: unknown[] = [];
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes('/crawl') && u.endsWith('/result')) {
+        return jsonResponse(200, {
+          roles: [
+            { role: 'anonymous', loginSucceeded: true, loginError: null, pages: crawlOutput().roles[0].pages },
+            { role: 'admin', loginSucceeded: true, loginError: null, pages: crawlOutput().roles[0].pages },
+          ],
+          visibilityMatrix: [],
+        });
+      }
+      if (u.includes('/crawl') && init?.method === 'POST') return jsonResponse(201, { run_id: 'crawl-run-1' });
+      if (u.includes('/executions/crawl-run-1')) {
+        return jsonResponse(200, runDetail({ state: 'COMPLETED', finished_at: new Date().toISOString() }));
+      }
+      if (u.includes('/compile')) {
+        compileBodies.push(init?.body === undefined ? undefined : JSON.parse(String(init.body)));
+        return jsonResponse(200, GROUNDED_READY);
+      }
+      if (u.includes('/handoff')) {
+        handoffBodies.push(JSON.parse(String(init?.body ?? '{}')));
+        return jsonResponse(201, { run_id: 'run-compiled', status: 'SCHEDULED', policy_notes: null });
+      }
+      if (u.includes('/test-cases')) return jsonResponse(200, [approved]);
+      if (u.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+      return jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return { compileBodies, handoffBodies };
+  }
+
+  async function crawlThenOpenCases() {
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+    await act(async () => {
+      fireEvent.change(document.getElementById('crawl-target-url') as HTMLInputElement, { target: { value: 'https://target.example.com' } });
+    });
+    await act(async () => {
+      document.getElementById('btn-start-crawl')!.click();
+    });
+    await waitFor(() => expect(screen.getByText(/Crawled 1 real page/)).toBeTruthy(), { timeout: 10000 });
+    await goToGeneratedCasesBranch();
+    await waitFor(() => expect(screen.getAllByText('Ready for handoff').length).toBeGreaterThan(0));
+    fireEvent.change(document.getElementById('handoff-executor-select') as HTMLSelectElement, { target: { value: '__compile__' } });
+  }
+
+  it('a preview and a handoff compile against the crawl and the role chosen, and the response says what it was grounded in', async () => {
+    const { compileBodies, handoffBodies } = setUp();
+    await crawlThenOpenCases();
+
+    fireEvent.click(document.getElementById('compile-grounded-toggle') as HTMLInputElement);
+    const roles = Array.from((document.getElementById('compile-role-select') as HTMLSelectElement).options).map((o) => o.value);
+    expect(roles).toEqual(['', 'admin']);
+    fireEvent.change(document.getElementById('compile-role-select') as HTMLSelectElement, { target: { value: 'admin' } });
+    fireEvent.click(document.getElementById('btn-preview-compilation') as HTMLButtonElement);
+
+    await waitFor(() => expect(document.getElementById('compile-grounding-note')?.textContent).toContain('signing in as admin first'));
+    expect(compileBodies).toEqual([{ crawl_run_id: 'crawl-run-1', role: 'admin' }]);
+    expect(document.getElementById('compile-secrets-note')?.textContent).toContain('AIQA_LOGIN_ADMIN_PASSWORD');
+
+    fireEvent.click(document.getElementById('btn-handoff-test-case') as HTMLButtonElement);
+    await waitFor(() =>
+      expect(handoffBodies).toEqual([{ compile_and_execute: true, crawl_run_id: 'crawl-run-1', role: 'admin' }]),
+    );
+  }, 30000);
+
+  it('left alone, the compile and the handoff are exactly what they were before: no crawl, no role, no body on the preview', async () => {
+    const { compileBodies, handoffBodies } = setUp();
+    await crawlThenOpenCases();
+
+    expect((document.getElementById('compile-grounded-toggle') as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(document.getElementById('btn-preview-compilation') as HTMLButtonElement);
+    await waitFor(() => expect(document.getElementById('compile-preview-panel')?.textContent).toContain('READY'));
+    fireEvent.click(document.getElementById('btn-handoff-test-case') as HTMLButtonElement);
+
+    await waitFor(() => expect(handoffBodies).toEqual([{ compile_and_execute: true }]));
+    expect(compileBodies).toEqual([undefined]);
+  }, 30000);
+});
