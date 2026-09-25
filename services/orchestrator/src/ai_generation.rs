@@ -1148,7 +1148,7 @@ use crate::ai_router::{AiInfrastructure, AiRequest, AiTask, GenerationOutcome2};
 /// code fences first; if the remainder still isn't parseable at the
 /// top level, fall back to the outermost `{...}` span. Returns `None`
 /// when no plausible JSON object exists at all.
-fn extract_json_payload(text: &str) -> Option<String> {
+pub(crate) fn extract_json_payload(text: &str) -> Option<String> {
     let mut working = text.trim().to_string();
 
     // Strip one or more <think>...</think> blocks (qwen-style reasoning
