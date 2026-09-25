@@ -1080,6 +1080,13 @@ mod tests {
             "{prompt}"
         );
         assert!(prompt.contains("PAGES (id — path — title — what is on it):"));
+        // The pages are numbered from P1 (what an answer's ids are read against), one to a line.
+        assert!(prompt.contains("\nP1 — /"), "{prompt}");
+        assert!(prompt.contains("\nP5 — /"), "{prompt}");
+        assert!(
+            !prompt.contains("P0 —") && !prompt.contains("P6 —"),
+            "{prompt}"
+        );
         assert!(
             prompt.contains("— /notes — \"My notes\" — on it: \"New note\""),
             "{prompt}"
@@ -2140,56 +2147,56 @@ mod tests {
 
     #[tokio::test]
     async fn of_two_weak_requirements_the_one_the_words_came_nearest_is_asked_first() {
-        let mut a = analyze(
-            &[
-                req(
-                    "W-1",
-                    RequirementKind::Functional,
-                    "Users can share a note with a colleague.",
-                ),
-                req(
-                    "W-2",
-                    RequirementKind::Functional,
-                    "Users can share and pin a note.",
-                ),
-            ],
-            &notes_app(),
-            &[],
-        );
-        let (one, two) = (finding(&a, "W-1"), finding(&a, "W-2"));
-        assert_eq!(
-            (one.status, two.status),
-            (Status::Weak, Status::Weak),
-            "{:?}",
-            statuses(&a)
-        );
-        assert_ne!(one.best_coverage(), two.best_coverage());
-        let nearest = if one.best_coverage() > two.best_coverage() {
-            "W-1"
-        } else {
-            "W-2"
+        let text = |key: &str| match key {
+            "W-1" => "Users can share a note with a colleague.",
+            _ => "Users can share and pin a note.",
         };
-        let other = if nearest == "W-1" { "W-2" } else { "W-1" };
-        let executor = Arc::new(RecordingExecutor::sequence(vec![ok(&answers(&[(
-            "R1",
-            "UNCLEAR",
-            &[],
-            "x",
-        )]))]));
+        // Whichever of the two the words came nearest is asked first, whether or not it comes first in the document:
+        // both orders are tried, so in one of them it comes second.
+        for keys in [["W-1", "W-2"], ["W-2", "W-1"]] {
+            let items: Vec<RequirementItem> = keys
+                .iter()
+                .map(|&k| req(k, RequirementKind::Functional, text(k)))
+                .collect();
+            let mut a = analyze(&items, &notes_app(), &[]);
+            let (one, two) = (finding(&a, "W-1"), finding(&a, "W-2"));
+            assert_eq!(
+                (one.status, two.status),
+                (Status::Weak, Status::Weak),
+                "{:?}",
+                statuses(&a)
+            );
+            assert_ne!(one.best_coverage(), two.best_coverage());
+            let nearest = if one.best_coverage() > two.best_coverage() {
+                "W-1"
+            } else {
+                "W-2"
+            };
+            let other = if nearest == "W-1" { "W-2" } else { "W-1" };
+            let executor = Arc::new(RecordingExecutor::sequence(vec![ok(&answers(&[(
+                "R1",
+                "UNCLEAR",
+                &[],
+                "x",
+            )]))]));
 
-        verify(
-            &mut a,
-            &infra_with(executor.clone()),
-            DEFAULT_MAX_VERIFICATIONS,
-        )
-        .await;
+            verify(
+                &mut a,
+                &infra_with(executor.clone()),
+                DEFAULT_MAX_VERIFICATIONS,
+            )
+            .await;
 
-        let prompt = executor.prompts.lock().unwrap()[0].clone();
-        assert!(
-            prompt.find(nearest).unwrap() < prompt.find(other).unwrap(),
-            "{prompt}"
-        );
-        assert!(prompt.contains(&format!("[R1] ({nearest},")), "{prompt}");
+            let prompt = executor.prompts.lock().unwrap()[0].clone();
+            assert!(
+                prompt.find(nearest).unwrap() < prompt.find(other).unwrap(),
+                "{keys:?}: {prompt}"
+            );
+            assert!(
+                prompt.contains(&format!("[R1] ({nearest},")),
+                "{keys:?}: {prompt}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -2349,5 +2356,132 @@ mod tests {
         assert_eq!(none.score, 0.0);
         assert!(none.terms.is_empty() && none.elements.is_empty());
         assert_eq!(none.similarity, None);
+    }
+
+    // ------------------------------------------- rules a first round of mutation testing found unpinned
+
+    #[test]
+    fn pages_equally_close_come_out_in_page_order_whatever_order_they_were_embedded_in() {
+        let flat: &[f32] = &[0.0, 1.0];
+        let near: &[f32] = &[1.0, 0.0];
+        // The embedder step embeds the fullest page first, so the vectors do not arrive in page order.
+        let pages = vec![
+            (4, flat.to_vec()),
+            (3, near.to_vec()),
+            (5, flat.to_vec()),
+            (1, near.to_vec()),
+            (2, flat.to_vec()),
+            (0, flat.to_vec()),
+        ];
+        assert_eq!(
+            standout_pages(&[1.0, 0.0], &pages),
+            vec![(1, 1.0), (3, 1.0)]
+        );
+    }
+
+    /// Remembers every text it was asked to embed, in order; every text gets the same vector.
+    struct RecordingEmbedder {
+        texts: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Embedder for RecordingEmbedder {
+        fn is_configured(&self) -> bool {
+            true
+        }
+        fn model_name(&self) -> String {
+            "recording".to_string()
+        }
+        fn dimensions(&self) -> u32 {
+            2
+        }
+        async fn embed(&self, text: &str) -> Result<Vec<f32>, ExecutionError> {
+            self.texts.lock().unwrap().push(text.to_string());
+            Ok(vec![1.0, 0.0])
+        }
+    }
+
+    #[tokio::test]
+    async fn with_more_pages_than_it_will_embed_the_fullest_go_first_and_the_emptiest_are_left_out()
+    {
+        // Seventy pages, each fuller than the one ten before it: 0-9 have nothing on them, 60-69 have six things.
+        let pages: Vec<PageEvidence> = (0..70)
+            .map(|i| {
+                page(
+                    &format!("https://notes.example.test/p{i}"),
+                    "Page",
+                    (0..(i / 10))
+                        .map(|j| el("link", &format!("Link {i} {j}")))
+                        .collect(),
+                )
+            })
+            .collect();
+        let mut a = analyze(&many_missing(1), &crawl_of(pages), &[]);
+        assert_eq!(status_of(&a, "Q-1"), Status::Missing, "{:?}", statuses(&a));
+        let embedder = RecordingEmbedder {
+            texts: std::sync::Mutex::new(Vec::new()),
+        };
+
+        let report = compare_meaning(&mut a, &embedder).await;
+
+        let texts = embedder.texts.lock().unwrap().clone();
+        assert_eq!(
+            texts.len(),
+            EMBED_MAX_PAGES + 1,
+            "sixty pages and the one requirement: {report:?}"
+        );
+        assert!(
+            texts[0].starts_with("/p60. "),
+            "the fullest page (the earliest of those) goes first: {}",
+            texts[0]
+        );
+        for p in 0..10 {
+            assert!(
+                !texts.contains(&a.page_text(p, EMBED_TEXT_CHARS)),
+                "page {p} has nothing on it: one of the ten left out"
+            );
+        }
+        for p in 60..70 {
+            assert!(
+                texts.contains(&a.page_text(p, EMBED_TEXT_CHARS)),
+                "page {p} is among the fullest"
+            );
+        }
+    }
+
+    #[test]
+    fn a_page_the_words_came_nearest_for_two_requirements_of_one_call_is_listed_once() {
+        // Both requirements are about the archive, so the archive's pages are candidates of each.
+        let a = analyze(
+            &[
+                req(
+                    "S-1",
+                    RequirementKind::Functional,
+                    "Users can restore a note from the archive.",
+                ),
+                req(
+                    "S-2",
+                    RequirementKind::Functional,
+                    "Users can empty the archive.",
+                ),
+            ],
+            &notes_app(),
+            &[],
+        );
+        let first = a.findings[0].candidate_pages();
+        let second = a.findings[1].candidate_pages();
+        assert!(
+            first.iter().any(|p| second.contains(p)),
+            "the two share a candidate page: {first:?} {second:?}"
+        );
+
+        let listed = page_map(&a, &[0, 1], MAP_MAX_CHARS);
+
+        let mut seen = std::collections::HashSet::new();
+        assert!(
+            listed.iter().all(|p| seen.insert(*p)),
+            "each page once: {listed:?}"
+        );
+        assert_eq!(listed.len(), a.page_count(), "and every page fits");
     }
 }
