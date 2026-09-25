@@ -166,6 +166,8 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
   const [lastRunId, setLastRunId] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [authRoles, setAuthRoles] = useState<AuthRoleDraft[]>([]);
+  // Phase 6: off unless ticked, so a crawl is exactly what it always was.
+  const [focusRequirements, setFocusRequirements] = useState(false);
   const nextLocalId = useRef(0);
 
   const addAuthRole = () => {
@@ -302,6 +304,7 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
         // — `CrawlOutput.visibility_matrix` needs more than one role's real
         // result to say what's role-gated.
         roles: [{ name: 'anonymous', login_actions: [] }, ...authRoles.map(toCrawlRole)],
+        ...(focusRequirements ? { focus_requirements: true } : {}),
       });
       setLastRunId(started.run_id);
       setStatus('RUNNING');
@@ -400,6 +403,21 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
           )}
         </button>
       </div>
+
+      <label className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-slate-300 cursor-pointer w-fit">
+        <input
+          id="crawl-focus-requirements"
+          type="checkbox"
+          checked={focusRequirements}
+          onChange={(e) => setFocusRequirements(e.target.checked)}
+          disabled={disabled || isBusy}
+          className="accent-teal-500"
+        />
+        <span>Visit the pages the requirements mention first</span>
+        <span className="text-[10px] text-slate-500">
+          Needs an uploaded requirements document. On a large application the crawl&apos;s page limit is spent on those pages first.
+        </span>
+      </label>
 
       <div className="space-y-2">
         {authRoles.length === 0 ? (

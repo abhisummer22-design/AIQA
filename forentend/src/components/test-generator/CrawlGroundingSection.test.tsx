@@ -379,3 +379,45 @@ describe('CrawlGroundingSection — Phase 5: env:NAME logins, and the crawl on o
     expect(onCrawlReady).toHaveBeenCalledWith(null);
   }, 20000);
 });
+
+describe('CrawlGroundingSection — visiting the pages the requirements mention first (Phase 6)', () => {
+  const crawlBodies = (fetchMock: ReturnType<typeof vi.fn>): Record<string, unknown>[] =>
+    fetchMock.mock.calls
+      .filter(([u, i]: [string, RequestInit | undefined]) => String(u).includes('/crawl') && i?.method === 'POST')
+      .map(([, i]: [string, RequestInit]) => JSON.parse(String(i.body)));
+
+  const startWith = async (tick: boolean) => {
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/crawl') && init?.method === 'POST') return jsonResponse(201, { run_id: 'crawl-run-focus' });
+      return jsonResponse(200, {});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    setApiKey(RAW_KEY);
+    render(
+      <CrawlGroundingSection appSources={emptySources()} projectId={PROJECT_ID} crawlRunId={null} onCrawlRunIdChange={noop} />,
+    );
+    await changeInput(document.getElementById('crawl-target-url')!, 'https://target.example.com');
+    if (tick) await clickButton(document.getElementById('crawl-focus-requirements')!);
+    await clickButton(document.getElementById('btn-start-crawl')!);
+    await waitFor(() => expect(crawlBodies(fetchMock)).toHaveLength(1));
+    return crawlBodies(fetchMock)[0];
+  };
+
+  it('is off by default, and then the crawl request is exactly what it always was', async () => {
+    const body = await startWith(false);
+    expect(body).toEqual({ base_url: 'https://target.example.com', roles: [{ name: 'anonymous', login_actions: [] }] });
+    expect('focus_requirements' in body).toBe(false);
+    expect((document.getElementById('crawl-focus-requirements') as HTMLInputElement).checked).toBe(false);
+  });
+
+  it('asks for it when ticked', async () => {
+    const body = await startWith(true);
+    expect(body.focus_requirements).toBe(true);
+    expect(body.base_url).toBe('https://target.example.com');
+  });
+
+  it('cannot be changed while a crawl is running', async () => {
+    await startWith(true);
+    await waitFor(() => expect((document.getElementById('crawl-focus-requirements') as HTMLInputElement).disabled).toBe(true));
+  });
+});
