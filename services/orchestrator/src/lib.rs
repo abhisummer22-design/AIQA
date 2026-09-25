@@ -25,6 +25,7 @@ pub mod governed_healing;
 pub mod grounding;
 pub mod intelligence;
 pub mod log_bus;
+pub mod login_suggest;
 pub mod metrics;
 pub mod mobile;
 pub mod operations;
