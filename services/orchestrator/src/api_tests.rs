@@ -11737,3 +11737,356 @@ async fn the_rounds_of_a_top_up_are_two_unless_set_and_never_fewer_than_one_or_m
     std::env::remove_var("COVERAGE_TOP_UP_ROUNDS");
     assert_eq!(crate::api::coverage_top_up_rounds(), 2);
 }
+
+// ------------------------------------------------------- Phase 6A — the gap check
+//
+// A crawl cannot really run in this harness (see Phase 5B above), so each test writes what a finished crawl would have
+// written for its one task: the grounding file (`helpers/crawler.ts` writes it in real life), or the older result.
+
+const SHOP_FRD: &str = "## 3 Shop\n\nFR-001: The user shall be able to log in with a username and password.\n\nFR-002: A user can add a product to the shopping cart.\n\nFR-003: The user can remove an item from the cart.\n\nFR-004: Users can add products to a wishlist.\n\nFR-005: The system shall export any report as a CSV file.\n\nFR-006: Pages shall load within 2 seconds.\n";
+
+const SHOP_GROUNDING: &str = r##"{"roles":[
+  {"role":"standard","loginSucceeded":true,"loginUsesLiterals":false,"loginActions":[],
+   "pages":[
+     {"url":"https://shop.example.test/","title":"Shop","elements":[
+        {"kind":"input","text":"Username","locator":"[data-test=\"username\"]","inputType":"text"},
+        {"kind":"input","text":"Password","locator":"[data-test=\"password\"]","inputType":"password"},
+        {"kind":"button","text":"Login","locator":"[data-test=\"login-button\"]"}]},
+     {"url":"https://shop.example.test/inventory.html","title":"Shop","elements":[
+        {"kind":"button","text":"Add to cart","locator":"[data-test=\"add-to-cart-backpack\"]"}]},
+     {"url":"https://shop.example.test/cart.html","title":"Shop","elements":[
+        {"kind":"button","text":"Remove","locator":"[data-test=\"remove-backpack\"]"},
+        {"kind":"button","text":"Checkout","locator":"[data-test=\"checkout\"]"}]},
+     {"url":"https://shop.example.test/legal/terms.html","title":"Terms of Service","headings":["Terms"],"elements":[
+        {"kind":"link","text":"Privacy Policy","locator":"a"}]}]},
+  {"role":"admin","loginSucceeded":false,"loginError":"selector never resolved","loginUsesLiterals":false,"loginActions":[],
+   "pages":[{"url":"https://shop.example.test/","title":"Shop","elements":[]}]}]}"##;
+
+/// The older result a crawl made before grounding was recorded leaves: links and buttons only.
+const SHOP_RESULT: &str = r##"{"roles":[{"role":"anonymous","loginSucceeded":true,"pages":[
+  {"url":"https://shop.example.test/","title":"Shop","elements":[
+    {"kind":"button","text":"Login","selectorHint":"[data-test=\"login-button\"]"},
+    {"kind":"link","text":"Cart","selectorHint":"#cart","href":"https://shop.example.test/cart.html"}]}]}],
+  "visibilityMatrix":[]}"##;
+
+/// Starts a crawl (which cannot really run here) and returns its run id and its task's id.
+async fn crawl_run_and_task(state: &AppState, project: Uuid, key: &str) -> (String, String) {
+    let (status, started) = send(
+        state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/crawl"),
+            Some(key),
+            Some(valid_crawl_body()),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={started}");
+    let run_id = started["run_id"].as_str().expect("run_id").to_string();
+    let (_, run) = send(
+        state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/executions/{run_id}"),
+            Some(key),
+            None,
+        ),
+    )
+    .await;
+    let task_id = run["tasks"][0]["id"].as_str().expect("task id").to_string();
+    (run_id, task_id)
+}
+
+fn write_crawl_file(file_name: &str, json: &str) -> std::path::PathBuf {
+    let dir = crate::crawler::generated_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(file_name);
+    std::fs::write(&path, json).unwrap();
+    path
+}
+
+async fn gap_check(state: &AppState, project: Uuid, key: &str, body: Option<Value>) -> (StatusCode, Value) {
+    send(
+        state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/gap-check"),
+            Some(key),
+            body,
+        ),
+    )
+    .await
+}
+
+fn finding_of<'a>(body: &'a Value, key: &str) -> &'a Value {
+    body["requirements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["key"] == key)
+        .unwrap_or_else(|| panic!("no requirement {key} in {body}"))
+}
+
+fn case_body_for(requirement: &str, title: &str, tags: Value) -> Value {
+    let mut body = open_settings_case_body(title);
+    body["requirement_reference"] = Value::String(requirement.to_string());
+    body["tags"] = tags;
+    body
+}
+
+#[tokio::test]
+async fn phase6a_the_gap_check_lines_the_requirements_up_with_the_crawl_and_the_cases() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Phase6A Gap Check").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let (status, uploaded) =
+        upload_document(&state, &owner, project, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+    assert_eq!(status, StatusCode::OK, "body={uploaded}");
+    let (run_id, task_id) = crawl_run_and_task(&state, project, &owner).await;
+    let file = write_crawl_file(&crate::crawler::grounding_file_name(&task_id), SHOP_GROUNDING);
+    // One case for a requirement the shop shows, one for a requirement it does not.
+    approved_case(
+        &state,
+        project,
+        &owner,
+        case_body_for("FR-002", "Add a product", serde_json::json!(["technique:positive"])),
+    )
+    .await;
+    approved_case(
+        &state,
+        project,
+        &owner,
+        case_body_for("FR-005", "Export a report", serde_json::json!([])),
+    )
+    .await;
+
+    let (status, body) = gap_check(&state, project, &owner, Some(serde_json::json!({"crawl_run_id": run_id}))).await;
+    std::fs::remove_file(file).ok();
+    assert_eq!(status, StatusCode::OK, "body={body}");
+
+    // Which crawl this is, and what it recorded.
+    assert_eq!(body["crawl"]["run_id"], run_id);
+    assert_eq!(body["crawl"]["source"], "grounding");
+    assert_eq!(body["crawl"]["roles"].as_array().unwrap().len(), 2);
+    assert!(
+        body["notes"][0].as_str().unwrap_or_default().contains("\"admin\" could not log in"),
+        "notes={}",
+        body["notes"]
+    );
+
+    // Each requirement, against the pages.
+    assert_eq!(finding_of(&body, "FR-001")["status"], "FOUND", "body={body}");
+    assert_eq!(finding_of(&body, "FR-001")["matches"][0]["url"], "https://shop.example.test/");
+    assert_eq!(finding_of(&body, "FR-002")["status"], "FOUND");
+    assert_eq!(finding_of(&body, "FR-002")["matches"][0]["url"], "https://shop.example.test/inventory.html");
+    assert_eq!(finding_of(&body, "FR-003")["status"], "FOUND");
+    assert_eq!(finding_of(&body, "FR-003")["matches"][0]["url"], "https://shop.example.test/cart.html");
+    assert_eq!(finding_of(&body, "FR-004")["status"], "WEAK");
+    assert_eq!(finding_of(&body, "FR-005")["status"], "MISSING");
+    assert_eq!(finding_of(&body, "FR-006")["status"], "NOT_CHECKABLE");
+    assert_eq!(finding_of(&body, "FR-006")["kind"], "performance");
+
+    // Cases: the two it was given, counted for their requirement, and the techniques still missing.
+    let added = &finding_of(&body, "FR-002")["cases"];
+    assert_eq!((added["total"].clone(), added["approved"].clone()), (1.into(), 1.into()), "body={body}");
+    assert_eq!(added["techniques"]["positive"], 1);
+    assert_eq!(added["missing_techniques"], serde_json::json!(["negative", "edge"]));
+    assert_eq!(finding_of(&body, "FR-005")["cases"]["total"], 1);
+    assert_eq!(finding_of(&body, "FR-003")["cases"]["total"], 0);
+
+    // The page nobody wrote a requirement for, and the counts.
+    assert_eq!(body["undocumented_pages"].as_array().unwrap().len(), 1, "body={body}");
+    assert_eq!(body["undocumented_pages"][0]["url"], "https://shop.example.test/legal/terms.html");
+    let summary = &body["summary"];
+    assert_eq!(summary["requirements"], 6);
+    assert_eq!(summary["found"], 3);
+    assert_eq!(summary["weak"], 1);
+    assert_eq!(summary["missing"], 1);
+    assert_eq!(summary["not_checkable"], 1);
+    assert_eq!(summary["tested_without_evidence"], 1, "FR-005 has a case and no sign in the crawl: {body}");
+    assert_eq!(summary["pages"], 4);
+}
+
+#[tokio::test]
+async fn phase6a_a_role_can_be_chosen_and_an_unknown_one_lists_the_roles() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Phase6A Gap Role").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    upload_document(&state, &owner, project, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+    let (run_id, task_id) = crawl_run_and_task(&state, project, &owner).await;
+    let file = write_crawl_file(&crate::crawler::grounding_file_name(&task_id), SHOP_GROUNDING);
+
+    let (status, only_admin) = gap_check(
+        &state,
+        project,
+        &owner,
+        Some(serde_json::json!({"crawl_run_id": run_id, "role": "ADMIN"})),
+    )
+    .await;
+    let (bad_status, unknown) = gap_check(
+        &state,
+        project,
+        &owner,
+        Some(serde_json::json!({"crawl_run_id": run_id, "role": "auditor"})),
+    )
+    .await;
+    std::fs::remove_file(file).ok();
+
+    // The admin's crawl reached one page (the login page) and found nothing else.
+    assert_eq!(status, StatusCode::OK, "body={only_admin}");
+    assert_eq!(only_admin["crawl"]["role"], "ADMIN");
+    assert_eq!(only_admin["summary"]["pages"], 1);
+    assert_eq!(finding_of(&only_admin, "FR-002")["status"], "MISSING", "body={only_admin}");
+    assert_eq!(bad_status, StatusCode::BAD_REQUEST, "body={unknown}");
+    assert!(unknown.to_string().contains("standard, admin"), "body={unknown}");
+}
+
+#[tokio::test]
+async fn phase6a_an_older_crawl_with_only_a_result_is_read_and_says_so() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Phase6A Gap Older Crawl").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    upload_document(&state, &owner, project, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+    let (run_id, task_id) = crawl_run_and_task(&state, project, &owner).await;
+    let file = write_crawl_file(&format!("crawl-result-{task_id}.json"), SHOP_RESULT);
+
+    let (status, body) = gap_check(&state, project, &owner, Some(serde_json::json!({"crawl_run_id": run_id}))).await;
+    std::fs::remove_file(file).ok();
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["crawl"]["source"], "result");
+    assert!(body["notes"].to_string().contains("form fields"), "notes={}", body["notes"]);
+    // The login button is there; the cart page was never crawled, only linked to.
+    assert_eq!(finding_of(&body, "FR-001")["status"], "WEAK", "body={body}");
+}
+
+#[tokio::test]
+async fn phase6a_with_no_crawl_named_the_latest_one_is_used_and_no_crawl_is_a_404() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Phase6A Gap Latest").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    upload_document(&state, &owner, project, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+
+    // No crawl at all yet.
+    let (status, body) = gap_check(&state, project, &owner, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
+    assert!(body.to_string().contains("no finished crawl"), "body={body}");
+
+    let (run_id, task_id) = crawl_run_and_task(&state, project, &owner).await;
+    // A crawl that left nothing to read is not used either.
+    let (status, body) = gap_check(&state, project, &owner, Some(serde_json::json!({}))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
+
+    // Once it has left its grounding, it is the crawl the check is made against — and the newest of two is the one used.
+    let file = write_crawl_file(&crate::crawler::grounding_file_name(&task_id), SHOP_GROUNDING);
+    let (newer_run, newer_task) = crawl_run_and_task(&state, project, &owner).await;
+    let newer_file = write_crawl_file(&crate::crawler::grounding_file_name(&newer_task), SHOP_GROUNDING);
+    let (status, body) = gap_check(&state, project, &owner, None).await;
+    // Naming the older one uses the older one.
+    let (named_status, named) = gap_check(&state, project, &owner, Some(serde_json::json!({"crawl_run_id": run_id}))).await;
+    std::fs::remove_file(file).ok();
+    std::fs::remove_file(newer_file).ok();
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["crawl"]["run_id"], newer_run);
+    assert_ne!(newer_run, run_id);
+    assert_eq!(finding_of(&body, "FR-001")["status"], "FOUND");
+    assert_eq!(named_status, StatusCode::OK, "body={named}");
+    assert_eq!(named["crawl"]["run_id"], run_id);
+}
+
+#[tokio::test]
+async fn phase6a_the_gap_check_says_what_is_missing_to_run_it() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Phase6A Gap Refusals").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    // No requirements yet.
+    let (status, body) = gap_check(&state, project, &owner, None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert!(body.to_string().contains("no requirements"), "body={body}");
+
+    upload_document(&state, &owner, project, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+    // Documents that are not this project's contribute no requirements.
+    let (status, body) = gap_check(
+        &state,
+        project,
+        &owner,
+        Some(serde_json::json!({"document_ids": [Uuid::new_v4()]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    // A crawl run that does not exist.
+    let (status, _) = gap_check(
+        &state,
+        project,
+        &owner,
+        Some(serde_json::json!({"crawl_run_id": Uuid::new_v4()})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    // A run that left no crawl behind (a plain run, or a crawl still going).
+    let (run_id, _) = crawl_run_and_task(&state, project, &owner).await;
+    let (status, body) = gap_check(&state, project, &owner, Some(serde_json::json!({"crawl_run_id": run_id}))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
+    assert!(body.to_string().contains("recorded no crawl"), "body={body}");
+}
+
+#[tokio::test]
+async fn phase6a_a_crawl_that_reached_no_page_is_refused_rather_than_reported_as_all_missing() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Phase6A Gap Empty Crawl").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    upload_document(&state, &owner, project, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+    let (run_id, task_id) = crawl_run_and_task(&state, project, &owner).await;
+    let file = write_crawl_file(
+        &crate::crawler::grounding_file_name(&task_id),
+        r#"{"roles":[{"role":"admin","loginSucceeded":false,"loginActions":[],"pages":[]}]}"#,
+    );
+
+    let (status, body) = gap_check(&state, project, &owner, Some(serde_json::json!({"crawl_run_id": run_id}))).await;
+    std::fs::remove_file(file).ok();
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert!(body.to_string().contains("reached no page"), "body={body}");
+}
+
+#[tokio::test]
+async fn phase6a_the_check_is_project_scoped_and_a_viewer_may_read_it() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project_a = make_project(&state, "Phase6A Gap Owner").await;
+    let project_b = make_project(&state, "Phase6A Gap Other").await;
+    let owner_a = mint_key(&state, "operator", Some(&project_a.to_string())).await;
+    let owner_b = mint_key(&state, "operator", Some(&project_b.to_string())).await;
+    let viewer_a = mint_key(&state, "viewer", Some(&project_a.to_string())).await;
+    upload_document(&state, &owner_a, project_a, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+    upload_document(&state, &owner_b, project_b, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+    let (run_id, task_id) = crawl_run_and_task(&state, project_a, &owner_a).await;
+    let file = write_crawl_file(&crate::crawler::grounding_file_name(&task_id), SHOP_GROUNDING);
+
+    let (viewer_status, viewer_body) = gap_check(
+        &state,
+        project_a,
+        &viewer_a,
+        Some(serde_json::json!({"crawl_run_id": run_id})),
+    )
+    .await;
+    // Another project's crawl cannot be checked against, and another project's key cannot check this one.
+    let (borrowed, _) = gap_check(
+        &state,
+        project_b,
+        &owner_b,
+        Some(serde_json::json!({"crawl_run_id": run_id})),
+    )
+    .await;
+    let (foreign, _) = gap_check(
+        &state,
+        project_a,
+        &owner_b,
+        Some(serde_json::json!({"crawl_run_id": run_id})),
+    )
+    .await;
+    std::fs::remove_file(file).ok();
+
+    assert_eq!(viewer_status, StatusCode::OK, "body={viewer_body}");
+    assert_eq!(borrowed, StatusCode::NOT_FOUND);
+    assert_eq!(foreign, StatusCode::FORBIDDEN);
+}
