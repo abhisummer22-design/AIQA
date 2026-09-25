@@ -4746,6 +4746,441 @@ async fn phase5a_crawl_start_refuses_a_reference_to_a_variable_outside_the_reser
     );
 }
 
+// ------------------------------------------------ Phase 5B — grounded compile
+//
+// A crawl cannot really run in this harness (see above), so each test writes the grounding file a finished crawl
+// would have written for its one task (`helpers/crawler.ts` writes it in real life; that side is proven by
+// `executors/playwright/tests/crawler.spec.ts` against a real browser and a real fixture app).
+
+/// The crawl of a small app: `admin` signs in with two secrets (`AIQA_LOGIN_ADMIN_*`, renamed per test so tests that
+/// set and unset variables never meet) and reaches a dashboard and Settings.
+const GROUNDING_TEMPLATE: &str = r##"{"roles":[
+  {"role":"admin","loginSucceeded":true,"loginUsesLiterals":false,
+   "loginActions":[
+     {"type":"NAVIGATE","url":"http://127.0.0.1:8080/login"},
+     {"type":"FILL","selector":"#username","value":"env:AIQA_LOGIN_ADMIN_USERNAME"},
+     {"type":"FILL","selector":"#password","value":"env:AIQA_LOGIN_ADMIN_PASSWORD"},
+     {"type":"CLICK","selector":"#submit-login"}],
+   "pages":[
+     {"url":"http://127.0.0.1:8080/dashboard","title":"Dashboard","elements":[
+       {"kind":"link","text":"Settings","locator":"a[href=\"/settings\"]"}]},
+     {"url":"http://127.0.0.1:8080/settings","title":"Settings","elements":[
+       {"kind":"button","text":"Delete Account","locator":"#danger-zone"}]}]},
+  {"role":"anonymous","loginSucceeded":true,"loginUsesLiterals":false,"loginActions":[],
+   "pages":[{"url":"http://127.0.0.1:8080/login","title":"Log in","elements":[
+       {"kind":"button","text":"Log in","locator":"#submit-login"}]}]}]}"##;
+
+fn grounding_json(secret_prefix: &str) -> String {
+    GROUNDING_TEMPLATE.replace("AIQA_LOGIN_ADMIN", secret_prefix)
+}
+
+const SETTINGS_PLAN_JSON: &str = r##"{"executable":true,"execution_type":"BROWSER","target":"http://127.0.0.1:8080/dashboard","actions":[
+  {"type":"NAVIGATE","url":"http://127.0.0.1:8080/dashboard"},
+  {"type":"CLICK","selector":"a[href=\"/settings\"]"},
+  {"type":"ASSERT_URL","url_contains":"/settings"},
+  {"type":"ASSERT_VISIBLE","selector":"#danger-zone"}]}"##;
+
+const INVENTED_PLAN_JSON: &str = r##"{"executable":true,"execution_type":"BROWSER","target":"http://127.0.0.1:8080/dashboard","actions":[
+  {"type":"NAVIGATE","url":"http://127.0.0.1:8080/dashboard"},
+  {"type":"CLICK","selector":"#settings-link"},
+  {"type":"ASSERT_VISIBLE","selector":"#danger-zone"}]}"##;
+
+/// A case with several steps, so the AI (not the deterministic compiler) compiles it.
+fn open_settings_case_body(title: &str) -> Value {
+    serde_json::json!({
+        "title": title,
+        "description": "The admin opens Settings from the dashboard.",
+        "category": "Functional",
+        "priority": "HIGH",
+        "severity": "MAJOR",
+        "preconditions": ["An admin account exists"],
+        "steps": [
+            {"step_number": 1, "action": "Open the dashboard", "expected_result": "The dashboard is shown"},
+            {"step_number": 2, "action": "Click the Settings link", "expected_result": "The Settings page is shown"}
+        ],
+        "expected_result": "Settings page is shown with its danger zone",
+        "assertions": [],
+        "requirement_reference": "FRD-SET-01",
+        "tags": []
+    })
+}
+
+/// Starts a crawl (which cannot really run here) and, when `grounding` is given, writes what a finished crawl would have
+/// recorded for its one task. Returns the crawl's run id and the file to remove afterwards.
+async fn crawl_with_grounding(
+    state: &AppState,
+    project: Uuid,
+    key: &str,
+    grounding: Option<&str>,
+) -> (String, Option<std::path::PathBuf>) {
+    let (status, started) = send(
+        state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/crawl"),
+            Some(key),
+            Some(valid_crawl_body()),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={started}");
+    let run_id = started["run_id"].as_str().expect("run_id").to_string();
+    let (_, run) = send(
+        state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/executions/{run_id}"),
+            Some(key),
+            None,
+        ),
+    )
+    .await;
+    let task_id = run["tasks"][0]["id"].as_str().expect("task id").to_string();
+    let file = grounding.map(|json| {
+        let dir = crate::crawler::generated_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(crate::crawler::grounding_file_name(&task_id));
+        std::fs::write(&path, json).unwrap();
+        path
+    });
+    (run_id, file)
+}
+
+/// Creates a case, validates and approves it, and returns its id.
+async fn approved_case(state: &AppState, project: Uuid, key: &str, body: Value) -> String {
+    let (status, created) = send(
+        state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(key),
+            Some(body),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={created}");
+    let id = created["id"].as_str().unwrap().to_string();
+    for step in ["validate", "approve"] {
+        let (status, body) = send(
+            state,
+            req(
+                "POST",
+                &format!("/api/v1/projects/{project}/test-cases/{id}/{step}"),
+                Some(key),
+                None,
+            ),
+        )
+        .await;
+        assert!(status.is_success(), "{step}: {status} {body}");
+    }
+    id
+}
+
+#[tokio::test]
+async fn phase5b_a_compile_grounded_in_a_crawl_has_the_login_first_and_reports_only_names() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(SETTINGS_PLAN_JSON))).await;
+    let project = make_project(&state, "Phase5B Grounded Compile").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let (run_id, file) =
+        crawl_with_grounding(&state, project, &owner, Some(&grounding_json("AIQA_LOGIN_T5B_ONE"))).await;
+    let (_, created) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(&owner),
+            Some(open_settings_case_body("Admin opens Settings")),
+        ),
+    )
+    .await;
+    let id = created["id"].as_str().unwrap();
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/compile"),
+            Some(&owner),
+            Some(serde_json::json!({"crawl_run_id": run_id, "role": "admin"})),
+        ),
+    )
+    .await;
+    if let Some(file) = file {
+        std::fs::remove_file(file).ok();
+    }
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["status"], "READY", "body={body}");
+    assert_eq!(body["actions"].as_array().unwrap().len(), 8, "the login (4) and the plan (4): {body}");
+    assert_eq!(body["actions"][0]["type"], "NAVIGATE");
+    assert_eq!(body["actions"][2]["value"], "env:AIQA_LOGIN_T5B_ONE_PASSWORD", "the login holds a reference: {body}");
+    // What the compiler was given: the role, the size of what it saw, and the names — never values — of the secrets.
+    assert_eq!(body["grounding"]["role"], "admin", "body={body}");
+    assert_eq!(body["grounding"]["login_steps"], 4);
+    assert_eq!(
+        body["grounding"]["secrets"],
+        serde_json::json!(["AIQA_LOGIN_T5B_ONE_PASSWORD", "AIQA_LOGIN_T5B_ONE_USERNAME"])
+    );
+}
+
+#[tokio::test]
+async fn phase5b_a_selector_the_crawl_never_found_is_not_executable_through_the_api() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(INVENTED_PLAN_JSON))).await;
+    let project = make_project(&state, "Phase5B Ungrounded").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let (run_id, file) =
+        crawl_with_grounding(&state, project, &owner, Some(&grounding_json("AIQA_LOGIN_T5B_TWO"))).await;
+    let (_, created) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(&owner),
+            Some(open_settings_case_body("Admin opens Settings")),
+        ),
+    )
+    .await;
+    let id = created["id"].as_str().unwrap();
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/compile"),
+            Some(&owner),
+            Some(serde_json::json!({"crawl_run_id": run_id, "role": "admin"})),
+        ),
+    )
+    .await;
+    if let Some(file) = file {
+        std::fs::remove_file(file).ok();
+    }
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["status"], "NOT_EXECUTABLE", "body={body}");
+    let reasons = body["reasons"].to_string();
+    assert!(reasons.contains("#settings-link") && reasons.contains("step 2 (CLICK)"), "reasons={reasons}");
+    assert_eq!(body["grounding"]["role"], "admin");
+}
+
+#[tokio::test]
+async fn phase5b_a_compile_with_no_crawl_is_exactly_what_it_was() {
+    // The same invented selector compiles when no crawl is named — the old behaviour, unchanged — and the response has
+    // no grounding key. Both an empty body and no body at all mean "no crawl".
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(INVENTED_PLAN_JSON))).await;
+    let project = make_project(&state, "Phase5B No Crawl").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let (_, created) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(&owner),
+            Some(open_settings_case_body("Admin opens Settings")),
+        ),
+    )
+    .await;
+    let id = created["id"].as_str().unwrap();
+    for body in [None, Some(serde_json::json!({}))] {
+        let (status, response) = send(
+            &state,
+            req(
+                "POST",
+                &format!("/api/v1/projects/{project}/test-cases/{id}/compile"),
+                Some(&owner),
+                body,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "response={response}");
+        assert_eq!(response["status"], "READY", "response={response}");
+        assert!(response.get("grounding").is_none(), "response={response}");
+        assert_eq!(response["actions"].as_array().unwrap().len(), 3, "no login was put in front: {response}");
+    }
+}
+
+#[tokio::test]
+async fn phase5b_the_compile_says_what_is_wrong_with_the_crawl_or_the_role() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(SETTINGS_PLAN_JSON))).await;
+    let project = make_project(&state, "Phase5B Bad Crawl").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let (run_with, file) =
+        crawl_with_grounding(&state, project, &owner, Some(&grounding_json("AIQA_LOGIN_T5B_THREE"))).await;
+    let (run_without, _) = crawl_with_grounding(&state, project, &owner, None).await;
+    let (_, created) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(&owner),
+            Some(open_settings_case_body("Admin opens Settings")),
+        ),
+    )
+    .await;
+    let id = created["id"].as_str().unwrap();
+    let compile = |body: Value| {
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/compile"),
+            Some(&owner),
+            Some(body),
+        )
+    };
+
+    // A crawl that recorded no grounding (still running, or made before grounding existed).
+    let (status, body) = send(&state, compile(serde_json::json!({"crawl_run_id": run_without}))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
+    assert!(body.to_string().contains("recorded no grounding"), "body={body}");
+    // A role the crawl does not have: the ones it has are named.
+    let (status, body) = send(
+        &state,
+        compile(serde_json::json!({"crawl_run_id": run_with, "role": "auditor"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert!(body.to_string().contains("admin, anonymous"), "body={body}");
+    // A role without a crawl to take it from.
+    let (status, body) = send(&state, compile(serde_json::json!({"role": "admin"}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    // A crawl run that does not exist.
+    let (status, _) = send(
+        &state,
+        compile(serde_json::json!({"crawl_run_id": Uuid::new_v4()})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    if let Some(file) = file {
+        std::fs::remove_file(file).ok();
+    }
+}
+
+#[tokio::test]
+async fn phase5b_another_projects_crawl_cannot_ground_a_compile() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(SETTINGS_PLAN_JSON))).await;
+    let project_a = make_project(&state, "Phase5B Crawl Owner").await;
+    let project_b = make_project(&state, "Phase5B Crawl Borrower").await;
+    let key_a = mint_key(&state, "operator", Some(&project_a.to_string())).await;
+    let key_b = mint_key(&state, "operator", Some(&project_b.to_string())).await;
+    let (run_id, file) =
+        crawl_with_grounding(&state, project_a, &key_a, Some(&grounding_json("AIQA_LOGIN_T5B_FOUR"))).await;
+    let (_, created) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_b}/test-cases"),
+            Some(&key_b),
+            Some(open_settings_case_body("Admin opens Settings")),
+        ),
+    )
+    .await;
+    let id = created["id"].as_str().unwrap();
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project_b}/test-cases/{id}/compile"),
+            Some(&key_b),
+            Some(serde_json::json!({"crawl_run_id": run_id, "role": "admin"})),
+        ),
+    )
+    .await;
+    if let Some(file) = file {
+        std::fs::remove_file(file).ok();
+    }
+    assert_eq!(status, StatusCode::NOT_FOUND, "another project's crawl is not reachable: {body}");
+}
+
+#[tokio::test]
+async fn phase5b_a_handoff_whose_login_secrets_are_not_set_is_refused_before_a_run_exists() {
+    std::env::remove_var("AIQA_LOGIN_T5B_FIVE_USERNAME");
+    std::env::remove_var("AIQA_LOGIN_T5B_FIVE_PASSWORD");
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(SETTINGS_PLAN_JSON))).await;
+    let project = make_project(&state, "Phase5B Handoff Missing Secret").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let (run_id, file) =
+        crawl_with_grounding(&state, project, &owner, Some(&grounding_json("AIQA_LOGIN_T5B_FIVE"))).await;
+    let id = approved_case(&state, project, &owner, open_settings_case_body("Admin opens Settings")).await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/handoff"),
+            Some(&owner),
+            Some(serde_json::json!({"compile_and_execute": true, "crawl_run_id": run_id, "role": "admin"})),
+        ),
+    )
+    .await;
+    if let Some(file) = file {
+        std::fs::remove_file(file).ok();
+    }
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert!(
+        body.to_string().contains("AIQA_LOGIN_T5B_FIVE_PASSWORD") && body.to_string().contains("not set"),
+        "body={body}"
+    );
+}
+
+/// The core Phase 5 guarantee, at the API: a grounded handoff creates a real run whose stored task holds the *names* of
+/// the login's secrets and a spec that reads them when it runs — and no value is anywhere it can be read back from.
+#[tokio::test]
+async fn phase5b_a_grounded_handoff_stores_a_spec_and_a_task_that_hold_no_credential() {
+    std::env::set_var("AIQA_LOGIN_T5B_SIX_USERNAME", "six-user-value-1");
+    std::env::set_var("AIQA_LOGIN_T5B_SIX_PASSWORD", "six-pass-value-2");
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(SETTINGS_PLAN_JSON))).await;
+    let project = make_project(&state, "Phase5B Handoff Stores No Credential").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let (crawl_run, file) =
+        crawl_with_grounding(&state, project, &owner, Some(&grounding_json("AIQA_LOGIN_T5B_SIX"))).await;
+    let id = approved_case(&state, project, &owner, open_settings_case_body("Admin opens Settings")).await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/handoff"),
+            Some(&owner),
+            Some(serde_json::json!({"compile_and_execute": true, "crawl_run_id": crawl_run, "role": "admin"})),
+        ),
+    )
+    .await;
+    if let Some(file) = file {
+        std::fs::remove_file(file).ok();
+    }
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    assert!(!body.to_string().contains("six-pass-value-2"), "body={body}");
+    let run_id: Uuid = body["run_id"].as_str().expect("run_id").parse().unwrap();
+
+    let (plan, ..) = state
+        .store
+        .get_run_for_rehydration(run_id)
+        .await
+        .expect("read the run")
+        .expect("the run is persisted");
+    let stored = serde_json::to_string(&plan).unwrap();
+    assert!(
+        !stored.contains("six-pass-value-2") && !stored.contains("six-user-value-1"),
+        "the persisted run must hold no secret value: {stored}"
+    );
+    let task = &plan.tasks[0];
+    assert_eq!(task.executor.as_deref(), Some("playwright"));
+    assert_eq!(
+        task.params["secrets"],
+        serde_json::json!(["AIQA_LOGIN_T5B_SIX_PASSWORD", "AIQA_LOGIN_T5B_SIX_USERNAME"])
+    );
+
+    // The spec the run will execute: the login as it was recorded, secrets read at run time, no value.
+    let spec = std::fs::read_to_string(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../executors/playwright")
+            .join(task.params["spec"].as_str().expect("a spec path")),
+    )
+    .expect("read the generated spec");
+    assert!(spec.contains("secret(\"AIQA_LOGIN_T5B_SIX_PASSWORD\")"), "{spec}");
+    assert!(spec.contains("import { secret } from \"../../helpers/secrets\";"), "{spec}");
+    assert!(!spec.contains("six-pass-value-2") && !spec.contains("six-user-value-1"), "{spec}");
+    assert!(spec.contains("AIQA_STEP"), "each step is logged as the run goes: {spec}");
+}
+
 /// "playwright" has no registered executor in this test harness, so the
 /// crawl's one task can never actually run and no result file is ever
 /// written — the result endpoint must report a real, honest 404, never a

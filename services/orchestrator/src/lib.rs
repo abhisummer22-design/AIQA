@@ -20,6 +20,7 @@ pub mod evidence;
 pub mod execution_plan;
 pub mod executor;
 pub mod governed_healing;
+pub mod grounding;
 pub mod intelligence;
 pub mod log_bus;
 pub mod metrics;

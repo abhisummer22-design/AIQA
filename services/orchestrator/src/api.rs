@@ -2148,12 +2148,77 @@ async fn compile_test_case_scoped(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
-) -> Result<Json<crate::execution_plan::CompilationOutcome>, ApiError> {
+    body: Option<ApiJson<CompileRequestBody>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
     auth::require_role(&ctx, Role::Operator)?;
     require_scoped_project(&state, &ctx, project_id).await?;
     let row = scoped_test_case(&state, &ctx, project_id, id).await?;
-    let outcome = crate::execution_plan::compile(&state.ai_infra, &row).await;
-    Ok(Json(outcome))
+    let body = body.map(|ApiJson(b)| b).unwrap_or_default();
+    let grounding = grounding_for(
+        &state,
+        project_id,
+        body.crawl_run_id,
+        body.role.as_deref(),
+        &row,
+    )
+    .await?;
+    let compiled =
+        crate::execution_plan::compile_grounded(&state.ai_infra, &row, grounding.as_ref()).await;
+    Ok(Json(compilation_json(compiled)))
+}
+
+/// `POST .../test-cases/:id/compile` body — optional, and every field of it too. Naming a crawl grounds the compile in
+/// it (Phase 5, `grounding.rs`): the plan may use only selectors that crawl found, and `role`'s login runs first.
+#[derive(Debug, Default, Deserialize)]
+struct CompileRequestBody {
+    /// A crawl run of this project (`POST .../crawl`) that has finished.
+    #[serde(default)]
+    crawl_run_id: Option<Uuid>,
+    /// The crawl's role the case runs as; omitted, the crawl's role that never logged in.
+    #[serde(default)]
+    role: Option<String>,
+}
+
+/// The outcome as it always was on the wire, plus — when a crawl grounded it — `grounding`: what the compiler was
+/// given (the role, how many pages and elements, how many login steps, and the *names* of the environment variables the
+/// login reads — never a value).
+fn compilation_json(compiled: crate::execution_plan::GroundedCompilation) -> serde_json::Value {
+    let mut value = serde_json::to_value(&compiled.outcome).unwrap_or(serde_json::Value::Null);
+    if let (Some(report), Some(object)) = (compiled.report, value.as_object_mut()) {
+        object.insert(
+            "grounding".to_string(),
+            serde_json::to_value(report).unwrap_or(serde_json::Value::Null),
+        );
+    }
+    value
+}
+
+/// The grounding a compile asked for: what the crawl `crawl_run_id` — one of this project's own runs — recorded, for the
+/// case and the role it runs as. `None` when no crawl is named. The `Err` says what is wrong and what to do.
+async fn grounding_for(
+    state: &AppState,
+    project_id: Uuid,
+    crawl_run_id: Option<Uuid>,
+    role: Option<&str>,
+    case: &crate::store::TestCaseRow,
+) -> Result<Option<crate::grounding::Grounding>, ApiError> {
+    let Some(run_id) = crawl_run_id else {
+        if role.is_some_and(|r| !r.trim().is_empty()) {
+            return Err(ApiError::validation(
+                "role names one of a crawl's roles: send crawl_run_id with it",
+            ));
+        }
+        return Ok(None);
+    };
+    scoped_run_summary(state, run_id, project_id).await?;
+    let tasks = scoped_run_tasks(state, run_id).await?;
+    let task = tasks
+        .first()
+        .ok_or_else(|| ApiError::not_found("crawl run has no tasks"))?;
+    let crawl = crate::grounding::read_crawl_grounding(&task.id).map_err(ApiError::not_found)?;
+    crate::grounding::Grounding::for_case(&crawl, role, case)
+        .map(Some)
+        .map_err(ApiError::validation)
 }
 
 /// POST .../test-cases/:id/handoff — the real bridge into the existing
@@ -2193,6 +2258,8 @@ async fn handoff_test_case_scoped(
         params: serde_json::Value::Null,
         simulate: None,
         compile_and_execute: false,
+        crawl_run_id: None,
+        role: None,
     }));
 
     let task_id = id.to_string();
@@ -2202,7 +2269,18 @@ async fn handoff_test_case_scoped(
         // sent alongside `compile_and_execute: true` is ignored (see
         // `TestCaseHandoffRequest`'s own doc comment) rather than silently
         // mixed with compiled output.
-        match crate::execution_plan::compile(&state.ai_infra, &row).await {
+        let grounding = grounding_for(
+            &state,
+            project_id,
+            body.crawl_run_id,
+            body.role.as_deref(),
+            &row,
+        )
+        .await?;
+        match crate::execution_plan::compile_grounded(&state.ai_infra, &row, grounding.as_ref())
+            .await
+            .outcome
+        {
             crate::execution_plan::CompilationOutcome::Ready(plan) => {
                 // A plan that logs in reads its credentials from the orchestrator's environment when it runs:
                 // refuse now, naming the variables, rather than create a run that can only fail.

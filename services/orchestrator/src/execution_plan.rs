@@ -40,6 +40,7 @@
 
 use crate::ai_router::{AiInfrastructure, AiRequest, AiTask, GenerationOutcome2};
 use crate::domain::TaskDef;
+use crate::grounding::{Grounding, GroundingReport};
 use crate::store::TestCaseRow;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -375,7 +376,10 @@ enum AiPlanResponse {
     },
 }
 
-fn build_compiler_prompt(case: &TestCaseRow) -> String {
+/// The prompt for one case. With a `grounding` it also carries the real pages and locators of a crawl, who signs in
+/// first, and the rule that a selector must be copied from that list (`grounding::prompt_block`); without one it is
+/// exactly what it always was.
+fn build_compiler_prompt(case: &TestCaseRow, grounding: Option<&Grounding>) -> String {
     let steps_text: String = case
         .steps
         .iter()
@@ -386,11 +390,15 @@ fn build_compiler_prompt(case: &TestCaseRow) -> String {
             )
         })
         .collect();
+    let grounding_block = grounding
+        .map(crate::grounding::prompt_block)
+        .unwrap_or_default();
     format!(
         "You are a QA test case compiler. Given a real test case's title, category, steps, and expected \
          result, produce a structured, SAFE execution plan — or truthfully state one cannot be produced.\n\n\
          TEST CASE:\nTitle: {title}\nCategory: {category}\nSteps:\n{steps_text}Case-level expected result: \
          \"{expected_result}\"\nAssertions: {assertions:?}\n\n\
+         {grounding_block}\
          Only use actions from this exact closed vocabulary — nothing else exists, do not invent a new one:\n\
          Browser: NAVIGATE{{url}}, CLICK{{selector}}, FILL{{selector,value}}, ASSERT_VISIBLE{{selector}}, \
          ASSERT_TEXT{{selector,text}}, ASSERT_URL{{url_contains}}\n\
@@ -427,10 +435,14 @@ fn resolve_relative_url(url: &str) -> String {
     }
 }
 
-async fn compile_with_ai(infra: &AiInfrastructure, case: &TestCaseRow) -> CompilationOutcome {
+async fn compile_with_ai(
+    infra: &AiInfrastructure,
+    case: &TestCaseRow,
+    grounding: Option<&Grounding>,
+) -> CompilationOutcome {
     let request = AiRequest {
         task: AiTask::TestCaseCompilation,
-        prompt: build_compiler_prompt(case),
+        prompt: build_compiler_prompt(case, grounding),
         preferred_provider: None,
         preferred_model: None,
     };
@@ -494,22 +506,66 @@ async fn compile_with_ai(infra: &AiInfrastructure, case: &TestCaseRow) -> Compil
                     ],
                 };
             }
+            let mut actions = actions;
+            let mut diagnostics = vec![format!("compiled by {}/{}", result.provider, result.model)];
+            // A grounded browser plan may use only selectors the crawl found. One that uses a selector it did not is
+            // not compiled: it is NOT_EXECUTABLE, whatever the AI said. The login (never the AI's business) is put
+            // in front of what the AI wrote.
+            if let (Some(grounding), ExecutionType::Browser) = (grounding, execution_type) {
+                let mut ungrounded = crate::grounding::ungrounded(&actions, grounding);
+                if !ungrounded.is_empty() {
+                    ungrounded.push(
+                        "only selectors the crawl found can be compiled: crawl the page that has the element \
+                         (in the state that shows it), then compile again"
+                            .to_string(),
+                    );
+                    return CompilationOutcome::NotExecutable {
+                        reasons: ungrounded,
+                    };
+                }
+                diagnostics.extend(crate::grounding::literal_password_notes(
+                    &actions, grounding,
+                ));
+                diagnostics.push(grounded_note(grounding));
+                actions.splice(0..0, grounding.login.iter().cloned());
+            }
             let plan = ExecutionPlan {
                 test_case_id: case.id.to_string(),
                 execution_type,
                 target,
                 actions,
                 compiler: CompilerMethod::Ai,
-                diagnostics: vec![format!("compiled by {}/{}", result.provider, result.model)],
+                diagnostics,
                 provider: Some(result.provider),
                 model: Some(result.model),
             };
-            match validate_plan(&plan).await {
-                Ok(()) => CompilationOutcome::Ready(plan),
-                Err(reasons) => CompilationOutcome::CompilationFailed { reasons },
-            }
+            validated(plan).await
         }
     }
+}
+
+/// A plan that has passed `validate_plan` is `Ready`; one that has not is a real `CompilationFailed`.
+async fn validated(plan: ExecutionPlan) -> CompilationOutcome {
+    match validate_plan(&plan).await {
+        Ok(()) => CompilationOutcome::Ready(plan),
+        Err(reasons) => CompilationOutcome::CompilationFailed { reasons },
+    }
+}
+
+/// What a grounded plan says about its grounding, for the plan's own diagnostics.
+fn grounded_note(grounding: &Grounding) -> String {
+    let report = grounding.report();
+    let mut note = format!(
+        "grounded in a crawl: {} of its {} pages ({} elements) were shown to the compiler, and every selector was found by the crawl",
+        report.pages_offered, report.pages_in_crawl, report.elements_offered
+    );
+    if let Some(role) = &report.role {
+        note.push_str(&format!(
+            "; signs in as role {role:?} first, reading {} from the environment",
+            report.secrets.join(", ")
+        ));
+    }
+    note
 }
 
 // --------------------------------------------------------------- validation
@@ -575,14 +631,65 @@ pub async fn validate_plan(plan: &ExecutionPlan) -> Result<(), Vec<String>> {
 /// prefers whatever explicit method/path/URL text the case already states
 /// over any inference, which is the same principle.
 pub async fn compile(infra: &AiInfrastructure, case: &TestCaseRow) -> CompilationOutcome {
-    if let Some(plan) = compile_deterministic(case) {
-        return match validate_plan(&plan).await {
-            Ok(()) => CompilationOutcome::Ready(plan),
-            Err(reasons) => CompilationOutcome::CompilationFailed { reasons },
+    compile_grounded(infra, case, None).await.outcome
+}
+
+/// What `compile_grounded` returns: the outcome, and — when a crawl grounded the compile — what the compiler was given.
+#[derive(Debug, Clone)]
+pub struct GroundedCompilation {
+    pub outcome: CompilationOutcome,
+    pub report: Option<GroundingReport>,
+}
+
+/// `compile`, optionally grounded in a crawl of the real application (`grounding.rs`).
+///
+/// With a grounding, a browser case is compiled from the crawl's real pages and locators rather than from prose alone:
+/// the AI is shown them and told to copy selectors from them, the plan is refused as NOT_EXECUTABLE if it uses one the
+/// crawl never found, and the role's login steps (credentials as `env:NAME` references, read when the test runs) are
+/// put in front of the plan. An API case needs no page and no login, and is compiled exactly as before, as is any case
+/// when there is no grounding. A case whose only step opens a page has nothing to ground: it still compiles
+/// deterministically, and signs in first.
+///
+/// The AI call is the ordinary `TestCaseCompilation` task, so a task chain set in Settings (a local model, Groq, ...)
+/// decides who answers it, and nothing outside that chain is asked.
+pub async fn compile_grounded(
+    infra: &AiInfrastructure,
+    case: &TestCaseRow,
+    grounding: Option<&Grounding>,
+) -> GroundedCompilation {
+    let Some(grounding) = grounding else {
+        // No crawl: exactly what `compile` always did.
+        let outcome = match compile_deterministic(case) {
+            Some(plan) => validated(plan).await,
+            None => compile_with_ai(infra, case, None).await,
+        };
+        return GroundedCompilation {
+            outcome,
+            report: None,
+        };
+    };
+
+    // An API case needs no page and no login: grounding is not used for it.
+    if let Some(plan) = compile_deterministic_api(case) {
+        return GroundedCompilation {
+            outcome: validated(plan).await,
+            report: None,
         };
     }
-
-    compile_with_ai(infra, case).await
+    if case.steps.len() <= 1 {
+        if let Some(mut plan) = compile_deterministic_browser(case) {
+            plan.actions.splice(0..0, grounding.login.iter().cloned());
+            plan.diagnostics.push(grounded_note(grounding));
+            return GroundedCompilation {
+                outcome: validated(plan).await,
+                report: Some(grounding.report()),
+            };
+        }
+    }
+    GroundedCompilation {
+        outcome: compile_with_ai(infra, case, Some(grounding)).await,
+        report: Some(grounding.report()),
+    }
 }
 
 // --------------------------------------------------------- materialization
@@ -690,9 +797,12 @@ mod tests {
     use super::test_support::*;
     use super::*;
     use crate::ai_router::test_support::{
-        healthy_model, healthy_provider, FakeDiscovery, FakeExecutor,
+        healthy_model, healthy_provider, FakeDiscovery, FakeExecutor, RecordingExecutor,
     };
-    use crate::ai_router::{AiExecutor, CapabilityLevel};
+    use crate::ai_router::{
+        AiExecutor, AiSettings, CapabilityLevel, RoutingMode, TaskProviderPreference, TaskTarget,
+    };
+    use crate::grounding::CrawlGrounding;
     use std::sync::Arc;
 
     fn infra_with_ai(result: Result<&str, crate::ai_router::ExecutionError>) -> AiInfrastructure {
@@ -1218,5 +1328,470 @@ mod tests {
             ),
             other => panic!("expected CompilationFailed, got {other:?}"),
         }
+    }
+
+    // ---------------------------------------------------------------- grounding
+
+    /// A crawl with two roles: `admin` (signs in with two secrets, reaches a dashboard and Settings) and `anonymous`
+    /// (the login page and its fields).
+    const CRAWL_JSON: &str = r##"{"roles":[
+      {"role":"admin","loginSucceeded":true,"loginUsesLiterals":false,
+       "loginActions":[
+         {"type":"NAVIGATE","url":"http://127.0.0.1:8080/login"},
+         {"type":"FILL","selector":"#username","value":"env:AIQA_LOGIN_ADMIN_USERNAME"},
+         {"type":"FILL","selector":"#password","value":"env:AIQA_LOGIN_ADMIN_PASSWORD"},
+         {"type":"CLICK","selector":"#submit-login"}],
+       "pages":[
+         {"url":"http://127.0.0.1:8080/dashboard","title":"Dashboard","elements":[
+           {"kind":"link","text":"Settings","locator":"a[href=\"/settings\"]"},
+           {"kind":"link","text":"Manage Users","locator":"a[href=\"/users\"]"}]},
+         {"url":"http://127.0.0.1:8080/settings","title":"Settings","elements":[
+           {"kind":"button","text":"Delete Account","locator":"#danger-zone"}]}]},
+      {"role":"anonymous","loginSucceeded":true,"loginUsesLiterals":false,"loginActions":[],
+       "pages":[{"url":"http://127.0.0.1:8080/login","title":"Log in","elements":[
+           {"kind":"input","text":"Username","locator":"#username","inputType":"text"},
+           {"kind":"input","text":"Password","locator":"#password","inputType":"password"},
+           {"kind":"button","text":"Log in","locator":"#submit-login"}]}]}]}"##;
+
+    fn grounding_as(role: Option<&str>, c: &TestCaseRow) -> Grounding {
+        let crawl: CrawlGrounding = serde_json::from_str(CRAWL_JSON).expect("the crawl parses");
+        Grounding::for_case(&crawl, role, c).expect("grounded")
+    }
+
+    /// A case that opens Settings from the dashboard — several steps, so nothing deterministic can stand in for the AI.
+    fn open_settings() -> TestCaseRow {
+        case(
+            "Admin opens Settings",
+            "Functional",
+            vec![
+                ("Open the dashboard", "The dashboard is shown"),
+                ("Click the Settings link", "The Settings page is shown"),
+            ],
+            "Settings page is shown with its danger zone",
+            vec![],
+        )
+    }
+
+    fn infra_recording(answer: &str) -> (AiInfrastructure, Arc<RecordingExecutor>) {
+        let executor = Arc::new(RecordingExecutor::ok_sequence(vec![answer]));
+        let mut executors: std::collections::HashMap<&'static str, Arc<dyn AiExecutor>> =
+            std::collections::HashMap::new();
+        executors.insert("mock", executor.clone() as Arc<dyn AiExecutor>);
+        let infra = AiInfrastructure::new(
+            vec![Arc::new(FakeDiscovery(healthy_provider(
+                "mock",
+                vec![healthy_model("mock-model", "mock", CapabilityLevel::Strong)],
+            )))],
+            executors,
+        );
+        (infra, executor)
+    }
+
+    const SETTINGS_PLAN: &str = r##"{"executable":true,"execution_type":"BROWSER","target":"http://127.0.0.1:8080/dashboard","actions":[
+        {"type":"NAVIGATE","url":"http://127.0.0.1:8080/dashboard"},
+        {"type":"CLICK","selector":"a[href=\"/settings\"]"},
+        {"type":"ASSERT_URL","url_contains":"/settings"},
+        {"type":"ASSERT_VISIBLE","selector":"#danger-zone"}]}"##;
+
+    #[tokio::test]
+    async fn a_grounded_browser_case_is_compiled_with_the_login_first_and_only_crawled_selectors() {
+        let c = open_settings();
+        let (infra, _) = infra_recording(SETTINGS_PLAN);
+        let g = grounding_as(Some("admin"), &c);
+        let compiled = compile_grounded(&infra, &c, Some(&g)).await;
+
+        let CompilationOutcome::Ready(plan) = compiled.outcome else {
+            panic!("expected Ready, got {:?}", compiled.outcome)
+        };
+        assert_eq!(plan.execution_type, ExecutionType::Browser);
+        // The role's login first (its credentials as references), then the AI's own steps.
+        assert_eq!(plan.actions.len(), 4 + 4);
+        assert!(matches!(&plan.actions[0], Action::Navigate { url } if url.ends_with("/login")));
+        assert!(
+            matches!(&plan.actions[3], Action::Click { selector } if selector == "#submit-login")
+        );
+        assert!(
+            matches!(&plan.actions[4], Action::Navigate { url } if url.ends_with("/dashboard"))
+        );
+        assert!(
+            matches!(&plan.actions[5], Action::Click { selector } if selector == "a[href=\"/settings\"]")
+        );
+        assert_eq!(
+            secret_names_of(&plan.actions),
+            vec![
+                "AIQA_LOGIN_ADMIN_PASSWORD".to_string(),
+                "AIQA_LOGIN_ADMIN_USERNAME".to_string()
+            ]
+        );
+        assert!(
+            plan.diagnostics
+                .iter()
+                .any(|d| d.contains("grounded in a crawl")
+                    && d.contains("signs in as role \"admin\"")),
+            "diagnostics={:?}",
+            plan.diagnostics
+        );
+        // What the response says was given to the compiler: names, never values.
+        let report = compiled
+            .report
+            .expect("a grounded compile reports its grounding");
+        assert_eq!(report.role.as_deref(), Some("admin"));
+        assert_eq!(report.login_steps, 4);
+        assert_eq!(
+            report.secrets,
+            vec![
+                "AIQA_LOGIN_ADMIN_PASSWORD".to_string(),
+                "AIQA_LOGIN_ADMIN_USERNAME".to_string()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_compiler_is_shown_the_crawls_real_locators_and_told_who_signs_in_and_never_a_secret(
+    ) {
+        let c = open_settings();
+        let (infra, executor) = infra_recording(SETTINGS_PLAN);
+        let g = grounding_as(Some("admin"), &c);
+        compile_grounded(&infra, &c, Some(&g)).await;
+
+        let prompts = executor.prompts.lock().unwrap();
+        assert_eq!(prompts.len(), 1);
+        let prompt = &prompts[0];
+        assert!(prompt.contains("GROUNDED APPLICATION"), "{prompt}");
+        assert!(
+            prompt.contains("- link \"Settings\" -> a[href=\"/settings\"]"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("- button \"Delete Account\" -> #danger-zone"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("signs in as the role \"admin\""),
+            "{prompt}"
+        );
+        assert!(prompt.contains("ONLY a locator copied exactly"), "{prompt}");
+        // The case itself is still in it.
+        assert!(prompt.contains("Admin opens Settings"), "{prompt}");
+        assert!(
+            !prompt.contains("AIQA_LOGIN_"),
+            "no secret name reaches a model: {prompt}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_selector_the_crawl_never_found_makes_the_case_not_executable_however_the_ai_answered(
+    ) {
+        let c = open_settings();
+        let invented = r##"{"executable":true,"execution_type":"BROWSER","target":"http://127.0.0.1:8080/dashboard","actions":[
+            {"type":"NAVIGATE","url":"http://127.0.0.1:8080/dashboard"},
+            {"type":"CLICK","selector":"#settings-link"},
+            {"type":"ASSERT_VISIBLE","selector":"#danger-zone"},
+            {"type":"ASSERT_TEXT","selector":"h1","text":"Settings"}]}"##;
+        let (infra, _) = infra_recording(invented);
+        let g = grounding_as(Some("admin"), &c);
+        let compiled = compile_grounded(&infra, &c, Some(&g)).await;
+
+        match compiled.outcome {
+            CompilationOutcome::NotExecutable { reasons } => {
+                assert!(
+                    reasons
+                        .iter()
+                        .any(|r| r.contains("step 2 (CLICK)") && r.contains("#settings-link")),
+                    "reasons={reasons:?}"
+                );
+                assert!(
+                    reasons.iter().any(|r| r.contains("step 4 (ASSERT_TEXT)")),
+                    "reasons={reasons:?}"
+                );
+                assert!(
+                    !reasons.iter().any(|r| r.contains("step 3")),
+                    "a selector the crawl found is not blamed: {reasons:?}"
+                );
+                assert!(
+                    reasons
+                        .iter()
+                        .any(|r| r.contains("only selectors the crawl found can be compiled")),
+                    "reasons={reasons:?}"
+                );
+            }
+            other => panic!("expected NotExecutable, got {other:?}"),
+        }
+        assert!(
+            compiled.report.is_some(),
+            "the response still says what the compiler was given"
+        );
+    }
+
+    #[tokio::test]
+    async fn without_a_crawl_an_invented_selector_compiles_as_it_always_did() {
+        // The old behaviour, unchanged: no crawl, no grounding check, no login, and the prompt as it was.
+        let c = open_settings();
+        let invented = r##"{"executable":true,"execution_type":"BROWSER","target":"http://127.0.0.1:8080/x","actions":[
+            {"type":"NAVIGATE","url":"http://127.0.0.1:8080/x"},{"type":"CLICK","selector":"#settings-link"}]}"##;
+        let (infra, executor) = infra_recording(invented);
+        let compiled = compile_grounded(&infra, &c, None).await;
+        assert!(
+            matches!(compiled.outcome, CompilationOutcome::Ready(_)),
+            "outcome={:?}",
+            compiled.outcome
+        );
+        assert!(compiled.report.is_none());
+        let prompts = executor.prompts.lock().unwrap();
+        assert!(
+            !prompts[0].contains("GROUNDED APPLICATION") && !prompts[0].contains("LOGIN:"),
+            "{}",
+            prompts[0]
+        );
+        assert!(
+            prompts[0].contains("Never invent a URL, selector, or value"),
+            "the old rules are still there"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_ai_that_declines_a_grounded_case_gives_its_own_reasons() {
+        let c = open_settings();
+        let (infra, _) = infra_recording(
+            r#"{"executable":false,"reasons":["there is no Billing link in the crawl"]}"#,
+        );
+        let g = grounding_as(Some("admin"), &c);
+        match compile_grounded(&infra, &c, Some(&g)).await.outcome {
+            CompilationOutcome::NotExecutable { reasons } => {
+                assert_eq!(
+                    reasons,
+                    vec!["there is no Billing link in the crawl".to_string()]
+                )
+            }
+            other => panic!("expected NotExecutable, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_case_that_only_opens_a_page_compiles_deterministically_and_signs_in_first_without_the_ai(
+    ) {
+        let c = case(
+            "Dashboard loads",
+            "Functional",
+            vec![(
+                "Navigate to http://127.0.0.1:8080/dashboard",
+                "The dashboard is shown",
+            )],
+            "Dashboard is shown",
+            vec![],
+        );
+        let (infra, executor) = infra_recording("not asked");
+        let g = grounding_as(Some("admin"), &c);
+        let compiled = compile_grounded(&infra, &c, Some(&g)).await;
+        let CompilationOutcome::Ready(plan) = compiled.outcome else {
+            panic!("expected Ready")
+        };
+        assert_eq!(plan.compiler, CompilerMethod::Deterministic);
+        assert_eq!(
+            plan.actions.len(),
+            4 + 2,
+            "the login, then the navigation and its URL check"
+        );
+        assert!(matches!(&plan.actions[0], Action::Navigate { url } if url.ends_with("/login")));
+        assert!(
+            executor.prompts.lock().unwrap().is_empty(),
+            "the AI was not asked"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_case_with_more_steps_than_opening_a_page_is_never_cut_down_to_the_page_it_opens() {
+        // Compiled deterministically this would keep only "Navigate to ..." and quietly drop the rest.
+        let c = case(
+            "Open Settings",
+            "Functional",
+            vec![
+                (
+                    "Navigate to http://127.0.0.1:8080/dashboard",
+                    "The dashboard is shown",
+                ),
+                ("Click the Settings link", "The Settings page is shown"),
+            ],
+            "Settings page is shown",
+            vec![],
+        );
+        let (infra, executor) = infra_recording(SETTINGS_PLAN);
+        let g = grounding_as(Some("admin"), &c);
+        let compiled = compile_grounded(&infra, &c, Some(&g)).await;
+        let CompilationOutcome::Ready(plan) = compiled.outcome else {
+            panic!("expected Ready")
+        };
+        assert_eq!(plan.compiler, CompilerMethod::Ai);
+        assert_eq!(
+            executor.prompts.lock().unwrap().len(),
+            1,
+            "the AI compiled it"
+        );
+        assert!(
+            plan.actions
+                .iter()
+                .any(|a| matches!(a, Action::Click { .. })),
+            "its click is in the plan"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_api_case_ignores_the_grounding_and_gets_no_login() {
+        let c = case(
+            "Health check",
+            "API",
+            vec![("GET /health", "HTTP 200 with body ok")],
+            "HTTP 200 ok",
+            vec![],
+        );
+        let (infra, executor) = infra_recording("not asked");
+        let g = grounding_as(Some("admin"), &c);
+        let compiled = compile_grounded(&infra, &c, Some(&g)).await;
+        let CompilationOutcome::Ready(plan) = compiled.outcome else {
+            panic!("expected Ready")
+        };
+        assert_eq!(plan.execution_type, ExecutionType::Api);
+        assert!(!plan
+            .actions
+            .iter()
+            .any(|a| matches!(a, Action::Fill { .. } | Action::Click { .. })));
+        assert!(compiled.report.is_none(), "grounding was not used");
+        assert!(executor.prompts.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_case_that_runs_without_signing_in_is_grounded_on_the_role_that_never_logged_in() {
+        let c = case(
+            "Login form",
+            "Functional",
+            vec![
+                ("Type a wrong password", "It is refused"),
+                ("Click Log in", "An error is shown"),
+            ],
+            "Login is refused",
+            vec![],
+        );
+        let plan_json = r##"{"executable":true,"execution_type":"BROWSER","target":"http://127.0.0.1:8080/login","actions":[
+            {"type":"NAVIGATE","url":"http://127.0.0.1:8080/login"},
+            {"type":"FILL","selector":"#username","value":"bob"},
+            {"type":"FILL","selector":"#password","value":"wrong-password"},
+            {"type":"CLICK","selector":"#submit-login"}]}"##;
+        let (infra, executor) = infra_recording(plan_json);
+        let g = grounding_as(None, &c);
+        let compiled = compile_grounded(&infra, &c, Some(&g)).await;
+        let CompilationOutcome::Ready(plan) = compiled.outcome else {
+            panic!("expected Ready")
+        };
+        assert_eq!(
+            plan.actions.len(),
+            4,
+            "no login steps in front: the case does not sign in"
+        );
+        assert!(executor.prompts.lock().unwrap()[0].contains("runs without signing in"));
+        // A literal typed into a password field is noted, never hidden (and the note does not repeat it).
+        let note = plan
+            .diagnostics
+            .iter()
+            .find(|d| d.contains("password field"))
+            .expect("a note");
+        assert!(
+            note.contains("step 3") && !note.contains("wrong-password"),
+            "note={note}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_compile_task_chain_decides_who_answers_a_grounded_compile() {
+        // "paid" would win automatic routing (it is Strong); the task's chain names only "local".
+        let mut executors: std::collections::HashMap<&'static str, Arc<dyn AiExecutor>> =
+            std::collections::HashMap::new();
+        executors.insert("local", Arc::new(FakeExecutor::ok(SETTINGS_PLAN)));
+        let paid = Arc::new(RecordingExecutor::ok_sequence(vec![SETTINGS_PLAN]));
+        executors.insert("paid", paid.clone() as Arc<dyn AiExecutor>);
+        let infra = AiInfrastructure::new(
+            vec![
+                Arc::new(FakeDiscovery(healthy_provider(
+                    "local",
+                    vec![healthy_model(
+                        "local-model",
+                        "local",
+                        CapabilityLevel::Basic,
+                    )],
+                ))),
+                Arc::new(FakeDiscovery(healthy_provider(
+                    "paid",
+                    vec![healthy_model("paid-model", "paid", CapabilityLevel::Strong)],
+                ))),
+            ],
+            executors,
+        );
+        let mut task_overrides = std::collections::HashMap::new();
+        task_overrides.insert(
+            AiTask::TestCaseCompilation,
+            TaskProviderPreference {
+                chain: vec![TaskTarget {
+                    provider: "local".to_string(),
+                    model: "local-model".to_string(),
+                }],
+                ..Default::default()
+            },
+        );
+        infra
+            .set_settings(AiSettings {
+                mode: RoutingMode::Auto,
+                preferred_provider: None,
+                preferred_model: None,
+                fallback_enabled: true,
+                task_overrides,
+            })
+            .await;
+
+        let c = open_settings();
+        let g = grounding_as(Some("admin"), &c);
+        let CompilationOutcome::Ready(plan) = compile_grounded(&infra, &c, Some(&g)).await.outcome
+        else {
+            panic!("expected Ready")
+        };
+        assert_eq!(plan.provider.as_deref(), Some("local"));
+        assert!(
+            paid.prompts.lock().unwrap().is_empty(),
+            "a provider outside the chain is never asked"
+        );
+    }
+
+    #[tokio::test]
+    async fn however_large_the_crawl_the_compile_prompt_stays_small_enough_for_a_local_window() {
+        let elements: Vec<serde_json::Value> = (0..500)
+            .map(|i| {
+                serde_json::json!({
+                    "kind": "link",
+                    "text": format!("Report number {i} with a long descriptive label"),
+                    "locator": format!("a[href=\"/r/{i}\"]"),
+                })
+            })
+            .collect();
+        let pages: Vec<serde_json::Value> = (0..40)
+            .map(|i| {
+                serde_json::json!({
+                    "url": format!("http://127.0.0.1:8080/section/{i}"),
+                    "title": format!("Section {i}"),
+                    "elements": elements,
+                })
+            })
+            .collect();
+        let crawl: CrawlGrounding = serde_json::from_value(serde_json::json!({"roles": [
+            {"role": "anonymous", "loginSucceeded": true, "loginUsesLiterals": false, "loginActions": [], "pages": pages}
+        ]}))
+        .unwrap();
+        let c = open_settings();
+        let g = Grounding::for_case(&crawl, None, &c).expect("grounded");
+        let (infra, executor) = infra_recording(r#"{"executable":false,"reasons":["x"]}"#);
+        compile_grounded(&infra, &c, Some(&g)).await;
+        let prompt = executor.prompts.lock().unwrap()[0].clone();
+        assert!(
+            prompt.chars().count() < 8_000,
+            "{} characters is too many for a 4,096-token window with the case and the answer",
+            prompt.chars().count()
+        );
     }
 }

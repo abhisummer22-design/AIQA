@@ -2,7 +2,8 @@ import { test, expect } from "@playwright/test";
 import { ChildProcess, spawn } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
-import { CrawlPlan, runCrawl } from "../helpers/crawler";
+import { CrawlPlan, extractGroundedElements, runCrawl } from "../helpers/crawler";
+import { resolveValue } from "../helpers/secrets";
 
 // Real, self-contained verification (same "own fixture, real browser, real
 // pass/fail" pattern tests/sample.spec.ts and tests/healing.spec.ts already
@@ -208,4 +209,155 @@ test("a wrong secret is a rejected login, and the value is in neither the result
 
   expect(pathsOf(admin.pages)).not.toContain("/dashboard");
   expect(raw).not.toContain("totally-wrong-password");
+});
+
+// Grounding: beside its result a crawl records what a test can act on — every element with a locator the crawl
+// checked matches exactly one element on its page — and each role's login without its credentials.
+
+const GROUNDING_FILE = "crawl-grounding-grounding.json";
+
+test("a crawl records grounding: fields and links with locators, and logins without credentials", async ({ browser }) => {
+  process.env.AIQA_LOGIN_CRAWLTEST_USER = "admin";
+  process.env.AIQA_LOGIN_CRAWLTEST_PW = "admin-pass";
+  const plan: CrawlPlan = {
+    baseUrl: BASE_URL,
+    roles: [
+      { name: "admin", loginActions: referencedLogin() },
+      { name: "literal", loginActions: loginActions("alice", "alice-pass") },
+      { name: "anonymous", loginActions: [] },
+    ],
+  };
+  await runCrawl(browser, plan, "crawl-result-grounding.json");
+  const raw = fs.readFileSync(path.join(RESULT_DIR, GROUNDING_FILE), "utf-8");
+  const grounding = JSON.parse(raw);
+  const role = (name: string) => grounding.roles.find((r: any) => r.role === name);
+  const admin = role("admin");
+  const literal = role("literal");
+  const anonymous = role("anonymous");
+
+  // No credential is in the file, whichever way the login was written.
+  expect(raw).not.toContain("admin-pass");
+  expect(raw).not.toContain("alice-pass");
+
+  // A login written as references is kept as they were written and can be run again by a test.
+  expect(admin.loginUsesLiterals).toBe(false);
+  expect(admin.loginActions.find((a: any) => a.selector === "#password").value).toBe("env:AIQA_LOGIN_CRAWLTEST_PW");
+  expect(admin.loginActions.find((a: any) => a.selector === "#username").value).toBe("env:AIQA_LOGIN_CRAWLTEST_USER");
+  // A login written with literals is kept as steps with the values removed, and flagged.
+  expect(literal.loginUsesLiterals).toBe(true);
+  expect(literal.loginActions.filter((a: any) => a.type === "FILL").every((a: any) => a.value === "")).toBe(true);
+  // The anonymous role logs in with nothing to keep.
+  expect(anonymous.loginActions).toEqual([]);
+  expect(anonymous.loginUsesLiterals).toBe(false);
+
+  // The login page (seen by the anonymous crawl) offers its fields, not only its button.
+  const loginPage = anonymous.pages.find((p: any) => new URL(p.url).pathname === "/login");
+  const locators = loginPage.elements.map((e: any) => e.locator);
+  expect(locators).toEqual(expect.arrayContaining(["#username", "#password", "#submit-login"]));
+  const password = loginPage.elements.find((e: any) => e.locator === "#password");
+  expect(password.kind).toBe("input");
+  expect(password.inputType).toBe("password");
+  expect(loginPage.elements.find((e: any) => e.locator === "#submit-login").kind).toBe("button");
+
+  // What a role sees behind its login is offered with locators that name each link by where it goes.
+  const dashboard = admin.pages.find((p: any) => new URL(p.url).pathname === "/dashboard");
+  expect(dashboard.elements.map((e: any) => e.locator)).toEqual(
+    expect.arrayContaining(['a[href="/settings"]', 'a[href="/users"]'])
+  );
+  const settings = admin.pages.find((p: any) => new URL(p.url).pathname === "/settings");
+  expect(settings.elements.map((e: any) => e.locator)).toContain("#danger-zone");
+  // ...and none of it is offered to the role that cannot reach it.
+  expect(role("anonymous").pages.some((p: any) => new URL(p.url).pathname === "/settings")).toBe(false);
+});
+
+test("every locator a crawl records matches exactly one element when a test uses it", async ({ browser }) => {
+  process.env.AIQA_LOGIN_CRAWLTEST_USER = "admin";
+  process.env.AIQA_LOGIN_CRAWLTEST_PW = "admin-pass";
+  const plan: CrawlPlan = { baseUrl: BASE_URL, roles: [{ name: "admin", loginActions: referencedLogin() }] };
+  await runCrawl(browser, plan, "crawl-result-grounding-replay.json");
+  const admin = JSON.parse(
+    fs.readFileSync(path.join(RESULT_DIR, "crawl-grounding-grounding-replay.json"), "utf-8")
+  ).roles[0];
+
+  // Replay it as a test would: sign in from the recorded steps (secrets read from the environment), then use each
+  // recorded locator on the page it was recorded on.
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  for (const action of admin.loginActions) {
+    if (action.type === "NAVIGATE") await page.goto(action.url);
+    if (action.type === "FILL") await page.locator(action.selector).fill(resolveValue(action.value));
+    if (action.type === "CLICK") await page.locator(action.selector).click();
+  }
+  let checked = 0;
+  for (const recorded of admin.pages) {
+    // Skip the page the crawl left by following /logout: that ends the session it was replaying.
+    if (new URL(recorded.url).pathname === "/login") continue;
+    await page.goto(recorded.url);
+    for (const element of recorded.elements) {
+      expect(await page.locator(element.locator).count(), `${recorded.url} ${element.locator}`).toBe(1);
+      checked += 1;
+    }
+  }
+  await context.close();
+  expect(checked).toBeGreaterThan(5);
+});
+
+test("grounded elements: a locator is offered only when it is unique, hidden things are not offered, and each kind is named", async ({ page }) => {
+  await page.setContent(`
+    <button id="save">Save</button>
+    <button>Cancel</button><button>Cancel</button>
+    <a href="/one">Docs</a><a href="/two">Docs</a>
+    <input id="email" type="email" placeholder="Email address">
+    <input type="password" name="pw" aria-label="Password">
+    <input type="checkbox" id="remember"><label for="remember">Remember me</label>
+    <select name="plan" id="plan"><option>A</option></select>
+    <textarea data-testid="notes"></textarea>
+    <div style="display:none"><button id="hidden-btn">Hidden</button></div>
+    <input type="hidden" name="csrf" value="x">
+    <button data-test="go">  Go   now </button>
+    <button id="dup">Dup one</button><button id="dup">Dup two</button>
+    <button>Unique Label</button>
+    <input type="submit" value="Send it">
+  `);
+  const found = await extractGroundedElements(page);
+  const byLocator = new Map(found.map((e) => [e.locator, e]));
+
+  // Each is named by the best locator that matches it alone.
+  for (const locator of [
+    "#save",
+    '[data-test="go"]',
+    'a[href="/one"]',
+    'a[href="/two"]',
+    "#email",
+    'input[name="pw"]',
+    "#remember",
+    "#plan",
+    '[data-testid="notes"]',
+    'role=button[name="Unique Label"]',
+  ]) {
+    expect(byLocator.has(locator), `${locator} in ${[...byLocator.keys()].join(" | ")}`).toBe(true);
+  }
+  // Two buttons that cannot be told apart are not offered at all: a plan built on them would click the wrong one.
+  expect(found.filter((e) => e.text === "Cancel")).toEqual([]);
+  // A duplicated id is not a locator; the accessible name is used when it is unique.
+  expect(byLocator.has("#dup")).toBe(false);
+  expect(byLocator.has('role=button[name="Dup one"]')).toBe(true);
+  // Nothing hidden is offered.
+  expect(found.some((e) => e.text === "Hidden" || e.locator === "#hidden-btn")).toBe(false);
+  expect(found.some((e) => e.locator.includes("csrf"))).toBe(false);
+
+  // Each kind is named, with what a person would call the element.
+  expect(byLocator.get("#email")).toMatchObject({ kind: "input", inputType: "email", text: "Email address" });
+  expect(byLocator.get('input[name="pw"]')).toMatchObject({ kind: "input", inputType: "password", text: "Password" });
+  expect(byLocator.get("#remember")).toMatchObject({ kind: "input", inputType: "checkbox", text: "Remember me" });
+  expect(byLocator.get("#plan")).toMatchObject({ kind: "select" });
+  expect(byLocator.get('[data-testid="notes"]')).toMatchObject({ kind: "textarea" });
+  expect(byLocator.get('[data-test="go"]')).toMatchObject({ kind: "button", text: "Go now" });
+  expect(byLocator.get('a[href="/one"]')).toMatchObject({ kind: "link", text: "Docs" });
+  expect(found.find((e) => e.text === "Send it")).toMatchObject({ kind: "button" });
+
+  // And every locator offered really matches one element.
+  for (const element of found) {
+    expect(await page.locator(element.locator).count(), element.locator).toBe(1);
+  }
 });
