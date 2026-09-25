@@ -168,6 +168,12 @@ A browser case is compiled from prose, and prose names no selector. Naming a fin
 - **Task routing**: the compile is the `TestCaseCompilation` task, so Settings → task routing decides who answers it (a local model, Groq, ...).
 - **Evidence**: the run's log lists each step (`AIQA_STEP {...}`, never a value) and the page it ended on (`AIQA_FINAL`).
 
+### Checking the Documents Against the Application (`gap_check.rs`)
+The requirements read out of the uploaded documents (`requirements.rs`) and a crawl of the running application (`crawler.rs`) can be lined up: `POST /api/v1/projects/:project_id/gap-check` (optional body `{crawl_run_id, role, document_ids}`; with no crawl named, the project's most recent one) answers, without calling any AI provider:
+- **Per requirement**: `FOUND` (a page carries the words the requirement is about: in its address, title, headings, a link, a button or a field), `WEAK` (something related is on a page, not enough to say the feature is there), `MISSING` (no page carries them) or `NOT_CHECKABLE` (a crawl cannot show a response time, an API, a lock-out rule or background text). Each comes with the pages and the words behind it, so a person can see why. It is evidence that a feature has somewhere to live, not a proof that it works.
+- **Per page**: the pages no requirement points at (`undocumented_pages`, "not in the documents").
+- **Per requirement, its cases**: how many saved (not rejected) cases test it, by status and by technique (`technique:<t>` tags), and which techniques that kind of requirement still lacks. The summary counts requirements the application shows that no case tests, and requirements with cases the crawl found no sign of.
+
 ---
 
 ## 7. Specialized Diagnostic Tools & Agents
@@ -631,6 +637,7 @@ All protected endpoints require an `Authorization: Bearer <api_key>` header unle
 | `POST` | `/api/v1/projects/:project_id/test-cases/:id/approve` | Approve test case for execution | Yes |
 | `POST` | `/api/v1/projects/:project_id/test-cases/:id/handoff` | Materialize case into executable run | Yes |
 | `POST` | `/api/v1/projects/:project_id/test-cases/generate-ai` | Generate non-persisted test drafts | Yes |
+| `POST` | `/api/v1/projects/:project_id/gap-check` | Line the requirements up with a crawl and with their cases | Yes |
 | `POST` | `/api/v1/projects/:project_id/test-plans` | Create a test plan | Yes |
 | `GET` | `/api/v1/projects/:project_id/test-plans` | List test plans | Yes |
 | `POST` | `/api/v1/projects/:project_id/test-suites` | Create a test suite | Yes |
