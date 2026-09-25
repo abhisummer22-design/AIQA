@@ -34,7 +34,43 @@ use uuid::Uuid;
 /// handshake, so it authenticates itself via a `?key=` query parameter
 /// instead (see `project_events_ws_handler`).
 pub fn router(state: AppState) -> Router {
-    let protected = Router::new()
+    let protected = protected_routes().layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        auth::require_auth,
+    ));
+
+    Router::new()
+        .route("/health", get(health))
+        // BE-14 (API Contract §14) — project-scoped realtime stream.
+        // Mounted outside the header-based `require_auth` layer because
+        // a WebSocket upgrade can't carry an `Authorization` header,
+        // so this authenticates itself via `?key=` instead (see
+        // `project_events_ws_handler`).
+        .route(
+            "/api/v1/projects/:project_id/events",
+            get(project_events_ws_handler),
+        )
+        .route("/api/v1/logs/ws", get(logs_ws_handler))
+        .route(
+            "/api/v1/projects/:project_id/logs/ws",
+            get(project_logs_ws_handler),
+        )
+        .merge(protected)
+        .with_state(state)
+}
+
+/// The same routes as `router`'s protected part, with no authentication layer on them, for the autopilot
+/// (`autopilot_runner.rs`): a run acts as the person who started it, calling this service's own routes in process with
+/// that person's persisted identity attached to each request (and checked to still be an active key). Never bound to a
+/// socket, so nothing outside the process can reach a route without a key.
+pub(crate) fn internal_router(state: AppState) -> Router {
+    protected_routes().with_state(state)
+}
+
+/// Every route that needs an API key, in one place so that `router` (which puts the authentication layer on them) and
+/// `internal_router` (which does not) can never differ.
+fn protected_routes() -> Router<AppState> {
+    Router::new()
         // The caller's own real identity/role/scope.
         .route("/api/v1/auth/whoami", get(whoami))
         // The real coordination surface behind the Orchestrator view:
@@ -434,6 +470,28 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/projects/:project_id/autopilot/estimate",
             post(autopilot_estimate_scoped),
         )
+        // Phase 7 — an autopilot run (`autopilot.rs`): made with the estimate it is shown, started when that is accepted,
+        // watched and cancelled here. It works through this same API, as the key that made it.
+        .route(
+            "/api/v1/projects/:project_id/autopilot/runs",
+            post(crate::autopilot_api::create_run).get(crate::autopilot_api::list_runs),
+        )
+        .route(
+            "/api/v1/projects/:project_id/autopilot/runs/:run_id",
+            get(crate::autopilot_api::get_run),
+        )
+        .route(
+            "/api/v1/projects/:project_id/autopilot/runs/:run_id/start",
+            post(crate::autopilot_api::start_run),
+        )
+        .route(
+            "/api/v1/projects/:project_id/autopilot/runs/:run_id/cancel",
+            post(crate::autopilot_api::cancel_run),
+        )
+        .route(
+            "/api/v1/projects/:project_id/autopilot/runs/:run_id/events",
+            get(crate::autopilot_api::list_events),
+        )
         // Phase 3 — what a requirement-driven generation would do, without
         // calling any model: how many AI calls, what each skill is shown.
         .route(
@@ -495,29 +553,6 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/projects/:project_id/logs",
             get(list_project_logs_handler),
         )
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            auth::require_auth,
-        ));
-
-    Router::new()
-        .route("/health", get(health))
-        // BE-14 (API Contract §14) — project-scoped realtime stream.
-        // Mounted outside the header-based `require_auth` layer because
-        // a WebSocket upgrade can't carry an `Authorization` header,
-        // so this authenticates itself via `?key=` instead (see
-        // `project_events_ws_handler`).
-        .route(
-            "/api/v1/projects/:project_id/events",
-            get(project_events_ws_handler),
-        )
-        .route("/api/v1/logs/ws", get(logs_ws_handler))
-        .route(
-            "/api/v1/projects/:project_id/logs/ws",
-            get(project_logs_ws_handler),
-        )
-        .merge(protected)
-        .with_state(state)
 }
 
 /// B12 remediation. Was `CorsLayer::new().allow_origin(Any)` in `main.rs` —
@@ -579,11 +614,11 @@ async fn health() -> &'static str {
     "ok"
 }
 
-fn to_500<E: std::fmt::Display>(e: E) -> ApiError {
+pub(crate) fn to_500<E: std::fmt::Display>(e: E) -> ApiError {
     ApiError::internal(e)
 }
 
-async fn audit(
+pub(crate) async fn audit(
     state: &AppState,
     ctx: &AuthContext,
     action: &str,
@@ -661,7 +696,7 @@ async fn audit_in_project(
 /// matching this file's own established convention elsewhere (`get_run`,
 /// `get_project_handler`): a project that doesn't exist can't be "yours"
 /// either way, so 404 is the more informative answer than 403.
-async fn require_scoped_project(
+pub(crate) async fn require_scoped_project(
     state: &AppState,
     ctx: &AuthContext,
     project_id: Uuid,
@@ -5083,7 +5118,7 @@ async fn list_runs_scoped(
 /// to the DB, same as every legacy handler) and confirms it belongs to
 /// `project_id` — the shared core every `_scoped` run-detail handler below
 /// uses, so that check is written exactly once.
-async fn scoped_run_summary(
+pub(crate) async fn scoped_run_summary(
     state: &AppState,
     run_id: Uuid,
     project_id: Uuid,
@@ -6972,10 +7007,6 @@ struct AutopilotEstimateBody {
     run_concurrency: Option<u64>,
 }
 
-const AUTOPILOT_MAX_ROLES: u64 = 20;
-const AUTOPILOT_DEFAULT_CONCURRENCY: u64 = 2;
-const AUTOPILOT_MAX_CONCURRENCY: u64 = 8;
-
 /// Where `task` would go right now, what that provider charges and what earlier calls of the task to it measured
 /// (`ai_call_stats`). `None`: nothing can serve the task.
 async fn estimate_server_for(
@@ -7038,30 +7069,45 @@ async fn autopilot_estimate_scoped(
 ) -> Result<Json<crate::autopilot_estimate::Estimate>, ApiError> {
     auth::require_role(&ctx, Role::Operator)?;
     require_scoped_project(&state, &ctx, project_id).await?;
-    let roles = body.roles.unwrap_or(1);
-    if !(1..=AUTOPILOT_MAX_ROLES).contains(&roles) {
-        return Err(ApiError::validation(format!(
-            "roles must be between 1 and {AUTOPILOT_MAX_ROLES}"
-        )));
-    }
-    let run_concurrency = body.run_concurrency.unwrap_or(AUTOPILOT_DEFAULT_CONCURRENCY);
-    if !(1..=AUTOPILOT_MAX_CONCURRENCY).contains(&run_concurrency) {
-        return Err(ApiError::validation(format!(
-            "run_concurrency must be between 1 and {AUTOPILOT_MAX_CONCURRENCY}"
-        )));
-    }
-    if let Some(n) = body.verify_gaps {
-        if n == 0 || n > crate::gap_verify::MAX_VERIFICATIONS_LIMIT as u64 {
-            return Err(ApiError::validation(format!(
-                "verify_gaps must be between 1 and {}",
-                crate::gap_verify::MAX_VERIFICATIONS_LIMIT
-            )));
-        }
-    }
+    let request = crate::autopilot::EstimateRequest {
+        requirement_document_ids: body.requirement_document_ids,
+        skills: body
+            .skills
+            .into_iter()
+            .map(|s| crate::ai_generation::SkillInput {
+                id: s.id,
+                name: s.name,
+                description: s.description,
+            })
+            .collect(),
+        depth: body.depth,
+        coverage_top_up: body.coverage_top_up,
+        roles: body.roles.unwrap_or(1),
+        focus_requirements: body.focus_requirements,
+        verify_gaps: body.verify_gaps,
+        execute: body.execute.unwrap_or(true),
+        run_concurrency: body
+            .run_concurrency
+            .unwrap_or(crate::autopilot::DEFAULT_CONCURRENCY),
+    };
+    Ok(Json(
+        build_autopilot_estimate(&state, project_id, &request).await?,
+    ))
+}
+
+/// What a run described by `request` would cost, worked out from the project's requirements and from where the AI router
+/// would send each task now. Reads only and calls no AI. Shared by the estimate route and by creating a run, so the
+/// estimate a person is shown for a run is the one they would have been shown before making it.
+pub(crate) async fn build_autopilot_estimate(
+    state: &AppState,
+    project_id: Uuid,
+    request: &crate::autopilot::EstimateRequest,
+) -> Result<crate::autopilot_estimate::Estimate, ApiError> {
+    request.check_limits().map_err(ApiError::validation)?;
 
     let items: Vec<crate::requirement_generation::RequirementItem> = state
         .store
-        .list_requirements(&project_id.to_string(), &body.requirement_document_ids)
+        .list_requirements(&project_id.to_string(), &request.requirement_document_ids)
         .await
         .map_err(to_500)?
         .into_iter()
@@ -7072,23 +7118,15 @@ async fn autopilot_estimate_scoped(
             text: r.text,
         })
         .collect();
-    let skills: Vec<crate::ai_generation::SkillInput> = body
-        .skills
-        .into_iter()
-        .map(|s| crate::ai_generation::SkillInput {
-            id: s.id,
-            name: s.name,
-            description: s.description,
-        })
-        .collect();
-    let coverage_options = coverage_options_for(body.depth.as_deref(), body.coverage_top_up, true)?;
-    let budget = requirement_batch_budget(&state).await;
-    let plan = crate::requirement_generation::plan_calls(&items, &skills, budget);
+    let skills = &request.skills;
+    let coverage_options = coverage_options_for(request.depth.as_deref(), request.coverage_top_up, true)?;
+    let budget = requirement_batch_budget(state).await;
+    let plan = crate::requirement_generation::plan_calls(&items, skills, budget);
     let (prompt_tokens, completion_tokens) =
         crate::requirement_generation::estimate_tokens(&plan, &items);
     let cases_target = coverage_options
         .map(|o| {
-            crate::coverage::plan_info(&items, &skills, o.depth, o.top_up, o.rounds, 0)
+            crate::coverage::plan_info(&items, skills, o.depth, o.top_up, o.rounds, 0)
                 .techniques
                 .iter()
                 .map(|t| (t.requirements * t.per_requirement) as u64)
@@ -7105,25 +7143,25 @@ async fn autopilot_estimate_scoped(
             .filter(|o| o.top_up)
             .map(|o| o.rounds as u64),
         cases_target,
-        roles,
-        focus: body.focus_requirements,
-        verify: body.verify_gaps,
-        execute: body.execute.unwrap_or(true),
-        run_concurrency,
+        roles: request.roles,
+        focus: request.focus_requirements,
+        verify: request.verify_gaps,
+        execute: request.execute,
+        run_concurrency: request.run_concurrency,
         generation: estimate_server_for(
-            &state,
+            state,
             crate::ai_router::AiTask::TestCaseGeneration,
             "TEST_CASE_GENERATION",
         )
         .await,
         compile: estimate_server_for(
-            &state,
+            state,
             crate::ai_router::AiTask::TestCaseCompilation,
             "TEST_CASE_COMPILATION",
         )
         .await,
         traceability: estimate_server_for(
-            &state,
+            state,
             crate::ai_router::AiTask::Traceability,
             "TRACEABILITY",
         )
@@ -7136,7 +7174,7 @@ async fn autopilot_estimate_scoped(
             "{not_offered} requirement(s) are of a kind no selected skill tests, so no case would be generated for them."
         ));
     }
-    Ok(Json(estimate))
+    Ok(estimate)
 }
 
 // ----------------------------------------------------------- intelligence

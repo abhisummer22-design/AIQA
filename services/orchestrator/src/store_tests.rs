@@ -1302,3 +1302,24 @@ async fn a_latency_too_large_to_store_is_kept_as_the_largest_that_can_be() {
     store.record_ai_call("p", "m", "T", u64::MAX, None, None).await.unwrap();
     assert_eq!(store.ai_call_stats("T").await.unwrap()[0].total_ms, i64::MAX);
 }
+
+// ------------------------------------------------------------------ Phase 7C — a key found by its id
+
+#[tokio::test]
+async fn an_api_key_is_found_by_its_id_only_while_it_has_not_been_revoked() {
+    let (store, _dir) = temp_store().await;
+    let id = Uuid::new_v4();
+    store.insert_api_key(id, "ci", "hash-1", "operator", Some("p1")).await.unwrap();
+    store.insert_api_key(Uuid::new_v4(), "other", "hash-2", "viewer", None).await.unwrap();
+
+    let key = store.find_active_api_key(id).await.unwrap().expect("active");
+    assert_eq!((key.id, key.name.as_str(), key.role.as_str()), (id, "ci", "operator"));
+    assert_eq!(key.project_id.as_deref(), Some("p1"));
+    let global = store.find_api_key_by_hash("hash-2").await.unwrap().expect("by hash, as before");
+    assert!(global.project_id.is_none());
+    assert!(store.find_active_api_key(Uuid::new_v4()).await.unwrap().is_none(), "an id nobody has");
+
+    store.revoke_api_key(id).await.unwrap();
+    assert!(store.find_active_api_key(id).await.unwrap().is_none(), "revoked");
+    assert!(store.find_api_key_by_hash("hash-1").await.unwrap().is_none(), "revoked by hash too");
+}

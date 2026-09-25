@@ -191,6 +191,15 @@ A crawl as `anonymous` records the login page's fields, each with a locator it c
 - **Where the numbers come from**: the calls are the generation plan's (`requirement_generation::plan_calls`) plus a quarter for answers that cannot be read and the top-up rounds; the tokens are the plan's own estimate; the dollars are the two rates of a metered provider (`Unmetered` costs `0`; a task nothing can serve has no cost figure at all, not `0`). The time of a call is **measured** once at least 3 earlier calls to that provider and model are recorded (`ai_call_stats`, migration 0021: every generation call adds its time and tokens, whichever page or run made it), and **assumed** for the kind of provider before that (a local model 20 tokens a second, a hosted one 100), and the estimate says which.
 - **Assumptions and warnings** are listed: no provider for a task, a run that may cost money (`totals.paid`), no depth chosen, requirements no selected skill tests. The wait for a person to approve the cases is not counted.
 
+### Autopilot Runs (`autopilot.rs`, `autopilot_runner.rs`, `autopilot_steps.rs`)
+One run takes a project from its uploaded requirements towards a report of executed tests. It is made with the estimate above, starts only when a person accepts that, and every step calls a route the application already has, as the key that made the run — so nothing happens in a run that this key could not do by hand.
+- **Making a run**: `POST /api/v1/projects/:project_id/autopilot/runs` (Operator role) with `{base_url, roles: [{name, login_actions}], crawl_run_id?, requirement_document_ids?, skills?, depth?, coverage_top_up?, focus_requirements?, verify_gaps?, execute?, run_concurrency?, approval?, name?}`. The roles carry the login steps a person confirmed (`login-suggestion` proposes them; their values are `env:NAME` references, never credentials). It stores the run with its estimate and starts nothing, and refuses what could only fail later: an address or login steps a crawl would refuse, a variable that is not set (it is named), no requirements to test, a `crawl_run_id` that is not a finished crawl of the project. A project has one run that has not ended at a time (the `409` names the one in the way).
+- **Accepting the cost**: `POST .../autopilot/runs/:run_id/start` with `{"accept_estimate": true}`, and `"accept_paid": true` as well when the run's estimate says a provider that charges is among those it would call. Without either, nothing starts. Making, starting and cancelling a run are audited (`autopilot.create`, `autopilot.start`, `autopilot.cancel`).
+- **Steps** (in order; each is a row with its state, its attempts and what it found): `REQUIREMENTS` (the documents have requirements: counts by kind), `CRAWL` (starts a crawl through `POST .../crawl` as the roles given, or uses `crawl_run_id`; the crawl's run id is saved the moment it is known, and the step watches that run until it ends, is cancelled or takes longer than 30 minutes), `GAP_CHECK` (`POST .../gap-check` against that crawl, with the AI's look at unclear requirements when `verify_gaps` is set). A step that fails ends the run `FAILED` with the step's name and the service's own reason.
+- **Watching**: `GET .../autopilot/runs` (the project's runs, newest first), `GET .../autopilot/runs/:run_id` (the run, its steps, the latest of its timeline, and `working`: whether this process is working on it now) and `GET .../autopilot/runs/:run_id/events?after=<id>&limit=` (the timeline, oldest first, from where a page was).
+- **Cancelling**: `POST .../autopilot/runs/:run_id/cancel`. A run nobody is working on ends at once; one that is being worked on is asked to stop and does at the next point it can (between steps, and every two seconds while it watches a crawl, which it then cancels too).
+- **Restarts and keys**: the database is the run's memory. Each step is marked running before it starts and saves its checkpoints, so when the service starts again the runs that were `RUNNING` are picked up at the step they were in (a crawl already started is waited for, not started again); runs waiting for their estimate or at a gate stay waiting for a person. The key that made a run is looked up again before every call the run makes, so revoking it stops its runs at their next call. A step that panics ends its run `FAILED`.
+
 ---
 
 ## 7. Specialized Diagnostic Tools & Agents
@@ -656,6 +665,13 @@ All protected endpoints require an `Authorization: Bearer <api_key>` header unle
 | `POST` | `/api/v1/projects/:project_id/test-cases/generate-ai` | Generate non-persisted test drafts | Yes |
 | `POST` | `/api/v1/projects/:project_id/gap-check` | Line the requirements up with a crawl and with their cases | Yes |
 | `POST` | `/api/v1/projects/:project_id/login-suggestion` | Suggest a role's login steps from what a crawl saw on the login page | Yes |
+| `POST` | `/api/v1/projects/:project_id/autopilot/estimate` | What an autopilot run would cost: AI calls, tokens, time and dollars, as ranges | Yes |
+| `POST` | `/api/v1/projects/:project_id/autopilot/runs` | Make an autopilot run with its estimate (starts nothing) | Yes |
+| `GET` | `/api/v1/projects/:project_id/autopilot/runs` | List the project's autopilot runs | Yes |
+| `GET` | `/api/v1/projects/:project_id/autopilot/runs/:run_id` | A run with its steps and the latest of its timeline | Yes |
+| `POST` | `/api/v1/projects/:project_id/autopilot/runs/:run_id/start` | Accept the estimate and start the run | Yes |
+| `POST` | `/api/v1/projects/:project_id/autopilot/runs/:run_id/cancel` | Cancel a run | Yes |
+| `GET` | `/api/v1/projects/:project_id/autopilot/runs/:run_id/events` | A run's timeline, from an event id | Yes |
 | `POST` | `/api/v1/projects/:project_id/test-plans` | Create a test plan | Yes |
 | `GET` | `/api/v1/projects/:project_id/test-plans` | List test plans | Yes |
 | `POST` | `/api/v1/projects/:project_id/test-suites` | Create a test suite | Yes |
