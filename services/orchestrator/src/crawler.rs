@@ -166,7 +166,7 @@ pub fn crawl_secret_names(plan: &CrawlPlan) -> Vec<String> {
 
 // --------------------------------------------------------- materialization
 
-fn safe_id_from(task_id: &str) -> Result<String, String> {
+pub(crate) fn safe_id_from(task_id: &str) -> Result<String, String> {
     let safe_id: String = task_id
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
@@ -183,7 +183,17 @@ fn result_file_name(safe_id: &str) -> String {
     format!("crawl-result-{safe_id}.json")
 }
 
-fn generated_dir() -> PathBuf {
+/// Beside its result a crawl writes what test cases can be compiled on (`grounding.rs` reads it).
+pub(crate) fn grounding_file_name(safe_id: &str) -> String {
+    format!("crawl-grounding-{safe_id}.json")
+}
+
+/// A crawl of a real site is several page loads per role, which takes longer than Playwright's default 30-second test
+/// timeout; without this it would be cut off before it wrote its result. The orchestrator's own task timeout
+/// (`AIQA_TASK_TIMEOUT_SECS`, 300 unless set) is what bounds the whole run.
+const CRAWL_TEST_TIMEOUT_MS: u64 = 240_000;
+
+pub(crate) fn generated_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../executors/playwright/tests/generated")
 }
 
@@ -209,7 +219,7 @@ pub fn materialize_crawl_spec(task_id: &str, plan: &CrawlPlan) -> Result<String,
          import {{ test }} from \"@playwright/test\";\n\
          import {{ runCrawl, CrawlPlan }} from \"../../helpers/crawler\";\n\n\
          const PLAN: CrawlPlan = {plan_json};\n\n\
-         test(\"crawl {safe_id}\", async ({{ browser }}) => {{\n  await runCrawl(browser, PLAN, {result_file});\n}});\n",
+         test(\"crawl {safe_id}\", async ({{ browser }}) => {{\n  test.setTimeout({CRAWL_TEST_TIMEOUT_MS});\n  await runCrawl(browser, PLAN, {result_file});\n}});\n",
         result_file = serde_json::to_string(&result_file_name(&safe_id)).unwrap(),
     );
     std::fs::write(&full_path, source)
@@ -487,6 +497,27 @@ mod tests {
         assert!(source.contains("\"type\":\"FILL\""));
         assert!(source.contains("\"selector\":\"#username\""));
         assert!(source.contains("crawl-result-test-crawl-materialize.json"));
+    }
+
+    #[test]
+    fn a_crawl_spec_is_given_more_time_than_playwrights_default_thirty_seconds() {
+        let plan = CrawlPlan {
+            base_url: "http://127.0.0.1:4174".to_string(),
+            roles: vec![role("anonymous", vec![])],
+        };
+        let rel_path = materialize_crawl_spec("test-crawl-timeout", &plan).expect("materialize");
+        let source = std::fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../executors/playwright")
+                .join(&rel_path),
+        )
+        .expect("read generated spec");
+        assert!(source.contains("test.setTimeout(240000);"), "{source}");
+        // It is set before the crawl starts, inside the test.
+        assert!(
+            source.find("test.setTimeout").unwrap() < source.find("await runCrawl").unwrap(),
+            "{source}"
+        );
     }
 
     #[test]

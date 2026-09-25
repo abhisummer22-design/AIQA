@@ -144,6 +144,205 @@ async function extractPageElements(
   });
 }
 
+// ---- Phase 5 grounding: what the crawl records for compiling test cases on ---------------------------------------------
+//
+// Alongside its result, a crawl writes `crawl-grounding-<id>.json` (`services/orchestrator/src/grounding.rs` reads it).
+// The result (`CrawlOutput`) is unchanged: links and buttons, with a best-effort `selectorHint`. The grounding lists
+// what a test can act on — links, buttons and form fields — each with a locator this crawl CHECKED matches exactly one
+// element on its page, and each role's login steps with every credential replaced by its `env:NAME` reference (a
+// literal credential is never kept: `loginUsesLiterals` says the role cannot be logged in again by a test).
+
+export type GroundedKind = "link" | "button" | "input" | "select" | "textarea";
+
+export interface GroundedElement {
+  kind: GroundedKind;
+  /** What a person would call it: a link's or button's text, a field's label, placeholder or name. */
+  text: string;
+  /** A Playwright selector string that matched exactly one element on this page when it was crawled. */
+  locator: string;
+  href?: string;
+  /** For an `input`: its `type` (`text`, `password`, ...). */
+  inputType?: string;
+}
+
+export interface GroundedPage {
+  url: string;
+  title: string;
+  elements: GroundedElement[];
+}
+
+export interface GroundedRole {
+  role: string;
+  loginSucceeded: boolean;
+  loginError?: string;
+  loginUsesLiterals: boolean;
+  loginActions: CrawlAction[];
+  pages: GroundedPage[];
+}
+
+export interface CrawlGrounding {
+  roles: GroundedRole[];
+}
+
+const MAX_GROUNDED_ELEMENTS_PER_PAGE = 80;
+
+interface RawGroundedElement {
+  kind: GroundedKind;
+  text: string;
+  href?: string;
+  inputType?: string;
+  /** CSS locators already checked in the page to match exactly this one element, best first. */
+  candidates: string[];
+  /** For the accessible-name locator tried when no CSS one is unique. */
+  role: string;
+  roleName: string;
+}
+
+/** Every visible link, button and form field of the page, with a locator that matches exactly it. */
+export async function extractGroundedElements(
+  page: import("@playwright/test").Page
+): Promise<GroundedElement[]> {
+  const raw: RawGroundedElement[] = await page.evaluate(() => {
+    const quote = (v: string) => v.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    const squash = (v: string | null | undefined) => (v || "").replace(/\s+/g, " ").trim();
+    const isVisible = (el: Element): boolean => {
+      const box = (el as HTMLElement).getClientRects();
+      if (box.length === 0) return false;
+      const style = getComputedStyle(el as HTMLElement);
+      return style.visibility !== "hidden" && style.display !== "none";
+    };
+    const labelOf = (el: Element): string => {
+      const aria = squash(el.getAttribute("aria-label"));
+      if (aria) return aria;
+      const id = el.getAttribute("id");
+      if (id) {
+        const label = document.querySelector(`label[for="${quote(id)}"]`);
+        if (label) return squash(label.textContent);
+      }
+      const wrapping = el.closest("label");
+      if (wrapping) return squash(wrapping.textContent);
+      return squash(el.getAttribute("placeholder")) || squash(el.getAttribute("name")) || squash(id);
+    };
+    const candidatesFor = (el: Element): string[] => {
+      const tag = el.tagName.toLowerCase();
+      const all: string[] = [];
+      for (const attr of ["data-testid", "data-test", "data-qa", "data-cy"]) {
+        const v = el.getAttribute(attr);
+        if (v) all.push(`[${attr}="${quote(v)}"]`);
+      }
+      const id = el.getAttribute("id");
+      if (id) all.push(/^[A-Za-z][\w-]*$/.test(id) ? `#${id}` : `[id="${quote(id)}"]`);
+      const name = el.getAttribute("name");
+      if (name) all.push(`${tag}[name="${quote(name)}"]`);
+      const aria = el.getAttribute("aria-label");
+      if (aria) all.push(`${tag}[aria-label="${quote(aria)}"]`);
+      const placeholder = el.getAttribute("placeholder");
+      if (placeholder) all.push(`${tag}[placeholder="${quote(placeholder)}"]`);
+      if (tag === "a") {
+        const href = el.getAttribute("href");
+        if (href) all.push(`a[href="${quote(href)}"]`);
+      }
+      return all.filter((css) => {
+        try {
+          const found = document.querySelectorAll(css);
+          return found.length === 1 && found[0] === el;
+        } catch {
+          return false;
+        }
+      });
+    };
+
+    const out: RawGroundedElement[] = [];
+    document.querySelectorAll("a[href], button, input, select, textarea").forEach((el) => {
+      if (!isVisible(el)) return;
+      const tag = el.tagName.toLowerCase();
+      let kind: GroundedKind;
+      let text: string;
+      let role: string;
+      let inputType: string | undefined;
+      if (tag === "a") {
+        kind = "link";
+        text = squash(el.textContent) || squash(el.getAttribute("aria-label")) || squash(el.getAttribute("title"));
+        role = "link";
+      } else if (tag === "button") {
+        kind = "button";
+        text = squash(el.textContent) || squash(el.getAttribute("aria-label"));
+        role = "button";
+      } else if (tag === "select") {
+        kind = "select";
+        text = labelOf(el);
+        role = "combobox";
+      } else if (tag === "textarea") {
+        kind = "textarea";
+        text = labelOf(el);
+        role = "textbox";
+      } else {
+        const type = (el.getAttribute("type") || "text").toLowerCase();
+        if (type === "hidden") return;
+        if (["submit", "button", "reset", "image"].includes(type)) {
+          kind = "button";
+          text = squash((el as HTMLInputElement).value) || labelOf(el);
+          role = "button";
+        } else {
+          kind = "input";
+          inputType = type;
+          text = labelOf(el);
+          role = type === "checkbox" ? "checkbox" : type === "radio" ? "radio" : "textbox";
+        }
+      }
+      out.push({
+        kind,
+        text,
+        href: tag === "a" ? (el as HTMLAnchorElement).href : undefined,
+        inputType,
+        candidates: candidatesFor(el),
+        role,
+        roleName: text,
+      });
+    });
+    return out;
+  });
+
+  const grounded: GroundedElement[] = [];
+  const seen = new Set<string>();
+  for (const el of raw) {
+    let locator: string | undefined = el.candidates[0];
+    if (!locator && el.roleName) {
+      // No CSS locator names this element alone: try its accessible name, and keep it only if it matches one element.
+      const byRole = `role=${el.role}[name=${JSON.stringify(el.roleName)}]`;
+      try {
+        if ((await page.locator(byRole).count()) === 1) locator = byRole;
+      } catch {
+        /* not a usable locator — the element is simply not offered */
+      }
+    }
+    if (!locator || seen.has(locator)) continue;
+    seen.add(locator);
+    grounded.push({ kind: el.kind, text: el.text, locator, href: el.href, inputType: el.inputType });
+    if (grounded.length >= MAX_GROUNDED_ELEMENTS_PER_PAGE) break;
+  }
+  return grounded;
+}
+
+/** A role's login steps as they are kept: every `env:NAME` reference as it was written, every literal value removed. */
+function keptLogin(actions: CrawlAction[]): { actions: CrawlAction[]; usesLiterals: boolean } {
+  let usesLiterals = false;
+  const kept = actions.map((action) => {
+    if (action.type !== "FILL") return action;
+    if (typeof action.value === "string" && action.value.startsWith("env:")) return action;
+    usesLiterals = true;
+    return { ...action, value: "" };
+  });
+  return { actions: kept, usesLiterals };
+}
+
+/** `crawl-result-<id>.json` -> `crawl-grounding-<id>.json` (the name `grounding.rs` looks for). */
+export function groundingFileName(resultFileName: string): string {
+  return resultFileName.startsWith("crawl-result-")
+    ? resultFileName.replace("crawl-result-", "crawl-grounding-")
+    : `grounding-${resultFileName}`;
+}
+
 /** One role's real crawl: real login (if configured), then a real,
  * bounded, same-origin breadth-first crawl from `baseUrl`, recording every
  * page's real title and real interactive elements. Never invents a page
@@ -151,7 +350,8 @@ async function extractPageElements(
 async function crawlAsRole(
   browser: Browser,
   baseUrl: string,
-  role: CrawlRoleConfig
+  role: CrawlRoleConfig,
+  groundedPages: GroundedPage[]
 ): Promise<RoleCrawlResult> {
   const context = await browser.newContext();
   const page = await context.newPage();
@@ -189,6 +389,13 @@ async function crawlAsRole(
     // other page links to it directly.
     visited.add(finalUrl);
     pages.push({ url: finalUrl, title, elements });
+    // What a test can act on, for compiling test cases on this page (see the grounding types above). A page whose
+    // grounding cannot be read is simply not offered for it; the crawl result above is unaffected.
+    try {
+      groundedPages.push({ url: finalUrl, title, elements: await extractGroundedElements(page) });
+    } catch {
+      /* not offered for grounding */
+    }
 
     for (const el of elements) {
       if (el.kind === "link" && el.href && sameOrigin(el.href, baseUrl) && !visited.has(el.href)) {
@@ -248,8 +455,20 @@ export async function runCrawl(
   resultFileName: string
 ): Promise<void> {
   const roles: RoleCrawlResult[] = [];
+  const groundedRoles: GroundedRole[] = [];
   for (const role of plan.roles) {
-    roles.push(await crawlAsRole(browser, plan.baseUrl, role));
+    const groundedPages: GroundedPage[] = [];
+    const result = await crawlAsRole(browser, plan.baseUrl, role, groundedPages);
+    roles.push(result);
+    const login = keptLogin(role.loginActions);
+    groundedRoles.push({
+      role: result.role,
+      loginSucceeded: result.loginSucceeded,
+      loginError: result.loginError,
+      loginUsesLiterals: login.usesLiterals,
+      loginActions: login.actions,
+      pages: groundedPages,
+    });
   }
   const visibilityMatrix = computeVisibilityMatrix(roles);
   const output: CrawlOutput = { roles, visibilityMatrix };
@@ -270,4 +489,11 @@ export async function runCrawl(
   const filePath = path.join(__dirname, "..", "tests", "generated", resultFileName);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, JSON.stringify(output, null, 2));
+
+  // Beside the result, what test cases can be compiled on (`services/orchestrator/src/grounding.rs` reads it).
+  const grounding: CrawlGrounding = { roles: groundedRoles };
+  fs.writeFileSync(
+    path.join(path.dirname(filePath), groundingFileName(resultFileName)),
+    JSON.stringify(grounding, null, 2)
+  );
 }
