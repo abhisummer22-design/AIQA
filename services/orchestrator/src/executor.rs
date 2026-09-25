@@ -1367,6 +1367,46 @@ impl Executor for CompiledApiExecutor {
     }
 }
 
+/// One step of a compiled browser test as a line of the run's own output (`AIQA_STEP {...}`), written just before the
+/// step runs — so a failed run's evidence ends at the step that failed, and a passing one lists what was done.
+/// Never a value: a FILL names its selector and, if it reads one, the variable (a secret's name is not a secret).
+fn step_log_line(index: usize, action: &crate::execution_plan::Action) -> String {
+    use crate::execution_plan::Action;
+    let step = match action {
+        Action::Navigate { url } => {
+            serde_json::json!({ "index": index, "type": "NAVIGATE", "url": url })
+        }
+        Action::Click { selector } => {
+            serde_json::json!({ "index": index, "type": "CLICK", "selector": selector })
+        }
+        Action::Fill { selector, value } => {
+            let mut step =
+                serde_json::json!({ "index": index, "type": "FILL", "selector": selector });
+            if let Some(name) = crate::execution_plan::secret_name(value) {
+                step["secret"] = serde_json::json!(name);
+            }
+            step
+        }
+        Action::AssertVisible { selector } => {
+            serde_json::json!({ "index": index, "type": "ASSERT_VISIBLE", "selector": selector })
+        }
+        Action::AssertText { selector, .. } => {
+            serde_json::json!({ "index": index, "type": "ASSERT_TEXT", "selector": selector })
+        }
+        Action::AssertUrl { url_contains } => {
+            serde_json::json!({ "index": index, "type": "ASSERT_URL", "url_contains": url_contains })
+        }
+        // API actions never reach a browser plan (`materialize_playwright_spec` refuses them, and a request's
+        // headers or body could hold a secret: nothing of it is formatted here).
+        _ => serde_json::json!({ "index": index, "type": "UNSUPPORTED" }),
+    };
+    let line = format!("AIQA_STEP {step}");
+    format!(
+        "  console.log({});\n",
+        serde_json::to_string(&line).unwrap_or_default()
+    )
+}
+
 /// Turns a validated `Browser`-type `ExecutionPlan` into a real, safe
 /// Playwright `.spec.ts` file under `executors/playwright/tests/generated/`,
 /// then returns the path (relative to `executors/playwright`, exactly what
@@ -1400,6 +1440,7 @@ pub fn materialize_playwright_spec(
     let mut body = String::new();
     let mut uses_secret = false;
     for (index, action) in plan.actions.iter().enumerate() {
+        body.push_str(&step_log_line(index, action));
         match action {
             Action::Navigate { url } => {
                 body.push_str(&format!("  await page.goto({});\n", js_str(url)))
@@ -1444,6 +1485,11 @@ pub fn materialize_playwright_spec(
             }
         }
     }
+
+    // Where the run ended, as one line of its own output: the evidence of a passing run says which page it reached.
+    body.push_str(
+        "  console.log(\"AIQA_FINAL \" + JSON.stringify({ url: page.url(), title: await page.title() }));\n",
+    );
 
     let safe_id: String = task_id
         .chars()
@@ -1756,6 +1802,114 @@ AIQA_HEALING_EVENT {"event":"heal","actionIndex":1,"actionKind":"CLICK","primary
         );
         // An ordinary value is still typed as written.
         assert!(source.contains(".fill(\"admin\");"), "{source}");
+    }
+
+    /// The `AIQA_STEP` lines of a generated spec, parsed: each is `console.log("AIQA_STEP {json}")`.
+    fn logged_steps(source: &str) -> Vec<serde_json::Value> {
+        source
+            .lines()
+            .filter(|line| line.contains("AIQA_STEP"))
+            .map(|line| {
+                let literal: String =
+                    serde_json::from_str(&line[line.find('"').unwrap()..=line.rfind('"').unwrap()])
+                        .expect("a JS string literal");
+                serde_json::from_str(literal.strip_prefix("AIQA_STEP ").expect("the marker"))
+                    .expect("the step is JSON")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_compiled_spec_logs_each_step_before_it_runs_and_where_it_ended_and_never_a_value() {
+        std::env::set_var("AIQA_LOGIN_T5B_STEP_PW", "step-pw-value-9");
+        let plan = browser_plan(
+            "steps",
+            vec![
+                Action::Navigate {
+                    url: "https://example.com/login".to_string(),
+                },
+                Action::Fill {
+                    selector: "#username".to_string(),
+                    value: "typed-literal-value".to_string(),
+                },
+                Action::Fill {
+                    selector: "#password".to_string(),
+                    value: "env:AIQA_LOGIN_T5B_STEP_PW".to_string(),
+                },
+                Action::Click {
+                    selector: "#go".to_string(),
+                },
+                Action::AssertText {
+                    selector: "h1".to_string(),
+                    text: "expected heading text".to_string(),
+                },
+                Action::AssertUrl {
+                    url_contains: "/welcome".to_string(),
+                },
+            ],
+        );
+        let rel_path = materialize_playwright_spec("test-5b-steps", &plan).expect("materialize");
+        let source = spec_source(&rel_path);
+        let steps = logged_steps(&source);
+
+        let kinds: Vec<&str> = steps.iter().map(|s| s["type"].as_str().unwrap()).collect();
+        assert_eq!(
+            kinds,
+            [
+                "NAVIGATE",
+                "FILL",
+                "FILL",
+                "CLICK",
+                "ASSERT_TEXT",
+                "ASSERT_URL"
+            ]
+        );
+        let indexes: Vec<u64> = steps.iter().map(|s| s["index"].as_u64().unwrap()).collect();
+        assert_eq!(indexes, [0, 1, 2, 3, 4, 5]);
+        assert_eq!(steps[0]["url"], "https://example.com/login");
+        assert_eq!(steps[3]["selector"], "#go");
+        // A secret's step names the variable; a literal's says nothing of the value; neither logs a value.
+        assert_eq!(steps[2]["secret"], "AIQA_LOGIN_T5B_STEP_PW");
+        assert!(steps[1].get("secret").is_none() && steps[1].get("value").is_none());
+        let log_lines: String = source
+            .lines()
+            .filter(|l| l.contains("AIQA_STEP"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!log_lines.contains("typed-literal-value"), "{log_lines}");
+        assert!(!log_lines.contains("step-pw-value-9"), "{log_lines}");
+        assert!(!log_lines.contains("expected heading text"), "{log_lines}");
+
+        // Each step is logged before it runs (so a failed run's evidence ends at the step that failed).
+        let position = |needle: &str| {
+            source
+                .find(needle)
+                .unwrap_or_else(|| panic!("{needle} not in {source}"))
+        };
+        for (index, action_code) in [
+            (3, "healingLocator(page, \"#go\", 3, \"CLICK\")"),
+            (2, "healingLocator(page, \"#password\", 2, \"FILL\")"),
+        ] {
+            let logged = source
+                .lines()
+                .position(|l| {
+                    l.contains("AIQA_STEP") && l.contains(&format!("\\\"index\\\":{index},"))
+                })
+                .expect("the step is logged");
+            let action = source
+                .lines()
+                .position(|l| l.contains(action_code))
+                .unwrap();
+            assert_eq!(
+                logged + 1,
+                action,
+                "step {index} is logged on the line before it runs"
+            );
+        }
+        // And where the run ended is logged last.
+        let final_line = position("AIQA_FINAL");
+        assert!(final_line > position("toHaveURL"), "{source}");
+        assert!(source[final_line..].contains("page.url()"));
     }
 
     #[test]
