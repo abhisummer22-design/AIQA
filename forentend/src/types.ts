@@ -8,6 +8,7 @@ import type { GenerateAiTestCasesResponse } from './types/contract';
 export type NavPage =
   | 'dashboard'
   | 'generator'
+  | 'requirement-coverage'
   | 'orchestrator'
   | 'validator'
   | 'execution'
