@@ -156,6 +156,9 @@ pub fn build(input: &ReportInput) -> Value {
     let passed = count_of("PASSED");
     let failed = count_of("FAILED");
     let finished_cases = execution["finished"].as_u64().unwrap_or(0);
+    // A case the compiler refused reached an outcome, but nothing was run for it.
+    let refused_cases: u64 = NOT_RUN.iter().map(|outcome| count_of(outcome)).sum();
+    let ran_cases = finished_cases.saturating_sub(refused_cases);
 
     let started = run.started_at;
     // The end of a run that has not ended yet is now (a report is written before its run completes).
@@ -281,6 +284,7 @@ pub fn build(input: &ReportInput) -> Value {
             "done": executed,
             "cases": execution["total"],
             "finished": finished_cases,
+            "ran": ran_cases,
             "counts": counts,
             "passed": passed,
             "failed": failed,
@@ -348,7 +352,7 @@ pub fn markdown(report: &Value) -> String {
     } else {
         out.push_str(&format!(
             "{} case(s) run: {} passed, {} failed.\n\n",
-            text(&execution["finished"]),
+            text(&execution["ran"]),
             text(&execution["passed"]),
             text(&execution["failed"]),
         ));
@@ -840,6 +844,27 @@ mod tests {
     }
 
     #[test]
+    fn the_cases_run_are_those_that_reached_an_outcome_except_the_ones_refused_before_they_could_run() {
+        // Six reached an outcome; one of them (FR-3's) was refused by the compiler, so nothing was run for it. A timeout was run.
+        let report = build_it("COMPLETED", true);
+        assert_eq!(report["execution"]["finished"], 6);
+        assert_eq!(report["execution"]["ran"], 5);
+        // Every kind of refusal counts as not run, and no count ever goes below nothing.
+        let run = run_row("COMPLETED", config_value());
+        let mut steps = steps();
+        steps[6].detail["finished"] = json!(4);
+        steps[6].detail["counts"] = json!({"NOT_EXECUTABLE": 1, "COMPILATION_FAILED": 1, "COMPILATION_UNAVAILABLE": 1, "NOT_RUN": 1, "PASSED": 5});
+        let report = build(&ReportInput {
+            run: &run,
+            steps: &steps,
+            requirements: &requirements(),
+            cases: &cases(),
+            finished: true,
+        });
+        assert_eq!(report["execution"]["ran"], 0, "4 finished, 4 refused");
+    }
+
+    #[test]
     fn a_case_the_person_rejected_at_the_gate_is_not_a_case_of_its_requirement() {
         let run = run_row("COMPLETED", config_value());
         let mut steps = steps();
@@ -984,7 +1009,7 @@ mod tests {
             "{md}"
         );
         assert!(md.contains("- **Run:** COMPLETED — maker, 600 s"), "{md}");
-        assert!(md.contains("6 case(s) run: 3 passed, 1 failed."), "{md}");
+        assert!(md.contains("5 case(s) run: 3 passed, 1 failed."), "{md}");
         assert!(
             md.contains(
                 "Requirements: 1 FAILED, 1 INCONCLUSIVE, 1 NOT_EXECUTED, 1 NO_CASES, 2 PASSED."
