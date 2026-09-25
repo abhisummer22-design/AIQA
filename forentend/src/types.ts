@@ -284,6 +284,10 @@ export interface GenerationSession {
    *  documents. Off unless the user turned it on, and absent on any session
    *  from before it existed (which reads as off). */
   requirementMode?: boolean;
+  /** Phase 4 — whether a requirement-driven generation is to fill the gaps
+   *  its coverage report shows, with extra calls. Off unless the user turned
+   *  it on; absent on any session from before it existed (reads as off). */
+  coverageTopUp?: boolean;
   generatedCases: GeneratedTestCase[];
   createdAt: string;
 }
