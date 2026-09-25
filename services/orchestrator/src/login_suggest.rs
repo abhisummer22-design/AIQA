@@ -208,7 +208,8 @@ fn says_confirm(e: &GroundedElement) -> bool {
 }
 
 fn is_password(e: &GroundedElement) -> bool {
-    e.kind == "input" && e.input_type.as_deref() == Some("password")
+    // Only an input has a type, so this is an input.
+    e.input_type.as_deref() == Some("password")
 }
 
 fn is_text_field(e: &GroundedElement) -> bool {
@@ -1365,6 +1366,39 @@ mod tests {
     }
 
     #[test]
+    fn a_buttons_locator_never_says_log_in_only_its_text_does() {
+        let s = suggest(vec![
+            field("input", "Username", "#u", Some("text")),
+            field("input", "Password", "#p", Some("password")),
+            field("button", "Alfa", "#login-button", None),
+            field("button", "Beta", "#b", None),
+        ]);
+        assert_eq!(
+            clicked(&s).as_deref(),
+            Some("#login-button"),
+            "the first of two that say nothing"
+        );
+        assert_eq!(s.confidence, Confidence::Low, "{:?}", s.reasons);
+    }
+
+    #[test]
+    fn a_link_is_never_the_button_and_of_two_buttons_that_say_log_in_the_first_is_taken() {
+        let s = suggest(vec![
+            field("input", "Username", "#u", Some("text")),
+            field("input", "Password", "#p", Some("password")),
+            field("link", "Alpha", "#alpha", None),
+        ]);
+        assert_eq!(clicked(&s), None, "{:?}", s.reasons);
+        let s = suggest(vec![
+            field("input", "Username", "#u", Some("text")),
+            field("input", "Password", "#p", Some("password")),
+            field("button", "Log in", "#first", None),
+            field("button", "Sign in", "#second", None),
+        ]);
+        assert_eq!(clicked(&s).as_deref(), Some("#first"));
+    }
+
+    #[test]
     fn a_search_box_before_the_password_field_is_not_taken_for_the_user_name() {
         for text in [
             "Search the shop",
@@ -1516,6 +1550,19 @@ mod tests {
         )
         .unwrap();
         assert_eq!(s.page_url, "https://login.x.test/");
+        // Nor does it make a page look like one: this second page's host says login, its address does not.
+        let s = suggest_by_rules(
+            &crawl(vec![role(
+                "anonymous",
+                vec![
+                    with_form("https://x.test/"),
+                    with_form("https://login.x.test/checkout"),
+                ],
+            )]),
+            "admin",
+        )
+        .unwrap();
+        assert_eq!(s.page_url, "https://x.test/");
         assert!(
             s.reasons.iter().any(|r| r.contains("more page(s)")),
             "{:?}",
@@ -2006,6 +2053,106 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("role needs a name"), "{err}");
         assert!(untouched.prompts.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_ai_is_shown_selects_and_text_areas_and_nothing_that_is_not_a_field_a_button_or_a_link() {
+        let p = page(
+            "https://odd.example.test/",
+            "T",
+            vec![
+                field("input", "Clave", "#clave", Some("password")),
+                field("select", "Pais", "#pais", None),
+                field("textarea", "Notas", "#notas", None),
+                field("button", "Ir", "#ir", None),
+                field("link", "Ayuda", "a.help", None),
+                field("heading", "Bienvenido", "h1", None),
+            ],
+        );
+        let (prompt, shown) = build_ai_prompt(&p);
+        assert_eq!(shown, vec![0, 1, 2, 3, 4]);
+        assert!(prompt.contains("E2 — select — \"Pais\""), "{prompt}");
+        assert!(prompt.contains("E3 — textarea — \"Notas\""), "{prompt}");
+        assert!(!prompt.contains("Bienvenido"), "{prompt}");
+    }
+
+    #[test]
+    fn a_text_is_shown_to_the_ai_up_to_eighty_characters_and_cut_after() {
+        let mut p = odd_login();
+        p.elements[0].text = "y".repeat(80);
+        p.elements[1].text = "z".repeat(81);
+        let (prompt, _) = build_ai_prompt(&p);
+        assert!(
+            prompt.contains(&format!("\"{}\"", "y".repeat(80))),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains(&format!("\"{}…\"", "z".repeat(80))),
+            "{prompt}"
+        );
+    }
+
+    /// Answers every call the same way and records which task it was made for.
+    struct TaskRecorder(std::sync::Mutex<Vec<crate::ai_router::AiTask>>);
+
+    #[async_trait::async_trait]
+    impl AiExecutor for TaskRecorder {
+        async fn execute(
+            &self,
+            _provider_id: &str,
+            _model_id: &str,
+            _prompt: &str,
+        ) -> Result<ExecutionOutput, ExecutionError> {
+            ok(r#"{"username":"E2","password":"E3","submit":"E6"}"#)
+        }
+
+        async fn execute_task(
+            &self,
+            provider_id: &str,
+            model_id: &str,
+            prompt: &str,
+            task: crate::ai_router::AiTask,
+        ) -> Result<ExecutionOutput, ExecutionError> {
+            self.0.lock().unwrap().push(task);
+            self.execute(provider_id, model_id, prompt).await
+        }
+    }
+
+    #[tokio::test]
+    async fn the_ai_is_asked_as_a_general_task_which_needs_no_vision_model() {
+        let recorder = Arc::new(TaskRecorder(Default::default()));
+        suggest_with_ai(
+            &infra_with(recorder.clone()),
+            &crawl(vec![role("anonymous", vec![odd_login()])]),
+            "editor",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            *recorder.0.lock().unwrap(),
+            vec![crate::ai_router::AiTask::GeneralAi]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_role_given_with_spaces_is_named_without_them_by_the_rules_and_by_the_ai() {
+        let by_rules = suggest_by_rules(
+            &crawl(vec![role("anonymous", vec![shop_login()])]),
+            "  editor  ",
+        )
+        .unwrap();
+        assert_eq!(by_rules.role, "editor");
+        let executor = Arc::new(RecordingExecutor::sequence(vec![ok(
+            r#"{"username":"E2","password":"E3","submit":"E6"}"#,
+        )]));
+        let by_ai = suggest_with_ai(
+            &infra_with(executor),
+            &crawl(vec![role("anonymous", vec![odd_login()])]),
+            "  editor  ",
+        )
+        .await
+        .unwrap();
+        assert_eq!(by_ai.role, "editor");
     }
 
     #[test]

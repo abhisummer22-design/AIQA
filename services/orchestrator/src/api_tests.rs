@@ -12645,6 +12645,11 @@ async fn phase7a_the_role_the_crawl_and_the_project_are_checked() {
     let (bare_status, bare) =
         login_suggestion(&state, project, &owner, serde_json::json!({"role": "admin", "crawl_run_id": bare_run})).await;
     let (scope_status, _) = login_suggestion(&state, project, &other_owner, serde_json::json!({"role": "admin"})).await;
+    // A role that cannot name variables is refused before any crawl is looked for.
+    let uncrawled = make_project(&state, "Phase7A Checks No Crawl").await;
+    let uncrawled_owner = mint_key(&state, "operator", Some(&uncrawled.to_string())).await;
+    let (early_status, early) =
+        login_suggestion(&state, uncrawled, &uncrawled_owner, serde_json::json!({"role": "!!!"})).await;
     let (missing_status, _) = send(
         &state,
         req("POST", &format!("/api/v1/projects/{project}/login-suggestion"), Some(&owner), Some(serde_json::json!({}))),
@@ -12656,6 +12661,8 @@ async fn phase7a_the_role_the_crawl_and_the_project_are_checked() {
     assert!(empty.to_string().contains("role must not be empty"), "body={empty}");
     assert_eq!(bad_status, StatusCode::BAD_REQUEST, "body={bad}");
     assert!(bad.to_string().contains("role needs a name"), "body={bad}");
+    assert_eq!(early_status, StatusCode::BAD_REQUEST, "the role is checked first: body={early}");
+    assert!(early.to_string().contains("role needs a name"), "body={early}");
     assert_eq!(foreign_status, StatusCode::NOT_FOUND, "another project's crawl: body={foreign}");
     assert_eq!(bare_status, StatusCode::NOT_FOUND, "body={bare}");
     assert!(bare.to_string().contains("recorded no grounding"), "body={bare}");
@@ -12697,7 +12704,8 @@ async fn phase7a_a_viewer_may_ask_for_the_rules_but_not_for_the_ai() {
 async fn phase7a_the_ai_is_asked_only_when_the_rules_are_unsure_and_its_answer_is_checked_and_audited() {
     // The AI is scripted: one answer for the odd page, and none for the plain one (a call there would panic).
     let answer = r#"{"username":"E1","password":"E2","submit":"E4","reason":"Beta is the second, so the submit"}"#;
-    let executor = Arc::new(RecordingExecutor::ok_sequence(vec![answer, r#"{"password":"E9"}"#]));
+    let agreeing = r#"{"username":"E1","password":"E2","submit":"E3"}"#;
+    let executor = Arc::new(RecordingExecutor::ok_sequence(vec![answer, r#"{"password":"E9"}"#, agreeing]));
     let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
     let (project, owner, odd_run, odd_file) = crawled_project(&state, "Phase7A AI", ODD_LOGIN_GROUNDING).await;
     let (plain_run, plain_task) = crawl_run_and_task(&state, project, &owner).await;
@@ -12711,6 +12719,8 @@ async fn phase7a_the_ai_is_asked_only_when_the_rules_are_unsure_and_its_answer_i
     let (odd_status, odd) = login_suggestion(&state, project, &owner, ask(&odd_run)).await;
     // An answer that names an element that is not on the page is not used: the rules stand, and the note says why.
     let (bad_status, bad) = login_suggestion(&state, project, &owner, ask(&odd_run)).await;
+    // An answer that is the rules' own adds nothing to list.
+    let (same_status, same) = login_suggestion(&state, project, &owner, ask(&odd_run)).await;
     let audit_rows = state.store.list_audit(None, 100, 0).await.expect("list_audit");
     std::fs::remove_file(odd_file).ok();
     std::fs::remove_file(plain_file).ok();
@@ -12735,10 +12745,15 @@ async fn phase7a_the_ai_is_asked_only_when_the_rules_are_unsure_and_its_answer_i
     assert_eq!(bad["suggestion"]["by"], "rules");
     assert_eq!(bad["alternatives"], serde_json::json!([]));
 
-    // Only the answer that was used is an audited action, against the crawl run.
+    assert_eq!(same_status, StatusCode::OK, "body={same}");
+    assert_eq!(same["ai"]["used"], true, "the AI was asked and answered");
+    assert_eq!(same["suggestion"]["by"], "rules", "body={same}");
+    assert_eq!(same["alternatives"], serde_json::json!([]), "the same steps are listed once: body={same}");
+
+    // Every answer that was used is an audited action, against the crawl run; one that was refused is not.
     let asked: Vec<_> = audit_rows.iter().filter(|a| a.action == "login_suggestion.ai").collect();
-    assert_eq!(asked.len(), 1, "{audit_rows:?}");
-    assert_eq!(asked[0].target.as_deref(), Some(odd_run.as_str()));
-    assert_eq!(asked[0].detail.as_deref(), Some("mock/mock-model"));
-    assert_eq!(executor.prompts.lock().unwrap().len(), 2);
+    assert_eq!(asked.len(), 2, "{audit_rows:?}");
+    assert!(asked.iter().all(|a| a.target.as_deref() == Some(odd_run.as_str())));
+    assert!(asked.iter().all(|a| a.detail.as_deref() == Some("mock/mock-model")));
+    assert_eq!(executor.prompts.lock().unwrap().len(), 3);
 }
