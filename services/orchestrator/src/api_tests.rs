@@ -12101,3 +12101,300 @@ async fn phase6a_the_check_is_project_scoped_and_a_viewer_may_read_it() {
     assert_eq!(borrowed, StatusCode::NOT_FOUND);
     assert_eq!(foreign, StatusCode::FORBIDDEN);
 }
+
+// ----------------------------------------- Phase 6B — the embedder and the AI, on request
+//
+// What the optional steps do is proved in `gap_verify.rs`; these prove that the request reaches them, who may ask, and
+// what the response says.
+
+/// An embedder whose vectors count how many words of each concept a text has, so what is close in meaning is whatever the
+/// test says it is: no network. A text with no concept word is background, with a direction of its own for pages (their
+/// text starts with an address) and for requirements, so background never resembles anything.
+struct ConceptEmbedder {
+    concepts: Vec<Vec<&'static str>>,
+}
+
+#[async_trait::async_trait]
+impl Embedder for ConceptEmbedder {
+    fn is_configured(&self) -> bool {
+        true
+    }
+    fn model_name(&self) -> String {
+        "concept-embedder".to_string()
+    }
+    fn dimensions(&self) -> u32 {
+        self.concepts.len() as u32 + 2
+    }
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, crate::ai_router::ExecutionError> {
+        let lower = text.to_lowercase();
+        let mut vector: Vec<f32> = self
+            .concepts
+            .iter()
+            .map(|words| words.iter().filter(|w| lower.contains(*w)).count() as f32)
+            .collect();
+        let hits: f32 = vector.iter().sum();
+        vector.push(if hits == 0.0 && text.starts_with('/') { 1.0 } else { 0.0 });
+        vector.push(if hits == 0.0 && !text.starts_with('/') { 1.0 } else { 0.0 });
+        Ok(vector)
+    }
+}
+
+/// The shop's crawl with two more pages nobody wrote a requirement for: six pages, enough for a comparison of meaning.
+const SIX_PAGE_GROUNDING: &str = r##"{"roles":[
+  {"role":"standard","loginSucceeded":true,"loginUsesLiterals":false,"loginActions":[],
+   "pages":[
+     {"url":"https://shop.example.test/","title":"Shop","elements":[
+        {"kind":"input","text":"Username","locator":"[data-test=\"username\"]","inputType":"text"},
+        {"kind":"button","text":"Login","locator":"[data-test=\"login-button\"]"}]},
+     {"url":"https://shop.example.test/inventory.html","title":"Shop","elements":[
+        {"kind":"button","text":"Add to cart","locator":"[data-test=\"add-to-cart-backpack\"]"}]},
+     {"url":"https://shop.example.test/cart.html","title":"Shop","elements":[
+        {"kind":"button","text":"Checkout","locator":"[data-test=\"checkout\"]"}]},
+     {"url":"https://shop.example.test/legal/terms.html","title":"Terms of Service","elements":[
+        {"kind":"link","text":"Privacy Policy","locator":"a"}]},
+     {"url":"https://shop.example.test/about","title":"About us","elements":[
+        {"kind":"link","text":"Contact","locator":"a"}]},
+     {"url":"https://shop.example.test/help","title":"Help","elements":[
+        {"kind":"link","text":"FAQ","locator":"a"}]}]}]}"##;
+
+
+fn verdict_answer(items: &[(&str, &str, &[&str], &str)]) -> String {
+    let verdicts: Vec<Value> = items
+        .iter()
+        .map(|(id, verdict, pages, reason)| serde_json::json!({"id": id, "verdict": verdict, "pages": pages, "reason": reason}))
+        .collect();
+    serde_json::json!({ "verdicts": verdicts }).to_string()
+}
+
+/// A project with the shop's requirements, and a crawl of the shop (which cannot really run here) that has left its
+/// grounding. Returns the project, an operator's key, the crawl's run id and the file to remove afterwards.
+async fn shop_project(state: &AppState, name: &str) -> (Uuid, String, String, std::path::PathBuf) {
+    let project = make_project(state, name).await;
+    let owner = mint_key(state, "operator", Some(&project.to_string())).await;
+    let (status, uploaded) = upload_document(state, &owner, project, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+    assert_eq!(status, StatusCode::OK, "body={uploaded}");
+    let (run_id, task_id) = crawl_run_and_task(state, project, &owner).await;
+    let file = write_crawl_file(&crate::crawler::grounding_file_name(&task_id), SHOP_GROUNDING);
+    (project, owner, run_id, file)
+}
+
+#[tokio::test]
+async fn phase6b_with_no_option_no_step_runs_and_the_response_says_so() {
+    let executor = Arc::new(RecordingExecutor::ok_sequence(vec![]));
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
+    let (project, owner, run_id, file) = shop_project(&state, "Phase6B No Options").await;
+
+    let (status, body) = gap_check(&state, project, &owner, Some(serde_json::json!({"crawl_run_id": run_id}))).await;
+    std::fs::remove_file(file).ok();
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["method"]["embeddings"]["requested"], false);
+    assert_eq!(body["method"]["verification"]["requested"], false);
+    assert_eq!(body["method"]["verification"]["calls"], 0);
+    assert!(executor.prompts.lock().unwrap().is_empty(), "no provider is called for the words check");
+    assert!(finding_of(&body, "FR-004").get("verification").is_none());
+    assert_eq!(finding_of(&body, "FR-004")["status"], "WEAK");
+}
+
+#[tokio::test]
+async fn phase6b_asking_the_ai_to_check_confirms_or_rejects_and_says_who_said_so() {
+    // FR-004 (a wishlist) is weak and FR-005 (a CSV export) missing: the AI is asked about them in that order, and shown
+    // the pages with the one the words came nearest to first.
+    let answer = verdict_answer(&[
+        ("R1", "CONFIRMED", &["P1"], "The product list has a heart button that adds a product to the wishlist."),
+        ("R2", "NOT_FOUND", &[], "Nothing exports anything."),
+    ]);
+    let executor = Arc::new(RecordingExecutor::ok_sequence(vec![&answer]));
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
+    let (project, owner, run_id, file) = shop_project(&state, "Phase6B Verify").await;
+
+    let (status, body) = gap_check(
+        &state,
+        project,
+        &owner,
+        Some(serde_json::json!({"crawl_run_id": run_id, "verify": true})),
+    )
+    .await;
+    std::fs::remove_file(file).ok();
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let prompts = executor.prompts.lock().unwrap().clone();
+    assert_eq!(prompts.len(), 1, "one call carries both requirements");
+    assert!(prompts[0].contains("(FR-004, 3 Shop, functional) Users can add products to a wishlist."), "{}", prompts[0]);
+    assert!(prompts[0].contains("(FR-005, 3 Shop, data) The system shall export any report as a CSV file."), "{}", prompts[0]);
+    assert!(prompts[0].contains("P1 — /inventory.html"), "the page the words came nearest to is listed first: {}", prompts[0]);
+    assert!(!prompts[0].contains("FR-001"), "a requirement the words found is not asked about");
+
+    let wishlist = finding_of(&body, "FR-004");
+    assert_eq!(wishlist["status"], "FOUND", "body={body}");
+    assert_eq!(wishlist["basis"], "ai");
+    assert_eq!(wishlist["matches"][0]["url"], "https://shop.example.test/inventory.html");
+    assert_eq!(wishlist["matches"][0]["basis"], "ai");
+    assert_eq!(wishlist["verification"]["verdict"], "CONFIRMED");
+    assert_eq!(wishlist["verification"]["by"], "mock/mock-model");
+    assert_eq!(wishlist["verification"]["reason"], "The product list has a heart button that adds a product to the wishlist.");
+    assert_eq!(wishlist["verification"]["pages"], serde_json::json!(["https://shop.example.test/inventory.html"]));
+    let export = finding_of(&body, "FR-005");
+    assert_eq!(export["status"], "MISSING");
+    assert_eq!(export["basis"], "ai");
+    assert_eq!(export["verification"]["verdict"], "NOT_FOUND");
+
+    let v = &body["method"]["verification"];
+    assert_eq!((v["requested"].clone(), v["calls"].clone(), v["checked"].clone()), (true.into(), 1.into(), 2.into()));
+    assert_eq!((v["confirmed"].clone(), v["not_found"].clone()), (1.into(), 1.into()));
+    assert_eq!(v["by"], serde_json::json!(["mock/mock-model"]));
+    // The counts follow what the AI decided: the wishlist is now found, and nothing is left weak.
+    assert_eq!(body["summary"]["found"], 4);
+    assert_eq!(body["summary"]["weak"], 0);
+    assert_eq!(body["summary"]["missing"], 1);
+}
+
+#[tokio::test]
+async fn phase6b_a_limit_on_the_questions_is_kept_and_a_provider_that_refuses_fails_the_step_not_the_request() {
+    let executor = Arc::new(RecordingExecutor::sequence(vec![Err(crate::ai_router::ExecutionError::NonSuccessStatus(503))]));
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
+    let (project, owner, run_id, file) = shop_project(&state, "Phase6B Refused").await;
+
+    let (status, body) = gap_check(
+        &state,
+        project,
+        &owner,
+        Some(serde_json::json!({"crawl_run_id": run_id, "verify": true, "max_verifications": 1})),
+    )
+    .await;
+    std::fs::remove_file(file).ok();
+
+    assert_eq!(status, StatusCode::OK, "the check itself is not lost when the provider is: {body}");
+    let prompts = executor.prompts.lock().unwrap().clone();
+    assert_eq!(prompts.len(), 1);
+    assert_eq!(prompts[0].lines().filter(|l| l.starts_with("[R")).count(), 1, "only one requirement was asked about");
+    assert_eq!(body["method"]["verification"]["failed"], 1);
+    assert_eq!(body["method"]["verification"]["checked"], 0);
+    // What was asked keeps its status, and says the check failed.
+    assert_eq!(finding_of(&body, "FR-004")["status"], "WEAK");
+    assert_eq!(finding_of(&body, "FR-004")["verification"]["verdict"], "FAILED");
+    assert!(finding_of(&body, "FR-005").get("verification").is_none(), "FR-005 was not asked");
+}
+
+#[tokio::test]
+async fn phase6b_the_options_that_call_a_provider_need_the_operator_role_and_the_free_check_does_not() {
+    let executor = Arc::new(RecordingExecutor::ok_sequence(vec![]));
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
+    let (project, owner, run_id, file) = shop_project(&state, "Phase6B Roles").await;
+    let viewer = mint_key(&state, "viewer", Some(&project.to_string())).await;
+    let ask = |extra: Value| {
+        let mut body = serde_json::json!({"crawl_run_id": run_id});
+        for (k, v) in extra.as_object().unwrap() {
+            body[k] = v.clone();
+        }
+        Some(body)
+    };
+
+    let (verify, _) = gap_check(&state, project, &viewer, ask(serde_json::json!({"verify": true}))).await;
+    let (embed, _) = gap_check(&state, project, &viewer, ask(serde_json::json!({"use_embeddings": true}))).await;
+    let (free, _) = gap_check(&state, project, &viewer, ask(serde_json::json!({}))).await;
+    // An operator may.
+    let (operator, _) = gap_check(&state, project, &owner, ask(serde_json::json!({"use_embeddings": true}))).await;
+    std::fs::remove_file(file).ok();
+
+    assert_eq!(verify, StatusCode::FORBIDDEN);
+    assert_eq!(embed, StatusCode::FORBIDDEN);
+    assert_eq!(free, StatusCode::OK);
+    assert_eq!(operator, StatusCode::OK);
+    assert!(executor.prompts.lock().unwrap().is_empty(), "a refused request calls no provider");
+}
+
+#[tokio::test]
+async fn phase6b_an_embedder_that_is_not_set_up_is_reported_and_changes_nothing() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(Arc::new(RecordingExecutor::ok_sequence(vec![])))).await;
+    let (project, owner, run_id, file) = shop_project(&state, "Phase6B No Embedder").await;
+
+    let (_, free) = gap_check(&state, project, &owner, Some(serde_json::json!({"crawl_run_id": run_id}))).await;
+    let (status, body) = gap_check(
+        &state,
+        project,
+        &owner,
+        Some(serde_json::json!({"crawl_run_id": run_id, "use_embeddings": true})),
+    )
+    .await;
+    std::fs::remove_file(file).ok();
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let e = &body["method"]["embeddings"];
+    assert_eq!((e["requested"].clone(), e["used"].clone()), (true.into(), false.into()));
+    assert!(e["note"].as_str().unwrap().contains("GEMINI_API_KEY"), "body={body}");
+    assert_eq!(body["requirements"], free["requirements"], "nothing changed");
+}
+
+#[tokio::test]
+async fn phase6b_an_embedder_names_the_page_closest_in_meaning_for_a_requirement_the_words_missed() {
+    let embedder: Arc<dyn Embedder> = Arc::new(ConceptEmbedder {
+        // The legal page's meaning: what "the small print" is.
+        concepts: vec![vec!["terms", "privacy", "small print"], vec!["cart", "checkout"], vec!["username", "password"], vec!["add to cart"]],
+    });
+    let (state, _dir) =
+        test_state_with_ai_router_and_embedder(ai_infra_with_executor(Arc::new(RecordingExecutor::ok_sequence(vec![]))), embedder).await;
+    let project = make_project(&state, "Phase6B Embedder").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    upload_document(&state, &owner, project, "FRD.md", b"## 4 Legal\n\nFR-301: Users can read the small print.\n", Some("FRD")).await;
+    let (run_id, task_id) = crawl_run_and_task(&state, project, &owner).await;
+    let file = write_crawl_file(&crate::crawler::grounding_file_name(&task_id), SIX_PAGE_GROUNDING);
+
+    let (_, words) = gap_check(&state, project, &owner, Some(serde_json::json!({"crawl_run_id": run_id}))).await;
+    let (status, body) = gap_check(
+        &state,
+        project,
+        &owner,
+        Some(serde_json::json!({"crawl_run_id": run_id, "use_embeddings": true})),
+    )
+    .await;
+    std::fs::remove_file(file).ok();
+
+    assert_eq!(finding_of(&words, "FR-301")["status"], "MISSING", "the words see nothing: {words}");
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let small_print = finding_of(&body, "FR-301");
+    // Only ever weak: how close is close enough is not something the words can confirm.
+    assert_eq!(small_print["status"], "WEAK", "body={body}");
+    assert_eq!(small_print["basis"], "embedding");
+    assert_eq!(small_print["matches"][0]["url"], "https://shop.example.test/legal/terms.html");
+    assert_eq!(small_print["matches"][0]["basis"], "embedding");
+    assert_eq!(small_print["matches"][0]["similarity"], 1.0);
+    let e = &body["method"]["embeddings"];
+    assert_eq!((e["requested"].clone(), e["used"].clone()), (true.into(), true.into()));
+    assert_eq!(e["model"], "concept-embedder");
+    // Six pages and the one requirement.
+    assert_eq!(e["texts"], 7);
+    assert_eq!(e["failed"], 0);
+    assert_eq!(body["summary"]["weak"], 1);
+}
+
+#[tokio::test]
+async fn phase6b_asking_the_ai_to_check_is_audited_and_the_free_check_is_not() {
+    let answer = verdict_answer(&[("R1", "UNCLEAR", &[], "x"), ("R2", "UNCLEAR", &[], "x")]);
+    let executor = Arc::new(RecordingExecutor::ok_sequence(vec![&answer]));
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor)).await;
+    let (project, owner, run_id, file) = shop_project(&state, "Phase6B Audit").await;
+
+    let (free, _) = gap_check(&state, project, &owner, Some(serde_json::json!({"crawl_run_id": run_id}))).await;
+    let after_free = state.store.list_audit(None, 100, 0).await.expect("list_audit");
+    let (asked, _) = gap_check(
+        &state,
+        project,
+        &owner,
+        Some(serde_json::json!({"crawl_run_id": run_id, "verify": true})),
+    )
+    .await;
+    let after_verify = state.store.list_audit(None, 100, 0).await.expect("list_audit");
+    std::fs::remove_file(file).ok();
+
+    assert_eq!((free, asked), (StatusCode::OK, StatusCode::OK));
+    assert!(!after_free.iter().any(|a| a.action == "gap_check.verify"), "the words check calls no provider");
+    let project_id = project.to_string();
+    assert!(
+        after_verify.iter().any(|a| a.action == "gap_check.verify"
+            && a.target.as_deref() == Some(run_id.as_str())
+            && a.project_id.as_deref() == Some(project_id.as_str())
+            && a.outcome == "ok"),
+        "asking the AI is an audited action: {after_verify:?}"
+    );
+}

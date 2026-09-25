@@ -6509,6 +6509,23 @@ struct GapCheckRequestBody {
     /// Only the requirements of these documents (`GET .../requirements`); omitted, all of the project's.
     #[serde(default)]
     document_ids: Vec<Uuid>,
+    /// Also compare meaning with the embedder (`gap_verify::compare_meaning`). Calls a provider: Operator role.
+    #[serde(default)]
+    use_embeddings: bool,
+    /// Also ask the router's AI to check the requirements the words left unclear (`gap_verify::verify`). Calls a
+    /// provider: Operator role.
+    #[serde(default)]
+    verify: bool,
+    /// The most requirements the AI is asked about (default 12, at most 60).
+    #[serde(default)]
+    max_verifications: Option<usize>,
+}
+
+/// What the optional steps did (each says whether it was asked for).
+#[derive(Debug, Default, Serialize)]
+struct GapMethod {
+    embeddings: crate::gap_verify::EmbeddingReport,
+    verification: crate::gap_verify::VerificationReport,
 }
 
 #[derive(Debug, Serialize)]
@@ -6528,6 +6545,7 @@ struct GapCheckResponse {
     report: crate::gap_check::GapReport,
     /// What a reader of the report should know about the crawl behind it.
     notes: Vec<String>,
+    method: GapMethod,
 }
 
 /// A run's crawl output: the grounding file when the crawl recorded one (links, buttons and form fields), the older
@@ -6604,6 +6622,10 @@ async fn gap_check_scoped(
 ) -> Result<Json<GapCheckResponse>, ApiError> {
     require_scoped_project(&state, &ctx, project_id).await?;
     let body = body.map(|ApiJson(b)| b).unwrap_or_default();
+    // The words check reads only; the embedder and the AI are provider calls.
+    if body.use_embeddings || body.verify {
+        auth::require_role(&ctx, Role::Operator)?;
+    }
     let pid = project_id.to_string();
 
     let rows = state
@@ -6644,7 +6666,30 @@ async fn gap_check_scoped(
         .map(crate::gap_check::CaseInfo::from)
         .collect();
 
-    let analysis = crate::gap_check::analyze(&requirements, &evidence, &cases);
+    let mut analysis = crate::gap_check::analyze(&requirements, &evidence, &cases);
+    let mut method = GapMethod::default();
+    if body.use_embeddings {
+        method.embeddings =
+            crate::gap_verify::compare_meaning(&mut analysis, state.embedder.as_ref()).await;
+    }
+    if body.verify {
+        method.verification = crate::gap_verify::verify(
+            &mut analysis,
+            &state.ai_infra,
+            body.max_verifications
+                .unwrap_or(crate::gap_verify::DEFAULT_MAX_VERIFICATIONS),
+        )
+        .await;
+        audit(
+            &state,
+            &ctx,
+            "gap_check.verify",
+            Some(&run_id.to_string()),
+            None,
+            "ok",
+        )
+        .await;
+    }
     Ok(Json(GapCheckResponse {
         crawl: GapCrawlInfo {
             run_id,
@@ -6654,6 +6699,7 @@ async fn gap_check_scoped(
         },
         report: analysis.report(),
         notes: crate::gap_check::notes_for(&evidence),
+        method,
     }))
 }
 
