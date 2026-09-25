@@ -906,6 +906,55 @@ mod tests {
     }
 
     #[test]
+    fn a_run_with_nothing_to_note_has_no_notes() {
+        // Every requirement has a case that passed; nothing failed, nothing is undecided or rejected, the gap check found every
+        // requirement, and the AI wrote everything with its first choice.
+        let run = run_row("COMPLETED", config_value());
+        let steps = vec![
+            step_row(Step::Requirements, "DONE", json!({"requirements": 2, "documents": 1, "by_kind": {"functional": 2}})),
+            step_row(Step::Crawl, "DONE", json!({"crawl_run_id": "crawl-1", "reused": false, "pages": 3, "roles": []})),
+            step_row(Step::GapCheck, "DONE", json!({"summary": {"requirements": 2, "found": 2, "weak": 0, "missing": 0}})),
+            step_row(
+                Step::Generate,
+                "DONE",
+                json!({"suite_id": "s1", "cases": 2, "providers": {"groq/llama": 1}, "fallback_used": false, "prompt_tokens": 10, "completion_tokens": 10, "latency_ms": 1000, "groups": [{"failed_waves": []}]}),
+            ),
+            step_row(Step::Validate, "DONE", json!({"validated": 2, "invalid": []})),
+            step_row(Step::Approve, "DONE", json!({"approved": 2, "rejected": 0, "pending": 0, "automatic": false, "released": true})),
+            step_row(
+                Step::Execute,
+                "DONE",
+                json!({"role": null, "total": 2, "finished": 2, "counts": {"PASSED": 2}, "cases": [exec_case("c1", "FR-1", "PASSED", None), exec_case("c2", "FR-2", "PASSED", None)]}),
+            ),
+        ];
+        let requirements = vec![requirement("FR-1", "functional"), requirement("FR-2", "functional")];
+        let cases = vec![case("c1", "FR-1", "EXECUTED"), case("c2", "FR-2", "EXECUTED")];
+        let report = build(&ReportInput { run: &run, steps: &steps, requirements: &requirements, cases: &cases, finished: true });
+        assert_eq!(report["notes"], json!([]), "{report}");
+        assert_eq!(report["coverage_summary"], json!({"PASSED": 2}));
+        assert_eq!(report["execution"]["ran"], 2);
+    }
+
+    #[test]
+    fn a_report_of_a_run_that_has_not_got_far_makes_up_no_counts_and_runs_the_cases_unless_told_not_to() {
+        // At its gate: no execute step, and the steps carry none of the fields the notes read; the run says nothing of executing.
+        let mut config = config_value();
+        config.as_object_mut().unwrap().remove("execute");
+        let run = run_row("WAITING", config);
+        let steps = vec![
+            step_row(Step::Requirements, "DONE", json!({})),
+            step_row(Step::GapCheck, "DONE", json!({})),
+            step_row(Step::Approve, "WAITING", json!({})),
+        ];
+        let report = build(&ReportInput { run: &run, steps: &steps, requirements: &[], cases: &[], finished: false });
+        assert_eq!(report["execution"]["enabled"], true, "the cases are run unless the run says they are not");
+        assert_eq!(report["execution"]["finished"], 0);
+        assert_eq!(report["execution"]["ran"], 0);
+        let notes: Vec<&str> = report["notes"].as_array().unwrap().iter().map(|n| n.as_str().unwrap()).collect();
+        assert_eq!(notes, ["The run has not ended: this is what it has found so far."], "no count is made up: {notes:?}");
+    }
+
+    #[test]
     fn the_notes_say_what_to_know_before_trusting_the_numbers() {
         let notes: Vec<String> = build_it("COMPLETED", true)["notes"]
             .as_array()
