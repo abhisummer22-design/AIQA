@@ -103,10 +103,11 @@ pub fn build(input: &ReportInput) -> Value {
         if !seen_keys.insert(key) {
             continue;
         }
+        // A case a person rejected at the gate tests nothing: it is not a case of the requirement here.
         let mine: Vec<&Value> = input
             .cases
             .iter()
-            .filter(|c| c["requirement_reference"].as_str() == Some(key))
+            .filter(|c| c["requirement_reference"].as_str() == Some(key) && c["status"] != "REJECTED")
             .collect();
         let count = |wanted: &str| {
             mine.iter()
@@ -202,6 +203,10 @@ pub fn build(input: &ReportInput) -> Value {
     let undecided = approval["pending"].as_u64().unwrap_or(0);
     if undecided > 0 {
         notes.push(format!("{undecided} generated case(s) were left undecided at the approval gate and were not run."));
+    }
+    let rejected = approval["rejected"].as_u64().unwrap_or(0);
+    if rejected > 0 {
+        notes.push(format!("{rejected} case(s) were rejected at the approval gate and are not counted."));
     }
     if !execution_on {
         notes.push(
@@ -832,6 +837,47 @@ mod tests {
             report["coverage_summary"],
             json!({"FAILED": 1, "INCONCLUSIVE": 1, "NOT_EXECUTED": 1, "NO_CASES": 1, "PASSED": 2})
         );
+    }
+
+    #[test]
+    fn a_case_the_person_rejected_at_the_gate_is_not_a_case_of_its_requirement() {
+        let run = run_row("COMPLETED", config_value());
+        let mut steps = steps();
+        steps[5].detail["rejected"] = json!(2);
+        let mut cases = cases();
+        cases.push(case("c8", "FR-6", "REJECTED")); // FR-6's only case
+        cases.push(case("c9", "FR-2", "REJECTED")); // FR-2 also has c3, which ran
+        let report = build(&ReportInput {
+            run: &run,
+            steps: &steps,
+            requirements: &requirements(),
+            cases: &cases,
+            finished: true,
+        });
+        let row = |key: &str| {
+            report["coverage"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["key"] == key)
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(row("FR-6")["verdict"], "NO_CASES", "nothing approved tests it");
+        assert_eq!(row("FR-6")["cases"], 0);
+        assert_eq!(row("FR-6")["not_run"], 0);
+        assert_eq!(row("FR-2")["cases"], 1, "the rejected case is not counted beside the one that ran");
+        assert_eq!(row("FR-2")["verdict"], "PASSED");
+        let notes: Vec<&str> = report["notes"].as_array().unwrap().iter().map(|n| n.as_str().unwrap()).collect();
+        assert!(notes.contains(&"2 case(s) were rejected at the approval gate and are not counted."), "{notes:?}");
+        // No rejection, no note.
+        let plain: Vec<String> = build_it("COMPLETED", true)["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n.as_str().unwrap().to_string())
+            .collect();
+        assert!(plain.iter().all(|n| !n.contains("rejected")), "{plain:?}");
     }
 
     #[test]

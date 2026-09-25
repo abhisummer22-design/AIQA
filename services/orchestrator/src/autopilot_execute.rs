@@ -138,11 +138,60 @@ fn outcome_of_run(run: &Value) -> Option<(String, Option<String>)> {
         return None;
     }
     let task = &run["tasks"][0];
-    let reason = task["reason"].as_str().map(str::to_string);
+    let reason = task["reason"].as_str().map(tidy_reason).filter(|r| !r.is_empty());
     match task["status"].as_str() {
         Some("QUEUED") | Some("RUNNING") | None => Some((state.to_string(), reason)),
         Some(status) => Some((status.to_string(), reason)),
     }
+}
+
+/// The most a case's reason says.
+const MAX_REASON_CHARS: usize = 400;
+
+/// A run's reason as a person reads it in the report and the timeline. The terminal's colour codes are taken out, and of
+/// Playwright's code frame (`> 22 |   await expect(...)`, the line that failed, among the lines around it) only that line is
+/// kept beside the first line; any other reason is its words on one line. At most `MAX_REASON_CHARS` characters.
+fn tidy_reason(reason: &str) -> String {
+    let plain = strip_terminal_codes(reason);
+    let mut lines = plain.lines().map(str::trim).filter(|l| !l.is_empty());
+    let first = lines.next().unwrap_or("");
+    let marked = plain.lines().map(str::trim).find_map(|line| {
+        let rest = line.strip_prefix("> ")?;
+        let (number, code) = rest.split_once('|')?;
+        let number = number.trim();
+        (!number.is_empty() && number.chars().all(|c| c.is_ascii_digit()))
+            .then(|| format!("line {number}: {}", code.split_whitespace().collect::<Vec<_>>().join(" ")))
+    });
+    let text = match marked {
+        Some(failed) => format!("{first} \u{2014} failed at {failed}"),
+        None => plain.split_whitespace().collect::<Vec<_>>().join(" "),
+    };
+    if text.chars().count() > MAX_REASON_CHARS {
+        let cut: String = text.chars().take(MAX_REASON_CHARS).collect();
+        format!("{}\u{2026}", cut.trim_end())
+    } else {
+        text
+    }
+}
+
+/// `text` without ANSI escape sequences (`ESC [ ... final byte`): what a terminal turns into colours and cursor moves.
+fn strip_terminal_codes(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            // Parameters and intermediates, then one final byte in `@`..=`~`.
+            for next in chars.by_ref() {
+                if ('@'..='~').contains(&next) {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// What a refused handoff was: the compiler's own word when the message starts with one (`NOT_EXECUTABLE: ...`), else
@@ -406,6 +455,58 @@ mod tests {
 
     fn handoff_ok(run: &str) -> Reply {
         Reply::new(201, json!({"run_id": run, "status": "SCHEDULED"}))
+    }
+
+    /// What Playwright printed for a failed assertion (colour codes and all), as the executor keeps it in a task's reason.
+    const PLAYWRIGHT_REASON: &str = "playwright exited with Some(1)\n\n    \u{1b}[0m \u{1b}[90m 20 |\u{1b}[39m   \u{1b}[36mawait\u{1b}[39m page\u{1b}[33m.\u{1b}[39mgoto(\u{1b}[32m\"https://shop.example.test/\"\u{1b}[39m)\u{1b}[33m;\u{1b}[39m\n     \u{1b}[90m 21 |\u{1b}[39m   console\u{1b}[33m.\u{1b}[39mlog(\u{1b}[32m\"AIQA_STEP\"\u{1b}[39m)\u{1b}[33m;\u{1b}[39m\n    \u{1b}[31m\u{1b}[1m>\u{1b}[22m\u{1b}[39m\u{1b}[90m 22 |\u{1b}[39m   \u{1b}[36mawait\u{1b}[39m expect(page.locator(\"h1\"))\u{1b}[33m.\u{1b}[39mtoHaveText(\u{1b}[32m\"Welcome back\"\u{1b}[39m)\u{1b}[33m;\u{1b}[39m\n     \u{1b}[90m    |\u{1b}[39m                          \u{1b}[31m\u{1b}[1m^\u{1b}[22m\u{1b}[39m\n     \u{1b}[90m 23 |\u{1b}[39m });\u{1b}[0m\n    \u{1b}[2m    at D:\\repo\\generated.spec.ts:22:94\u{1b}[22m\n\n\u{1b}[1A\u{1b}[2K\u{1b}[31m  1 failed\u{1b}[39m\n";
+
+    #[test]
+    fn a_reason_is_read_without_the_terminals_colour_codes() {
+        assert_eq!(tidy_reason("\u{1b}[31mexpected 1, got 2\u{1b}[0m"), "expected 1, got 2");
+        assert_eq!(strip_terminal_codes("a\u{1b}[1A\u{1b}[2Kb\u{1b}[38;5;9mc"), "abc");
+        // An escape that is not a control sequence, and a lone one at the end, are left alone (nothing is swallowed).
+        assert_eq!(strip_terminal_codes("x\u{1b}Ty"), "x\u{1b}Ty");
+        assert_eq!(strip_terminal_codes("x\u{1b}"), "x\u{1b}");
+        assert_eq!(strip_terminal_codes("x\u{1b}[31"), "x", "an unfinished sequence ends the text");
+    }
+
+    #[test]
+    fn of_playwrights_code_frame_only_the_line_that_failed_is_kept() {
+        assert_eq!(
+            tidy_reason(PLAYWRIGHT_REASON),
+            "playwright exited with Some(1) \u{2014} failed at line 22: await expect(page.locator(\"h1\")).toHaveText(\"Welcome back\");"
+        );
+    }
+
+    #[test]
+    fn any_other_reason_is_its_words_on_one_line() {
+        assert_eq!(tidy_reason("expected the cart badge to show 1"), "expected the cart badge to show 1");
+        assert_eq!(tidy_reason("no browser\ncould be   started\n"), "no browser could be started");
+        assert_eq!(tidy_reason(""), "");
+        assert_eq!(tidy_reason("\u{1b}[31m\u{1b}[0m"), "");
+        // A `>` that is not a marked code line (no line number before the bar) is just text.
+        assert_eq!(tidy_reason("> a | b"), "> a | b");
+    }
+
+    #[test]
+    fn a_long_reason_is_cut_with_an_ellipsis_and_a_short_one_is_not() {
+        let long = "word ".repeat(200);
+        let tidy = tidy_reason(&long);
+        assert!(tidy.chars().count() <= MAX_REASON_CHARS, "{tidy}");
+        assert!(tidy.ends_with('\u{2026}'), "{tidy}");
+        let exact = "x".repeat(MAX_REASON_CHARS);
+        assert_eq!(tidy_reason(&exact), exact, "exactly the most is not cut");
+        let over = "x".repeat(MAX_REASON_CHARS + 1);
+        assert_eq!(tidy_reason(&over).chars().count(), MAX_REASON_CHARS + 1, "the cut text and its ellipsis");
+    }
+
+    #[test]
+    fn a_run_that_ended_gives_its_tidied_reason_and_no_reason_when_nothing_is_left_of_it() {
+        let ended = |reason: Value| json!({"state": "COMPLETED", "tasks": [{"status": "FAILED", "reason": reason}]});
+        assert_eq!(outcome_of_run(&ended(json!("\u{1b}[31mboom\u{1b}[0m"))), Some(("FAILED".to_string(), Some("boom".to_string()))));
+        assert_eq!(outcome_of_run(&ended(json!(PLAYWRIGHT_REASON))).unwrap().1.unwrap().chars().take(30).collect::<String>(), "playwright exited with Some(1)");
+        assert_eq!(outcome_of_run(&ended(json!("\u{1b}[0m"))), Some(("FAILED".to_string(), None)));
+        assert_eq!(outcome_of_run(&ended(Value::Null)), Some(("FAILED".to_string(), None)));
     }
 
     fn run_reply(state: &str, status: &str, reason: Option<&str>) -> Reply {
