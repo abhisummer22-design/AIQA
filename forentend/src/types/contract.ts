@@ -2036,3 +2036,296 @@ export interface RetentionReport {
   retention_days: number;
 }
 
+// ---------------------------------------------------------- Phase 7: Autopilot
+
+/** `login_suggest.rs::Confidence`. */
+export type LoginSuggestionConfidence = 'low' | 'medium' | 'high';
+
+/** `login_suggest.rs::LoginSuggestion` — a role's login steps as proposed from what a crawl saw on the login page.
+ *  Every locator is one the crawl recorded; the values are `env:NAME` references, never credentials. */
+export interface LoginSuggestion {
+  role: string;
+  page_url: string;
+  page_title: string;
+  actions: PlanAction[];
+  /** The environment variables the steps read (names only). */
+  secrets: string[];
+  confidence: LoginSuggestionConfidence;
+  /** Why each part was chosen. */
+  reasons: string[];
+  /** `rules`, or the `provider/model` of the AI that proposed it. */
+  by: string;
+}
+
+/** `POST .../login-suggestion` request. */
+export interface LoginSuggestionRequest {
+  role: string;
+  /** A crawl of this project; omitted, its newest one that has a page with a password field. */
+  crawl_run_id?: string;
+  /** Also ask the router's AI when the rules are not sure (Operator role). */
+  use_ai?: boolean;
+}
+
+/** `api.rs::LoginSuggestionResponse`. */
+export interface LoginSuggestionResponse {
+  crawl_run_id: string;
+  suggestion: LoginSuggestion;
+  /** The other answer, when the rules and the AI differ. */
+  alternatives: LoginSuggestion[];
+  ai: { requested: boolean; used: boolean; note: string | null };
+  /** Variables the steps read that are not set in the orchestrator's environment. */
+  missing_secrets: string[];
+}
+
+export type AutopilotRunState = 'AWAITING_APPROVAL' | 'RUNNING' | 'WAITING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
+export type AutopilotStepState = 'PENDING' | 'RUNNING' | 'WAITING' | 'DONE' | 'SKIPPED' | 'FAILED';
+export type AutopilotStepName =
+  | 'REQUIREMENTS'
+  | 'CRAWL'
+  | 'GAP_CHECK'
+  | 'GENERATE'
+  | 'VALIDATE'
+  | 'APPROVE'
+  | 'EXECUTE'
+  | 'REPORT';
+export type AutopilotApprovalMode = 'manual' | 'auto_validated';
+
+/** `autopilot.rs::AutopilotConfig` — what a person asks a run to do. */
+export interface AutopilotConfig {
+  name?: string | null;
+  base_url: string;
+  /** The roles to crawl and test as, each with the login steps a person confirmed. `anonymous`, with none, is a role too. */
+  roles: CrawlRole[];
+  /** A finished crawl of this project to use instead of crawling again. */
+  crawl_run_id?: string | null;
+  requirement_document_ids?: string[];
+  skills?: GenerateAiSkillInput[];
+  depth?: string | null;
+  coverage_top_up?: boolean;
+  focus_requirements?: boolean;
+  /** Ask the AI about at most this many requirements the words left unclear. */
+  verify_gaps?: number | null;
+  /** Whether approved cases are compiled and run (default true). */
+  execute?: boolean;
+  run_concurrency?: number | null;
+  approval?: AutopilotApprovalMode;
+  execution_role?: string | null;
+}
+
+export interface AutopilotRange<T = number> {
+  min: T;
+  max: T;
+}
+
+export type AutopilotPricing =
+  | { kind: 'UNMETERED' }
+  | { kind: 'METERED'; input_usd_per_1k: number; output_usd_per_1k: number };
+
+export interface AutopilotProviderProfile {
+  id: string;
+  name: string;
+  model: string;
+  kind: 'LOCAL' | 'API' | 'OTHER';
+  pricing: AutopilotPricing;
+  observed: {
+    calls: number;
+    avg_ms: number;
+    avg_prompt_tokens: number | null;
+    avg_completion_tokens: number | null;
+  } | null;
+}
+
+export type AutopilotLatency =
+  | { basis: 'MEASURED'; calls: number; avg_seconds: number }
+  | { basis: 'ASSUMED'; tokens_per_second: number }
+  | { basis: 'UNKNOWN' };
+
+/** `autopilot_estimate.rs::Estimate` — what a run would cost, as ranges, every assumption written down. */
+export interface AutopilotEstimate {
+  requirements: number;
+  cases: AutopilotRange;
+  steps: Array<{ step: AutopilotStepName; ai_calls: AutopilotRange; seconds: AutopilotRange; note: string | null }>;
+  tasks: Array<{
+    task: string;
+    used_for: string;
+    provider: AutopilotProviderProfile | null;
+    calls: AutopilotRange;
+    prompt_tokens: AutopilotRange;
+    completion_tokens: AutopilotRange;
+    seconds: AutopilotRange;
+    /** `null` when no provider serves the task (a cost nobody can state), never a made-up 0. */
+    cost_usd: AutopilotRange | null;
+    latency: AutopilotLatency;
+  }>;
+  totals: { ai_calls: AutopilotRange; seconds: AutopilotRange; cost_usd: AutopilotRange | null; paid: boolean };
+  assumptions: string[];
+  warnings: string[];
+}
+
+/** `POST .../autopilot/estimate` body — every field optional. */
+export interface AutopilotEstimateRequest {
+  requirement_document_ids?: string[];
+  skills?: GenerateAiSkillInput[];
+  depth?: string;
+  coverage_top_up?: boolean;
+  roles?: number;
+  focus_requirements?: boolean;
+  verify_gaps?: number;
+  execute?: boolean;
+  run_concurrency?: number;
+}
+
+/** `autopilot_store.rs::AutopilotRunRow`. */
+export interface AutopilotRun {
+  id: string;
+  project_id: string;
+  name: string;
+  state: AutopilotRunState;
+  config: AutopilotConfig;
+  estimate: AutopilotEstimate;
+  approved_at: string | null;
+  approved_paid: boolean;
+  created_by_name: string;
+  current_step: AutopilotStepName | null;
+  error: string | null;
+  cancel_requested: boolean;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  updated_at: string;
+}
+
+/** `autopilot_store.rs::AutopilotStepRow`. `detail` is what the step found (see `autopilotModel.ts` for how it is read). */
+export interface AutopilotStep {
+  run_id: string;
+  name: AutopilotStepName;
+  position: number;
+  state: AutopilotStepState;
+  attempts: number;
+  detail: Record<string, unknown>;
+  error: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+/** `autopilot_store.rs::AutopilotEventRow`. */
+export interface AutopilotEvent {
+  id: number;
+  at: string;
+  kind: string;
+  step: AutopilotStepName | null;
+  message: string;
+  data: unknown;
+}
+
+/** `autopilot_api.rs::RunDetail`. */
+export interface AutopilotRunDetail {
+  run: AutopilotRun;
+  steps: AutopilotStep[];
+  events: AutopilotEvent[];
+  /** Whether the service is working on the run at this moment. */
+  working: boolean;
+}
+
+/** `POST .../autopilot/runs/:id/start` body. */
+export interface AutopilotStartRequest {
+  accept_estimate: boolean;
+  accept_paid?: boolean;
+}
+
+/** `POST .../autopilot/runs/:id/cancel` response. */
+export interface AutopilotCancelResponse extends AutopilotRunDetail {
+  outcome: 'cancelled' | 'requested';
+}
+
+/** `POST .../autopilot/runs/:id/approve-cases` response. */
+export interface AutopilotApproveCasesResponse {
+  suite_id: string;
+  approved: string[];
+  refused: Array<{ id: string; title: string; reason: string }>;
+}
+
+export type AutopilotVerdict = 'PASSED' | 'FAILED' | 'INCONCLUSIVE' | 'NOT_EXECUTED' | 'NO_CASES';
+
+/** `autopilot_report.rs::build` — the report of a run. */
+export interface AutopilotReport {
+  final: boolean;
+  run: {
+    id: string;
+    name: string;
+    state: AutopilotRunState;
+    error: string | null;
+    created_by: string;
+    created_at: string;
+    started_at: string | null;
+    finished_at: string | null;
+    seconds: number | null;
+  };
+  application: { base_url: string; roles: string[] | null; execution_role: string | null };
+  requirements: { total: number; by_kind: Record<string, number> | null };
+  crawl: { crawl_run_id: string | null; reused: boolean | null; pages: number | null; roles: unknown };
+  gaps: Record<string, number> | null;
+  generation: {
+    cases: number | null;
+    groups: number;
+    providers: Record<string, number> | null;
+    fallback_used: boolean | null;
+    prompt_tokens: number | null;
+    completion_tokens: number | null;
+    latency_ms: number | null;
+  };
+  validation: { validated: number | null; invalid: Array<{ id: string; title?: string; reason?: string }> | null };
+  approval: {
+    approved: number | null;
+    rejected: number | null;
+    undecided: number | null;
+    automatic: boolean | null;
+    released: boolean | null;
+  };
+  execution: {
+    enabled: boolean;
+    done: boolean;
+    cases: number | null;
+    finished: number | null;
+    counts: Record<string, number> | null;
+    passed: number;
+    failed: number;
+    role: string | null;
+  };
+  findings: AutopilotReportCase[];
+  not_run: AutopilotReportCase[];
+  coverage: Array<{
+    key: string;
+    kind: string;
+    text: string;
+    cases: number;
+    ran: number;
+    passed: number;
+    failed: number;
+    not_run: number;
+    verdict: AutopilotVerdict;
+  }>;
+  coverage_summary: Partial<Record<AutopilotVerdict, number>>;
+  cost: {
+    estimated: AutopilotEstimate['totals'] | null;
+    actual: {
+      ai_prompt_tokens: number | null;
+      ai_completion_tokens: number | null;
+      ai_seconds: number | null;
+      run_seconds: number | null;
+    };
+  };
+  steps: Array<{ name: AutopilotStepName; state: AutopilotStepState; attempts: number; seconds: number | null }>;
+  notes: string[];
+}
+
+/** A case of the run that failed, or that could not give an answer. */
+export interface AutopilotReportCase {
+  case_id: string;
+  title: string;
+  requirement: string | null;
+  outcome: string;
+  reason: string | null;
+  run_id: string | null;
+  attempts: Array<{ run_id: string; outcome: string; reason: string | null }>;
+}
