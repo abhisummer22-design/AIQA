@@ -10,6 +10,9 @@ const CHAIN_TASKS: ReadonlyArray<{ task: string; label: string }> = [
   { task: 'BUG_ANALYSIS', label: 'Bug analysis' },
   // Phase 6: the AI that checks the requirements the gap check's words left unclear (`gap_verify.rs`).
   { task: 'TRACEABILITY', label: 'Requirement gap check' },
+  // Phase 7: the AI that proposes a role's login steps when the rules are not sure (`login_suggest.rs`); plain text, so a small local
+  // model will do.
+  { task: 'GENERAL_AI', label: 'Login suggestion' },
 ];
 
 type TaskOverrides = Record<string, TaskProviderPreference>;

@@ -73,6 +73,18 @@ import type {
   GenerateAiTestCasesResponse,
   GapCheckRequest,
   GapCheckResponse,
+  AutopilotApproveCasesResponse,
+  AutopilotCancelResponse,
+  AutopilotConfig,
+  AutopilotEstimate,
+  AutopilotEstimateRequest,
+  AutopilotEvent,
+  AutopilotReport,
+  AutopilotRun,
+  AutopilotRunDetail,
+  AutopilotStartRequest,
+  LoginSuggestionRequest,
+  LoginSuggestionResponse,
   ListRequirementsResponse,
   StartCrawlRequest,
   CrawlStartedResponse,
@@ -589,8 +601,9 @@ export const aiqaApi = {
    *  `*_test_case_scoped` handlers). Replaces the Test Case Generator's
    *  previous local-only, React-state-only output. */
   testCases: {
-    list: (projectId: string, opts: { status?: TestCaseRow['status'] } = {}, signal?: AbortSignal) =>
-      requestJson<TestCaseRow[]>(`/projects/${projectId}/test-cases`, { query: { status: opts.status }, signal }),
+    /** `suiteId` narrows to one suite's cases (`?suite_id=`), as an autopilot run's gate lists the ones it wrote. */
+    list: (projectId: string, opts: { status?: TestCaseRow['status']; suiteId?: string } = {}, signal?: AbortSignal) =>
+      requestJson<TestCaseRow[]>(`/projects/${projectId}/test-cases`, { query: { status: opts.status, suite_id: opts.suiteId }, signal }),
     create: (projectId: string, body: CreateTestCaseRequest, signal?: AbortSignal) =>
       requestJson<TestCaseRow>(`/projects/${projectId}/test-cases`, { method: 'POST', body, signal }),
     get: (projectId: string, id: string, signal?: AbortSignal) =>
@@ -720,6 +733,61 @@ export const aiqaApi = {
   gapCheck: {
     run: (projectId: string, body: GapCheckRequest = {}, signal?: AbortSignal) =>
       requestJson<GapCheckResponse>(`/projects/${projectId}/gap-check`, { method: 'POST', body, signal }),
+  },
+
+  /** Phase 7 — a role's login steps, proposed from what a crawl saw on the login page (`login_suggest.rs`). The person
+   *  reads and confirms them; the values are `env:NAME` references, never credentials. `use_ai` (Operator role) also
+   *  asks the router's AI when the rules are not sure. */
+  loginSuggestion: {
+    suggest: (projectId: string, body: LoginSuggestionRequest, signal?: AbortSignal) =>
+      requestJson<LoginSuggestionResponse>(`/projects/${projectId}/login-suggestion`, { method: 'POST', body, signal }),
+  },
+
+  /** Phase 7 — autopilot: from the uploaded requirements to a report of executed tests, in one run a person starts
+   *  knowing what it costs (`autopilot.rs`, `autopilot_api.rs`). Making a run starts nothing; it starts when its estimate
+   *  is accepted. */
+  autopilot: {
+    /** What a run would cost, as ranges, before anything is made. Reads only and calls no AI (Operator role). */
+    estimate: (projectId: string, body: AutopilotEstimateRequest = {}, signal?: AbortSignal) =>
+      requestJson<AutopilotEstimate>(`/projects/${projectId}/autopilot/estimate`, { method: 'POST', body, signal }),
+    runs: {
+      /** Makes a run with its estimate (starts nothing). */
+      create: (projectId: string, body: AutopilotConfig, signal?: AbortSignal) =>
+        requestJson<AutopilotRunDetail>(`/projects/${projectId}/autopilot/runs`, { method: 'POST', body, signal }),
+      list: (projectId: string, signal?: AbortSignal) =>
+        requestJson<{ runs: AutopilotRun[] }>(`/projects/${projectId}/autopilot/runs`, { signal }),
+      get: (projectId: string, runId: string, signal?: AbortSignal) =>
+        requestJson<AutopilotRunDetail>(`/projects/${projectId}/autopilot/runs/${runId}`, { signal }),
+      /** Accepts the estimate (and, for a run that would cost money, that cost) and starts the run. */
+      start: (projectId: string, runId: string, body: AutopilotStartRequest, signal?: AbortSignal) =>
+        requestJson<AutopilotRunDetail>(`/projects/${projectId}/autopilot/runs/${runId}/start`, { method: 'POST', body, signal }),
+      cancel: (projectId: string, runId: string, signal?: AbortSignal) =>
+        requestJson<AutopilotCancelResponse>(`/projects/${projectId}/autopilot/runs/${runId}/cancel`, { method: 'POST', signal }),
+      /** Lets a run that waits at the approval gate go on. */
+      continue: (projectId: string, runId: string, signal?: AbortSignal) =>
+        requestJson<AutopilotRunDetail>(`/projects/${projectId}/autopilot/runs/${runId}/continue`, { method: 'POST', signal }),
+      /** Takes a failed run over and starts it again at the step that failed. */
+      resume: (projectId: string, runId: string, signal?: AbortSignal) =>
+        requestJson<AutopilotRunDetail>(`/projects/${projectId}/autopilot/runs/${runId}/resume`, { method: 'POST', signal }),
+      /** Approves the run's validated cases (or the ones named), as the person asking. */
+      approveCases: (projectId: string, runId: string, caseIds?: string[], signal?: AbortSignal) =>
+        requestJson<AutopilotApproveCasesResponse>(`/projects/${projectId}/autopilot/runs/${runId}/approve-cases`, {
+          method: 'POST',
+          body: caseIds && caseIds.length > 0 ? { case_ids: caseIds } : {},
+          signal,
+        }),
+      /** The timeline, oldest first: the latest events, or those after event id `after`. */
+      events: (projectId: string, runId: string, opts: { after?: number; limit?: number } = {}, signal?: AbortSignal) =>
+        requestJson<{ events: AutopilotEvent[] }>(`/projects/${projectId}/autopilot/runs/${runId}/events`, {
+          query: { after: opts.after, limit: opts.limit },
+          signal,
+        }),
+      report: (projectId: string, runId: string, signal?: AbortSignal) =>
+        requestJson<AutopilotReport>(`/projects/${projectId}/autopilot/runs/${runId}/report`, { signal }),
+      /** The same report as Markdown, to paste. */
+      reportMarkdown: (projectId: string, runId: string, signal?: AbortSignal) =>
+        requestText(`/projects/${projectId}/autopilot/runs/${runId}/report`, { query: { format: 'markdown' }, signal }),
+    },
   },
 
   /** Central AI Provider & Model Intelligence Layer
