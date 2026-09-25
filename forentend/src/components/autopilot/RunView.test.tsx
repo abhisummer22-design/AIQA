@@ -225,6 +225,37 @@ describe('RunView — a run that failed', () => {
     expect(onDetail.mock.calls[0][0].run.state).toBe('RUNNING');
   });
 
+  it('shows a spinner on Start while the run is being started, and on Start Again while it is being taken up', async () => {
+    let release: (r: unknown) => void = () => {};
+    const { view } = renderRun(detail('AWAITING_APPROVAL'), { 'POST /start': () => new Promise((resolve) => (release = resolve)) });
+    fireEvent.click(box('accept-estimate'));
+    const spinning = (id: string) => el(id)!.querySelector('.animate-spin') !== null;
+    expect(spinning('run-start')).toBe(false);
+    await act(async () => {
+      button('run-start').click();
+    });
+    expect(spinning('run-start')).toBe(true);
+    expect(button('run-cancel').disabled).toBe(true); // nothing else while it goes
+    await act(async () => release(detail('RUNNING')));
+    await waitFor(() => expect(spinning('run-start')).toBe(false));
+    view.unmount();
+
+    const again = renderRun(detail('FAILED', { CRAWL: 'FAILED' }, { run: { current_step: 'CRAWL', error: 'no page' } }), { 'POST /resume': () => new Promise((resolve) => (release = resolve)) });
+    expect(spinning('run-resume')).toBe(false);
+    await act(async () => {
+      button('run-resume').click();
+    });
+    expect(spinning('run-resume')).toBe(true);
+    await act(async () => release(detail('RUNNING')));
+    await waitFor(() => expect(spinning('run-resume')).toBe(false));
+    again.view.unmount();
+  });
+
+  it('says a run stopped without inventing a reason when none was recorded', () => {
+    renderRun(detail('FAILED', { CRAWL: 'FAILED' }, { run: { current_step: 'CRAWL', error: null } }));
+    expect(el('run-failed')!.querySelectorAll('p')).toHaveLength(1); // what is kept, and nothing about why
+  });
+
   it('shows the backend’s words when another run is active and starting again is refused', async () => {
     renderRun(failed(), { 'POST /resume': () => failure(409, 'CONFLICT', 'this project has another autopilot run that has not ended: "Nightly"') });
     await act(async () => {
@@ -284,6 +315,16 @@ describe('RunView — the steps', () => {
     expect(text('step-CRAWL')).toContain('4 pages seen as 1 role');
     expect(text('step-CRAWL')).toContain('attempt 2');
     expect(text('step-REQUIREMENTS')).not.toContain('attempt');
+  });
+
+  it('shows a line about what a step found, or its error, only when it has one', () => {
+    renderRun(detail('RUNNING', { REQUIREMENTS: 'DONE', CRAWL: 'RUNNING' }));
+    // A step that is done or running with nothing recorded says nothing more than its name and state.
+    for (const name of ['REQUIREMENTS', 'CRAWL']) {
+      expect(el(`step-${name}`)!.querySelectorAll('.text-\\[11px\\]')).toHaveLength(0);
+    }
+    // One that has not started says what it will do; one with something found says it, once.
+    expect(el('step-GENERATE')!.querySelectorAll('.text-\\[11px\\]')).toHaveLength(1);
   });
 
   it('says what a step that has not started will do, and the error of one that failed', () => {

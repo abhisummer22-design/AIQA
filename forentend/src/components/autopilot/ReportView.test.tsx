@@ -274,6 +274,14 @@ describe('ReportView — cost and steps', () => {
     expect(text('report-notes')).not.toContain('custom-ai-');
   });
 
+  it('does not say who wrote the cases when the report does not say', async () => {
+    const first = await showReport(report({ generation: { ...report().generation, providers: null, fallback_used: null } }));
+    expect(document.getElementById('report-providers')).toBeNull();
+    first.view.unmount();
+    await showReport(report({ generation: { ...report().generation, providers: {} } }));
+    expect(document.getElementById('report-providers')).toBeNull();
+  });
+
   it('says no estimate was kept when there is none', async () => {
     await showReport(report({ cost: { ...report().cost, estimated: null } }));
     expect(text('report-cost')).toContain('No estimate was kept with this run.');

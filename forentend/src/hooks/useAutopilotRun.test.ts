@@ -34,7 +34,7 @@ afterEach(() => {
 });
 
 describe('useAutopilotRun', () => {
-  it('reads nothing while no run is chosen', async () => {
+  it('reads nothing while no run is chosen, and is not loading anything', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     const { result } = renderHook(() => useAutopilotRun(PROJECT_ID, null));
@@ -42,6 +42,21 @@ describe('useAutopilotRun', () => {
     await tick(60_000);
     expect(fetchMock).not.toHaveBeenCalled();
     expect(result.current.detail).toBeNull();
+    expect(result.current.loading).toBe(false);
+    expect(result.current.error).toBeNull();
+  });
+
+  it('reads nothing with no project either', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const { result } = renderHook(() => useAutopilotRun(null, RUN_ID));
+    await settle();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.current.loading).toBe(false);
+  });
+
+  it('waits ten seconds before it looks again after a look that failed', () => {
+    expect(RETRY_DELAY_MS).toBe(10_000);
   });
 
   it('reads the run once when it is chosen, and shows it', async () => {
@@ -228,6 +243,71 @@ describe('useAutopilotRuns', () => {
     act(() => result.current.refresh());
     await settle();
     expect(result.current.runs?.map((r) => r.state)).toEqual(['COMPLETED']);
+  });
+
+  it('is not loading when there is no project, and is when there is one that has not answered yet', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => jsonResponse(200, { runs: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+    const { result, rerender } = renderHook(({ id }) => useAutopilotRuns(id), { initialProps: { id: null as string | null } });
+    expect(result.current.loading).toBe(false);
+    rerender({ id: 'proj-a' });
+    expect(result.current.loading).toBe(true);
+    await settle();
+    expect(result.current.loading).toBe(false);
+    expect(result.current.runs).toEqual([]);
+  });
+
+  it('keeps the runs it had, and says so, when reading them again fails', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(200, { runs: [run('RUNNING', { name: 'kept' })] }))
+      .mockResolvedValueOnce(jsonResponse(500, errorBody('the list is busy')));
+    vi.stubGlobal('fetch', fetchMock);
+    const { result } = renderHook(() => useAutopilotRuns(PROJECT_ID));
+    await settle();
+    act(() => result.current.refresh());
+    await settle();
+    expect(result.current.runs?.map((r) => r.name)).toEqual(['kept']);
+    expect(result.current.error?.message).toBe('the list is busy');
+    expect(result.current.loading).toBe(false);
+  });
+
+  it('never shows one project’s runs under another, not even for the render before it has read the other’s', async () => {
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => jsonResponse(200, { runs: [run('COMPLETED', { name: url.includes('proj-b') ? 'B run' : 'A run' })] }));
+    vi.stubGlobal('fetch', fetchMock);
+    const rendered: Array<{ id: string | null; names: string[] | null }> = [];
+    const { rerender } = renderHook(
+      ({ id }) => {
+        const list = useAutopilotRuns(id);
+        rendered.push({ id, names: list.runs?.map((r) => r.name) ?? null });
+        return list;
+      },
+      { initialProps: { id: 'proj-a' as string | null } },
+    );
+    await settle();
+    rerender({ id: 'proj-b' });
+    await settle();
+    expect(rendered.filter((r) => r.id === 'proj-b' && r.names?.includes('A run'))).toEqual([]);
+    expect(rendered.at(-1)).toEqual({ id: 'proj-b', names: ['B run'] });
+  });
+
+  it('never shows one run under another, not even for the render before the other has been read', async () => {
+    const OTHER = '33333333-3333-4333-8333-333333333333';
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string) => jsonResponse(200, url.endsWith(OTHER) ? detail('RUNNING', {}, { run: { id: OTHER, name: 'the other run' } }) : detail('RUNNING'))));
+    const rendered: Array<{ id: string; name: string | null }> = [];
+    const { rerender } = renderHook(
+      ({ id }) => {
+        const look = useAutopilotRun(PROJECT_ID, id);
+        rendered.push({ id, name: look.detail?.run.name ?? null });
+        return look;
+      },
+      { initialProps: { id: RUN_ID } },
+    );
+    await settle();
+    rerender({ id: OTHER });
+    await settle();
+    expect(rendered.filter((r) => r.id === OTHER && r.name === 'Autopilot: https://shop.example.test')).toEqual([]);
+    expect(rendered.at(-1)).toEqual({ id: OTHER, name: 'the other run' });
   });
 
   it('reads nothing with no project, and shows nothing of the last project under the next', async () => {

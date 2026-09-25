@@ -35,7 +35,8 @@ interface Held {
   loading: boolean;
 }
 
-const nothing = (key: string): Held => ({ key, detail: null, events: [], error: null, loading: true });
+/** Nothing read yet: loading, unless there is no run chosen (`key` empty), when there is nothing to load. */
+const nothing = (key: string): Held => ({ key, detail: null, events: [], error: null, loading: key !== '' });
 
 export function useAutopilotRun(projectId: string | null, runId: string | null): AutopilotRunLook {
   const key = projectId && runId ? `${projectId}/${runId}` : '';

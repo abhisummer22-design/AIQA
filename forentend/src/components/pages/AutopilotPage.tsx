@@ -164,7 +164,8 @@ export const AutopilotPage: React.FC = () => {
             The latest look at the run failed ({look.error.message}); what is shown is from the one before. It will look again.
           </p>
         )}
-        <RunView projectId={selectedProjectId!} detail={look.detail} events={look.events} onDetail={look.apply} />
+        {/* Its own page for each run: what was ticked for one run is not carried to another. */}
+        <RunView key={look.detail.run.id} projectId={selectedProjectId!} detail={look.detail} events={look.events} onDetail={look.apply} />
       </div>
     );
   };

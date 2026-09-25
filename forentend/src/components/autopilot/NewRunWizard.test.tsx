@@ -103,11 +103,15 @@ describe('NewRunWizard — the form', () => {
     expect(first).toContain('SRS.docx');
     expect(first).toContain('1 requirement');
     expect(first).not.toContain('1 requirements');
+    // The kind of a document is shown when it has one (the FRD), not as an empty tag when it has none.
+    expect(el('wizard-doc-doc-1')!.closest('label')!.querySelectorAll('span.font-mono')).toHaveLength(1);
+    expect(el('wizard-doc-doc-2')!.closest('label')!.querySelectorAll('span.font-mono')).toHaveLength(0);
   });
 
   it('says a project with no requirements has nothing to start from, points to where to upload, and cannot make a run', async () => {
     const { onUploadDocuments } = renderWizard({ documents: [] });
     await waitFor(() => expect(el('wizard-no-documents')).toBeTruthy());
+    expect(el('wizard-documents')!.querySelector('ul')).toBeNull(); // nothing to tick
     await fillAddress();
     expect(button('wizard-create').disabled).toBe(true);
     fireEvent.click(button('wizard-upload'));
