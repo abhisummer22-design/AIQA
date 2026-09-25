@@ -560,11 +560,23 @@ export function providerLabel(key: string, providerName: (id: string) => string)
 /** The words to show for a call that failed: the backend's own message when it gave one. */
 export const errorText = (e: unknown, fallback: string): string => (e instanceof Error && e.message ? e.message : fallback);
 
-/** `2026-09-26T10:15:03.123Z` as `2026-09-26 10:15:03` (UTC: the same everywhere, so a screen and its test agree). */
-export function formatTimestamp(iso: string | null | undefined): string {
+/** `2026-09-26T10:15:03.123Z` as `2026-09-26 15:45:03`: to the second, on the viewer's own clock (as the rest of the app shows a
+ *  time), or on the clock of `timeZone` when one is named (an IANA name, `UTC`). A text that is not a time is shown as it is. */
+export function formatTimestamp(iso: string | null | undefined, timeZone?: string): string {
   if (!iso) return '';
-  const match = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})/.exec(iso);
-  return match ? `${match[1]} ${match[2]}` : iso;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  // Swedish is the one locale that writes `2026-09-26 15:45:03`.
+  return new Intl.DateTimeFormat('sv-SE', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).format(date);
 }
 
 /** Seconds a run took, from its own times when the report does not say. `null`: not started, or not ended. */

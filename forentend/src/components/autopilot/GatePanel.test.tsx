@@ -40,6 +40,114 @@ function renderGate(cases: TestCaseRow[] | (() => TestCaseRow[]) = CASES, extra:
 const tally = () => document.getElementById('gate-tally')!.textContent!;
 const button = (id: string) => document.getElementById(id) as HTMLButtonElement;
 
+const spinning = (id: string) => document.getElementById(id)!.querySelector('.animate-spin') !== null;
+
+describe('GatePanel — what is shown while it waits, and what is not shown when there is nothing to show', () => {
+  it('says it is reading the cases until they arrive, and shows no error while it does', async () => {
+    let release: (r: unknown) => void = () => {};
+    renderGate(CASES, { [CASES_ROUTE]: () => new Promise((resolve) => (release = resolve)) });
+    await waitFor(() => expect(document.getElementById('autopilot-gate')!.textContent).toContain('Reading the cases…'));
+    expect(document.getElementById('gate-load-error')).toBeNull();
+    expect(document.getElementById('gate-cases')).toBeNull();
+    await act(async () => release(CASES));
+    await waitFor(() => expect(document.getElementById('gate-cases')).toBeTruthy());
+    expect(document.getElementById('autopilot-gate')!.textContent).not.toContain('Reading the cases');
+  });
+
+  it('does not say it is reading the cases when it could not', async () => {
+    renderGate(CASES, { [CASES_ROUTE]: () => failure(500, 'INTERNAL_ERROR', 'the cases are gone') });
+    await waitFor(() => expect(document.getElementById('gate-load-error')).toBeTruthy());
+    expect(document.getElementById('autopilot-gate')!.textContent).not.toContain('Reading the cases');
+    expect(document.getElementById('gate-cases')).toBeNull();
+  });
+
+  it('shows no list when the run has no case', async () => {
+    renderGate([]);
+    await waitFor(() => expect(document.getElementById('gate-empty')).toBeTruthy());
+    expect(document.getElementById('gate-cases')).toBeNull();
+  });
+
+  it('shows nothing extra for a case that has no requirement, no technique, no notes, no description and no preconditions', async () => {
+    renderGate([testCase('c9', 'A bare case', 'VALIDATED', { requirement_reference: null, tags: ['ai-generated'], description: '', preconditions: [] })]);
+    await waitFor(() => expect(document.getElementById('gate-case-c9')).toBeTruthy());
+    const row = document.getElementById('gate-case-c9')!;
+    expect(row.querySelectorAll('span.font-mono')).toHaveLength(1); // the status, and neither a requirement nor a technique
+    expect(row.querySelectorAll('p')).toHaveLength(0);
+    fireEvent.click(screen.getByText('A bare case'));
+    expect(row.querySelectorAll('p')).toHaveLength(1); // opened: what the case expects, and no description and no "Before"
+    expect(row.textContent).not.toContain('Before:');
+    expect(row.textContent).toContain('Expected: The user is logged in');
+  });
+
+  it('shows the description and the preconditions of a case that has them, when it is opened', async () => {
+    renderGate([testCase('c9', 'A full case', 'VALIDATED', { description: 'What it is about', preconditions: ['A user exists', 'The shop is open'] })]);
+    await waitFor(() => expect(document.getElementById('gate-case-c9')).toBeTruthy());
+    fireEvent.click(screen.getByText('A full case'));
+    const row = document.getElementById('gate-case-c9')!;
+    expect(row.textContent).toContain('What it is about');
+    expect(row.textContent).toContain('Before: A user exists; The shop is open');
+  });
+
+  it('shows what validation found only on a case that needs fixing', async () => {
+    renderGate([
+      testCase('c1', 'Needs fixing', 'GENERATED', { validation_notes: 'a step has no expected result' }),
+      testCase('c2', 'Already validated', 'VALIDATED', { validation_notes: 'an old note' }),
+      testCase('c3', 'Needs fixing, no note', 'GENERATED', { validation_notes: null }),
+    ]);
+    await waitFor(() => expect(document.getElementById('gate-cases')).toBeTruthy());
+    expect(document.getElementById('gate-case-c1')!.textContent).toContain('a step has no expected result');
+    expect(document.getElementById('gate-case-c2')!.textContent).not.toContain('an old note');
+    expect(document.getElementById('gate-case-c3')!.querySelectorAll('p')).toHaveLength(0);
+  });
+
+  it('lists no refused cases when none was refused, and no undecided count when none is undecided', async () => {
+    renderGate([testCase('c1', 'One', 'VALIDATED'), testCase('c4', 'Two', 'APPROVED')], {
+      'POST /approve-cases': () => ({ suite_id: SUITE_ID, approved: ['c1'], refused: [] }),
+    });
+    await waitFor(() => expect(document.getElementById('gate-cases')).toBeTruthy());
+    expect(document.getElementById('gate-undecided')!.textContent).toContain('1 case is undecided');
+    await act(async () => {
+      button('gate-approve-all').click();
+    });
+    await waitFor(() => expect(document.getElementById('gate-result')).toBeTruthy());
+    expect(document.getElementById('gate-result')!.querySelector('ul')).toBeNull();
+  });
+
+  it('shows no undecided count when every case is decided', async () => {
+    renderGate([testCase('c4', 'Two', 'APPROVED'), testCase('c5', 'Three', 'REJECTED')]);
+    await waitFor(() => expect(document.getElementById('gate-cases')).toBeTruthy());
+    expect(document.getElementById('gate-undecided')).toBeNull();
+  });
+
+  it('shows that it is working on the button that was pressed, and on that one only', async () => {
+    let release: (r: unknown) => void = () => {};
+    renderGate(CASES, { 'POST /approve-cases': () => new Promise((resolve) => (release = resolve)) });
+    await waitFor(() => expect(document.getElementById('gate-cases')).toBeTruthy());
+    expect(spinning('gate-approve-all')).toBe(false);
+    await act(async () => {
+      button('gate-approve-all').click();
+    });
+    expect(spinning('gate-approve-all')).toBe(true);
+    expect(spinning('gate-continue')).toBe(false);
+    await act(async () => release({ suite_id: SUITE_ID, approved: [], refused: [] }));
+    await waitFor(() => expect(spinning('gate-approve-all')).toBe(false));
+  });
+
+  it('shows that it is working on Continue while the run is let go on', async () => {
+    let release: (r: unknown) => void = () => {};
+    renderGate(CASES, { 'POST /continue': () => new Promise((resolve) => (release = resolve)) });
+    await waitFor(() => expect(document.getElementById('gate-cases')).toBeTruthy());
+    expect(spinning('gate-continue')).toBe(false);
+    await act(async () => {
+      button('gate-continue').click();
+    });
+    expect(spinning('gate-continue')).toBe(true);
+    expect(spinning('gate-approve-all')).toBe(false);
+    await act(async () => release(detail('RUNNING')));
+    await waitFor(() => expect(spinning('gate-continue')).toBe(false));
+  });
+});
+
 describe('GatePanel — reading the cases', () => {
   it('asks for the cases of the run’s suite, and only that suite', async () => {
     const { fetchMock } = renderGate();

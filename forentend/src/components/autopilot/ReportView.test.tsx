@@ -168,6 +168,50 @@ describe('ReportView — what it says', () => {
   });
 });
 
+describe('ReportView — a case with little to say, and a report on its way', () => {
+  const bare = { case_id: 'k1', title: 'A bare case', requirement: null, outcome: 'FAILED', reason: null, run_id: null, attempts: [] };
+
+  it('shows nothing extra for a case that names no requirement, gives no reason and was run once', async () => {
+    await showReport(report({ findings: [{ ...bare, attempts: [{ run_id: 'a', outcome: 'FAILED', reason: null }] }] }));
+    const item = document.querySelector('#report-findings li')!;
+    expect(item.querySelectorAll('span.font-mono')).toHaveLength(1); // the outcome, and no requirement
+    expect(item.querySelectorAll('p')).toHaveLength(0);
+    expect(item.querySelectorAll('ul')).toHaveLength(0); // one attempt is the case itself
+  });
+
+  it('shows the attempts of a case that was run twice, each with its outcome and, when it has one, its reason', async () => {
+    await showReport(
+      report({
+        findings: [
+          {
+            ...bare,
+            attempts: [
+              { run_id: 'a', outcome: 'INFRA_ERROR', reason: null },
+              { run_id: 'b', outcome: 'FAILED', reason: null },
+            ],
+          },
+        ],
+      }),
+    );
+    expect(Array.from(document.querySelectorAll('#report-findings li li')).map((li) => li.textContent)).toEqual(['Infrastructure error', 'Failed']);
+  });
+
+  it('dims the report while a newer one is awaited', async () => {
+    let release: (r: unknown) => void = () => {};
+    let answers = 0;
+    backend({ [REPORT_ROUTE]: () => (answers++ === 0 ? report() : new Promise((resolve) => (release = resolve))) });
+    const { rerender } = render(<ReportView projectId={PROJECT_ID} runId={RUN_ID} autoLoad version="v1" />);
+    await waitFor(() => expect(document.getElementById('report-headline')).toBeTruthy());
+    const section = () => document.getElementById('autopilot-report')!;
+    expect(section().getAttribute('aria-busy')).toBe('false');
+    rerender(<ReportView projectId={PROJECT_ID} runId={RUN_ID} autoLoad version="v2" />);
+    await waitFor(() => expect(section().getAttribute('aria-busy')).toBe('true'));
+    expect(document.getElementById('report-headline')).toBeTruthy(); // the last one stays until the next is there
+    await act(async () => release(report()));
+    await waitFor(() => expect(section().getAttribute('aria-busy')).toBe('false'));
+  });
+});
+
 describe('ReportView — the requirements table', () => {
   it('lists the requirements worst first, whatever order the backend sent them in', async () => {
     await showReport();

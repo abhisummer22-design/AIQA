@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setApiKey } from '../../services/aiqaApi';
 import { RunView } from './RunView';
 import { PROJECT_ID, RUN_ID, SUITE_ID, detail, estimate, event, report, testCase } from './autopilotTestData';
+import { formatTimestamp } from './autopilotModel';
 import { backend, failure, requests } from './autopilotTestBackend';
 import type { AutopilotEvent, AutopilotRunDetail } from '../../types/contract';
 
@@ -39,8 +40,8 @@ describe('RunView — the header', () => {
     expect(text('run-header')).toContain('Autopilot: https://shop.example.test');
     expect(text('run-state')).toBe('Running');
     expect(text('run-header')).toContain('made by Abhishek');
-    expect(text('run-header')).toContain('2026-09-26 09:58:00');
-    expect(text('run-header')).toContain('started 2026-09-26 09:59:30');
+    expect(text('run-header')).toContain(formatTimestamp('2026-09-26T09:58:00Z'));
+    expect(text('run-header')).toContain(`started ${formatTimestamp('2026-09-26T09:59:30Z')}`);
   });
 
   it('shows that the service is working on the run only while it is', () => {
@@ -53,10 +54,10 @@ describe('RunView — the header', () => {
 
   it('says when the estimate was accepted, and that the cost was too when it was', () => {
     const { view } = renderRun(detail('RUNNING', {}, { run: { approved_paid: false } }));
-    expect(text('run-accepted')).toBe('The estimate was accepted 2026-09-26 09:59:00.');
+    expect(text('run-accepted')).toBe(`The estimate was accepted ${formatTimestamp('2026-09-26T09:59:00Z')}.`);
     view.unmount();
     renderRun(detail('RUNNING', {}, { run: { approved_paid: true } }));
-    expect(text('run-accepted')).toBe('The estimate was accepted 2026-09-26 09:59:00, including its cost.');
+    expect(text('run-accepted')).toBe(`The estimate was accepted ${formatTimestamp('2026-09-26T09:59:00Z')}, including its cost.`);
   });
 
   it('says how long an ended run took', () => {
@@ -242,7 +243,7 @@ describe('RunView — a run that failed', () => {
 describe('RunView — a run that was cancelled or completed', () => {
   it('says a cancelled run was cancelled, that its cases are still in the project, and offers nothing to do', () => {
     renderRun(detail('CANCELLED'));
-    expect(text('run-cancelled')).toContain('was cancelled at 2026-09-26 10:05:30');
+    expect(text('run-cancelled')).toContain(`was cancelled at ${formatTimestamp('2026-09-26T10:05:30Z')}`);
     expect(text('run-cancelled')).toContain('still in the project');
     expect(el('run-start')).toBeNull();
     expect(el('run-cancel')).toBeNull();
@@ -311,8 +312,9 @@ describe('RunView — the timeline', () => {
 
   it('shows each event with its time (UTC) and, when a step said it, the step', () => {
     renderRun(detail('RUNNING'), {}, [event(1, 'The run was made'), event(5, 'Read 6 requirements', { step: 'REQUIREMENTS', kind: 'step.done' })]);
-    expect(text('event-1')).toBe('10:00:01The run was made');
-    expect(text('event-5')).toBe('10:00:05Requirements: Read 6 requirements');
+    // The time of the day on the viewer's clock, then the words.
+    expect(text('event-1')).toBe(`${formatTimestamp('2026-09-26T10:00:01Z').slice(11)}The run was made`);
+    expect(text('event-5')).toBe(`${formatTimestamp('2026-09-26T10:00:05Z').slice(11)}Requirements: Read 6 requirements`);
   });
 
   it('shows a custom provider by the name it was given (Settings) where a line of the timeline names its id', async () => {

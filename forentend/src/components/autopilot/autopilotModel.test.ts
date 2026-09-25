@@ -649,10 +649,24 @@ describe('small things', () => {
     expect(errorText(null, 'fallback')).toBe('fallback');
   });
 
-  it('shows a time as UTC date and clock, without the fraction or the zone', () => {
-    expect(formatTimestamp('2026-09-26T10:15:03Z')).toBe('2026-09-26 10:15:03');
-    expect(formatTimestamp('2026-09-26T10:15:03.123456+00:00')).toBe('2026-09-26 10:15:03');
-    expect(formatTimestamp('2026-09-26 10:15:03')).toBe('2026-09-26 10:15:03');
+  it('shows a time as a date and a clock to the second, without the fraction or the zone', () => {
+    expect(formatTimestamp('2026-09-26T10:15:03Z', 'UTC')).toBe('2026-09-26 10:15:03');
+    expect(formatTimestamp('2026-09-26T10:15:03.123456+00:00', 'UTC')).toBe('2026-09-26 10:15:03');
+    expect(formatTimestamp('2026-09-26T15:45:03+05:30', 'UTC')).toBe('2026-09-26 10:15:03');
+  });
+
+  it('shows it on the clock of the zone asked for, the day changing with it and midnight as 00', () => {
+    expect(formatTimestamp('2026-09-26T10:15:03Z', 'Asia/Kolkata')).toBe('2026-09-26 15:45:03');
+    expect(formatTimestamp('2026-09-26T10:15:03Z', 'America/Los_Angeles')).toBe('2026-09-26 03:15:03');
+    expect(formatTimestamp('2026-09-26T20:00:00Z', 'Asia/Kolkata')).toBe('2026-09-27 01:30:00');
+    expect(formatTimestamp('2026-09-26T18:30:00Z', 'Asia/Kolkata')).toBe('2026-09-27 00:00:00');
+  });
+
+  it('shows it on the viewer’s own clock when no zone is named', () => {
+    const at = new Date('2026-09-26T10:15:03Z');
+    const two = (n: number) => String(n).padStart(2, '0');
+    const local = `${at.getFullYear()}-${two(at.getMonth() + 1)}-${two(at.getDate())} ${two(at.getHours())}:${two(at.getMinutes())}:${two(at.getSeconds())}`;
+    expect(formatTimestamp('2026-09-26T10:15:03Z')).toBe(local);
   });
 
   it('shows nothing for no time, and a time it cannot read as it is', () => {
