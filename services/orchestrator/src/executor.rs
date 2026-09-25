@@ -639,9 +639,92 @@ macro_rules! param_or_return {
 
 // --- real adapters ---------------------------------------------------------
 
+// --- run-time secrets ------------------------------------------------------
+
+/// The variables a task says its spec reads (`params.secrets`: `AIQA_LOGIN_*` / `AIQA_SECRET_*` names — names only,
+/// never values). The spec reads them itself (`helpers/secrets.ts`); this is what lets the executor refuse to start
+/// a run whose secrets are not set, and scrub their values from what the run prints.
+fn secret_names_param(task: &TaskDef) -> Result<Vec<String>, ExecutionOutcome> {
+    let Some(raw) = task.params.get("secrets") else {
+        return Ok(Vec::new());
+    };
+    let rejected = |why: &str| ExecutionOutcome {
+        status: TaskStatus::InfraError,
+        reason: Some(format!("rejected executor parameter secrets: {why}")),
+        evidence: None,
+    };
+    let array = raw
+        .as_array()
+        .ok_or_else(|| rejected("expected an array of variable names"))?;
+    let mut names = Vec::with_capacity(array.len());
+    for item in array {
+        let name = item
+            .as_str()
+            .filter(|n| crate::execution_plan::is_valid_secret_name(n))
+            .ok_or_else(|| {
+                rejected("every entry must be a variable name starting AIQA_LOGIN_ or AIQA_SECRET_")
+            })?;
+        names.push(name.to_string());
+    }
+    Ok(names)
+}
+
+/// The values of `names` from the orchestrator's environment, or the `INFRA_ERROR` outcome that names the ones that
+/// are not set (names only).
+fn read_secrets(names: &[String]) -> Result<Vec<String>, ExecutionOutcome> {
+    let missing = crate::execution_plan::missing_secrets(names);
+    if !missing.is_empty() {
+        return Err(ExecutionOutcome {
+            status: TaskStatus::InfraError,
+            reason: Some(crate::execution_plan::missing_secrets_message(&missing)),
+            evidence: None,
+        });
+    }
+    Ok(names
+        .iter()
+        .filter_map(|name| crate::ai_router::env_value(name))
+        .collect())
+}
+
+/// The shortest secret that is scrubbed: a shorter one would also match ordinary words in the output.
+const MIN_REDACTED_SECRET_LEN: usize = 4;
+
+/// `text` with every secret value replaced by `***`. What a run prints — an error's code frame, a failed assertion —
+/// can quote what was typed; the value must reach neither the stored evidence nor a run's reason.
+pub fn redact_secrets(text: &str, values: &[String]) -> String {
+    let mut forms: Vec<String> = Vec::new();
+    for value in values.iter().filter(|v| v.len() >= MIN_REDACTED_SECRET_LEN) {
+        forms.push(value.clone());
+        // The way a JSON string or a source line would spell it.
+        if let Ok(quoted) = serde_json::to_string(value) {
+            let escaped = quoted[1..quoted.len() - 1].to_string();
+            if escaped != *value {
+                forms.push(escaped);
+            }
+        }
+    }
+    // Longest first, so a secret that contains another is not left half-scrubbed.
+    forms.sort_by_key(|form| std::cmp::Reverse(form.len()));
+    forms.iter().fold(text.to_string(), |out, form| {
+        out.replace(form.as_str(), "***")
+    })
+}
+
+fn redact_outcome(mut outcome: ExecutionOutcome, values: &[String]) -> ExecutionOutcome {
+    if values.is_empty() {
+        return outcome;
+    }
+    outcome.reason = outcome.reason.map(|r| redact_secrets(&r, values));
+    outcome.evidence = outcome.evidence.map(|e| redact_secrets(&e, values));
+    outcome
+}
+
 /// Web executor (SRD §17: "Playwright handles web"). `params.spec` selects
 /// the spec file, `params.grep` selects one test title within it (both
 /// relative to `project_dir`, which points at executors/playwright).
+/// `params.secrets` (optional) names the environment variables the spec reads
+/// at run time (`env:NAME` values): the run is refused if one is not set, and
+/// their values are scrubbed from the evidence.
 pub struct PlaywrightExecutor {
     pub project_dir: PathBuf,
 }
@@ -651,16 +734,24 @@ impl Executor for PlaywrightExecutor {
     async fn execute(&self, task: &TaskDef) -> ExecutionOutcome {
         let spec = param_or_return!(safe_param(task, "spec", "tests/sample.spec.ts"));
         let grep = param_or_return!(safe_param(task, "grep", ""));
+        let secret_names = param_or_return!(secret_names_param(task));
+        let secret_values = param_or_return!(read_secrets(&secret_names));
         let mut args = vec!["playwright", "test", spec.as_str(), "--reporter=line"];
         if !grep.is_empty() {
             args.push("--grep");
             args.push(grep.as_str());
         }
         match run_contained(shell_command("npx", &args, &self.project_dir), "playwright").await {
-            Ok(output) => outcome_from_output(output, "playwright"),
+            Ok(output) => finish_playwright(output, &secret_values),
             Err(e) => spawn_error_outcome("playwright", e),
         }
     }
+}
+
+/// What a finished Playwright run reports: its outcome, with every secret value scrubbed from the reason and from
+/// the evidence that is stored.
+fn finish_playwright(output: std::process::Output, secret_values: &[String]) -> ExecutionOutcome {
+    redact_outcome(outcome_from_output(output, "playwright"), secret_values)
 }
 
 /// API executor, Postman collections (SRD §16: "Newman is the primary
@@ -1307,6 +1398,7 @@ pub fn materialize_playwright_spec(
     }
 
     let mut body = String::new();
+    let mut uses_secret = false;
     for (index, action) in plan.actions.iter().enumerate() {
         match action {
             Action::Navigate { url } => {
@@ -1316,11 +1408,21 @@ pub fn materialize_playwright_spec(
                 "  await (await healingLocator(page, {}, {index}, \"CLICK\")).click();\n",
                 js_str(selector)
             )),
-            Action::Fill { selector, value } => body.push_str(&format!(
-                "  await (await healingLocator(page, {}, {index}, \"FILL\")).fill({});\n",
-                js_str(selector),
-                js_str(value)
-            )),
+            Action::Fill { selector, value } => {
+                // A value written `env:NAME` is read from the environment when the test runs: the spec holds the
+                // name, never the text.
+                let text = match crate::execution_plan::secret_name(value) {
+                    Some(name) => {
+                        uses_secret = true;
+                        format!("secret({})", js_str(name))
+                    }
+                    None => js_str(value),
+                };
+                body.push_str(&format!(
+                    "  await (await healingLocator(page, {}, {index}, \"FILL\")).fill({text});\n",
+                    js_str(selector),
+                ));
+            }
             Action::AssertVisible { selector } => body.push_str(&format!(
                 "  await expect(await healingLocator(page, {}, {index}, \"ASSERT_VISIBLE\")).toBeVisible();\n",
                 js_str(selector)
@@ -1368,12 +1470,19 @@ pub fn materialize_playwright_spec(
     } else {
         ""
     };
+    let secret_import = if uses_secret {
+        "import { secret } from \"../../helpers/secrets\";\n"
+    } else {
+        ""
+    };
     let source = format!(
         "// Generated by execution_plan::materialize_playwright_spec from a real, compiled\n\
          // test case's ExecutionPlan — every value above was embedded via a safe JSON string\n\
-         // escape, never raw-interpolated. Not hand-edited; safe to delete/regenerate.\n\
+         // escape, never raw-interpolated. Values written env:NAME are read from the environment\n\
+         // when the test runs (helpers/secrets.ts); this file holds only the name.\n\
+         // Not hand-edited; safe to delete/regenerate.\n\
          import {{ test, expect }} from \"@playwright/test\";\n\
-         {healing_import}\n\
+         {healing_import}{secret_import}\n\
          test(\"compiled plan for test case {safe_id}\", async ({{ page }}) => {{\n{body}}});\n"
     );
     std::fs::write(&full_path, source)
@@ -1587,6 +1696,219 @@ AIQA_HEALING_EVENT {"event":"heal","actionIndex":1,"actionKind":"CLICK","primary
         // proof this is a safe escape, not raw string concatenation.
         assert!(source.contains("input[data-x=\\\"a\\\\b\\\"]"));
         assert!(source.contains("quote\\\" and backslash\\\\ here"));
+    }
+
+    // ------------------------------------------------------ run-time secrets
+
+    fn spec_source(rel_path: &str) -> String {
+        std::fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../executors/playwright")
+                .join(rel_path),
+        )
+        .expect("read generated spec")
+    }
+
+    fn playwright_task(params: serde_json::Value) -> TaskDef {
+        TaskDef {
+            id: "t".to_string(),
+            name: "n".to_string(),
+            prerequisites: Vec::new(),
+            simulate: None,
+            executor: Some("playwright".to_string()),
+            params,
+        }
+    }
+
+    #[test]
+    fn a_secret_fill_is_read_at_run_time_and_the_spec_never_holds_its_value() {
+        std::env::set_var("AIQA_LOGIN_T5A_SPEC_PW", "pa55-w0rd-value");
+        let plan = browser_plan(
+            "secrets",
+            vec![
+                Action::Navigate {
+                    url: "https://example.com/login".to_string(),
+                },
+                Action::Fill {
+                    selector: "#username".to_string(),
+                    value: "admin".to_string(),
+                },
+                Action::Fill {
+                    selector: "#password".to_string(),
+                    value: "env:AIQA_LOGIN_T5A_SPEC_PW".to_string(),
+                },
+            ],
+        );
+        let rel_path = materialize_playwright_spec("test-5a-secrets", &plan).expect("materialize");
+        let source = spec_source(&rel_path);
+        assert!(
+            source.contains("import { secret } from \"../../helpers/secrets\";"),
+            "{source}"
+        );
+        assert!(
+            source.contains(".fill(secret(\"AIQA_LOGIN_T5A_SPEC_PW\"));"),
+            "{source}"
+        );
+        assert!(!source.contains("pa55-w0rd-value"), "{source}");
+        assert!(
+            !source.contains("env:AIQA_LOGIN_T5A_SPEC_PW"),
+            "the reference is not left in the spec as text either: {source}"
+        );
+        // An ordinary value is still typed as written.
+        assert!(source.contains(".fill(\"admin\");"), "{source}");
+    }
+
+    #[test]
+    fn a_plan_with_no_secret_never_imports_the_secret_helper() {
+        let plan = browser_plan(
+            "nosecret",
+            vec![Action::Fill {
+                selector: "#q".to_string(),
+                value: "text".to_string(),
+            }],
+        );
+        let rel_path = materialize_playwright_spec("test-5a-nosecret", &plan).expect("materialize");
+        let source = spec_source(&rel_path);
+        assert!(!source.contains("import { secret }"), "{source}");
+        assert!(!source.contains("secret("), "{source}");
+    }
+
+    #[test]
+    fn redaction_scrubs_every_spelling_of_a_secret_and_leaves_short_values_alone() {
+        let values = vec![
+            "pa55-w0rd".to_string(),
+            "q\"uote\\d".to_string(),
+            "abc".to_string(),
+        ];
+        let text = "typed pa55-w0rd; as JSON \"q\\\"uote\\\\d\" and raw q\"uote\\d; abc stays";
+        let out = redact_secrets(text, &values);
+        assert!(!out.contains("pa55-w0rd"), "{out}");
+        assert!(!out.contains("q\\\"uote\\\\d"), "{out}");
+        assert!(!out.contains("q\"uote\\d"), "{out}");
+        assert!(
+            out.contains("abc stays"),
+            "a value under {MIN_REDACTED_SECRET_LEN} characters is not scrubbed: {out}"
+        );
+        assert_eq!(redact_secrets("nothing here", &values), "nothing here");
+        assert_eq!(redact_secrets("anything", &[]), "anything");
+    }
+
+    #[test]
+    fn a_secret_that_contains_another_is_scrubbed_whole() {
+        let out = redact_secrets(
+            "value: super-secret-pass",
+            &["secret".to_string(), "super-secret-pass".to_string()],
+        );
+        assert_eq!(out, "value: ***");
+    }
+
+    #[test]
+    fn redact_outcome_scrubs_both_the_reason_and_the_evidence() {
+        let outcome = ExecutionOutcome {
+            status: TaskStatus::Failed,
+            reason: Some("failed typing s3cr3t-v4lue".to_string()),
+            evidence: Some("log: s3cr3t-v4lue\nmore".to_string()),
+        };
+        let out = redact_outcome(outcome, &["s3cr3t-v4lue".to_string()]);
+        assert_eq!(out.reason.as_deref(), Some("failed typing ***"));
+        assert_eq!(out.evidence.as_deref(), Some("log: ***\nmore"));
+        assert!(matches!(out.status, TaskStatus::Failed));
+    }
+
+    /// A real `Output` (the exit status comes from a real, trivial process) carrying the given stdout.
+    fn finished_process_output(stdout: &str, exit_code: i32) -> std::process::Output {
+        #[cfg(windows)]
+        let mut output = std::process::Command::new("cmd")
+            .args(["/C", &format!("exit {exit_code}")])
+            .output()
+            .expect("run a trivial process");
+        #[cfg(not(windows))]
+        let mut output = std::process::Command::new("sh")
+            .args(["-c", &format!("exit {exit_code}")])
+            .output()
+            .expect("run a trivial process");
+        output.stdout = stdout.as_bytes().to_vec();
+        output.stderr = Vec::new();
+        output
+    }
+
+    #[test]
+    fn a_finished_run_has_its_secrets_scrubbed_from_the_reason_and_the_stored_evidence() {
+        let output = finished_process_output(
+            "Error: locator.fill: expected s3cr3t-value\n  at login.spec.ts:7\n",
+            1,
+        );
+        let outcome = finish_playwright(output, &["s3cr3t-value".to_string()]);
+        assert!(matches!(outcome.status, TaskStatus::Failed));
+        let reason = outcome.reason.expect("a failed run has a reason");
+        let evidence = outcome.evidence.expect("the output is the evidence");
+        assert!(!reason.contains("s3cr3t-value"), "{reason}");
+        assert!(!evidence.contains("s3cr3t-value"), "{evidence}");
+        assert!(evidence.contains("expected ***"), "{evidence}");
+        // A passing run is scrubbed too.
+        let passed = finish_playwright(
+            finished_process_output("typed s3cr3t-value\n", 0),
+            &["s3cr3t-value".to_string()],
+        );
+        assert!(matches!(passed.status, TaskStatus::Passed));
+        assert_eq!(passed.evidence.as_deref(), Some("typed ***\n"));
+    }
+
+    #[test]
+    fn secret_names_come_from_the_task_params_and_must_be_reserved_names() {
+        assert!(secret_names_param(&playwright_task(serde_json::json!({})))
+            .unwrap()
+            .is_empty());
+        let ok = secret_names_param(&playwright_task(
+            serde_json::json!({"secrets": ["AIQA_LOGIN_A_USER", "AIQA_SECRET_B"]}),
+        ))
+        .unwrap();
+        assert_eq!(
+            ok,
+            vec!["AIQA_LOGIN_A_USER".to_string(), "AIQA_SECRET_B".to_string()]
+        );
+        for bad in [
+            serde_json::json!("AIQA_LOGIN_A"),
+            serde_json::json!(["GROQ_API_KEY"]),
+            serde_json::json!([1]),
+            serde_json::json!(["AIQA_LOGIN_A; calc"]),
+        ] {
+            let err = secret_names_param(&playwright_task(serde_json::json!({ "secrets": bad })))
+                .expect_err("rejected");
+            assert!(matches!(err.status, TaskStatus::InfraError));
+        }
+    }
+
+    #[test]
+    fn read_secrets_returns_the_trimmed_values_of_set_variables() {
+        std::env::set_var("AIQA_LOGIN_T5A_READ", "  read-me-123  ");
+        assert_eq!(
+            read_secrets(&["AIQA_LOGIN_T5A_READ".to_string()]).unwrap(),
+            vec!["read-me-123".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_run_whose_secret_is_not_set_is_refused_before_anything_is_launched() {
+        std::env::remove_var("AIQA_LOGIN_T5A_NEVER_SET");
+        // A directory that does not exist: if the executor got as far as launching, the outcome would say it
+        // failed to launch — not that a secret is missing.
+        let executor = PlaywrightExecutor {
+            project_dir: PathBuf::from("this-directory-does-not-exist"),
+        };
+        let outcome = executor
+            .execute(&playwright_task(serde_json::json!({
+                "spec": "tests/generated/x.spec.ts",
+                "secrets": ["AIQA_LOGIN_T5A_NEVER_SET"],
+            })))
+            .await;
+        assert!(matches!(outcome.status, TaskStatus::InfraError));
+        let reason = outcome.reason.expect("a reason");
+        assert!(
+            reason.contains("AIQA_LOGIN_T5A_NEVER_SET is not set"),
+            "{reason}"
+        );
+        assert!(outcome.evidence.is_none(), "nothing was launched");
     }
 
     // ------------------------------------------- Phase 4: API Testing page

@@ -512,6 +512,15 @@ COVERAGE_TOP_UP_ROUNDS=
 # inline as `schema_content` instead.
 AIQA_SCHEMA_ROOT=
 
+# Login secrets for the crawler and for compiled browser tests (optional)
+# A login step's FILL value written env:NAME (for example env:AIQA_LOGIN_ADMIN_PASSWORD)
+# is read from this environment when the crawl or the test runs. The plan, the
+# generated spec, the stored run and the evidence hold only the name, and a run
+# whose variable is not set is refused before it starts. NAME must start with
+# AIQA_LOGIN_ or AIQA_SECRET_ — no other variable can be referenced.
+AIQA_LOGIN_ADMIN_USERNAME=
+AIQA_LOGIN_ADMIN_PASSWORD=
+
 # Performance Testing Safeguards
 PERF_TEST_MAX_CONCURRENCY=50
 PERF_TEST_MAX_DURATION_SECS=300

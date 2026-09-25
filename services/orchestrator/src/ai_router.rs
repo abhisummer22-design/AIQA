@@ -2115,7 +2115,7 @@ pub fn env_key_name(api_key: &str) -> Option<&str> {
 }
 
 /// What the environment variable `name` currently holds, if it holds something other than blanks.
-fn env_value(name: &str) -> Option<String> {
+pub(crate) fn env_value(name: &str) -> Option<String> {
     std::env::var(name)
         .ok()
         .map(|v| v.trim().to_string())

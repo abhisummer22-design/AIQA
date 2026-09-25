@@ -2204,6 +2204,16 @@ async fn handoff_test_case_scoped(
         // mixed with compiled output.
         match crate::execution_plan::compile(&state.ai_infra, &row).await {
             crate::execution_plan::CompilationOutcome::Ready(plan) => {
+                // A plan that logs in reads its credentials from the orchestrator's environment when it runs:
+                // refuse now, naming the variables, rather than create a run that can only fail.
+                let missing = crate::execution_plan::missing_secrets(
+                    &crate::execution_plan::secret_names_of(&plan.actions),
+                );
+                if !missing.is_empty() {
+                    return Err(ApiError::validation(
+                        crate::execution_plan::missing_secrets_message(&missing),
+                    ));
+                }
                 crate::execution_plan::materialize_task_def(
                     task_id.clone(),
                     row.title.clone(),
@@ -6313,19 +6323,35 @@ async fn start_crawl_scoped(
         .await
         .map_err(|reasons| ApiError::validation(reasons.join("; ")))?;
 
+    // Login values written `env:NAME` are read from the orchestrator's environment when the crawl runs: refuse
+    // now, naming the variables, rather than start a crawl whose login can only fail.
+    let secrets = crate::crawler::crawl_secret_names(&plan);
+    let missing = crate::execution_plan::missing_secrets(&secrets);
+    if !missing.is_empty() {
+        return Err(ApiError::validation(
+            crate::execution_plan::missing_secrets_message(&missing),
+        ));
+    }
+
     // The task's own id doubles as the real key `crawler::read_crawl_result`
     // looks the eventual result up by — no separate id needed.
     let task_id = Uuid::new_v4().to_string();
     let spec_path =
         crate::crawler::materialize_crawl_spec(&task_id, &plan).map_err(ApiError::validation)?;
 
+    // The names of those variables (never their values) go with the task, so the executor can scrub the values
+    // from the crawl's evidence.
+    let mut params = serde_json::json!({ "spec": spec_path });
+    if !secrets.is_empty() {
+        params["secrets"] = serde_json::json!(secrets);
+    }
     let task = TaskDef {
         id: task_id,
         name: format!("Crawl: {}", plan.base_url),
         prerequisites: Vec::new(),
         simulate: None,
         executor: Some("playwright".to_string()),
-        params: serde_json::json!({ "spec": spec_path }),
+        params,
     };
     let run_plan = RunPlan {
         name: format!("Crawl: {}", plan.base_url),

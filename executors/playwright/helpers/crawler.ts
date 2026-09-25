@@ -1,6 +1,7 @@
 import { Browser } from "@playwright/test";
 import * as fs from "fs";
 import * as path from "path";
+import { resolveValue, scrub } from "./secrets";
 
 /**
  * Real crawler + per-role visibility matrix (Phase 6). Mirrors
@@ -16,6 +17,8 @@ export interface CrawlAction {
   type: "NAVIGATE" | "FILL" | "CLICK";
   url?: string;
   selector?: string;
+  /** For FILL: the text to type, or `env:NAME` to read it from the environment variable `NAME` (an
+   * `AIQA_LOGIN_*` / `AIQA_SECRET_*` name) when the crawl runs — see `helpers/secrets.ts`. */
   value?: string;
 }
 
@@ -85,18 +88,25 @@ function sameOrigin(a: string, b: string): boolean {
   }
 }
 
+/** `secretsUsed` collects the values that came from `env:NAME` references, so an error's message can be scrubbed of
+ * them before it is written to the result. */
 async function runLoginActions(
   page: import("@playwright/test").Page,
-  actions: CrawlAction[]
+  actions: CrawlAction[],
+  secretsUsed: string[]
 ): Promise<void> {
   for (const action of actions) {
     switch (action.type) {
       case "NAVIGATE":
         await page.goto(action.url!, { timeout: NAV_TIMEOUT_MS });
         break;
-      case "FILL":
-        await page.locator(action.selector!).fill(action.value!, { timeout: NAV_TIMEOUT_MS });
+      case "FILL": {
+        // A value written `env:NAME` is read from the environment now, never stored in the plan or the spec.
+        const value = resolveValue(action.value!);
+        if (value !== action.value) secretsUsed.push(value);
+        await page.locator(action.selector!).fill(value, { timeout: NAV_TIMEOUT_MS });
         break;
+      }
       case "CLICK":
         await page.locator(action.selector!).click({ timeout: NAV_TIMEOUT_MS });
         break;
@@ -148,11 +158,12 @@ async function crawlAsRole(
 
   let loginSucceeded = true;
   let loginError: string | undefined;
+  const secretsUsed: string[] = [];
   try {
-    await runLoginActions(page, role.loginActions);
+    await runLoginActions(page, role.loginActions, secretsUsed);
   } catch (e) {
     loginSucceeded = false;
-    loginError = String(e);
+    loginError = scrub(String(e), secretsUsed);
   }
 
   const visited = new Set<string>();
