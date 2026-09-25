@@ -11008,3 +11008,184 @@ async fn planning_confine_hands_the_tool_the_canonical_file_it_checked() {
         "the plan must come from the file inside the root: {plan:?}"
     );
 }
+
+// ============================= Phase 4 — the coverage engine on top of requirement generation
+
+const BASKET_FRD: &str = "## 1 Basket\n\nThe system shall let a user add an item to the basket.\n\nThe system shall let a user remove an item from the basket.\n";
+
+/// A model answer: `(requirement id, technique, title)` per case.
+fn coverage_answer(cases: &[(&str, &str, &str)]) -> String {
+    serde_json::json!({
+        "test_cases": cases.iter().map(|(id, technique, title)| serde_json::json!({
+            "title": title, "category": "Functional", "skill_id": "s", "requirement_id": id, "technique": technique,
+            "preconditions": [], "steps": [{"action": "Do it", "expected_result": "It works"}],
+            "expected_result": "It works", "priority": "HIGH", "severity": "MAJOR",
+            "evidence": "inferred", "source_reference": null,
+        })).collect::<Vec<_>>()
+    })
+    .to_string()
+}
+
+async fn basket_project(state: &AppState, name: &str) -> (Uuid, String, String) {
+    let project = make_project(state, name).await;
+    let owner = mint_key(state, "operator", Some(&project.to_string())).await;
+    let (_, uploaded) = upload_document(state, &owner, project, "FRD.md", BASKET_FRD.as_bytes(), Some("FRD")).await;
+    let doc_id = uploaded["requirements_document"]["document_id"].as_str().unwrap().to_string();
+    (project, owner, doc_id)
+}
+
+#[tokio::test]
+async fn naming_a_depth_adds_the_coverage_matrix_and_a_request_without_one_has_none() {
+    let _env = REQUIREMENT_ENV.lock().await;
+    let functional = coverage_answer(&[("FRD-1-01", "positive", "Add an item"), ("FRD-1-02", "positive", "Remove an item")]);
+    let negative = coverage_answer(&[("FRD-1-01", "negative", "Add nothing"), ("FRD-1-02", "negative", "Remove what is not there")]);
+    let executor = Arc::new(RecordingExecutor::ok_sequence(vec![&functional, &negative, &functional, &negative]));
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
+    let (project, owner, doc_id) = basket_project(&state, "Coverage - Matrix").await;
+    let skills = ["Functional Testing", "Negative Testing"];
+
+    let mut with_depth = generate_ai_body(&[&doc_id], &skills);
+    with_depth["depth"] = serde_json::json!("Standard");
+    let (status, body) = post_generate(&state, &owner, project, with_depth).await;
+    let (_, without) = post_generate(&state, &owner, project, generate_ai_body(&[&doc_id], &skills)).await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let matrix = &body["requirements"]["matrix"];
+    assert_eq!(matrix["depth"], "STANDARD", "body={body}");
+    let technique = |name: &str| matrix["techniques"].as_array().unwrap().iter().find(|t| t["technique"] == name).cloned();
+    assert_eq!((technique("positive").unwrap()["met"].as_u64(), technique("negative").unwrap()["met"].as_u64()), (Some(2), Some(2)));
+    let edge = technique("edge").unwrap();
+    assert_eq!((edge["applicable"].as_u64(), edge["short"].as_u64()), (Some(2), Some(2)));
+    assert!(edge["provided_by"].is_null(), "no selected skill provides edge cases: {edge}");
+    assert_eq!(matrix["gap_total"], 0, "a gap nobody could fill is not listed: {matrix}");
+    assert!(matrix.get("top_up").is_none(), "no top-up was asked for: {matrix}");
+    // Each case says which technique it counts for.
+    let techniques: Vec<&str> = body["test_cases"].as_array().unwrap().iter().filter_map(|c| c["technique"].as_str()).collect();
+    assert!(techniques.contains(&"positive") && techniques.contains(&"negative"), "body={body}");
+    assert!(without["requirements"].get("matrix").is_none(), "no depth, no matrix: {without}");
+}
+
+#[tokio::test]
+async fn an_unknown_depth_or_a_top_up_with_no_depth_is_refused_before_any_call() {
+    let _env = REQUIREMENT_ENV.lock().await;
+    let executor = Arc::new(RecordingExecutor::ok_sequence(vec![]));
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
+    let (project, owner, doc_id) = basket_project(&state, "Coverage - Refused").await;
+
+    let mut deep = generate_ai_body(&[&doc_id], &["Functional Testing"]);
+    deep["depth"] = serde_json::json!("deep");
+    let mut no_depth = generate_ai_body(&[&doc_id], &["Functional Testing"]);
+    no_depth["coverage_top_up"] = serde_json::json!(true);
+
+    let (deep_status, deep_body) = post_generate(&state, &owner, project, deep).await;
+    let (top_up_status, top_up_body) = post_generate(&state, &owner, project, no_depth).await;
+
+    assert_eq!(deep_status, StatusCode::BAD_REQUEST, "body={deep_body}");
+    assert!(deep_body["error"]["message"].as_str().unwrap().contains("depth must be SMOKE, STANDARD, EXHAUSTIVE or CHAOS_EXPLORATORY"), "{deep_body}");
+    assert_eq!(top_up_status, StatusCode::BAD_REQUEST, "body={top_up_body}");
+    assert!(top_up_body["error"]["message"].as_str().unwrap().contains("coverage_top_up needs a depth"), "{top_up_body}");
+    assert!(executor.prompts.lock().unwrap().is_empty(), "no model may be called");
+}
+
+#[tokio::test]
+async fn a_depth_on_a_request_that_names_no_documents_changes_nothing() {
+    let _env = REQUIREMENT_ENV.lock().await;
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    let project = make_project(&state, "Coverage - Old Path").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, body) = post_generate(
+        &state,
+        &owner,
+        project,
+        serde_json::json!({"requirement_text": "Password must be at least 8 characters.", "skills": [], "depth": "STANDARD", "coverage_top_up": true}),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert!(body.get("requirements").is_none(), "{body}");
+    assert!(body["test_cases"][0].get("technique").is_none(), "the original path labels nothing: {body}");
+}
+
+#[tokio::test]
+async fn a_top_up_makes_the_extra_call_and_the_response_says_what_it_did() {
+    let _env = REQUIREMENT_ENV.lock().await;
+    let functional = coverage_answer(&[("FRD-1-01", "positive", "Add an item"), ("FRD-1-02", "positive", "Remove an item")]);
+    let negative = coverage_answer(&[("FRD-1-01", "negative", "Add nothing"), ("FRD-1-02", "negative", "Remove what is not there")]);
+    // The edge skill only found something for the first requirement.
+    let edge = coverage_answer(&[("FRD-1-01", "edge", "Add the largest quantity")]);
+    let top_up = coverage_answer(&[("FRD-1-02", "edge", "Remove the last item of the basket")]);
+    let executor = Arc::new(RecordingExecutor::ok_sequence(vec![&functional, &negative, &edge, &top_up]));
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
+    let (project, owner, doc_id) = basket_project(&state, "Coverage - Top Up").await;
+
+    let mut body = generate_ai_body(&[&doc_id], &["Functional Testing", "Negative Testing", "Edge Case Analysis"]);
+    body["depth"] = serde_json::json!("STANDARD");
+    body["coverage_top_up"] = serde_json::json!(true);
+    let (status, response) = post_generate(&state, &owner, project, body).await;
+
+    assert_eq!(status, StatusCode::OK, "body={response}");
+    let prompts = executor.prompts.lock().unwrap().clone();
+    assert_eq!(prompts.len(), 4, "three first-pass calls and one top-up call");
+    let last = &prompts[3];
+    assert!(last.contains("COVERAGE TOP-UP") && last.contains("Generate ONLY edge test cases"), "{last}");
+    assert!(last.contains("[FRD-1-02] ") && !last.contains("[FRD-1-01] "), "only the requirement that lacks it is asked about: {last}");
+    let matrix = &response["requirements"]["matrix"];
+    assert_eq!(matrix["complete"], 2, "body={response}");
+    assert_eq!(matrix["gap_total"], 0);
+    assert_eq!(
+        matrix["top_up"],
+        serde_json::json!({"rounds": 1, "calls": 1, "cases_added": 1, "stopped": "every target is met"}),
+        "body={response}"
+    );
+    assert_eq!(response["requirements"]["calls"], 3, "the calls planned up front; the top-up is reported apart");
+    let waves = response["waves"].as_array().unwrap();
+    assert_eq!(waves.len(), 4);
+    assert_eq!((waves[3]["wave"].as_str(), waves[3]["technique"].as_str(), waves[3]["batch"].as_str()), (Some("top_up"), Some("edge"), Some("1/1")));
+    assert_eq!(response["test_cases"].as_array().unwrap().len(), 6);
+}
+
+#[tokio::test]
+async fn the_plan_says_which_techniques_a_depth_covers_and_what_a_top_up_may_add() {
+    let _env = REQUIREMENT_ENV.lock().await;
+    let executor = Arc::new(RecordingExecutor::ok_sequence(vec![]));
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
+    let (project, owner, doc_id) = basket_project(&state, "Coverage - Plan").await;
+    let path = format!("/api/v1/projects/{project}/test-cases/generate-ai/plan");
+
+    let mut with_depth = generate_ai_body(&[&doc_id], &["Functional Testing", "Negative Testing"]);
+    with_depth["depth"] = serde_json::json!("EXHAUSTIVE");
+    with_depth["coverage_top_up"] = serde_json::json!(true);
+    let (status, plan) = send(&state, req("POST", &path, Some(&owner), Some(with_depth))).await;
+    let (_, without) = send(&state, req("POST", &path, Some(&owner), Some(generate_ai_body(&[&doc_id], &["Functional Testing"])))).await;
+    let mut bad = generate_ai_body(&[&doc_id], &["Functional Testing"]);
+    bad["depth"] = serde_json::json!("deep");
+    let (bad_status, _) = send(&state, req("POST", &path, Some(&owner), Some(bad))).await;
+
+    assert_eq!(status, StatusCode::OK, "plan={plan}");
+    let coverage = &plan["coverage"];
+    assert_eq!(coverage["depth"], "EXHAUSTIVE");
+    assert_eq!(coverage["top_up"], true);
+    assert_eq!(coverage["top_up_rounds"], 2);
+    assert_eq!(coverage["top_up_call_limit"], 148, "150 calls, two of them the first pass");
+    let positive = coverage["techniques"].as_array().unwrap().iter().find(|t| t["technique"] == "positive").cloned().unwrap();
+    assert_eq!((positive["requirements"].as_u64(), positive["per_requirement"].as_u64()), (Some(2), Some(2)));
+    assert_eq!(positive["provided_by"], "Functional Testing");
+    let edge = coverage["techniques"].as_array().unwrap().iter().find(|t| t["technique"] == "edge").cloned().unwrap();
+    assert!(edge["provided_by"].is_null());
+    assert!(without.get("coverage").is_none(), "no depth, no coverage plan: {without}");
+    assert_eq!(bad_status, StatusCode::BAD_REQUEST);
+    assert!(executor.prompts.lock().unwrap().is_empty(), "planning must never call a model");
+}
+
+#[tokio::test]
+async fn the_rounds_of_a_top_up_are_two_unless_set_and_never_fewer_than_one_or_more_than_five() {
+    let _env = REQUIREMENT_ENV.lock().await;
+    assert_eq!(crate::api::coverage_top_up_rounds(), 2);
+    for (value, expected) in [("1", 1), ("3", 3), (" 4 ", 4), ("9", 5), ("0", 1), ("many", 2), ("", 2)] {
+        std::env::set_var("COVERAGE_TOP_UP_ROUNDS", value);
+        assert_eq!(crate::api::coverage_top_up_rounds(), expected, "{value:?}");
+    }
+    std::env::remove_var("COVERAGE_TOP_UP_ROUNDS");
+    assert_eq!(crate::api::coverage_top_up_rounds(), 2);
+}

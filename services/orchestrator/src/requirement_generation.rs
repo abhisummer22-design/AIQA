@@ -32,6 +32,10 @@ use crate::ai_generation::{
     GenerationOutcome, ResolvedSkillInstruction, SkillInput, Wave, WaveSummary,
 };
 use crate::ai_router::{AiInfrastructure, AiRequest, AiTask, GenerationOutcome2, GenerationResult};
+use crate::coverage::{
+    self, is_near_duplicate, resolve_technique, techniques_of_skill, CoverageMatrix, Depth,
+    Technique, TopUpSummary,
+};
 use crate::log_bus::LogBus;
 use crate::requirements::RequirementKind;
 use serde::Serialize;
@@ -80,6 +84,7 @@ pub fn scope_of(skill_name: &str) -> &'static [RequirementKind] {
             Performance,
         ],
         "security testing" => &[Security, Interface, Data],
+        "non-functional testing" => &[Performance, Security, Usability, Interface],
         "rbac testing" => &[Security, Functional, Interface],
         "performance testing" => &[Performance, Interface],
         "ui/ux testing" => &[Usability, Functional, Data],
@@ -189,7 +194,7 @@ impl RequirementPlan {
 /// document order. A batch is closed when the next requirement would not fit,
 /// when it holds the most it may, or — once it is more than half full — at the
 /// end of a section, so related requirements tend to stay together.
-fn split_batches(
+pub(crate) fn split_batches(
     items: &[RequirementItem],
     indices: &[usize],
     budget: BatchBudget,
@@ -368,6 +373,10 @@ pub fn build_requirement_prompt(
          EVIDENCE RULES (critical, do not violate):\n\
          - Every test case must set \"requirement_id\" to the id of the ONE requirement it tests, exactly \
            as written inside the square brackets above. Never invent an id.\n\
+         - Set \"technique\" to how the case tests that requirement: \"positive\" (valid input, the \
+           expected behaviour), \"negative\" (invalid or unauthorised input that must be rejected), \
+           \"edge\" (limits: boundary, empty, maximum), \"security\", \"performance\" or \
+           \"accessibility\".\n\
          - If a test case's expected behavior is directly stated in that requirement, set \
            \"evidence\": \"evidenced\" and set \"source_reference\" to the exact short phrase from that \
            requirement's text that supports it.\n\
@@ -388,6 +397,99 @@ pub fn build_requirement_prompt(
          Return ONLY a JSON object with this exact shape, no markdown, no commentary:\n\
          {{\"test_cases\": [{{\"title\": string, \"category\": string, \"skill_id\": string, \
          \"requirement_id\": string, \
+         \"technique\": \"positive\"|\"negative\"|\"edge\"|\"security\"|\"performance\"|\"accessibility\", \
+         \"preconditions\": [string], \"steps\": [{{\"action\": string, \"expected_result\": string}}], \
+         \"expected_result\": string, \"priority\": \"CRITICAL\"|\"HIGH\"|\"MEDIUM\"|\"LOW\", \
+         \"severity\": \"CRITICAL\"|\"MAJOR\"|\"MINOR\"|\"TRIVIAL\", \
+         \"evidence\": \"evidenced\"|\"inferred\"|\"exploratory\", \
+         \"source_reference\": string|null}}]}}"
+    )
+}
+
+/// The most earlier cases a top-up call is told about, so it does not repeat
+/// them: those of its own requirements, the most recent first.
+const MAX_TOP_UP_EXISTING: usize = 60;
+
+/// The prompt for one coverage top-up call: one technique, the requirements
+/// that are short of it (each with how many more cases it needs), and the cases
+/// that already exist for them.
+#[allow(clippy::too_many_arguments)]
+pub fn build_top_up_prompt(
+    settings_text: &str,
+    technique: Technique,
+    entries: &[(&RequirementItem, usize)],
+    round: usize,
+    batch_number: usize,
+    batches_of: usize,
+    skill: &ResolvedSkillInstruction,
+    feedback: &FeedbackContext,
+    existing: &[GeneratedTestCaseDraft],
+    crawl: Option<&crate::crawler::CrawlOutput>,
+) -> String {
+    let name = technique.as_str();
+    let definition = technique.definition();
+    let lines: String = entries
+        .iter()
+        .map(|(r, missing)| format!("{}  <- needs {missing} more {name} case(s)\n", r.rendered()))
+        .collect();
+    let existing_lines: String = if existing.is_empty() {
+        "(none yet)\n".to_string()
+    } else {
+        existing
+            .iter()
+            .map(|c| {
+                format!(
+                    "- [{}] ({}) {}\n",
+                    c.requirement_id.as_deref().unwrap_or("?"),
+                    c.technique.as_deref().unwrap_or("positive"),
+                    c.title
+                )
+            })
+            .collect()
+    };
+    let settings = if settings_text.trim().is_empty() {
+        "(none)"
+    } else {
+        settings_text.trim()
+    };
+    let crawl_block = build_crawl_context_block(crawl);
+    let feedback_block = build_feedback_block(feedback);
+    let skill_line = format!(
+        "- Skill \"{}\" (id: {}): {}\n",
+        skill.name, skill.id, skill.instruction
+    );
+
+    format!(
+        "You are a QA test case generator doing a COVERAGE TOP-UP. The numbered requirements below already \
+         have test cases, but not enough {name} ones. Generate ONLY {name} test cases — {definition} — \
+         strictly from the requirements.\n\n\
+         GENERATION SETTINGS (what the user asked for — not requirements themselves):\n{settings}\n\n\
+         REQUIREMENTS — top-up round {round}, batch {batch_number} of {batches_of}. Each line starts with the \
+         requirement's id in square brackets and ends with how many more {name} cases it needs:\n{lines}\n\
+         {crawl_block}\
+         SKILL (each test case must map to it):\n{skill_line}\n\
+         CASES THAT ALREADY EXIST FOR THESE REQUIREMENTS (do not repeat any of them, not even reworded):\n\
+         {existing_lines}\n\
+         EVIDENCE RULES (critical, do not violate):\n\
+         - Every test case must set \"requirement_id\" to the id of the ONE requirement it tests, exactly \
+           as written inside the square brackets above. Never invent an id.\n\
+         - Every test case must set \"technique\" to \"{name}\".\n\
+         - If a test case's expected behavior is directly stated in that requirement, set \
+           \"evidence\": \"evidenced\" and set \"source_reference\" to the exact short phrase from that \
+           requirement's text that supports it.\n\
+         - If a test case is a reasonable extension of what the requirement implies but not stated \
+           outright, set \"evidence\": \"inferred\" and \"source_reference\": null.\n\
+         - If a test case exists only because the technique calls for exploring it and the requirement \
+           gives no basis at all, set \"evidence\": \"exploratory\" and \"source_reference\": null.\n\
+         - Never invent a specific numeric requirement (character counts, time limits, thresholds) that \
+           is not literally present in the requirements. If you need a number and there is none, omit \
+           the number and mark the case \"inferred\" or \"exploratory\".\n\n\
+         COVERAGE: give each requirement at least the number of {name} cases its line asks for. If a \
+         requirement gives no real basis for {name} testing, give it none rather than inventing one.\n\n\
+         {feedback_block}\
+         Return ONLY a JSON object with this exact shape, no markdown, no commentary:\n\
+         {{\"test_cases\": [{{\"title\": string, \"category\": string, \"skill_id\": string, \
+         \"requirement_id\": string, \"technique\": \"{name}\", \
          \"preconditions\": [string], \"steps\": [{{\"action\": string, \"expected_result\": string}}], \
          \"expected_result\": string, \"priority\": \"CRITICAL\"|\"HIGH\"|\"MEDIUM\"|\"LOW\", \
          \"severity\": \"CRITICAL\"|\"MAJOR\"|\"MINOR\"|\"TRIVIAL\", \
@@ -454,6 +556,7 @@ async fn generate_call(
     infra: &AiInfrastructure,
     prompt: String,
     batch: &[&RequirementItem],
+    fallback: Technique,
 ) -> Result<(Vec<GeneratedTestCaseDraft>, GenerationResult), String> {
     let request = AiRequest {
         task: AiTask::TestCaseGeneration,
@@ -476,6 +579,15 @@ async fn generate_call(
             Ok(cases) => {
                 let mut cases = enforce_traceability(cases, &batch_text);
                 link_to_requirements(&mut cases, batch);
+                // A case counts for the technique the model named, else for
+                // what the call was for.
+                for case in &mut cases {
+                    case.technique = Some(
+                        resolve_technique(case.technique.as_deref(), fallback)
+                            .as_str()
+                            .to_string(),
+                    );
+                }
                 return Ok((cases, result));
             }
             Err(reason) => last_failure = Some(reason),
@@ -498,9 +610,14 @@ pub struct RequirementCoverage {
     /// Of a kind no selected skill tests — at most 100 ids.
     pub not_offered_keys: Vec<String>,
     pub notes: Vec<String>,
-    /// AI calls the run planned.
+    /// AI calls the run planned (the top-up calls it then made are counted in
+    /// `matrix.top_up`).
     pub calls: usize,
     pub budget_chars: usize,
+    /// Which techniques each requirement was tested with, against the depth
+    /// asked for; present only when the request named a depth.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matrix: Option<CoverageMatrix>,
 }
 
 const MAX_LISTED_KEYS: usize = 100;
@@ -550,12 +667,236 @@ fn coverage_of(
         notes,
         calls: plan.calls.len(),
         budget_chars: plan.budget.max_chars,
+        matrix: None,
     }
 }
 
 pub struct RequirementRun {
     pub outcome: GenerationOutcome,
     pub coverage: RequirementCoverage,
+}
+
+/// What a request asks of the coverage engine.
+#[derive(Debug, Clone, Copy)]
+pub struct CoverageOptions {
+    pub depth: Depth,
+    /// Make extra calls for the requirements that are short of the depth's
+    /// targets.
+    pub top_up: bool,
+    /// The most AI calls the whole run may make, first pass and top-up together.
+    pub max_calls: usize,
+    /// The most rounds of gap-filling.
+    pub rounds: usize,
+}
+
+/// Fills the gaps the coverage matrix shows, round by round: each round asks
+/// for the missing technique of the requirements that lack it, one technique
+/// per call, until every target is met, a round adds nothing, or the call or
+/// round limit is reached. Only techniques a selected skill provides are
+/// attempted, and each call is made as that skill.
+#[allow(clippy::too_many_arguments)]
+async fn run_top_up(
+    infra: &AiInfrastructure,
+    settings_text: &str,
+    items: &[RequirementItem],
+    skills: &[SkillInput],
+    feedback: &FeedbackContext,
+    crawl: Option<&crate::crawler::CrawlOutput>,
+    budget: BatchBudget,
+    progress: Option<(&LogBus, &str)>,
+    options: &CoverageOptions,
+    calls_made: usize,
+    all_cases: &mut Vec<GeneratedTestCaseDraft>,
+    waves: &mut Vec<WaveSummary>,
+) -> TopUpSummary {
+    let provided = coverage::providers(skills);
+    let provided_set: std::collections::HashSet<Technique> = provided.keys().copied().collect();
+    let mut summary = TopUpSummary {
+        rounds: 0,
+        calls: 0,
+        cases_added: 0,
+        stopped: String::new(),
+    };
+
+    for round in 1..=options.rounds {
+        let gaps = coverage::needs(items, all_cases, options.depth, &provided_set);
+        if gaps.is_empty() {
+            summary.stopped = "every target is met".to_string();
+            break;
+        }
+        let left = options.max_calls.saturating_sub(calls_made + summary.calls);
+        if left == 0 {
+            summary.stopped = "the call limit was reached".to_string();
+            break;
+        }
+        let mut batches = coverage::plan_top_up(items, &gaps, budget);
+        let truncated = batches.len() > left;
+        batches.truncate(left);
+        summary.rounds = round;
+        let added_before = summary.cases_added;
+        let batches_of = batches.len();
+
+        if let Some((log_bus, project_id)) = progress {
+            log_bus
+                .emit(
+                    "INFO",
+                    "generation",
+                    &format!(
+                        "Coverage top-up round {round}: {} gap(s) in {batches_of} call(s)",
+                        gaps.len()
+                    ),
+                    None,
+                    Some(project_id),
+                    None,
+                )
+                .await;
+        }
+
+        for (n, batch) in batches.iter().enumerate() {
+            let skill = provided[&batch.technique].clone();
+            let resolved = resolve_skill_instructions(std::slice::from_ref(&skill));
+            let entries: Vec<(&RequirementItem, usize)> = batch
+                .entries
+                .iter()
+                .map(|&(i, missing)| (&items[i], missing))
+                .collect();
+            let batch_items: Vec<&RequirementItem> = entries.iter().map(|(r, _)| *r).collect();
+            let keys: std::collections::HashSet<&str> =
+                batch_items.iter().map(|r| r.key.as_str()).collect();
+            let mut existing: Vec<GeneratedTestCaseDraft> = all_cases
+                .iter()
+                .rev()
+                .filter(|c| {
+                    c.requirement_id
+                        .as_deref()
+                        .is_some_and(|id| keys.contains(id))
+                })
+                .take(MAX_TOP_UP_EXISTING)
+                .cloned()
+                .collect();
+            existing.reverse();
+            let prompt = build_top_up_prompt(
+                settings_text,
+                batch.technique,
+                &entries,
+                round,
+                n + 1,
+                batches_of,
+                &resolved[0],
+                feedback,
+                &existing,
+                crawl,
+            );
+            let batch_label = format!("{}/{}", n + 1, batches_of);
+            let technique_label = batch.technique.as_str().to_string();
+
+            if let Some((log_bus, project_id)) = progress {
+                // Same wording as every other call's message, so the page's
+                // live "which skill is running" indicator reads it unchanged.
+                log_bus
+                    .emit(
+                        "INFO",
+                        "generation",
+                        &format!("Wave 'top_up' ({}) started", skill.name),
+                        None,
+                        Some(project_id),
+                        None,
+                    )
+                    .await;
+                log_bus
+                    .emit(
+                        "INFO",
+                        "generation",
+                        &format!(
+                            "Top-up {batch_label}: {technique_label} cases for {} requirement(s)",
+                            batch_items.len()
+                        ),
+                        None,
+                        Some(project_id),
+                        None,
+                    )
+                    .await;
+            }
+
+            summary.calls += 1;
+            match generate_call(infra, prompt, &batch_items, batch.technique).await {
+                Ok((mut cases, result)) => {
+                    // Only what was asked for, tied to a requirement, and not
+                    // a rewording of a case the requirement already has.
+                    cases.retain(|c| {
+                        c.requirement_id.is_some()
+                            && c.technique.as_deref() == Some(batch.technique.as_str())
+                            && !all_cases.iter().any(|e| {
+                                e.requirement_id == c.requirement_id
+                                    && is_near_duplicate(&e.title, &c.title)
+                            })
+                    });
+                    summary.cases_added += cases.len();
+                    waves.push(WaveSummary {
+                        wave: "top_up",
+                        skill_names: vec![skill.name.clone()],
+                        case_count: cases.len(),
+                        provider: Some(result.provider.clone()),
+                        model: Some(result.model.clone()),
+                        routing_score: Some(result.routing_score),
+                        fallback_used: Some(result.fallback_used),
+                        routing_mode: Some(routing_mode_label(&result)),
+                        prompt_tokens: result.prompt_tokens,
+                        completion_tokens: result.completion_tokens,
+                        estimated_cost_usd: result.estimated_cost_usd,
+                        latency_ms: Some(result.latency_ms),
+                        failure_reason: None,
+                        skipped: false,
+                        batch: Some(batch_label),
+                        requirements: Some(batch_items.len()),
+                        technique: Some(technique_label),
+                    });
+                    all_cases.extend(cases);
+                }
+                Err(reason) => waves.push(WaveSummary {
+                    wave: "top_up",
+                    skill_names: vec![skill.name.clone()],
+                    case_count: 0,
+                    provider: None,
+                    model: None,
+                    routing_score: None,
+                    fallback_used: None,
+                    routing_mode: None,
+                    prompt_tokens: None,
+                    completion_tokens: None,
+                    estimated_cost_usd: None,
+                    latency_ms: None,
+                    failure_reason: Some(reason),
+                    skipped: false,
+                    batch: Some(batch_label),
+                    requirements: Some(batch_items.len()),
+                    technique: Some(technique_label),
+                }),
+            }
+        }
+
+        let remaining = coverage::needs(items, all_cases, options.depth, &provided_set);
+        if remaining.is_empty() {
+            summary.stopped = "every target is met".to_string();
+            break;
+        }
+        if summary.cases_added == added_before {
+            summary.stopped = "the last round added no case".to_string();
+            break;
+        }
+        if truncated {
+            summary.stopped = "the call limit was reached".to_string();
+            break;
+        }
+    }
+    if summary.stopped.is_empty() {
+        summary.stopped = if options.rounds == 0 {
+            "no round was allowed".to_string()
+        } else {
+            "the round limit was reached".to_string()
+        };
+    }
+    summary
 }
 
 /// Runs a requirement-driven generation: plans the calls, makes them one after
@@ -571,6 +912,7 @@ pub async fn generate_from_requirements(
     crawl: Option<&crate::crawler::CrawlOutput>,
     budget: BatchBudget,
     progress: Option<(&LogBus, &str)>,
+    coverage_options: Option<CoverageOptions>,
 ) -> RequirementRun {
     let plan = plan_calls(items, skills, budget);
     let mut all_cases: Vec<GeneratedTestCaseDraft> = Vec::new();
@@ -645,7 +987,14 @@ pub async fn generate_from_requirements(
                 .await;
         }
 
-        match generate_call(infra, prompt, &batch).await {
+        // What a case is counted as when the model does not label it: what the
+        // skill is about, else a valid-input case.
+        let fallback = call
+            .skill
+            .as_ref()
+            .and_then(|s| techniques_of_skill(&s.name).first().copied())
+            .unwrap_or(Technique::Positive);
+        match generate_call(infra, prompt, &batch, fallback).await {
             Ok((cases, result)) => {
                 waves.push(WaveSummary {
                     wave: call.wave.label(),
@@ -664,6 +1013,7 @@ pub async fn generate_from_requirements(
                     skipped: false,
                     batch: Some(batch_label),
                     requirements: Some(batch.len()),
+                    technique: None,
                 });
                 all_cases.extend(cases);
             }
@@ -684,8 +1034,31 @@ pub async fn generate_from_requirements(
                 skipped: false,
                 batch: Some(batch_label),
                 requirements: Some(batch.len()),
+                technique: None,
             }),
         }
+    }
+
+    // Coverage top-up: the first pass is done; close the gaps it left, if asked to.
+    let mut top_up: Option<TopUpSummary> = None;
+    if let Some(options) = coverage_options.filter(|o| o.top_up && !plan.calls.is_empty()) {
+        top_up = Some(
+            run_top_up(
+                infra,
+                settings_text,
+                items,
+                skills,
+                feedback,
+                crawl,
+                budget,
+                progress,
+                &options,
+                plan.calls.len(),
+                &mut all_cases,
+                &mut waves,
+            )
+            .await,
+        );
     }
 
     let outcome = if plan.calls.is_empty() {
@@ -700,7 +1073,16 @@ pub async fn generate_from_requirements(
         GenerationOutcome::Ai { cases, .. } => cases,
         GenerationOutcome::Failed { .. } => &[],
     };
-    let coverage = coverage_of(&plan, items, final_cases);
+    let mut coverage = coverage_of(&plan, items, final_cases);
+    if let Some(options) = coverage_options {
+        coverage.matrix = Some(coverage::build_matrix(
+            items,
+            final_cases,
+            options.depth,
+            skills,
+            top_up,
+        ));
+    }
     RequirementRun { outcome, coverage }
 }
 
@@ -1162,6 +1544,7 @@ mod tests {
             evidence: crate::ai_generation::EvidenceKind::Inferred,
             source_reference: source_reference.map(str::to_string),
             requirement_id: requirement_id.map(str::to_string),
+            technique: None,
         }
     }
 
@@ -1337,6 +1720,7 @@ mod tests {
             &FeedbackContext::default(),
             None,
             budget(max_chars),
+            None,
             None,
         )
         .await
@@ -1728,5 +2112,557 @@ mod tests {
         assert!(prompts
             .iter()
             .all(|p| p.contains("Requested generation depth: Standard.")));
+    }
+
+    // ---------------------------------------------------------------- coverage
+
+    fn technique_case(title: &str, requirement_id: &str, technique: &str) -> serde_json::Value {
+        let mut case = case_json(title, requirement_id, "inferred", None);
+        case["technique"] = serde_json::json!(technique);
+        case
+    }
+
+    fn is_top_up(prompt: &str) -> bool {
+        prompt.contains("COVERAGE TOP-UP")
+    }
+
+    /// The technique a top-up prompt asks for.
+    fn asked_technique(prompt: &str) -> String {
+        prompt
+            .split("Generate ONLY ")
+            .nth(1)
+            .and_then(|t| t.split_whitespace().next())
+            .unwrap_or("")
+            .to_string()
+    }
+
+    /// A first pass that only ever hands back valid-input cases, whichever skill
+    /// it is asked as (the gap a top-up exists to close), and a top-up that is
+    /// answered as it asks — each call in words of its own, so that a later
+    /// round is never mistaken for a rewording of an earlier one.
+    fn positive_then_as_asked() -> Reply {
+        const WORDS: [&str; 8] = [
+            "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel",
+        ];
+        Box::new(|n, prompt| {
+            let cases: Vec<_> = if is_top_up(prompt) {
+                let technique = asked_technique(prompt);
+                ids_in(prompt)
+                    .iter()
+                    .map(|id| {
+                        technique_case(
+                            &format!("{technique} {} case for {id}", WORDS[n % 8]),
+                            id,
+                            &technique,
+                        )
+                    })
+                    .collect()
+            } else {
+                ids_in(prompt)
+                    .iter()
+                    .map(|id| technique_case(&format!("Check {id}"), id, "positive"))
+                    .collect()
+            };
+            Ok(serde_json::json!({ "test_cases": cases }).to_string())
+        })
+    }
+
+    fn options(depth: Depth, top_up: bool, max_calls: usize) -> CoverageOptions {
+        CoverageOptions {
+            depth,
+            top_up,
+            max_calls,
+            rounds: 2,
+        }
+    }
+
+    async fn run_with(
+        infra: &AiInfrastructure,
+        items: &[RequirementItem],
+        skills: &[SkillInput],
+        options: CoverageOptions,
+    ) -> RequirementRun {
+        generate_from_requirements(
+            infra,
+            "Requested generation depth: Standard.",
+            items,
+            skills,
+            &FeedbackContext::default(),
+            None,
+            budget(12_000),
+            None,
+            Some(options),
+        )
+        .await
+    }
+
+    fn all_three_skills() -> Vec<SkillInput> {
+        vec![
+            skill("s1", "Functional Testing", ""),
+            skill("s2", "Negative Testing", ""),
+            skill("s3", "Edge Case Analysis", ""),
+        ]
+    }
+
+    #[test]
+    fn the_first_pass_prompt_asks_for_a_technique_on_every_case() {
+        let items = functional(1);
+        let prompt = build_requirement_prompt(
+            "",
+            &[&items[0]],
+            1,
+            1,
+            &[],
+            &FeedbackContext::default(),
+            &[],
+            None,
+        );
+        assert!(
+            prompt.contains("Set \"technique\" to how the case tests that requirement"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("\"technique\": \"positive\"|\"negative\"|\"edge\"|\"security\"|\"performance\"|\"accessibility\""));
+    }
+
+    #[test]
+    fn the_non_functional_skill_reads_the_requirements_about_how_the_system_must_be() {
+        use RequirementKind::*;
+        let scope = scope_of("Non-Functional Testing");
+        assert!(
+            scope.contains(&Performance) && scope.contains(&Security) && scope.contains(&Usability)
+        );
+        assert!(!scope.contains(&Functional) && !scope.contains(&Reference));
+    }
+
+    #[tokio::test]
+    async fn a_case_counts_for_the_technique_the_model_names_else_for_what_its_skill_is_about() {
+        let reply: Reply = Box::new(|_, prompt| {
+            let ids = ids_in(prompt);
+            let cases = vec![
+                technique_case("Edge by the model's word", &ids[0], "Edge case"),
+                case_json("No label at all", &ids[0], "inferred", None),
+                technique_case("A label of no known kind", &ids[0], "exploratory"),
+            ];
+            Ok(serde_json::json!({ "test_cases": cases }).to_string())
+        });
+        let (infra, _) = infra_with(reply);
+
+        let result = run(
+            &infra,
+            &functional(1),
+            &[skill("n", "Negative Testing", "")],
+            12_000,
+        )
+        .await;
+
+        let techniques: Vec<Option<String>> = cases_of(&result)
+            .iter()
+            .map(|c| c.technique.clone())
+            .collect();
+        assert_eq!(
+            techniques,
+            [
+                Some("edge".to_string()),
+                Some("negative".to_string()),
+                Some("negative".to_string())
+            ],
+            "the model's own label, else the skill's technique"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_run_that_names_no_depth_has_no_matrix_and_makes_no_extra_call() {
+        let (infra, executor) = infra_with(positive_then_as_asked());
+
+        let result = run(&infra, &functional(3), &all_three_skills(), 12_000).await;
+
+        assert!(result.coverage.matrix.is_none());
+        assert_eq!(
+            executor.prompts.lock().unwrap().len(),
+            3,
+            "one call per skill, nothing more"
+        );
+    }
+
+    #[tokio::test]
+    async fn without_a_top_up_the_matrix_reports_what_is_missing_and_no_extra_call_is_made() {
+        let (infra, executor) = infra_with(positive_then_as_asked());
+
+        let result = run_with(
+            &infra,
+            &functional(4),
+            &all_three_skills(),
+            options(Depth::Standard, false, 150),
+        )
+        .await;
+
+        assert_eq!(executor.prompts.lock().unwrap().len(), 3);
+        let matrix = result.coverage.matrix.clone().expect("a depth was named");
+        assert_eq!(matrix.depth, "STANDARD");
+        assert!(matrix.top_up.is_none());
+        assert_eq!(matrix.complete, 0);
+        assert_eq!(
+            matrix.gap_total, 4,
+            "every requirement lacks a negative and an edge case"
+        );
+        assert_eq!(
+            matrix.gaps[0]
+                .missing
+                .iter()
+                .map(|m| m.technique)
+                .collect::<Vec<_>>(),
+            [Technique::Negative, Technique::Edge]
+        );
+        let positive = matrix
+            .techniques
+            .iter()
+            .find(|t| t.technique == Technique::Positive)
+            .unwrap();
+        assert_eq!((positive.applicable, positive.met), (4, 4));
+    }
+
+    #[tokio::test]
+    async fn a_top_up_asks_each_missing_technique_of_the_skill_that_provides_it_and_stops_when_all_is_met(
+    ) {
+        let (infra, executor) = infra_with(positive_then_as_asked());
+
+        let result = run_with(
+            &infra,
+            &functional(4),
+            &all_three_skills(),
+            options(Depth::Standard, true, 150),
+        )
+        .await;
+
+        let prompts = executor.prompts.lock().unwrap().clone();
+        assert_eq!(
+            prompts.len(),
+            5,
+            "three first-pass calls and two top-up calls"
+        );
+        let negative = &prompts[3];
+        assert!(
+            is_top_up(negative) && negative.contains("Generate ONLY negative test cases"),
+            "{negative}"
+        );
+        assert!(negative.contains("Skill \"Negative Testing\""));
+        assert!(negative
+            .contains("[R1] (3 Scope · functional) The system shall handle scenario number 1"));
+        assert!(negative.contains("<- needs 1 more negative case(s)"));
+        assert!(
+            negative.contains("- [R1] (positive) Check R1"),
+            "the cases that already exist are listed: {negative}"
+        );
+        let edge = &prompts[4];
+        assert!(
+            edge.contains("Generate ONLY edge test cases")
+                && edge.contains("Skill \"Edge Case Analysis\"")
+        );
+
+        let matrix = result.coverage.matrix.clone().unwrap();
+        assert_eq!(matrix.complete, 4);
+        assert_eq!(matrix.gap_total, 0);
+        assert_eq!(
+            matrix.top_up,
+            Some(TopUpSummary {
+                rounds: 1,
+                calls: 2,
+                cases_added: 8,
+                stopped: "every target is met".to_string()
+            })
+        );
+        let techniques: Vec<String> = cases_of(&result)
+            .iter()
+            .filter_map(|c| c.technique.clone())
+            .collect();
+        assert_eq!(techniques.iter().filter(|t| *t == "negative").count(), 4);
+        assert_eq!(techniques.iter().filter(|t| *t == "edge").count(), 4);
+    }
+
+    #[tokio::test]
+    async fn top_up_calls_are_reported_as_their_own_rows_with_their_technique_and_batch() {
+        let (infra, _) = infra_with(positive_then_as_asked());
+
+        let result = run_with(
+            &infra,
+            &functional(4),
+            &all_three_skills(),
+            options(Depth::Standard, true, 150),
+        )
+        .await;
+
+        let waves = waves_of(&result);
+        assert_eq!(waves.len(), 5);
+        let top_ups: Vec<&WaveSummary> = waves.iter().filter(|w| w.wave == "top_up").collect();
+        assert_eq!(top_ups.len(), 2);
+        assert_eq!(top_ups[0].skill_names, ["Negative Testing"]);
+        assert_eq!(top_ups[0].technique.as_deref(), Some("negative"));
+        // A top-up call's place among the calls of its round.
+        assert_eq!(top_ups[0].batch.as_deref(), Some("1/2"));
+        assert_eq!(top_ups[1].batch.as_deref(), Some("2/2"));
+        assert_eq!(top_ups[1].technique.as_deref(), Some("edge"));
+        assert_eq!(top_ups[0].requirements, Some(4));
+        assert_eq!(top_ups[0].case_count, 4);
+        assert!(waves
+            .iter()
+            .filter(|w| w.wave != "top_up")
+            .all(|w| w.technique.is_none()));
+    }
+
+    #[tokio::test]
+    async fn a_technique_no_selected_skill_provides_is_never_attempted_but_is_reported() {
+        let (infra, executor) = infra_with(positive_then_as_asked());
+        let only_functional = [skill("s1", "Functional Testing", "")];
+
+        let result = run_with(
+            &infra,
+            &functional(3),
+            &only_functional,
+            options(Depth::Standard, true, 150),
+        )
+        .await;
+
+        assert_eq!(
+            executor.prompts.lock().unwrap().len(),
+            1,
+            "nothing to top up with"
+        );
+        let matrix = result.coverage.matrix.clone().unwrap();
+        assert_eq!(
+            matrix
+                .top_up
+                .as_ref()
+                .map(|t| (t.calls, t.stopped.as_str())),
+            Some((0, "every target is met"))
+        );
+        assert_eq!(
+            matrix.gap_total, 0,
+            "a gap nobody can fill is not listed as a gap"
+        );
+        let negative = matrix
+            .techniques
+            .iter()
+            .find(|t| t.technique == Technique::Negative)
+            .unwrap();
+        assert_eq!((negative.short, negative.provided_by.clone()), (3, None));
+    }
+
+    #[tokio::test]
+    async fn a_top_up_stops_at_the_call_limit_and_says_so() {
+        let (infra, executor) = infra_with(positive_then_as_asked());
+
+        // Three first-pass calls plus room for one more.
+        let result = run_with(
+            &infra,
+            &functional(4),
+            &all_three_skills(),
+            options(Depth::Standard, true, 4),
+        )
+        .await;
+
+        assert_eq!(executor.prompts.lock().unwrap().len(), 4);
+        let matrix = result.coverage.matrix.clone().unwrap();
+        assert_eq!(
+            matrix
+                .top_up
+                .as_ref()
+                .map(|t| (t.calls, t.stopped.as_str())),
+            Some((1, "the call limit was reached"))
+        );
+        assert_eq!(matrix.gap_total, 4, "the edge cases were never asked for");
+        assert!(matrix
+            .gaps
+            .iter()
+            .all(|g| g.missing.iter().all(|m| m.technique == Technique::Edge)));
+    }
+
+    #[tokio::test]
+    async fn the_call_limit_covers_every_round_together_not_each_round_alone() {
+        let (infra, executor) = infra_with(positive_then_as_asked());
+
+        // Exhaustive depth needs more than one round. Three first-pass calls and
+        // room for three more: round one asks two techniques, round two has room
+        // for one of the two it would like.
+        let result = run_with(
+            &infra,
+            &functional(2),
+            &all_three_skills(),
+            options(Depth::Exhaustive, true, 6),
+        )
+        .await;
+
+        assert_eq!(executor.prompts.lock().unwrap().len(), 6);
+        let top_up = result.coverage.matrix.unwrap().top_up.unwrap();
+        assert_eq!(
+            (top_up.rounds, top_up.calls, top_up.stopped.as_str()),
+            (2, 3, "the call limit was reached")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_top_up_with_no_room_at_all_makes_no_call() {
+        let (infra, executor) = infra_with(positive_then_as_asked());
+
+        let result = run_with(
+            &infra,
+            &functional(2),
+            &all_three_skills(),
+            options(Depth::Standard, true, 3),
+        )
+        .await;
+
+        assert_eq!(executor.prompts.lock().unwrap().len(), 3);
+        let top_up = result.coverage.matrix.unwrap().top_up.unwrap();
+        assert_eq!(
+            (top_up.rounds, top_up.calls, top_up.stopped.as_str()),
+            (0, 0, "the call limit was reached")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_round_that_adds_nothing_ends_the_top_up() {
+        // The top-up only rewords what exists, so every case it returns is dropped.
+        let reply: Reply = Box::new(|_, prompt| {
+            let cases: Vec<_> = if is_top_up(prompt) {
+                ids_in(prompt)
+                    .iter()
+                    .map(|id| {
+                        technique_case(&format!("Check {id} works"), id, &asked_technique(prompt))
+                    })
+                    .collect()
+            } else {
+                ids_in(prompt)
+                    .iter()
+                    .map(|id| technique_case(&format!("Check {id} works"), id, "positive"))
+                    .collect()
+            };
+            Ok(serde_json::json!({ "test_cases": cases }).to_string())
+        });
+        let (infra, _) = infra_with(reply);
+
+        let result = run_with(
+            &infra,
+            &functional(3),
+            &all_three_skills(),
+            options(Depth::Standard, true, 150),
+        )
+        .await;
+
+        let top_up = result.coverage.matrix.clone().unwrap().top_up.unwrap();
+        assert_eq!(
+            (top_up.rounds, top_up.cases_added, top_up.stopped.as_str()),
+            (1, 0, "the last round added no case")
+        );
+        assert_eq!(
+            cases_of(&result).len(),
+            3,
+            "only the first pass's cases, once each"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_top_up_case_is_kept_only_when_it_is_the_technique_asked_for_and_tied_to_a_requirement(
+    ) {
+        let reply: Reply = Box::new(|_, prompt| {
+            let cases: Vec<serde_json::Value> = if is_top_up(prompt) {
+                let ids = ids_in(prompt);
+                vec![
+                    technique_case("Reject an empty name", &ids[0], "negative"),
+                    technique_case("Accept a valid name again", &ids[0], "positive"),
+                    {
+                        let mut orphan =
+                            technique_case("Reject something unrelated", &ids[0], "negative");
+                        orphan["requirement_id"] = serde_json::Value::Null;
+                        orphan
+                    },
+                ]
+            } else {
+                ids_in(prompt)
+                    .iter()
+                    .map(|id| technique_case(&format!("Check {id}"), id, "positive"))
+                    .collect()
+            };
+            Ok(serde_json::json!({ "test_cases": cases }).to_string())
+        });
+        let (infra, _) = infra_with(reply);
+        let skills = [
+            skill("s1", "Functional Testing", ""),
+            skill("s2", "Negative Testing", ""),
+        ];
+
+        let result = run_with(
+            &infra,
+            &functional(1),
+            &skills,
+            options(Depth::Standard, true, 150),
+        )
+        .await;
+
+        let titles: Vec<String> = cases_of(&result).iter().map(|c| c.title.clone()).collect();
+        assert!(titles.contains(&"Reject an empty name".to_string()));
+        assert!(
+            !titles.contains(&"Accept a valid name again".to_string()),
+            "a positive case is not what was asked for"
+        );
+        assert!(
+            !titles.contains(&"Reject something unrelated".to_string()),
+            "a case tied to no requirement is dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_top_up_call_leaves_the_gap_and_says_why() {
+        let reply: Reply = Box::new(|n, prompt| {
+            if is_top_up(prompt) {
+                Err(ExecutionError::ProviderRejected {
+                    status: 400,
+                    message: "this batch is not allowed".to_string(),
+                })
+            } else {
+                positive_then_as_asked()(n, prompt)
+            }
+        });
+        let (infra, _) = infra_with(reply);
+
+        let result = run_with(
+            &infra,
+            &functional(2),
+            &all_three_skills(),
+            options(Depth::Standard, true, 150),
+        )
+        .await;
+
+        let waves = waves_of(&result);
+        let top_ups: Vec<&WaveSummary> = waves.iter().filter(|w| w.wave == "top_up").collect();
+        assert!(!top_ups.is_empty());
+        assert!(
+            top_ups.iter().all(|w| w
+                .failure_reason
+                .as_deref()
+                .is_some_and(|r| r.contains("not allowed"))),
+            "{top_ups:?}"
+        );
+        let matrix = result.coverage.matrix.clone().unwrap();
+        assert!(matrix.gap_total > 0);
+        assert_eq!(matrix.top_up.as_ref().map(|t| t.cases_added), Some(0));
+    }
+
+    #[tokio::test]
+    async fn a_higher_depth_wants_more_cases_and_a_second_round_asks_again() {
+        let (infra, _) = infra_with(positive_then_as_asked());
+
+        let result = run_with(
+            &infra,
+            &functional(2),
+            &all_three_skills(),
+            options(Depth::Exhaustive, true, 150),
+        )
+        .await;
+
+        // Two of each technique per requirement: a round can ask for one at a time
+        // per requirement here, because the answer names one case per requirement.
+        let top_up = result.coverage.matrix.clone().unwrap().top_up.unwrap();
+        assert_eq!(top_up.rounds, 2);
+        assert!(top_up.cases_added > 0);
     }
 }

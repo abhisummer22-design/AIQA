@@ -2311,6 +2311,17 @@ struct GenerateAiTestCasesBody {
     /// Omitted or empty, the request is generated exactly as it always was.
     #[serde(default)]
     requirement_document_ids: Vec<Uuid>,
+    /// Phase 4: the depth asked for (`SMOKE`, `STANDARD`, `EXHAUSTIVE` or
+    /// `CHAOS_EXPLORATORY`). With `requirement_document_ids` it turns on the
+    /// coverage report — which techniques each requirement was tested with,
+    /// against that depth's targets. Without documents it is ignored (the
+    /// depth is already part of `requirement_text`).
+    #[serde(default)]
+    depth: Option<String>,
+    /// Phase 4: after the first pass, make extra calls for the requirements
+    /// that are short of the depth's targets. Needs `depth`.
+    #[serde(default)]
+    coverage_top_up: bool,
 }
 
 /// `generation_method` is always exactly `"ai"` or `"fallback"` — never
@@ -2851,6 +2862,11 @@ async fn generate_ai_test_cases_scoped(
     // ("... started"), no new schema. `project_id_str` is bound here so the
     // reference handed to `generate_test_cases` outlives the call.
     let project_id_str = project_id.to_string();
+    let coverage_options = coverage_options_for(
+        body.depth.as_deref(),
+        body.coverage_top_up,
+        requirement_items.is_some(),
+    )?;
     let (outcome, requirement_coverage) = match &requirement_items {
         Some(items) => {
             let budget = requirement_batch_budget(&state).await;
@@ -2884,6 +2900,7 @@ async fn generate_ai_test_cases_scoped(
                 crawl_output.as_ref(),
                 budget,
                 Some((state.log_bus.as_ref(), project_id_str.as_str())),
+                coverage_options,
             )
             .await;
             (run.outcome, Some(run.coverage))
@@ -3150,12 +3167,61 @@ fn requirement_max_calls() -> usize {
         .unwrap_or(150)
 }
 
+/// The most rounds of gap-filling one coverage top-up makes
+/// (`COVERAGE_TOP_UP_ROUNDS`, default 2, at most 5).
+pub(crate) fn coverage_top_up_rounds() -> usize {
+    std::env::var("COVERAGE_TOP_UP_ROUNDS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .map(|n| n.clamp(1, 5))
+        .unwrap_or(2)
+}
+
+/// Phase 4 — what a request asks of the coverage engine, or `None` for a
+/// request that names no depth or no documents: those are generated exactly as
+/// before. An unknown depth, or a top-up with no depth to top up to, is a
+/// mistake worth saying so about rather than guessing.
+fn coverage_options_for(
+    depth: Option<&str>,
+    top_up: bool,
+    from_requirements: bool,
+) -> Result<Option<crate::requirement_generation::CoverageOptions>, ApiError> {
+    let Some(text) = depth.map(str::trim).filter(|d| !d.is_empty()) else {
+        if top_up && from_requirements {
+            return Err(ApiError::validation(
+                "coverage_top_up needs a depth (SMOKE, STANDARD, EXHAUSTIVE or CHAOS_EXPLORATORY)",
+            ));
+        }
+        return Ok(None);
+    };
+    let depth = crate::coverage::Depth::parse(text).ok_or_else(|| {
+        ApiError::validation(format!(
+            "depth must be SMOKE, STANDARD, EXHAUSTIVE or CHAOS_EXPLORATORY, got '{text}'"
+        ))
+    })?;
+    if !from_requirements {
+        return Ok(None);
+    }
+    Ok(Some(crate::requirement_generation::CoverageOptions {
+        depth,
+        top_up,
+        max_calls: requirement_max_calls(),
+        rounds: coverage_top_up_rounds(),
+    }))
+}
+
 #[derive(Debug, Deserialize)]
 struct GeneratePlanBody {
     #[serde(default)]
     skills: Vec<SkillInputBody>,
     #[serde(default)]
     requirement_document_ids: Vec<Uuid>,
+    /// Phase 4: the depth and top-up the generation would ask for; with a
+    /// depth the plan also says which techniques would be covered.
+    #[serde(default)]
+    depth: Option<String>,
+    #[serde(default)]
+    coverage_top_up: bool,
 }
 
 #[derive(Serialize)]
@@ -3180,6 +3246,10 @@ struct GeneratePlanResponse {
     /// Rough sizes, not a quote: what the calls carry and a typical answer.
     estimated_prompt_tokens: u64,
     estimated_completion_tokens: u64,
+    /// Present when the request named a depth: which techniques each
+    /// requirement would be tested with, and what a top-up may add.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    coverage: Option<crate::coverage::CoveragePlan>,
 }
 
 /// POST /api/v1/projects/:project_id/test-cases/generate-ai/plan — what a
@@ -3210,6 +3280,7 @@ async fn plan_generate_ai_scoped(
         })
         .collect();
 
+    let coverage_options = coverage_options_for(body.depth.as_deref(), body.coverage_top_up, true)?;
     let budget = requirement_batch_budget(&state).await;
     let plan = crate::requirement_generation::plan_calls(&items, &skills, budget);
     let (prompt_tokens, completion_tokens) =
@@ -3245,6 +3316,16 @@ async fn plan_generate_ai_scoped(
         prompt_window_tokens: route.as_ref().map(|(_, _, w)| *w),
         estimated_prompt_tokens: prompt_tokens,
         estimated_completion_tokens: completion_tokens,
+        coverage: coverage_options.map(|o| {
+            crate::coverage::plan_info(
+                &items,
+                &skills,
+                o.depth,
+                o.top_up,
+                o.rounds,
+                max_calls.saturating_sub(plan.calls.len()),
+            )
+        }),
     }))
 }
 
