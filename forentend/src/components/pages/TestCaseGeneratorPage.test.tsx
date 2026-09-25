@@ -2832,7 +2832,7 @@ describe('TestCaseGeneratorPage — Phase 3, generating from numbered requiremen
     const base = aiGenerateResponse().test_cases[0];
     return aiGenerateResponse({
       test_cases: [
-        { ...base, title: 'Lock the account after five failed sign-ins', requirement_id: 'FR-012', source_reference: 'locked out after five failed attempts' },
+        { ...base, title: 'Lock the account after five failed sign-ins', requirement_id: 'FR-012', technique: 'negative', source_reference: 'locked out after five failed attempts' },
         { ...base, title: 'Reject a password shorter than eight characters', source_reference: 'at least 8 characters' },
       ],
       // What the backend adds to a requirement-driven run: how much of the
@@ -2944,6 +2944,9 @@ describe('TestCaseGeneratorPage — Phase 3, generating from numbered requiremen
 
     expect(seen.generate).toHaveLength(1);
     expect(seen.generate[0]).not.toHaveProperty('requirement_document_ids');
+    // Nor the depth or a top-up: those belong to a run from requirements.
+    expect(seen.generate[0]).not.toHaveProperty('depth');
+    expect(seen.generate[0]).not.toHaveProperty('coverage_top_up');
     expect(seen.generate[0].requirement_text).toContain(FRD_TEXT);
     expect(seen.plans).toHaveLength(0);
     // A run from pasted text has no requirement set to report on.
@@ -3150,5 +3153,211 @@ describe('TestCaseGeneratorPage — Phase 3, generating from numbered requiremen
 
     await openAndSelectProject(PROJECT_A);
     await waitFor(() => expect(toggle().checked).toBe(true));
+  }, 30000);
+
+  // ------------------------------------------------------------ Phase 4 — coverage
+
+  const topUpToggle = () => screen.getByLabelText('Fill coverage gaps with extra calls') as HTMLInputElement;
+
+  const depthSelect = () =>
+    [...document.querySelectorAll('select')].find((el) => [...el.options].some((o) => o.value === 'EXHAUSTIVE')) as HTMLSelectElement;
+
+  /** What the backend adds when a request names a depth. */
+  function responseWithMatrix(): GenerateAiTestCasesResponse {
+    const response = requirementResponse();
+    return {
+      ...response,
+      requirements: {
+        ...response.requirements!,
+        matrix: {
+          depth: 'STANDARD',
+          techniques: [
+            { technique: 'positive', applicable: 2, met: 2, short: 0, provided_by: 'Functional Testing' },
+            { technique: 'negative', applicable: 2, met: 1, short: 1, provided_by: 'Negative Testing' },
+          ],
+          gaps: [{ key: 'FR-013', kind: 'functional', missing: [{ technique: 'negative', have: 0, target: 1 }] }],
+          gap_total: 1,
+          complete: 1,
+          not_applicable: 0,
+          unlinked_cases: 1,
+          top_up: { rounds: 1, calls: 2, cases_added: 3, stopped: 'the call limit was reached' },
+        },
+      },
+    };
+  }
+
+  it('names the depth in a request from requirements, and asks for no top-up unless the option is ticked', async () => {
+    const seen = serve();
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+    await turnOn();
+    expect(topUpToggle().checked).toBe(false);
+    expect(seen.plans[seen.plans.length - 1].depth).toBe('STANDARD');
+    expect(seen.plans[seen.plans.length - 1]).not.toHaveProperty('coverage_top_up');
+
+    await generate();
+
+    expect(seen.generate[0].depth).toBe('STANDARD');
+    expect(seen.generate[0]).not.toHaveProperty('coverage_top_up');
+  }, 30000);
+
+  it('sends the depth chosen under Exploration Depth, and the plan is worked out for it too', async () => {
+    const seen = serve();
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+    await turnOn();
+
+    await act(async () => {
+      fireEvent.change(depthSelect(), { target: { value: 'EXHAUSTIVE' } });
+    });
+    await waitFor(() => expect(seen.plans[seen.plans.length - 1].depth).toBe('EXHAUSTIVE'), { timeout: 5000 });
+    await generate();
+
+    expect(seen.generate[0].depth).toBe('EXHAUSTIVE');
+  }, 30000);
+
+  it('asks for the gaps to be filled once the option is ticked — in the plan and in the request', async () => {
+    const seen = serve();
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+    await turnOn();
+
+    await act(async () => {
+      fireEvent.click(topUpToggle());
+    });
+    await waitFor(() => expect(seen.plans[seen.plans.length - 1].coverage_top_up).toBe(true), { timeout: 5000 });
+    await generate();
+
+    expect(seen.generate[0]).toMatchObject({ depth: 'STANDARD', coverage_top_up: true });
+  }, 30000);
+
+  it('sends neither depth nor top-up once the mode is turned off again, whatever was ticked before', async () => {
+    const seen = serve();
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+    await turnOn();
+    await act(async () => {
+      fireEvent.click(topUpToggle());
+    });
+    await act(async () => {
+      fireEvent.click(toggle());
+    });
+    expect(toggle().checked).toBe(false);
+
+    await generate();
+
+    expect(seen.generate[0]).not.toHaveProperty('requirement_document_ids');
+    expect(seen.generate[0]).not.toHaveProperty('depth');
+    expect(seen.generate[0]).not.toHaveProperty('coverage_top_up');
+    expect(seen.generate[0].requirement_text).toContain(FRD_TEXT);
+  }, 30000);
+
+  it('a case shows and keeps the technique it counts for: in its analysis, as a tag, and in its test data', async () => {
+    const seen = serve();
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+    await turnOn();
+    await generate();
+
+    await waitFor(() => expect(screen.getByText(/Generated Test Suite/)).toBeTruthy());
+    await act(async () => {
+      document.getElementById('btn-save-to-project')!.click();
+    });
+    await waitFor(() => expect(seen.saved).toHaveLength(2));
+
+    const linked = seen.saved.find((c) => c.title === 'Lock the account after five failed sign-ins');
+    expect(linked.tags).toContain('technique:negative');
+    expect(JSON.parse(linked.test_data)).toMatchObject({ requirement_id: 'FR-012', technique: 'negative' });
+    expect(linked.traceability.aiAnalysis).toContain('requirement: FR-012, technique: negative');
+    const unlinked = seen.saved.find((c) => c.title === 'Reject a password shorter than eight characters');
+    expect(unlinked.tags.some((t: string) => t.startsWith('technique:'))).toBe(false);
+    expect(JSON.parse(unlinked.test_data)).not.toHaveProperty('technique');
+  }, 30000);
+
+  it('shows the coverage by technique in Generation Details when the run has a matrix', async () => {
+    serve({ generation: () => jsonResponse(200, responseWithMatrix()) });
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+    await turnOn();
+    await generate();
+
+    const matrix = document.getElementById('coverage-matrix')!;
+    expect(document.getElementById('generation-details-panel')!.contains(matrix)).toBe(true);
+    expect(matrix.textContent).toContain('Coverage at Standard depth: 1 of 2 testable requirements have every technique that applies');
+    expect(matrix.textContent).toContain('Top-up: 1 round, 2 extra calls, 3 cases added — stopped because the call limit was reached.');
+    expect(matrix.textContent).toContain('FR-013 (Negative 0/1)');
+  }, 30000);
+
+  it('shows no coverage matrix for a run that has none', async () => {
+    serve();
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+    await turnOn();
+    await generate();
+
+    expect(document.getElementById('requirement-coverage')).toBeTruthy();
+    expect(document.getElementById('coverage-matrix')).toBeNull();
+  }, 30000);
+
+  it('keeps the top-up choice across leaving the page, and for its own project', async () => {
+    serve();
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+    await turnOn();
+    await act(async () => {
+      fireEvent.click(topUpToggle());
+    });
+    expect(topUpToggle().checked).toBe(true);
+
+    await goToDashboard();
+    await goToGenerator();
+    await goToSourcesBranch();
+    await waitFor(() => expect(topUpToggle().checked).toBe(true));
+
+    await openAndSelectProject(PROJECT_B);
+    await waitFor(() => expect(toggle().checked).toBe(false));
+    expect(screen.queryByLabelText('Fill coverage gaps with extra calls')).toBeNull();
+
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(topUpToggle().checked).toBe(true));
+  }, 40000);
+
+  it('the top-up choice is still there after a generation that finished while the page was gone', async () => {
+    let resolveGeneration: (value: Response) => void;
+    const pending = new Promise<Response>((resolve) => {
+      resolveGeneration = resolve;
+    });
+    const seen = serve({ generation: () => pending });
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+    await turnOn();
+    await act(async () => {
+      fireEvent.click(topUpToggle());
+    });
+    await act(async () => {
+      document.getElementById('btn-generate-test-cases-primary')!.click();
+    });
+    await waitFor(() => expect(screen.getByText('Generating Test Cases...')).toBeTruthy());
+    expect(seen.generate[0].coverage_top_up).toBe(true);
+
+    await goToDashboard();
+    await act(async () => {
+      resolveGeneration(jsonResponse(200, requirementResponse()));
+    });
+    await goToGenerator();
+    await goToSourcesBranch();
+
+    await waitFor(() => expect(topUpToggle().checked).toBe(true));
+  }, 40000);
+
+  it('the Non-Functional category, ticked by default, now brings the Non-Functional skill into a request', async () => {
+    const seen = serve();
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+    await generate();
+
+    const ids: string[] = seen.generate[0].skills.map((s: { id: string }) => s.id);
+    expect(ids).toContain('skill-non-functional-testing');
+    expect(seen.generate[0].skills.find((s: { id: string }) => s.id === 'skill-non-functional-testing').name).toBe('Non-Functional Testing');
   }, 30000);
 });

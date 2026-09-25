@@ -21,13 +21,20 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, ChevronDown, ChevronRight, Info, ListChecks, Loader2 } from 'lucide-react';
 import { UploadedRequirementDoc } from '../../types';
 import { ApiError, aiqaApi } from '../../services/aiqaApi';
-import type { GenerateAiPlanResponse, GenerateAiSkillInput, RequirementRecord } from '../../types/contract';
+import type { CoverageDepth, GenerateAiPlanResponse, GenerateAiSkillInput, RequirementRecord } from '../../types/contract';
+import { DEPTH_LABEL, DEPTH_MEANING, techniqueLabel, techniqueSkill } from './coverageLabels';
 
 interface RequirementGenerationSectionProps {
   projectId: string | null;
   /** Controlled by the page, which sends the documents' ids with the request. */
   enabled: boolean;
   onEnabledChange: (enabled: boolean) => void;
+  /** The depth the request will ask for (the page's Exploration Depth) — what
+   *  the coverage plan below is worked out for. */
+  depth: CoverageDepth;
+  /** Whether the request will also ask for the coverage gaps to be filled. */
+  topUp: boolean;
+  onTopUpChange: (topUp: boolean) => void;
   documents: UploadedRequirementDoc[];
   /** Exactly the skills the next generation would send. */
   skills: GenerateAiSkillInput[];
@@ -53,6 +60,9 @@ export const RequirementGenerationSection: React.FC<RequirementGenerationSection
   projectId,
   enabled,
   onEnabledChange,
+  depth,
+  topUp,
+  onTopUpChange,
   documents,
   skills,
   disabled = false,
@@ -79,7 +89,11 @@ export const RequirementGenerationSection: React.FC<RequirementGenerationSection
     setPlanLoading(true);
     const timer = setTimeout(() => {
       aiqaApi.testCases
-        .planGenerateAi(projectId, { skills, requirement_document_ids: docIds }, controller.signal)
+        .planGenerateAi(
+          projectId,
+          { skills, requirement_document_ids: docIds, depth, ...(topUp ? { coverage_top_up: true } : {}) },
+          controller.signal,
+        )
         .then((p) => {
           if (controller.signal.aborted) return;
           setPlan(p);
@@ -101,7 +115,7 @@ export const RequirementGenerationSection: React.FC<RequirementGenerationSection
     // `skills`/`docIds` are rebuilt on every render; their keys carry what
     // matters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, projectId, docIdsKey, skillsKey]);
+  }, [enabled, projectId, docIdsKey, skillsKey, depth, topUp]);
 
   // The requirements themselves, read only when the user asks to see them.
   const [showList, setShowList] = useState(false);
@@ -214,6 +228,27 @@ export const RequirementGenerationSection: React.FC<RequirementGenerationSection
             </div>
           )}
 
+          {/* Phase 4 — the coverage top-up: opt-in, within this mode. */}
+          <label className="flex items-center gap-1.5 text-[11px] font-mono text-slate-300 cursor-pointer">
+            <input
+              type="checkbox"
+              id="coverage-top-up-toggle"
+              checked={topUp}
+              onChange={(e) => onTopUpChange(e.target.checked)}
+              disabled={disabled}
+              className="accent-violet-600"
+            />
+            <span>Fill coverage gaps with extra calls</span>
+          </label>
+          <p className="text-[11px] text-slate-500 font-sans">
+            After the first pass, a requirement that is short of the depth's targets (say, it has no negative or edge
+            case) is asked about again, one technique at a time, until every target is met, a round adds nothing, or the
+            call limit is reached.
+            {topUp && plan?.coverage
+              ? ` Up to ${plan.coverage.top_up_rounds} ${plural(plan.coverage.top_up_rounds, 'round', 'rounds')} and ${plan.coverage.top_up_call_limit.toLocaleString()} more ${plural(plan.coverage.top_up_call_limit, 'call', 'calls')} in all.`
+              : ''}
+          </p>
+
           {planLoading && (
             <div className="flex items-center gap-1.5 text-[11px] font-mono text-violet-300">
               <Loader2 className="w-3 h-3 animate-spin" />
@@ -268,8 +303,41 @@ export const RequirementGenerationSection: React.FC<RequirementGenerationSection
 
               <div className="text-slate-500">
                 Rough size: about {plan.estimated_prompt_tokens.toLocaleString()} tokens in and{' '}
-                {plan.estimated_completion_tokens.toLocaleString()} out across all calls.
+                {plan.estimated_completion_tokens.toLocaleString()} out across all calls
+                {topUp ? ' of the first pass (a top-up adds to it)' : ''}.
               </div>
+
+              {plan.coverage && (
+                <div id="coverage-plan" className="pt-1.5 border-t border-slate-800/80 space-y-1">
+                  <div className="text-slate-100">
+                    Coverage at {DEPTH_LABEL[plan.coverage.depth] ?? plan.coverage.depth} depth
+                    <span className="text-slate-500">
+                      {DEPTH_MEANING[plan.coverage.depth] ? ` — ${DEPTH_MEANING[plan.coverage.depth]}` : ''}. Change it under
+                      Exploration Depth.
+                    </span>
+                  </div>
+                  <ul className="space-y-0.5">
+                    {plan.coverage.techniques.map((t) => (
+                      <li key={t.technique} className="flex flex-wrap items-baseline gap-x-2">
+                        <span className="text-slate-100 w-24">{techniqueLabel(t.technique)}</span>
+                        <span>
+                          {t.requirements.toLocaleString()} {plural(t.requirements, 'requirement', 'requirements')} ×{' '}
+                          {t.per_requirement}
+                        </span>
+                        {t.provided_by ? (
+                          <span className="text-slate-500">via {t.provided_by}</span>
+                        ) : (
+                          <span className="text-amber-300">
+                            no selected skill provides it
+                            {techniqueSkill(t.technique) ? ` — select ${techniqueSkill(t.technique)}` : ''}; it will not be
+                            attempted
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
 
               {notOffered > 0 && (
                 <div className="text-amber-300 flex items-start gap-1">
