@@ -18,8 +18,8 @@ use crate::errors::{ApiError, ApiJson, ApiPath, ApiQuery};
 use crate::state::AppState;
 use axum::{
     extract::{Extension, State},
-    http::StatusCode,
-    response::Json,
+    http::{header, StatusCode},
+    response::{IntoResponse, Json, Response},
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -57,11 +57,20 @@ async fn load_run(
 }
 
 async fn detail_of(state: &AppState, run: AutopilotRunRow) -> Result<RunDetail, ApiError> {
-    let steps = state
+    let mut steps = state
         .store
         .list_autopilot_steps(run.id)
         .await
         .map_err(to_500)?;
+    // The report is big and is read on its own route (`GET .../report`); a page watching the run does not need it every time.
+    for step in steps
+        .iter_mut()
+        .filter(|s| s.name == crate::autopilot::Step::Report.as_str())
+    {
+        if let Some(detail) = step.detail.as_object_mut() {
+            detail.remove("report");
+        }
+    }
     let events = state
         .store
         .list_autopilot_events(run.id, None, DETAIL_EVENTS)
@@ -559,6 +568,87 @@ pub(crate) async fn approve_cases(
         "approved": approved,
         "refused": refused,
     })))
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct ReportQuery {
+    /// `json` (the default) or `markdown`.
+    #[serde(default)]
+    format: Option<String>,
+}
+
+/// GET /api/v1/projects/:project_id/autopilot/runs/:run_id/report — what the run found: the requirements one by one with
+/// how their cases came out, the failures, the cases that could not be run, what the AI wrote and cost, and what to know
+/// before trusting the numbers. The report the run's last step wrote when it has one; for a run that is going (or that ended
+/// before it got there) it is worked out now from what the run has recorded, and says it is not final. `?format=markdown`
+/// gives it as text to paste. Viewer.
+pub(crate) async fn get_report(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, run_id)): ApiPath<(Uuid, Uuid)>,
+    ApiQuery(query): ApiQuery<ReportQuery>,
+) -> Result<Response, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let run = load_run(&state, project_id, run_id).await?;
+    let markdown = match query.format.as_deref() {
+        None | Some("json") => false,
+        Some("markdown") => true,
+        Some(other) => {
+            return Err(ApiError::validation(format!(
+                "format must be json or markdown, got '{other}'"
+            )))
+        }
+    };
+    let steps = state
+        .store
+        .list_autopilot_steps(run_id)
+        .await
+        .map_err(to_500)?;
+    let written = steps
+        .iter()
+        .find(|s| s.name == crate::autopilot::Step::Report.as_str() && s.state == "DONE")
+        .map(|s| s.detail["report"].clone())
+        .filter(|r| r.is_object());
+    let report = match written {
+        Some(report) => report,
+        None => {
+            // Read as the person asking, the way the run's own steps read.
+            let api = crate::autopilot_pipeline::InternalApi::new(&state, ctx.key_id);
+            let suite = steps
+                .iter()
+                .find(|s| s.name == crate::autopilot::Step::Generate.as_str())
+                .and_then(|s| s.detail["suite_id"].as_str().map(str::to_string));
+            let documents: Vec<Uuid> = run.config["requirement_document_ids"]
+                .as_array()
+                .map(|ids| {
+                    ids.iter()
+                        .filter_map(|id| id.as_str().and_then(|s| Uuid::parse_str(s).ok()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let (requirements, cases) =
+                crate::autopilot_report::collect(&api, project_id, &documents, suite.as_deref())
+                    .await
+                    .map_err(ApiError::internal)?;
+            let finished = RunState::parse(&run.state).is_some_and(RunState::is_terminal);
+            crate::autopilot_report::build(&crate::autopilot_report::ReportInput {
+                run: &run,
+                steps: &steps,
+                requirements: &requirements,
+                cases: &cases,
+                finished,
+            })
+        }
+    };
+    if markdown {
+        Ok((
+            [(header::CONTENT_TYPE, "text/markdown; charset=utf-8")],
+            crate::autopilot_report::markdown(&report),
+        )
+            .into_response())
+    } else {
+        Ok(Json(report).into_response())
+    }
 }
 
 #[derive(Debug, Deserialize)]

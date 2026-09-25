@@ -129,17 +129,23 @@ pub enum Step {
     Validate,
     /// The gate: the cases wait for a person to approve them (or the run approves the validated ones, when it was told to).
     Approve,
+    /// The approved cases are compiled and run against the application, a few at a time.
+    Execute,
+    /// What the run found, in one place.
+    Report,
 }
 
 impl Step {
     /// In the order they run.
-    pub const ALL: [Step; 6] = [
+    pub const ALL: [Step; 8] = [
         Step::Requirements,
         Step::Crawl,
         Step::GapCheck,
         Step::Generate,
         Step::Validate,
         Step::Approve,
+        Step::Execute,
+        Step::Report,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -150,6 +156,8 @@ impl Step {
             Step::Generate => "GENERATE",
             Step::Validate => "VALIDATE",
             Step::Approve => "APPROVE",
+            Step::Execute => "EXECUTE",
+            Step::Report => "REPORT",
         }
     }
 
@@ -166,6 +174,8 @@ impl Step {
             Step::Generate => "generating the test cases",
             Step::Validate => "validating the test cases",
             Step::Approve => "approving the test cases",
+            Step::Execute => "running the approved test cases",
+            Step::Report => "writing the report",
         }
     }
 }
@@ -260,6 +270,10 @@ pub struct AutopilotConfig {
     pub run_concurrency: Option<u64>,
     #[serde(default)]
     pub approval: ApprovalMode,
+    /// The crawl's role the approved cases run as. Omitted: the role of the crawl that never logged in (`anonymous`) when
+    /// the run has one, otherwise the first role.
+    #[serde(default)]
+    pub execution_role: Option<String>,
 }
 
 fn yes() -> bool {
@@ -269,6 +283,22 @@ fn yes() -> bool {
 impl AutopilotConfig {
     pub fn concurrency(&self) -> u64 {
         self.run_concurrency.unwrap_or(DEFAULT_CONCURRENCY)
+    }
+
+    /// The role to hand the cases off as, in the form the handoff route takes: `None` is the crawl's role that never logged in.
+    pub fn execution_role(&self) -> Option<String> {
+        if let Some(role) = self
+            .execution_role
+            .as_deref()
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+        {
+            return Some(role.to_string());
+        }
+        if self.roles.iter().any(|r| r.login_actions.is_empty()) {
+            return None;
+        }
+        self.roles.first().map(|r| r.name.clone())
     }
 
     /// What an estimate of this run is worked out from.
@@ -316,6 +346,18 @@ impl AutopilotConfig {
                 "a run needs at least one role (anonymous, with no login steps, is a role too)"
                     .to_string(),
             );
+        }
+        if let Some(role) = self
+            .execution_role
+            .as_deref()
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+        {
+            if !self.roles.iter().any(|r| r.name == role) {
+                problems.push(format!(
+                    "execution_role names {role:?}, which is not one of the run's roles"
+                ));
+            }
         }
         // An empty list of roles is reported above, not twice.
         let mut request = self.estimate_request();
@@ -421,6 +463,7 @@ pub mod event {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{json, Value};
 
     fn config() -> AutopilotConfig {
         serde_json::from_value(serde_json::json!({
@@ -501,7 +544,9 @@ mod tests {
                 Step::GapCheck,
                 Step::Generate,
                 Step::Validate,
-                Step::Approve
+                Step::Approve,
+                Step::Execute,
+                Step::Report
             ],
             "the crawl needs the requirements read, the gap check needs the crawl"
         );
@@ -632,6 +677,64 @@ mod tests {
             c.check().unwrap_err(),
             ["roles must be between 1 and 20".to_string()]
         );
+    }
+
+    #[test]
+    fn the_cases_run_as_the_named_role_or_as_the_visitor_when_there_is_one_or_as_the_first_role() {
+        let login = json!([{"type": "NAVIGATE", "url": "https://shop.example.test/login"}]);
+        let config = |roles: Value, role: Option<&str>| -> AutopilotConfig {
+            serde_json::from_value(json!({
+                "base_url": "https://shop.example.test",
+                "roles": roles,
+                "execution_role": role,
+            }))
+            .unwrap()
+        };
+        // Named: that role.
+        let both = json!([{"name": "anonymous"}, {"name": "admin", "login_actions": login}]);
+        assert_eq!(
+            config(both.clone(), Some("admin"))
+                .execution_role()
+                .as_deref(),
+            Some("admin")
+        );
+        assert_eq!(
+            config(both.clone(), Some("  admin "))
+                .execution_role()
+                .as_deref(),
+            Some("admin"),
+            "spaces do not count"
+        );
+        // Not named, and a role that needs no login exists: the crawl's role that never logged in, which is what none means.
+        assert_eq!(config(both.clone(), None).execution_role(), None);
+        assert_eq!(
+            config(both, Some("  ")).execution_role(),
+            None,
+            "a blank name is no name"
+        );
+        // Not named and every role logs in: the first.
+        let logged_in = json!([{"name": "standard", "login_actions": login}, {"name": "admin", "login_actions": login}]);
+        assert_eq!(
+            config(logged_in.clone(), None).execution_role().as_deref(),
+            Some("standard")
+        );
+        assert_eq!(
+            config(json!([]), None).execution_role(),
+            None,
+            "no roles, no role"
+        );
+
+        // A role that is not one of the run's is refused, and one that is, is not.
+        let mut c = config(logged_in, Some("root"));
+        let problems = c.check().unwrap_err();
+        assert_eq!(
+            problems,
+            ["execution_role names \"root\", which is not one of the run's roles".to_string()]
+        );
+        c.execution_role = Some("admin".to_string());
+        assert!(c.check().is_ok());
+        c.execution_role = None;
+        assert!(c.check().is_ok());
     }
 
     #[test]

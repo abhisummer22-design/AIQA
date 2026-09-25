@@ -28,6 +28,8 @@ pub struct RunnerOptions {
     pub poll_every: Duration,
     /// The longest a crawl may take before the step gives up on it.
     pub crawl_timeout: Duration,
+    /// The longest the run of one test case may take before the step stops waiting for it.
+    pub run_timeout: Duration,
 }
 
 impl Default for RunnerOptions {
@@ -35,6 +37,7 @@ impl Default for RunnerOptions {
         RunnerOptions {
             poll_every: Duration::from_secs(2),
             crawl_timeout: Duration::from_secs(30 * 60),
+            run_timeout: Duration::from_secs(20 * 60),
         }
     }
 }
@@ -513,6 +516,7 @@ mod tests {
                 options: RunnerOptions {
                     poll_every: Duration::from_millis(1),
                     crawl_timeout: Duration::from_secs(1),
+                    run_timeout: Duration::from_secs(1),
                 },
             }
         }
@@ -967,6 +971,7 @@ mod tests {
         let fast = RunnerOptions {
             poll_every: Duration::from_millis(5),
             crawl_timeout: Duration::from_secs(9),
+            run_timeout: Duration::from_secs(8),
         };
         registry.set_options(fast);
         assert_eq!(registry.options(), fast);

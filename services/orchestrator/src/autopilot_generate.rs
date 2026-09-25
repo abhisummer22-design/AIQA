@@ -35,7 +35,7 @@ fn suite_of(detail: &Value) -> Option<Uuid> {
 }
 
 /// The cases of the run's suite, as the API lists them.
-async fn cases_of_suite(ctx: &StepCtx, suite: Uuid) -> Result<Vec<Value>, StepError> {
+pub(crate) async fn cases_of_suite(ctx: &StepCtx, suite: Uuid) -> Result<Vec<Value>, StepError> {
     let reply = ctx
         .api
         .get(&ctx.path(&format!("test-cases?suite_id={suite}")))
@@ -50,7 +50,7 @@ async fn cases_of_suite(ctx: &StepCtx, suite: Uuid) -> Result<Vec<Value>, StepEr
 }
 
 /// The suite the generate step made, from the saved detail of that step.
-async fn suite_of_run(ctx: &StepCtx) -> Result<Uuid, StepError> {
+pub(crate) async fn suite_of_run(ctx: &StepCtx) -> Result<Uuid, StepError> {
     suite_of(&ctx.detail_of(Step::Generate).await).ok_or_else(|| {
         StepError::failed("there is no suite of test cases: the generate step did not record one")
     })

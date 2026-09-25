@@ -25,6 +25,8 @@ impl StepRunner for ApiSteps {
             Step::Generate => crate::autopilot_generate::generate(ctx).await,
             Step::Validate => crate::autopilot_generate::validate(ctx).await,
             Step::Approve => crate::autopilot_generate::approve(ctx).await,
+            Step::Execute => crate::autopilot_execute::execute(ctx).await,
+            Step::Report => crate::autopilot_report::report(ctx).await,
         }
     }
 }

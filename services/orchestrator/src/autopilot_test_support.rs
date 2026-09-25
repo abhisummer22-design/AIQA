@@ -77,6 +77,7 @@ pub(crate) async fn fixture(
         options: RunnerOptions {
             poll_every: Duration::from_millis(1),
             crawl_timeout: Duration::from_secs(5),
+            run_timeout: Duration::from_secs(5),
         },
     };
     Fixture {
