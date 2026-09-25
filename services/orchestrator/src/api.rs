@@ -428,6 +428,12 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/projects/:project_id/login-suggestion",
             post(login_suggestion_scoped),
         )
+        // Phase 7 — what an autopilot run would cost before it is started: AI
+        // calls, tokens, time and dollars per provider (`autopilot_estimate.rs`).
+        .route(
+            "/api/v1/projects/:project_id/autopilot/estimate",
+            post(autopilot_estimate_scoped),
+        )
         // Phase 3 — what a requirement-driven generation would do, without
         // calling any model: how many AI calls, what each skill is shown.
         .route(
@@ -3038,6 +3044,7 @@ async fn generate_ai_test_cases_scoped(
             // Real totals summed from `waves`, not this variant's own
             // (last-wave-only, per its own doc comment) top-level fields.
             let usage = crate::ai_generation::aggregate_wave_usage(&waves);
+            record_generation_calls(&state, &waves).await;
             // The real routing decision, emitted on its own `ai_router`
             // source so the Orchestrator view can show *why* this route
             // won (score, mode, whether it was the primary choice) rather
@@ -3189,6 +3196,33 @@ async fn generate_ai_test_cases_scoped(
     };
 
     Ok(Json(response))
+}
+
+/// Remembers what each call of a generation took (a wave is one call), so that the estimate of a later run can say how long
+/// a call to this provider and model lasts (`ai_call_stats`, `autopilot_estimate.rs`). Fails open: an estimate is never
+/// worth losing a generation over.
+async fn record_generation_calls(state: &AppState, waves: &[crate::ai_generation::WaveSummary]) {
+    for wave in waves.iter().filter(|w| w.succeeded()) {
+        let (Some(provider), Some(model), Some(latency_ms)) =
+            (&wave.provider, &wave.model, wave.latency_ms)
+        else {
+            continue;
+        };
+        if let Err(e) = state
+            .store
+            .record_ai_call(
+                provider,
+                model,
+                "TEST_CASE_GENERATION",
+                latency_ms,
+                wave.prompt_tokens,
+                wave.completion_tokens,
+            )
+            .await
+        {
+            tracing::warn!("could not record what a generation call took: {e}");
+        }
+    }
 }
 
 /// The requirements of `document_ids` as generation items. A document that is
@@ -6903,6 +6937,206 @@ async fn login_suggestion_scoped(
         ai,
         missing_secrets,
     }))
+}
+
+// -------------------------------------------------------------- autopilot (Phase 7)
+//
+// From documents to a report, in one run a person starts knowing what it costs. See `autopilot_estimate.rs`.
+
+/// `POST .../autopilot/estimate` body: what a run would be asked to do. Every field is optional.
+#[derive(Debug, Deserialize)]
+struct AutopilotEstimateBody {
+    /// The documents the run is about; omitted or empty, every document of the project that has requirements.
+    #[serde(default)]
+    requirement_document_ids: Vec<Uuid>,
+    #[serde(default)]
+    skills: Vec<SkillInputBody>,
+    /// `SMOKE`, `STANDARD`, `EXHAUSTIVE` or `CHAOS_EXPLORATORY`; omitted, the number of cases is only guessed.
+    #[serde(default)]
+    depth: Option<String>,
+    #[serde(default)]
+    coverage_top_up: bool,
+    /// Roles the crawl logs in as, `anonymous` included (default 1, at most 20).
+    #[serde(default)]
+    roles: Option<u64>,
+    #[serde(default)]
+    focus_requirements: bool,
+    /// The most requirements the gap check's AI step is asked about; omitted, the step is not used.
+    #[serde(default)]
+    verify_gaps: Option<u64>,
+    /// Whether approved cases are compiled and run (default true).
+    #[serde(default)]
+    execute: Option<bool>,
+    /// How many runs go at once (default 2, at most 8).
+    #[serde(default)]
+    run_concurrency: Option<u64>,
+}
+
+const AUTOPILOT_MAX_ROLES: u64 = 20;
+const AUTOPILOT_DEFAULT_CONCURRENCY: u64 = 2;
+const AUTOPILOT_MAX_CONCURRENCY: u64 = 8;
+
+/// Where `task` would go right now, what that provider charges and what earlier calls of the task to it measured
+/// (`ai_call_stats`). `None`: nothing can serve the task.
+async fn estimate_server_for(
+    state: &AppState,
+    task: crate::ai_router::AiTask,
+    task_name: &str,
+) -> crate::autopilot_estimate::Server {
+    use crate::autopilot_estimate as est;
+    let (decision, _, _) = state.ai_infra.route_and_window_for(task).await?;
+    let providers = state.ai_infra.providers_snapshot().await;
+    let provider = providers.iter().find(|p| p.id == decision.provider_id)?;
+    let observed = state
+        .store
+        .ai_call_stats(task_name)
+        .await
+        .ok()
+        .and_then(|rows| {
+            rows.into_iter().find(|r| {
+                r.provider == decision.provider_id && r.model == decision.model_id && r.calls > 0
+            })
+        })
+        .map(|r| est::Observed {
+            calls: r.calls as u64,
+            avg_ms: r.total_ms as f64 / r.calls as f64,
+            avg_prompt_tokens: (r.token_calls > 0).then(|| r.prompt_tokens as f64 / r.token_calls as f64),
+            avg_completion_tokens: (r.token_calls > 0)
+                .then(|| r.completion_tokens as f64 / r.token_calls as f64),
+        });
+    Some(est::ProviderProfile {
+        id: provider.id.clone(),
+        name: provider.name.clone(),
+        model: decision.model_id.clone(),
+        kind: match provider.provider_type {
+            crate::ai_router::ProviderType::Local => est::ProviderKind::Local,
+            crate::ai_router::ProviderType::Api => est::ProviderKind::Api,
+            _ => est::ProviderKind::Other,
+        },
+        pricing: match provider.pricing {
+            crate::ai_router::ProviderPricing::Unmetered => est::Pricing::Unmetered,
+            crate::ai_router::ProviderPricing::Metered {
+                input_usd_per_1k,
+                output_usd_per_1k,
+            } => est::Pricing::Metered {
+                input_usd_per_1k,
+                output_usd_per_1k,
+            },
+        },
+        observed,
+    })
+}
+
+/// POST /api/v1/projects/:project_id/autopilot/estimate — what a run over this project's requirements would cost before it is
+/// started: AI calls, tokens, time and dollars, as ranges, per step and per task, each provider named with what it charges
+/// and how its speed is known, and every assumption written down. Reads only and calls no AI.
+async fn autopilot_estimate_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiJson(body): ApiJson<AutopilotEstimateBody>,
+) -> Result<Json<crate::autopilot_estimate::Estimate>, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let roles = body.roles.unwrap_or(1);
+    if !(1..=AUTOPILOT_MAX_ROLES).contains(&roles) {
+        return Err(ApiError::validation(format!(
+            "roles must be between 1 and {AUTOPILOT_MAX_ROLES}"
+        )));
+    }
+    let run_concurrency = body.run_concurrency.unwrap_or(AUTOPILOT_DEFAULT_CONCURRENCY);
+    if !(1..=AUTOPILOT_MAX_CONCURRENCY).contains(&run_concurrency) {
+        return Err(ApiError::validation(format!(
+            "run_concurrency must be between 1 and {AUTOPILOT_MAX_CONCURRENCY}"
+        )));
+    }
+    if let Some(n) = body.verify_gaps {
+        if n == 0 || n > crate::gap_verify::MAX_VERIFICATIONS_LIMIT as u64 {
+            return Err(ApiError::validation(format!(
+                "verify_gaps must be between 1 and {}",
+                crate::gap_verify::MAX_VERIFICATIONS_LIMIT
+            )));
+        }
+    }
+
+    let items: Vec<crate::requirement_generation::RequirementItem> = state
+        .store
+        .list_requirements(&project_id.to_string(), &body.requirement_document_ids)
+        .await
+        .map_err(to_500)?
+        .into_iter()
+        .map(|r| crate::requirement_generation::RequirementItem {
+            key: r.key,
+            section: r.section,
+            kind: crate::requirements::RequirementKind::from_db(&r.kind),
+            text: r.text,
+        })
+        .collect();
+    let skills: Vec<crate::ai_generation::SkillInput> = body
+        .skills
+        .into_iter()
+        .map(|s| crate::ai_generation::SkillInput {
+            id: s.id,
+            name: s.name,
+            description: s.description,
+        })
+        .collect();
+    let coverage_options = coverage_options_for(body.depth.as_deref(), body.coverage_top_up, true)?;
+    let budget = requirement_batch_budget(&state).await;
+    let plan = crate::requirement_generation::plan_calls(&items, &skills, budget);
+    let (prompt_tokens, completion_tokens) =
+        crate::requirement_generation::estimate_tokens(&plan, &items);
+    let cases_target = coverage_options
+        .map(|o| {
+            crate::coverage::plan_info(&items, &skills, o.depth, o.top_up, o.rounds, 0)
+                .techniques
+                .iter()
+                .map(|t| (t.requirements * t.per_requirement) as u64)
+                .sum()
+        })
+        .unwrap_or(0);
+
+    let input = crate::autopilot_estimate::EstimateInput {
+        requirements: items.len() as u64,
+        first_pass_calls: plan.calls.len() as u64,
+        first_pass_prompt_tokens: prompt_tokens,
+        first_pass_completion_tokens: completion_tokens,
+        top_up_rounds: coverage_options
+            .filter(|o| o.top_up)
+            .map(|o| o.rounds as u64),
+        cases_target,
+        roles,
+        focus: body.focus_requirements,
+        verify: body.verify_gaps,
+        execute: body.execute.unwrap_or(true),
+        run_concurrency,
+        generation: estimate_server_for(
+            &state,
+            crate::ai_router::AiTask::TestCaseGeneration,
+            "TEST_CASE_GENERATION",
+        )
+        .await,
+        compile: estimate_server_for(
+            &state,
+            crate::ai_router::AiTask::TestCaseCompilation,
+            "TEST_CASE_COMPILATION",
+        )
+        .await,
+        traceability: estimate_server_for(
+            &state,
+            crate::ai_router::AiTask::Traceability,
+            "TRACEABILITY",
+        )
+        .await,
+    };
+    let mut estimate = crate::autopilot_estimate::estimate(&input);
+    let not_offered = items.len() - plan.offered_count();
+    if not_offered > 0 {
+        estimate.warnings.push(format!(
+            "{not_offered} requirement(s) are of a kind no selected skill tests, so no case would be generated for them."
+        ));
+    }
+    Ok(Json(estimate))
 }
 
 // ----------------------------------------------------------- intelligence
