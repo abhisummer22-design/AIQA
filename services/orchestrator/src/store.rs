@@ -32,18 +32,27 @@ pub struct Store {
     pub pool: SqlitePool,
 }
 
-fn now_rfc3339() -> String {
+pub(crate) fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
-fn parse_ts(s: &str) -> chrono::DateTime<chrono::Utc> {
+pub(crate) fn parse_ts(s: &str) -> chrono::DateTime<chrono::Utc> {
     chrono::DateTime::parse_from_rfc3339(s)
         .map(|d| d.with_timezone(&chrono::Utc))
         .unwrap_or_else(|_| chrono::Utc::now())
 }
 
-fn parse_ts_opt(s: Option<String>) -> Option<chrono::DateTime<chrono::Utc>> {
+pub(crate) fn parse_ts_opt(s: Option<String>) -> Option<chrono::DateTime<chrono::Utc>> {
     s.map(|s| parse_ts(&s))
+}
+
+fn api_key_row_from(r: sqlx::sqlite::SqliteRow) -> ApiKeyRow {
+    ApiKeyRow {
+        id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap_or_default(),
+        name: r.get("name"),
+        role: r.get("role"),
+        project_id: r.get("project_id"),
+    }
 }
 
 fn healing_proposal_from_row(r: sqlx::sqlite::SqliteRow) -> Result<HealingProposalRow> {
@@ -1217,6 +1226,21 @@ impl Store {
             .execute(&mut *tx)
             .await?;
         sqlx::query("DELETE FROM requirement_documents WHERE project_id = ?")
+            .bind(&pid_str)
+            .execute(&mut *tx)
+            .await?;
+
+        // 8e. Delete autopilot runs with their steps and events (Phase 7) — children first, so this does not depend
+        // on the foreign keys' cascade being switched on.
+        sqlx::query("DELETE FROM autopilot_events WHERE run_id IN (SELECT id FROM autopilot_runs WHERE project_id = ?)")
+            .bind(&pid_str)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM autopilot_steps WHERE run_id IN (SELECT id FROM autopilot_runs WHERE project_id = ?)")
+            .bind(&pid_str)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM autopilot_runs WHERE project_id = ?")
             .bind(&pid_str)
             .execute(&mut *tx)
             .await?;
@@ -2420,12 +2444,19 @@ impl Store {
         .bind(key_hash)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.map(|r| ApiKeyRow {
-            id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap_or_default(),
-            name: r.get("name"),
-            role: r.get("role"),
-            project_id: r.get("project_id"),
-        }))
+        Ok(row.map(api_key_row_from))
+    }
+
+    /// The key with this id, if it exists and has not been revoked: what a background job started by a key (the
+    /// autopilot) looks up before each call it makes on that key's behalf, so revoking the key stops the job.
+    pub async fn find_active_api_key(&self, id: Uuid) -> Result<Option<ApiKeyRow>> {
+        let row = sqlx::query(
+            "SELECT id, name, role, project_id FROM api_keys WHERE id = ? AND revoked_at IS NULL",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(api_key_row_from))
     }
 
     pub async fn list_api_keys(&self) -> Result<Vec<ApiKeyListRow>> {

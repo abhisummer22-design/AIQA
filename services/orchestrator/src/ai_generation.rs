@@ -150,7 +150,7 @@ pub struct ResolvedSkillInstruction {
 /// (built-in + session-only custom, `useSkillSelection.ts`), so this
 /// backend does not duplicate a second skill registry; it only resolves
 /// the *instruction* for whatever skills the caller says are selected.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillInput {
     pub id: String,
     pub name: String,
