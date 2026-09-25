@@ -12757,3 +12757,408 @@ async fn phase7a_the_ai_is_asked_only_when_the_rules_are_unsure_and_its_answer_i
     assert!(asked.iter().all(|a| a.detail.as_deref() == Some("mock/mock-model")));
     assert_eq!(executor.prompts.lock().unwrap().len(), 3);
 }
+
+// ------------------------------------------------- Phase 7B — what an autopilot run would cost
+
+async fn autopilot_estimate(state: &AppState, project: Uuid, key: &str, body: Value) -> (StatusCode, Value) {
+    send(
+        state,
+        req("POST", &format!("/api/v1/projects/{project}/autopilot/estimate"), Some(key), Some(body)),
+    )
+    .await
+}
+
+/// A router whose one provider charges: hosted, $0.002 per 1,000 tokens in and $0.01 out.
+fn priced_ai_infra() -> Arc<AiInfrastructure> {
+    let mut provider = healthy_provider("paid", vec![healthy_model("big-1", "paid", CapabilityLevel::Strong)]);
+    provider.provider_type = crate::ai_router::ProviderType::Api;
+    provider.pricing = crate::ai_router::ProviderPricing::Metered {
+        input_usd_per_1k: 0.002,
+        output_usd_per_1k: 0.01,
+    };
+    let mut executors: std::collections::HashMap<&'static str, Arc<dyn AiExecutor>> = std::collections::HashMap::new();
+    executors.insert("paid", Arc::new(FakeExecutor::ok("{}")));
+    Arc::new(AiInfrastructure::new(vec![Arc::new(FakeDiscovery(provider))], executors))
+}
+
+fn task_of<'a>(estimate: &'a Value, name: &str) -> &'a Value {
+    estimate["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["task"] == name)
+        .unwrap_or_else(|| panic!("no {name} in {estimate}"))
+}
+
+#[tokio::test]
+async fn phase7b_the_estimate_says_calls_tokens_time_and_what_they_rest_on() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    let project = make_project(&state, "Phase7B Estimate").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    upload_document(&state, &owner, project, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+
+    let (status, e) = autopilot_estimate(
+        &state,
+        project,
+        &owner,
+        serde_json::json!({"depth": "STANDARD", "coverage_top_up": true, "roles": 2, "focus_requirements": true}),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "body={e}");
+    assert_eq!(e["requirements"], 6);
+    // Six short requirements fit one batch: one call in a first pass, a quarter more allowed for answers that cannot be read
+    // and two top-up rounds of at most as many calls as the first pass.
+    let generation = task_of(&e, "TEST_CASE_GENERATION");
+    assert_eq!(generation["calls"], serde_json::json!({"min": 1, "max": 4}), "body={e}");
+    assert_eq!(generation["provider"]["id"], "mock");
+    assert_eq!(generation["provider"]["model"], "mock-model");
+    assert_eq!(generation["provider"]["kind"], "LOCAL");
+    assert_eq!(generation["provider"]["pricing"]["kind"], "UNMETERED");
+    assert_eq!(generation["cost_usd"], serde_json::json!({"min": 0.0, "max": 0.0}));
+    assert_eq!(generation["latency"]["basis"], "ASSUMED", "nothing measured yet");
+    assert!(generation["seconds"]["max"].as_u64().unwrap() > generation["seconds"]["min"].as_u64().unwrap());
+    // What the depth asks for is more cases than requirements; at least one each.
+    assert_eq!(e["cases"]["min"], 6);
+    assert!(e["cases"]["max"].as_u64().unwrap() > 6, "body={e}");
+    // Every step, in the order the run takes them; the wait for an approval is not counted.
+    let steps: Vec<&str> = e["steps"].as_array().unwrap().iter().map(|s| s["step"].as_str().unwrap()).collect();
+    assert_eq!(steps, ["REQUIREMENTS", "CRAWL", "GAP_CHECK", "GENERATE", "VALIDATE", "APPROVE", "EXECUTE", "REPORT"]);
+    let crawl = e["steps"].as_array().unwrap().iter().find(|s| s["step"] == "CRAWL").unwrap();
+    assert_eq!(crawl["note"], "2 role(s), up to 30 pages each", "a focused crawl may take ten more pages");
+    assert_eq!(e["totals"]["paid"], false);
+    assert!(e["assumptions"].as_array().unwrap().iter().any(|a| a.as_str().unwrap().contains("mock/mock-model is assumed to write 20 tokens a second")), "body={e}");
+    // Compiling is counted (rules first: none to one AI call a case); the gap check's AI step is not asked for.
+    assert_eq!(task_of(&e, "TEST_CASE_COMPILATION")["calls"]["min"], 0);
+    assert!(e["tasks"].as_array().unwrap().iter().all(|t| t["task"] != "TRACEABILITY"));
+}
+
+#[tokio::test]
+async fn phase7b_a_generation_is_remembered_and_the_estimate_after_enough_of_them_uses_what_they_took() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    let project = make_project(&state, "Phase7B Measured").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    upload_document(&state, &owner, project, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+
+    // A real generation through the endpoint records its call: one wave, one call.
+    let (status, generated) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/generate-ai"),
+            Some(&owner),
+            Some(serde_json::json!({"requirement_text": "Users can log in.", "skills": []})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={generated}");
+    let stats = state.store.ai_call_stats("TEST_CASE_GENERATION").await.unwrap();
+    assert_eq!(stats.len(), 1, "{stats:?}");
+    assert_eq!((stats[0].provider.as_str(), stats[0].model.as_str(), stats[0].calls), ("mock", "mock-model", 1));
+    // Only generation is recorded here.
+    assert!(state.store.ai_call_stats("TEST_CASE_COMPILATION").await.unwrap().is_empty());
+
+    // One call is not an average.
+    let (_, first) = autopilot_estimate(&state, project, &owner, serde_json::json!({})).await;
+    assert_eq!(task_of(&first, "TEST_CASE_GENERATION")["latency"]["basis"], "ASSUMED", "body={first}");
+
+    // Two more, slow ones: three calls make an average, and the estimate says it is measured.
+    state.store.record_ai_call("mock", "mock-model", "TEST_CASE_GENERATION", 80_000, Some(4_000), Some(1_000)).await.unwrap();
+    state.store.record_ai_call("mock", "mock-model", "TEST_CASE_GENERATION", 80_000, Some(4_000), Some(1_000)).await.unwrap();
+    let (_, second) = autopilot_estimate(&state, project, &owner, serde_json::json!({})).await;
+    let latency = &task_of(&second, "TEST_CASE_GENERATION")["latency"];
+    assert_eq!(latency["basis"], "MEASURED", "body={second}");
+    assert_eq!(latency["calls"], 3);
+    let avg = latency["avg_seconds"].as_f64().unwrap();
+    assert!((53.0..54.0).contains(&avg), "two 80 s calls and a quick one average about 53 s: {avg}");
+    // The seconds are that average, spread.
+    let seconds = &task_of(&second, "TEST_CASE_GENERATION")["seconds"];
+    assert!(seconds["min"].as_u64().unwrap() > 30 && seconds["max"].as_u64().unwrap() > 90, "body={second}");
+}
+
+#[tokio::test]
+async fn phase7b_a_provider_that_charges_makes_the_estimate_a_paid_one_and_says_how_much() {
+    let (state, _dir) = test_state_with_ai_router(priced_ai_infra()).await;
+    let project = make_project(&state, "Phase7B Paid").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    upload_document(&state, &owner, project, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+
+    let (status, e) = autopilot_estimate(&state, project, &owner, serde_json::json!({"execute": false})).await;
+
+    assert_eq!(status, StatusCode::OK, "body={e}");
+    let generation = task_of(&e, "TEST_CASE_GENERATION");
+    assert_eq!(generation["provider"]["kind"], "API");
+    assert_eq!(
+        generation["provider"]["pricing"],
+        serde_json::json!({"kind": "METERED", "input_usd_per_1k": 0.002, "output_usd_per_1k": 0.01})
+    );
+    assert!(generation["cost_usd"]["max"].as_f64().unwrap() > 0.0, "body={e}");
+    assert_eq!(e["totals"]["paid"], true);
+    assert!(e["totals"]["cost_usd"]["max"].as_f64().unwrap() > 0.0);
+    assert!(e["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("may cost up to $") && w.as_str().unwrap().contains("on paid")), "body={e}");
+    // Not asked to run the cases: nothing is compiled.
+    assert!(e["tasks"].as_array().unwrap().iter().all(|t| t["task"] != "TEST_CASE_COMPILATION"), "body={e}");
+}
+
+#[tokio::test]
+async fn phase7b_with_no_provider_the_estimate_gives_no_cost_and_a_warning_not_a_zero() {
+    let (state, _dir) = test_state_with_ai_router(Arc::new(AiInfrastructure::new(vec![], std::collections::HashMap::new()))).await;
+    let project = make_project(&state, "Phase7B No Provider").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    upload_document(&state, &owner, project, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+
+    let (status, e) = autopilot_estimate(&state, project, &owner, serde_json::json!({})).await;
+
+    assert_eq!(status, StatusCode::OK, "body={e}");
+    let generation = task_of(&e, "TEST_CASE_GENERATION");
+    assert!(generation["provider"].is_null());
+    assert!(generation["cost_usd"].is_null(), "no provider: no cost figure");
+    assert_eq!(generation["latency"]["basis"], "UNKNOWN");
+    assert!(e["totals"]["cost_usd"].is_null(), "body={e}");
+    assert!(e["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("No provider can serve generating the cases")), "body={e}");
+}
+
+#[tokio::test]
+async fn phase7b_the_documents_chosen_and_the_skills_selected_decide_what_is_counted() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    let project = make_project(&state, "Phase7B Choices").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let (_, shop) = upload_document(&state, &owner, project, "Shop.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+    let (_, sample) = upload_document(&state, &owner, project, "Sample.md", SAMPLE_FRD.as_bytes(), Some("PRD")).await;
+    let shop_id = shop["requirements_document"]["document_id"].as_str().unwrap().to_string();
+    let sample_id = sample["requirements_document"]["document_id"].as_str().unwrap().to_string();
+
+    let (_, all) = autopilot_estimate(&state, project, &owner, serde_json::json!({})).await;
+    let (_, only_sample) = autopilot_estimate(&state, project, &owner, serde_json::json!({"requirement_document_ids": [sample_id]})).await;
+    let (_, only_shop) = autopilot_estimate(&state, project, &owner, serde_json::json!({"requirement_document_ids": [shop_id]})).await;
+    assert_eq!(all["requirements"], 9);
+    assert_eq!(only_shop["requirements"], 6);
+    assert_eq!(only_sample["requirements"], 3);
+
+    // A skill that tests only performance requirements is offered one of the shop's six: the other five would get no case,
+    // and the estimate says so.
+    let (_, one_offered) = autopilot_estimate(
+        &state,
+        project,
+        &owner,
+        serde_json::json!({"requirement_document_ids": [shop_id], "skills": [{"id": "skill-performance", "name": "Performance Testing"}]}),
+    )
+    .await;
+    assert_eq!(task_of(&one_offered, "TEST_CASE_GENERATION")["calls"]["min"], 1, "body={one_offered}");
+    assert!(
+        one_offered["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().starts_with("5 requirement(s) are of a kind no selected skill tests")),
+        "body={one_offered}"
+    );
+
+    // The gap check's AI step is counted when asked for: at most 12 requirements, eight to a call.
+    let (_, verify) = autopilot_estimate(&state, project, &owner, serde_json::json!({"verify_gaps": 12})).await;
+    assert_eq!(task_of(&verify, "TRACEABILITY")["calls"], serde_json::json!({"min": 0, "max": 2}), "body={verify}");
+}
+
+#[tokio::test]
+async fn phase7b_a_project_with_no_requirements_gets_an_estimate_that_says_so() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    let project = make_project(&state, "Phase7B Nothing").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, e) = autopilot_estimate(&state, project, &owner, serde_json::json!({"depth": "STANDARD"})).await;
+
+    assert_eq!(status, StatusCode::OK, "body={e}");
+    assert_eq!(e["requirements"], 0);
+    assert!(e["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("no requirements")), "body={e}");
+    assert!(e["tasks"].as_array().unwrap().iter().all(|t| t["task"] != "TEST_CASE_GENERATION"));
+}
+
+#[tokio::test]
+async fn phase7b_what_is_left_out_of_the_request_takes_its_defaults_and_the_figures_follow_what_was_asked_for() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    let project = make_project(&state, "Phase7B Defaults").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    upload_document(&state, &owner, project, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+    let step_of = |e: &Value, name: &str| e["steps"].as_array().unwrap().iter().find(|s| s["step"] == name).unwrap().clone();
+    let has = |e: &Value, text: &str| e["assumptions"].as_array().unwrap().iter().any(|a| a.as_str().unwrap().contains(text));
+
+    // Nothing said: one role, two runs at a time.
+    let (_, plain) = autopilot_estimate(&state, project, &owner, serde_json::json!({})).await;
+    assert_eq!(step_of(&plain, "CRAWL")["note"], "1 role(s), up to 20 pages each");
+    assert!(has(&plain, "Running: 10-45 s a case, 2 at a time;"), "body={plain}");
+    // One requirement no skill is chosen for tests: named as such, and it is one, not "more than one".
+    assert!(
+        plain["warnings"].as_array().unwrap().iter().any(|w| w == "1 requirement(s) are of a kind no selected skill tests, so no case would be generated for them."),
+        "body={plain}"
+    );
+
+    // Asked for: the number of runs at a time reaches the figures.
+    let (_, four) = autopilot_estimate(&state, project, &owner, serde_json::json!({"depth": "STANDARD", "run_concurrency": 4})).await;
+    assert!(has(&four, "Running: 10-45 s a case, 4 at a time;"), "body={four}");
+    let (_, one) = autopilot_estimate(&state, project, &owner, serde_json::json!({"depth": "STANDARD", "run_concurrency": 1})).await;
+    let seconds = |e: &Value| step_of(e, "EXECUTE")["seconds"]["max"].as_u64().unwrap();
+    assert!(seconds(&one) > seconds(&four), "one at a time takes longer: {} against {}", seconds(&one), seconds(&four));
+
+    // A depth with no top-up makes no gap-filling calls; with one, two rounds of them.
+    let (_, without) = autopilot_estimate(&state, project, &owner, serde_json::json!({"depth": "STANDARD", "coverage_top_up": false})).await;
+    assert_eq!(task_of(&without, "TEST_CASE_GENERATION")["calls"], serde_json::json!({"min": 1, "max": 2}), "body={without}");
+    assert!(!has(&without, "gap-filling"), "body={without}");
+    let (_, with) = autopilot_estimate(&state, project, &owner, serde_json::json!({"depth": "STANDARD", "coverage_top_up": true})).await;
+    assert_eq!(task_of(&with, "TEST_CASE_GENERATION")["calls"], serde_json::json!({"min": 1, "max": 4}), "body={with}");
+    assert!(has(&with, "up to 2 round(s) of gap-filling calls"), "body={with}");
+
+    // The cases a depth asks for are, for each technique, its requirements times what it wants of each.
+    assert_eq!(without["cases"]["min"], 6);
+    assert_eq!(without["cases"]["max"], 15, "body={without}");
+    // A deeper run wants more of each: the same techniques, times what the depth asks of each.
+    let (_, thorough) = autopilot_estimate(&state, project, &owner, serde_json::json!({"depth": "EXHAUSTIVE"})).await;
+    assert_eq!(thorough["cases"]["max"], 30, "twice what a standard run asks of each: body={thorough}");
+}
+
+/// Two providers, `alpha` (local, unmetered) and `beta` (charges, of the kind given), to tell which task goes where.
+fn two_provider_infra(beta_kind: crate::ai_router::ProviderType) -> Arc<AiInfrastructure> {
+    let alpha = healthy_provider("alpha", vec![healthy_model("alpha-model", "alpha", CapabilityLevel::Strong)]);
+    let mut beta = healthy_provider("beta", vec![healthy_model("beta-model", "beta", CapabilityLevel::Strong)]);
+    beta.provider_type = beta_kind;
+    beta.pricing = crate::ai_router::ProviderPricing::Metered { input_usd_per_1k: 0.002, output_usd_per_1k: 0.01 };
+    let mut executors: std::collections::HashMap<&'static str, Arc<dyn AiExecutor>> = std::collections::HashMap::new();
+    executors.insert("alpha", Arc::new(FakeExecutor::ok("{}")));
+    executors.insert("beta", Arc::new(FakeExecutor::ok("{}")));
+    Arc::new(AiInfrastructure::new(vec![Arc::new(FakeDiscovery(alpha)), Arc::new(FakeDiscovery(beta))], executors))
+}
+
+/// Sends generation to `alpha` and compiling to `beta`.
+async fn route_generation_to_alpha_and_compiling_to_beta(state: &AppState) {
+    let operator = mint_key(state, "operator", None).await;
+    let (status, body) = send(
+        state,
+        req(
+            "PUT",
+            "/api/v1/ai/settings",
+            Some(&operator),
+            Some(serde_json::json!({
+                "mode": "AUTO",
+                "fallback_enabled": true,
+                "task_overrides": {
+                    "TEST_CASE_GENERATION": {"provider": null, "model": null, "chain": [{"provider": "alpha", "model": "alpha-model"}]},
+                    "TEST_CASE_COMPILATION": {"provider": null, "model": null, "chain": [{"provider": "beta", "model": "beta-model"}]}
+                }
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+}
+
+#[tokio::test]
+async fn phase7b_each_task_is_estimated_for_the_provider_it_goes_to_with_the_measurements_of_that_task_provider_and_model() {
+    let (state, _dir) = test_state_with_ai_router(two_provider_infra(crate::ai_router::ProviderType::Api)).await;
+    let project = make_project(&state, "Phase7B Two Providers").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    upload_document(&state, &owner, project, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+    route_generation_to_alpha_and_compiling_to_beta(&state).await;
+    let record = |provider: &'static str, model: &'static str, task: &'static str, ms: u64, tokens: Option<(u32, u32)>| {
+        let store = state.store.clone();
+        async move {
+            store.record_ai_call(provider, model, task, ms, tokens.map(|t| t.0), tokens.map(|t| t.1)).await.unwrap();
+        }
+    };
+    // Generation on alpha took a minute a call (two of the three said how many tokens); compiling on beta ten seconds (none did).
+    record("alpha", "alpha-model", "TEST_CASE_GENERATION", 60_000, Some((1_000, 400))).await;
+    record("alpha", "alpha-model", "TEST_CASE_GENERATION", 60_000, Some((2_000, 600))).await;
+    record("alpha", "alpha-model", "TEST_CASE_GENERATION", 60_000, None).await;
+    for _ in 0..3 {
+        record("beta", "beta-model", "TEST_CASE_COMPILATION", 10_000, None).await;
+    }
+    // What is measured of another model of the same provider, or of another provider's model of the same name, is not this one's.
+    for _ in 0..3 {
+        // (Named to sort before the right ones, so a lookup that ignored the difference would find them first.)
+        record("alpha", "aaa-model", "TEST_CASE_GENERATION", 5_000, Some((9, 9))).await;
+        record("aaa-provider", "alpha-model", "TEST_CASE_GENERATION", 7_000, Some((9, 9))).await;
+        // Nor is what is measured of a task another task's.
+        record("beta", "beta-model", "TEST_CASE_GENERATION", 1_000, Some((9, 9))).await;
+    }
+
+    let (status, e) = autopilot_estimate(&state, project, &owner, serde_json::json!({"depth": "STANDARD"})).await;
+    assert_eq!(status, StatusCode::OK, "body={e}");
+    let generation = task_of(&e, "TEST_CASE_GENERATION");
+    let compile = task_of(&e, "TEST_CASE_COMPILATION");
+    assert_eq!((generation["provider"]["id"].as_str(), compile["provider"]["id"].as_str()), (Some("alpha"), Some("beta")), "each task to its own provider: body={e}");
+    assert_eq!(generation["latency"], serde_json::json!({"basis": "MEASURED", "calls": 3, "avg_seconds": 60.0}), "body={e}");
+    assert_eq!(compile["latency"], serde_json::json!({"basis": "MEASURED", "calls": 3, "avg_seconds": 10.0}), "body={e}");
+    // The plan's one to two calls, each carrying what the measured calls carried: 3,000 in and 1,000 out over two calls.
+    assert_eq!(generation["calls"], serde_json::json!({"min": 1, "max": 2}));
+    assert_eq!(generation["prompt_tokens"], serde_json::json!({"min": 1500, "max": 3000}), "body={e}");
+    assert_eq!(generation["completion_tokens"], serde_json::json!({"min": 500, "max": 1000}), "body={e}");
+    // Compiling has no token figures measured: the plan's own are kept, not a division of nothing by nothing.
+    let compile_calls_max = compile["calls"]["max"].as_u64().unwrap();
+    assert_eq!(compile["prompt_tokens"]["max"].as_u64().unwrap(), compile_calls_max * crate::autopilot_estimate::COMPILE_TOKENS.0, "body={e}");
+    assert_eq!(compile["completion_tokens"]["max"].as_u64().unwrap(), compile_calls_max * crate::autopilot_estimate::COMPILE_TOKENS.1);
+    // Only compiling is on the provider that charges.
+    assert_eq!(generation["cost_usd"], serde_json::json!({"min": 0.0, "max": 0.0}));
+    assert!(compile["cost_usd"]["max"].as_f64().unwrap() > 0.0);
+    assert_eq!(e["totals"]["paid"], true);
+}
+
+#[tokio::test]
+async fn phase7b_another_endpoint_is_assumed_slower_than_a_hosted_service_and_faster_than_a_home_machine() {
+    let (state, _dir) = test_state_with_ai_router(two_provider_infra(crate::ai_router::ProviderType::OpenAiCompatible)).await;
+    let project = make_project(&state, "Phase7B Other Endpoint").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    upload_document(&state, &owner, project, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+    route_generation_to_alpha_and_compiling_to_beta(&state).await;
+    let (_, e) = autopilot_estimate(&state, project, &owner, serde_json::json!({})).await;
+    assert_eq!(task_of(&e, "TEST_CASE_GENERATION")["latency"], serde_json::json!({"basis": "ASSUMED", "tokens_per_second": 20.0}), "a local one: body={e}");
+    assert_eq!(task_of(&e, "TEST_CASE_COMPILATION")["latency"], serde_json::json!({"basis": "ASSUMED", "tokens_per_second": 40.0}), "another endpoint: body={e}");
+    assert_eq!(task_of(&e, "TEST_CASE_COMPILATION")["provider"]["kind"], "OTHER");
+}
+
+#[tokio::test]
+async fn phase7b_the_tokens_a_call_reports_are_remembered_with_its_time() {
+    let executor = Arc::new(FakeExecutor::ok_with_usage(valid_ai_response(), 120, 30));
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor)).await;
+    let project = make_project(&state, "Phase7B Tokens Remembered").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let (status, generated) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/generate-ai"),
+            Some(&owner),
+            Some(serde_json::json!({"requirement_text": "Users can log in.", "skills": []})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={generated}");
+    let stats = state.store.ai_call_stats("TEST_CASE_GENERATION").await.unwrap();
+    assert_eq!(stats.len(), 1, "{stats:?}");
+    assert_eq!((stats[0].calls, stats[0].token_calls), (1, 1));
+    assert_eq!((stats[0].prompt_tokens, stats[0].completion_tokens), (120, 30), "{stats:?}");
+}
+
+#[tokio::test]
+async fn phase7b_the_request_is_checked_and_needs_an_operator_of_the_project() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    let project = make_project(&state, "Phase7B Checks").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let viewer = mint_key(&state, "viewer", Some(&project.to_string())).await;
+    let stranger = mint_key(&state, "operator", Some(&make_project(&state, "Phase7B Other").await.to_string())).await;
+
+    for (what, body) in [
+        ("no roles", serde_json::json!({"roles": 0})),
+        ("too many roles", serde_json::json!({"roles": 21})),
+        ("no concurrency", serde_json::json!({"run_concurrency": 0})),
+        ("too much concurrency", serde_json::json!({"run_concurrency": 9})),
+        ("no verifications", serde_json::json!({"verify_gaps": 0})),
+        ("too many verifications", serde_json::json!({"verify_gaps": 61})),
+        ("an unknown depth", serde_json::json!({"depth": "EXTREME"})),
+        ("a top-up with no depth", serde_json::json!({"coverage_top_up": true})),
+    ] {
+        let (status, body) = autopilot_estimate(&state, project, &owner, body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{what}: body={body}");
+    }
+    for ok in [serde_json::json!({"roles": 20}), serde_json::json!({"run_concurrency": 8}), serde_json::json!({"verify_gaps": 60})] {
+        let (status, body) = autopilot_estimate(&state, project, &owner, ok).await;
+        assert_eq!(status, StatusCode::OK, "body={body}");
+    }
+    let (viewer_status, _) = autopilot_estimate(&state, project, &viewer, serde_json::json!({})).await;
+    let (stranger_status, _) = autopilot_estimate(&state, project, &stranger, serde_json::json!({})).await;
+    assert_eq!(viewer_status, StatusCode::FORBIDDEN);
+    assert_eq!(stranger_status, StatusCode::FORBIDDEN);
+}

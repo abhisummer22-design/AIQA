@@ -3172,6 +3172,72 @@ impl Store {
     /// done correctly. Paired with `count_audit` below so a caller can
     /// show a real "page N of M" / "X-Y of Z" rather than guessing from a
     /// fetched batch's length.
+    /// Adds one answered AI call to the running totals of its provider, model and task (`ai_call_stats`, migration 0021).
+    /// The tokens count only when the provider reported both, so `token_calls` is how many calls they are an average of.
+    pub async fn record_ai_call(
+        &self,
+        provider: &str,
+        model: &str,
+        task: &str,
+        latency_ms: u64,
+        prompt_tokens: Option<u32>,
+        completion_tokens: Option<u32>,
+    ) -> Result<()> {
+        let (token_calls, prompt, completion) = match (prompt_tokens, completion_tokens) {
+            (Some(p), Some(c)) => (1i64, i64::from(p), i64::from(c)),
+            _ => (0, 0, 0),
+        };
+        let now = now_rfc3339();
+        sqlx::query(
+            "INSERT INTO ai_call_stats
+                 (provider, model, task, calls, total_ms, token_calls, prompt_tokens, completion_tokens, first_at, last_at)
+             VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT (provider, model, task) DO UPDATE SET
+                 calls = calls + 1,
+                 total_ms = total_ms + excluded.total_ms,
+                 token_calls = token_calls + excluded.token_calls,
+                 prompt_tokens = prompt_tokens + excluded.prompt_tokens,
+                 completion_tokens = completion_tokens + excluded.completion_tokens,
+                 last_at = excluded.last_at",
+        )
+        .bind(provider)
+        .bind(model)
+        .bind(task)
+        .bind(i64::try_from(latency_ms).unwrap_or(i64::MAX))
+        .bind(token_calls)
+        .bind(prompt)
+        .bind(completion)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// What the calls of `task` took so far, one row per provider and model (`record_ai_call`).
+    pub async fn ai_call_stats(&self, task: &str) -> Result<Vec<AiCallStatRow>> {
+        let rows = sqlx::query(
+            "SELECT provider, model, task, calls, total_ms, token_calls, prompt_tokens, completion_tokens
+             FROM ai_call_stats WHERE task = ? ORDER BY provider, model",
+        )
+        .bind(task)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| AiCallStatRow {
+                provider: r.get("provider"),
+                model: r.get("model"),
+                task: r.get("task"),
+                calls: r.get("calls"),
+                total_ms: r.get("total_ms"),
+                token_calls: r.get("token_calls"),
+                prompt_tokens: r.get("prompt_tokens"),
+                completion_tokens: r.get("completion_tokens"),
+            })
+            .collect())
+    }
+
     pub async fn list_audit(
         &self,
         project_filter: Option<&str>,
@@ -4189,6 +4255,20 @@ pub struct AuditRow {
     pub target: Option<String>,
     pub detail: Option<String>,
     pub outcome: String,
+}
+
+/// The running totals of the answered calls of one task to one provider and model (`ai_call_stats`).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct AiCallStatRow {
+    pub provider: String,
+    pub model: String,
+    pub task: String,
+    pub calls: i64,
+    pub total_ms: i64,
+    /// How many of the calls reported token counts (the tokens below are sums over just those).
+    pub token_calls: i64,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
