@@ -12398,3 +12398,85 @@ async fn phase6b_asking_the_ai_to_check_is_audited_and_the_free_check_is_not() {
         "asking the AI is an audited action: {after_verify:?}"
     );
 }
+
+// ------------------------------------------------- Phase 6C — look for the pages the requirements mention first
+
+async fn crawl_body_with(state: &AppState, project: Uuid, key: &str, extra: Value) -> (StatusCode, Value) {
+    let mut body = valid_crawl_body();
+    for (k, v) in extra.as_object().unwrap() {
+        body[k] = v.clone();
+    }
+    send(
+        state,
+        req("POST", &format!("/api/v1/projects/{project}/crawl"), Some(key), Some(body)),
+    )
+    .await
+}
+
+/// The spec a crawl run's one task was given (which the run itself cannot execute here).
+async fn crawl_spec_of(state: &AppState, project: Uuid, key: &str, run_id: &str) -> (String, std::path::PathBuf) {
+    let (_, run) = send(
+        state,
+        req("GET", &format!("/api/v1/projects/{project}/executions/{run_id}"), Some(key), None),
+    )
+    .await;
+    let task_id = run["tasks"][0]["id"].as_str().unwrap().to_string();
+    let path = crate::crawler::generated_dir().join(format!("crawl-{task_id}.spec.ts"));
+    (std::fs::read_to_string(&path).expect("the crawl's generated spec"), path)
+}
+
+#[tokio::test]
+async fn phase6c_a_crawl_can_ask_to_visit_the_pages_the_requirements_mention_first() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Phase6C Focus").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    upload_document(&state, &owner, project, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+
+    let (status, started) = crawl_body_with(&state, project, &owner, serde_json::json!({"focus_requirements": true})).await;
+    assert_eq!(status, StatusCode::CREATED, "body={started}");
+    let (spec, path) = crawl_spec_of(&state, project, &owner, started["run_id"].as_str().unwrap()).await;
+    std::fs::remove_file(path).ok();
+
+    let start = spec.find("const PLAN: CrawlPlan = ").unwrap() + "const PLAN: CrawlPlan = ".len();
+    let end = spec[start..].find(";\n").unwrap() + start;
+    let plan: Value = serde_json::from_str(&spec[start..end]).unwrap();
+    let terms: Vec<&str> = plan["focusTerms"].as_array().expect("the plan carries the words").iter().map(|t| t.as_str().unwrap()).collect();
+    // What the shop's requirements are about: its cart, its wishlist, its report export.
+    for word in ["cart", "wishlist", "report", "product"] {
+        assert!(terms.contains(&word), "{word} in {terms:?}");
+    }
+    // The plan is otherwise the plan that was sent.
+    assert_eq!(plan["baseUrl"], "http://127.0.0.1:8080/app");
+    assert_eq!(plan["roles"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn phase6c_without_the_option_a_crawl_is_exactly_what_it_was() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Phase6C No Focus").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    upload_document(&state, &owner, project, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+
+    let (status, started) = crawl_body_with(&state, project, &owner, serde_json::json!({})).await;
+    let (off_status, off) = crawl_body_with(&state, project, &owner, serde_json::json!({"focus_requirements": false})).await;
+    assert_eq!((status, off_status), (StatusCode::CREATED, StatusCode::CREATED));
+    let (a, path_a) = crawl_spec_of(&state, project, &owner, started["run_id"].as_str().unwrap()).await;
+    let (b, path_b) = crawl_spec_of(&state, project, &owner, off["run_id"].as_str().unwrap()).await;
+    std::fs::remove_file(path_a).ok();
+    std::fs::remove_file(path_b).ok();
+    assert!(!a.contains("focusTerms") && !b.contains("focusTerms"), "{a}");
+}
+
+#[tokio::test]
+async fn phase6c_asking_for_the_focus_of_a_project_with_no_requirements_says_what_to_do() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Phase6C Nothing To Focus On").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, body) = crawl_body_with(&state, project, &owner, serde_json::json!({"focus_requirements": true})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert!(body.to_string().contains("upload a requirements document first"), "body={body}");
+    // Nothing was started: the project has no run.
+    let (_, runs) = send(&state, req("GET", &format!("/api/v1/projects/{project}/executions"), Some(&owner), None)).await;
+    assert_eq!(runs.as_array().unwrap().len(), 0, "{runs}");
+}

@@ -6377,6 +6377,10 @@ async fn delete_test_suite_scoped(
 struct CrawlRequestBody {
     base_url: String,
     roles: Vec<crate::crawler::CrawlRole>,
+    /// Visit first the pages the project's requirements are about (`gap_check::focus_terms`): a link whose text or
+    /// address mentions a word of theirs is followed before the others. Off unless set.
+    #[serde(default)]
+    focus_requirements: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -6419,11 +6423,40 @@ async fn start_crawl_scoped(
         ));
     }
 
+    // The words the requirements are about, for a crawl asked to look for those pages first.
+    let focus_terms = if body.focus_requirements {
+        let rows = state
+            .store
+            .list_requirements(&project_id.to_string(), &[])
+            .await
+            .map_err(to_500)?;
+        let items: Vec<crate::requirement_generation::RequirementItem> = rows
+            .into_iter()
+            .map(|r| crate::requirement_generation::RequirementItem {
+                key: r.key,
+                section: r.section,
+                kind: crate::requirements::RequirementKind::from_db(&r.kind),
+                text: r.text,
+            })
+            .collect();
+        let terms = crate::gap_check::focus_terms(&items);
+        if terms.is_empty() {
+            return Err(ApiError::validation(
+                "focus_requirements needs requirements to take the pages from: upload a requirements document first (Test Case Generator, Source & Generation)",
+            ));
+        }
+        crate::crawler::validate_focus_terms(&terms)
+            .map_err(|reasons| ApiError::validation(reasons.join("; ")))?;
+        terms
+    } else {
+        Vec::new()
+    };
+
     // The task's own id doubles as the real key `crawler::read_crawl_result`
     // looks the eventual result up by — no separate id needed.
     let task_id = Uuid::new_v4().to_string();
-    let spec_path =
-        crate::crawler::materialize_crawl_spec(&task_id, &plan).map_err(ApiError::validation)?;
+    let spec_path = crate::crawler::materialize_crawl_spec_focused(&task_id, &plan, &focus_terms)
+        .map_err(ApiError::validation)?;
 
     // The names of those variables (never their values) go with the task, so the executor can scrub the values
     // from the crawl's evidence.

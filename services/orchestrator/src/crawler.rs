@@ -12,12 +12,14 @@
 //! such signal yet. Building targeting logic ahead of that signal existing
 //! would be guessing, not targeting.
 //!
-//! Also deliberately NOT built here: a doc-vs-reality gap check. That needs
-//! a real, structured "what the requirement documents say" side to diff
-//! this module's real "what the app actually shows" side against — this
-//! codebase has never had real document ingestion (PRD/FRD text
-//! extraction), so that other side of the diff does not exist. Attempting
-//! the gap check now would mean fabricating one half of a comparison.
+//! Also not built here: the doc-vs-reality gap check. It lives in `gap_check.rs`
+//! now that documents are read into numbered requirements (`requirements.rs`);
+//! what is left here for it is a crawl that can be told which words to look for
+//! first (`materialize_crawl_spec_focused`, and `gap_check::focus_terms` for the
+//! words a project's requirements are about): a link whose text or address mentions
+//! one is followed before the others, and may take a page beyond the usual limit.
+//! That orders and extends a crawl; it is not the "which areas are important"
+//! targeting a requirement graph would give.
 //!
 //! ```text
 //! CrawlPlan (real base_url + real per-role login sequences)
@@ -93,14 +95,54 @@ pub struct CrawlPlan {
 /// needs to embed a real plan into a spec `helpers/crawler.ts` can parse —
 /// `Action`'s own fields (`url`/`selector`/`value`) need no conversion,
 /// only `CrawlPlan`/`CrawlRole`'s own field names do.
-fn plan_to_camel_case_json(plan: &CrawlPlan) -> serde_json::Value {
-    serde_json::json!({
+fn plan_to_camel_case_json(plan: &CrawlPlan, focus_terms: &[String]) -> serde_json::Value {
+    let mut json = serde_json::json!({
         "baseUrl": plan.base_url,
         "roles": plan.roles.iter().map(|r| serde_json::json!({
             "name": r.name,
             "loginActions": r.login_actions,
         })).collect::<Vec<_>>(),
-    })
+    });
+    // Only when there are some: a crawl that names none has a spec exactly as it always had.
+    if !focus_terms.is_empty() {
+        json["focusTerms"] = serde_json::json!(focus_terms);
+    }
+    json
+}
+
+/// The most words a crawl may be told to look for first, and the longest one: they are embedded in the spec.
+pub const MAX_FOCUS_TERMS: usize = 300;
+const MAX_FOCUS_TERM_CHARS: usize = 40;
+
+/// The words a crawl looks for first (`helpers/crawler.ts`: a link whose text or address mentions one is followed before
+/// the others): each must be short, lower-case letters and digits, and there may not be many.
+pub fn validate_focus_terms(terms: &[String]) -> Result<(), Vec<String>> {
+    let mut reasons = Vec::new();
+    if terms.len() > MAX_FOCUS_TERMS {
+        reasons.push(format!(
+            "a crawl may look for at most {MAX_FOCUS_TERMS} words first, got {}",
+            terms.len()
+        ));
+    }
+    for term in terms.iter().take(MAX_FOCUS_TERMS) {
+        let chars = term.chars().count();
+        if chars < 2
+            || chars > MAX_FOCUS_TERM_CHARS
+            || !term
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        {
+            reasons.push(format!(
+                "a word to look for first must be 2 to {MAX_FOCUS_TERM_CHARS} lower-case letters or digits, got {term:?}"
+            ));
+            break;
+        }
+    }
+    if reasons.is_empty() {
+        Ok(())
+    } else {
+        Err(reasons)
+    }
 }
 
 // --------------------------------------------------------------- validation
@@ -204,8 +246,18 @@ pub(crate) fn generated_dir() -> PathBuf {
 /// the path (relative to `executors/playwright`) `PlaywrightExecutor`'s
 /// existing `spec` param already expects.
 pub fn materialize_crawl_spec(task_id: &str, plan: &CrawlPlan) -> Result<String, String> {
+    materialize_crawl_spec_focused(task_id, plan, &[])
+}
+
+/// [`materialize_crawl_spec`] for a crawl that looks for `focus_terms` first (`validate_focus_terms` says what is
+/// acceptable); with none, the spec is exactly what it always was.
+pub fn materialize_crawl_spec_focused(
+    task_id: &str,
+    plan: &CrawlPlan,
+    focus_terms: &[String],
+) -> Result<String, String> {
     let safe_id = safe_id_from(task_id)?;
-    let plan_json = serde_json::to_string(&plan_to_camel_case_json(plan))
+    let plan_json = serde_json::to_string(&plan_to_camel_case_json(plan, focus_terms))
         .map_err(|e| format!("failed to serialize crawl plan: {e}"))?;
     let file_name = format!("crawl-{safe_id}.spec.ts");
     let dir = generated_dir();
@@ -552,6 +604,88 @@ mod tests {
             Some(value) => assert_eq!(value, "quote\" and backslash\\ here"),
             other => panic!("expected a real FILL value, got {other:?}"),
         }
+    }
+
+    // ------------------------------------------------ words to look for first (Phase 6C)
+
+    fn words(list: &[&str]) -> Vec<String> {
+        list.iter().map(|w| w.to_string()).collect()
+    }
+
+    #[test]
+    fn words_to_look_for_first_are_short_lower_case_and_not_too_many() {
+        assert!(validate_focus_terms(&words(&["cart", "checkout", "report", "2fa"])).is_ok());
+        assert!(validate_focus_terms(&[]).is_ok());
+        // Each of these is refused, and the reason names what was wrong.
+        for bad in [
+            "",
+            "a",
+            "Cart",
+            "two words",
+            "a-b",
+            "caf\u{e9}",
+            "quote\"",
+            "back\\slash",
+        ] {
+            let err = validate_focus_terms(&words(&["cart", bad])).expect_err(bad);
+            assert!(
+                err.iter()
+                    .any(|r| r.contains("lower-case letters or digits")),
+                "{bad:?}: {err:?}"
+            );
+        }
+        let long = "x".repeat(41);
+        assert!(validate_focus_terms(&words(&[&long])).is_err());
+        assert!(validate_focus_terms(&words(&[&"x".repeat(40)])).is_ok());
+        let many: Vec<String> = (0..=MAX_FOCUS_TERMS).map(|i| format!("word{i}")).collect();
+        let err = validate_focus_terms(&many).expect_err("one too many");
+        assert!(err.iter().any(|r| r.contains("at most 300")), "{err:?}");
+        assert!(validate_focus_terms(&many[..MAX_FOCUS_TERMS]).is_ok());
+    }
+
+    fn generated_source(rel_path: &str) -> String {
+        std::fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../executors/playwright")
+                .join(rel_path),
+        )
+        .expect("read generated spec")
+    }
+
+    #[test]
+    fn a_crawl_told_what_to_look_for_first_carries_the_words_and_one_that_is_not_is_as_it_always_was(
+    ) {
+        let plan = CrawlPlan {
+            base_url: "http://127.0.0.1:4174".to_string(),
+            roles: vec![role("anonymous", vec![])],
+        };
+        let focused = generated_source(
+            &materialize_crawl_spec_focused(
+                "test-crawl-focused",
+                &plan,
+                &words(&["cart", "report"]),
+            )
+            .expect("focused"),
+        );
+        let start =
+            focused.find("const PLAN: CrawlPlan = ").unwrap() + "const PLAN: CrawlPlan = ".len();
+        let end = focused[start..].find(";\n").unwrap() + start;
+        let parsed: serde_json::Value =
+            serde_json::from_str(&focused[start..end]).expect("re-parse PLAN");
+        assert_eq!(parsed["focusTerms"], serde_json::json!(["cart", "report"]));
+        assert_eq!(parsed["baseUrl"], "http://127.0.0.1:4174");
+
+        // No words: the spec is the same to the byte as the one made without the feature, and has no `focusTerms`.
+        let plain =
+            generated_source(&materialize_crawl_spec("test-crawl-plain", &plan).expect("plain"));
+        let none = generated_source(
+            &materialize_crawl_spec_focused("test-crawl-plain-b", &plan, &[]).expect("no words"),
+        );
+        assert!(!plain.contains("focusTerms"), "{plain}");
+        assert_eq!(
+            plain.replace("test-crawl-plain", "ID"),
+            none.replace("test-crawl-plain-b", "ID")
+        );
     }
 
     // -------------------------------------------------------------- result parsing
