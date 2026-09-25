@@ -1265,6 +1265,9 @@ export interface CrawlRole {
 export interface StartCrawlRequest {
   base_url: string;
   roles: CrawlRole[];
+  /** Visit first the pages the project's requirements are about
+   *  (`gap_check::focus_terms`); off unless set. */
+  focus_requirements?: boolean;
 }
 
 /** `api.rs::CrawlStartedResponse`. The crawl runs through the exact same
