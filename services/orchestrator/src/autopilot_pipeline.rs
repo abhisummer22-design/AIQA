@@ -198,6 +198,17 @@ pub(crate) mod scripted {
                 .collect()
         }
 
+        /// Every body sent to `method path`, in the order they were sent.
+        pub fn bodies_of(&self, method: &str, path: &str) -> Vec<Value> {
+            self.requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(m, p, _)| m == method && p == path)
+                .filter_map(|(_, _, body)| body.clone())
+                .collect()
+        }
+
         pub fn body_of(&self, method: &str, path: &str) -> Option<Value> {
             self.requests
                 .lock()

@@ -12,6 +12,7 @@ use crate::auth::{self, AuthContext, Role};
 use crate::autopilot::{check_acceptance, event, AutopilotConfig, RunState};
 use crate::autopilot_store::{
     AutopilotEventRow, AutopilotRunRow, AutopilotStepRow, CancelOutcome, NewAutopilotRun,
+    ResumeOutcome,
 };
 use crate::errors::{ApiError, ApiJson, ApiPath, ApiQuery};
 use crate::state::AppState;
@@ -328,6 +329,236 @@ pub(crate) async fn cancel_run(
         outcome,
         detail: detail_of(&state, run).await?,
     }))
+}
+
+/// POST /api/v1/projects/:project_id/autopilot/runs/:run_id/continue — a person lets a run that waits at a gate go on
+/// (the cases they left undecided are not run). Operator.
+pub(crate) async fn continue_run(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, run_id)): ApiPath<(Uuid, Uuid)>,
+) -> Result<Json<RunDetail>, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let run = load_run(&state, project_id, run_id).await?;
+    if run.state != RunState::Waiting.as_str() {
+        return Err(ApiError::conflict(format!(
+            "this run is {}, not waiting at a gate",
+            run.state
+        )));
+    }
+    if !state
+        .store
+        .continue_autopilot_run(run_id)
+        .await
+        .map_err(to_500)?
+    {
+        return Err(ApiError::conflict(
+            "this run is no longer waiting at a gate",
+        ));
+    }
+    let _ = state
+        .store
+        .add_autopilot_event(
+            run_id,
+            event::CONTINUED,
+            run.current_step.as_deref(),
+            &format!("{} let the run go on", ctx.name),
+            None,
+        )
+        .await;
+    audit(
+        &state,
+        &ctx,
+        "autopilot.continue",
+        Some(&run_id.to_string()),
+        run.current_step.as_deref(),
+        "ok",
+    )
+    .await;
+    let run = load_run(&state, project_id, run_id).await?;
+    crate::autopilot_runner::spawn_run(&state, &run);
+    Ok(Json(detail_of(&state, run).await?))
+}
+
+/// POST /api/v1/projects/:project_id/autopilot/runs/:run_id/resume — a person takes a run that failed and starts it again at
+/// the step that failed, keeping what was done before it (the groups of cases already saved, a crawl already made). The run
+/// acts as the person from then on. Operator.
+pub(crate) async fn resume_run(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, run_id)): ApiPath<(Uuid, Uuid)>,
+) -> Result<Json<RunDetail>, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let run = load_run(&state, project_id, run_id).await?;
+    match state
+        .store
+        .resume_failed_autopilot_run(run_id, ctx.key_id, &ctx.name)
+        .await
+        .map_err(to_500)?
+    {
+        ResumeOutcome::Resumed => {}
+        ResumeOutcome::NotFailed(now) => {
+            return Err(ApiError::conflict(format!(
+                "only a run that failed can be started again: this one is {}",
+                now.as_str()
+            )))
+        }
+        ResumeOutcome::Blocked => {
+            let other = state
+                .store
+                .find_active_autopilot_run(&project_id.to_string())
+                .await
+                .map_err(to_500)?;
+            return Err(ApiError::conflict(match other {
+                Some(other) => format!(
+                    "this project has another autopilot run that has not ended: \"{}\" ({}, {}). Let it finish or cancel it first",
+                    other.name, other.id, other.state
+                ),
+                None => "this project has another autopilot run that has not ended".to_string(),
+            }));
+        }
+        ResumeOutcome::NotFound => {
+            return Err(ApiError::not_found(
+                "autopilot run not found in this project",
+            ))
+        }
+    }
+    let _ = state
+        .store
+        .add_autopilot_event(
+            run_id,
+            event::RETRIED,
+            run.current_step.as_deref(),
+            &format!(
+                "{} started the run again, at {}; from here it acts as them",
+                ctx.name,
+                run.current_step
+                    .as_deref()
+                    .and_then(crate::autopilot::Step::parse)
+                    .map_or("the step that failed", crate::autopilot::Step::label)
+            ),
+            Some(&serde_json::json!({"was": run.error})),
+        )
+        .await;
+    audit(
+        &state,
+        &ctx,
+        "autopilot.resume",
+        Some(&run_id.to_string()),
+        run.current_step.as_deref(),
+        "ok",
+    )
+    .await;
+    let run = load_run(&state, project_id, run_id).await?;
+    crate::autopilot_runner::spawn_run(&state, &run);
+    Ok(Json(detail_of(&state, run).await?))
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct ApproveCasesBody {
+    /// The cases to approve, which must be cases of this run; omitted or empty, every case of the run that has been
+    /// validated and not yet decided.
+    #[serde(default)]
+    case_ids: Vec<Uuid>,
+}
+
+/// POST /api/v1/projects/:project_id/autopilot/runs/:run_id/approve-cases — approves the run's cases, as the person asking
+/// (each is an ordinary approval: audited under their name, and the case joins what similar cases are drawn from). A case
+/// that cannot be approved (it is not validated yet, or was already decided) is listed with why. Operator.
+pub(crate) async fn approve_cases(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, run_id)): ApiPath<(Uuid, Uuid)>,
+    body: Option<ApiJson<ApproveCasesBody>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let body = body.map(|ApiJson(b)| b).unwrap_or_default();
+    load_run(&state, project_id, run_id).await?;
+    let suite = state
+        .store
+        .list_autopilot_steps(run_id)
+        .await
+        .map_err(to_500)?
+        .into_iter()
+        .find(|step| step.name == crate::autopilot::Step::Generate.as_str())
+        .and_then(|step| step.detail["suite_id"].as_str().map(str::to_string))
+        .ok_or_else(|| {
+            ApiError::conflict("this run has no test cases yet: it has not generated any")
+        })?;
+
+    // The calls are made as the person asking, not as the key that made the run.
+    let api = crate::autopilot_pipeline::InternalApi::new(&state, ctx.key_id);
+    let api: &dyn crate::autopilot_pipeline::PipelineApi = &api;
+    let listed = api
+        .get(&format!(
+            "/api/v1/projects/{project_id}/test-cases?suite_id={suite}"
+        ))
+        .await;
+    if !listed.is_ok() {
+        return Err(ApiError::internal(format!(
+            "the run's cases could not be listed: {}",
+            listed.problem()
+        )));
+    }
+    let cases = listed.body.as_array().cloned().unwrap_or_default();
+    let chosen: Vec<&serde_json::Value> = if body.case_ids.is_empty() {
+        cases
+            .iter()
+            .filter(|case| case["status"] == "VALIDATED")
+            .collect()
+    } else {
+        let mut chosen = Vec::new();
+        for id in &body.case_ids {
+            match cases.iter().find(|case| case["id"] == id.to_string()) {
+                Some(case) => chosen.push(case),
+                None => {
+                    return Err(ApiError::validation(format!(
+                        "{id} is not a case of this run"
+                    )))
+                }
+            }
+        }
+        chosen
+    };
+    let mut approved = Vec::new();
+    let mut refused = Vec::new();
+    for case in chosen {
+        let id = case["id"].as_str().unwrap_or_default();
+        let reply = api
+            .post(
+                &format!("/api/v1/projects/{project_id}/test-cases/{id}/approve"),
+                serde_json::json!({}),
+            )
+            .await;
+        if reply.is_ok() {
+            approved.push(id.to_string());
+        } else {
+            refused.push(
+                serde_json::json!({"id": id, "title": case["title"], "reason": reply.problem()}),
+            );
+        }
+    }
+    audit(
+        &state,
+        &ctx,
+        "autopilot.approve_cases",
+        Some(&run_id.to_string()),
+        Some(&format!(
+            "{} approved, {} refused",
+            approved.len(),
+            refused.len()
+        )),
+        "ok",
+    )
+    .await;
+    Ok(Json(serde_json::json!({
+        "suite_id": suite,
+        "approved": approved,
+        "refused": refused,
+    })))
 }
 
 #[derive(Debug, Deserialize)]

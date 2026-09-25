@@ -489,6 +489,18 @@ fn protected_routes() -> Router<AppState> {
             post(crate::autopilot_api::cancel_run),
         )
         .route(
+            "/api/v1/projects/:project_id/autopilot/runs/:run_id/continue",
+            post(crate::autopilot_api::continue_run),
+        )
+        .route(
+            "/api/v1/projects/:project_id/autopilot/runs/:run_id/resume",
+            post(crate::autopilot_api::resume_run),
+        )
+        .route(
+            "/api/v1/projects/:project_id/autopilot/runs/:run_id/approve-cases",
+            post(crate::autopilot_api::approve_cases),
+        )
+        .route(
             "/api/v1/projects/:project_id/autopilot/runs/:run_id/events",
             get(crate::autopilot_api::list_events),
         )

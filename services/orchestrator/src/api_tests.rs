@@ -10649,6 +10649,26 @@ async fn restart_test_state(
     )
 }
 
+/// `restart_test_state`, with an AI router of the test's own.
+async fn restart_test_state_with_ai(
+    db_path: &std::path::Path,
+    evidence_dir: std::path::PathBuf,
+    ai_router: Arc<AiInfrastructure>,
+) -> AppState {
+    let store = Store::connect(db_path).await.expect("connect");
+    let evidence = LocalEvidenceStore::new(evidence_dir).expect("evidence store");
+    let registry = ExecutorRegistry::new(Arc::new(SimulatedExecutor))
+        .register("maestro", Arc::new(SimulatedExecutor));
+    AppState::new(
+        Arc::new(registry),
+        store,
+        restart_test_policy(),
+        evidence,
+        ai_router,
+        unconfigured_embedder(),
+    )
+}
+
 fn gated_plan(name: &str) -> Value {
     serde_json::json!({
         "name": name,
@@ -13212,10 +13232,28 @@ async fn autopilot_project(state: &AppState, name: &str) -> (Uuid, String) {
     (project, owner)
 }
 
+/// The files a crawl left, removed when this is dropped.
+struct CrawlFiles(Vec<std::path::PathBuf>);
+
+impl Drop for CrawlFiles {
+    fn drop(&mut self) {
+        for file in &self.0 {
+            std::fs::remove_file(file).ok();
+        }
+    }
+}
+
 /// A crawl run that has finished and left the grounding a crawl leaves: what a run can be told to use instead of crawling.
-async fn finished_crawl(state: &AppState, project: Uuid, key: &str, grounding: Option<&str>) -> (String, Option<std::path::PathBuf>) {
+async fn finished_crawl(state: &AppState, project: Uuid, key: &str, grounding: Option<&str>) -> (String, CrawlFiles) {
     let (run_id, task_id) = crawl_run_and_task(state, project, key).await;
-    let file = grounding.map(|g| write_crawl_file(&crate::crawler::grounding_file_name(&task_id), g));
+    // A crawl leaves its grounding and its result; the files go when this value does.
+    let file = CrawlFiles(match grounding {
+        Some(g) => vec![
+            write_crawl_file(&crate::crawler::grounding_file_name(&task_id), g),
+            write_crawl_file(&format!("crawl-result-{task_id}.json"), SHOP_RESULT),
+        ],
+        None => Vec::new(),
+    });
     let id = Uuid::parse_str(&run_id).unwrap();
     // The crawl cannot really run here: wait until the database says the run has ended however it ended (the engine writes
     // that last, so a change made before it would be overwritten), then make it what a crawl that worked is.
@@ -13243,6 +13281,39 @@ async fn wait_for_autopilot(state: &AppState, project: Uuid, key: &str, run: &st
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
     panic!("the run never reached one of {wanted:?}: {last}");
+}
+
+/// Waits until the run's step `name` is in one of `wanted` (or the run has ended, which is returned as it is).
+async fn wait_for_step(state: &AppState, project: Uuid, key: &str, run: &str, name: &str, wanted: &[&str]) -> Value {
+    let mut last = Value::Null;
+    for _ in 0..600 {
+        let (status, detail) = autopilot(state, "GET", &format!("/api/v1/projects/{project}/autopilot/runs/{run}"), key, None).await;
+        assert_eq!(status, StatusCode::OK, "body={detail}");
+        let step = detail["steps"].as_array().unwrap().iter().find(|s| s["name"] == name).cloned().unwrap_or(Value::Null);
+        if wanted.contains(&step["state"].as_str().unwrap_or("")) || matches!(detail["run"]["state"].as_str(), Some("FAILED" | "CANCELLED" | "COMPLETED")) {
+            return detail;
+        }
+        last = detail;
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("step {name} of the run never reached one of {wanted:?}: {last}");
+}
+
+/// Cancels a run that has gone on past what a test is about and waits until it has ended.
+async fn stop_run(state: &AppState, project: Uuid, key: &str, run: &str) {
+    for _ in 0..3 {
+        autopilot(state, "POST", &format!("/api/v1/projects/{project}/autopilot/runs/{run}/cancel"), key, None).await;
+        for _ in 0..200 {
+            let (_, detail) = autopilot(state, "GET", &format!("/api/v1/projects/{project}/autopilot/runs/{run}"), key, None).await;
+            if matches!(detail["run"]["state"].as_str(), Some("FAILED" | "CANCELLED" | "COMPLETED")) {
+                return;
+            }
+            if detail["run"]["state"] == "WAITING" {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    }
 }
 
 fn steps_of(detail: &Value) -> Vec<(String, String)> {
@@ -13279,7 +13350,10 @@ async fn phase7c_a_run_is_made_with_its_estimate_and_nothing_starts() {
     assert_eq!(run["estimate"]["requirements"], 6, "the estimate is stored with the run: {run}");
     assert!(run["estimate"]["totals"]["ai_calls"].is_object());
     assert!(run["approved_at"].is_null() && run["started_at"].is_null());
-    assert_eq!(steps_of(&made), [("REQUIREMENTS", "PENDING"), ("CRAWL", "PENDING"), ("GAP_CHECK", "PENDING")].map(|(a, b)| (a.to_string(), b.to_string())));
+    assert_eq!(
+        steps_of(&made),
+        ["REQUIREMENTS", "CRAWL", "GAP_CHECK", "GENERATE", "VALIDATE", "APPROVE"].map(|name| (name.to_string(), "PENDING".to_string()))
+    );
     assert_eq!(made["events"][0]["kind"], "run.created");
     assert_eq!(made["working"], false);
 
@@ -13439,8 +13513,9 @@ async fn phase7c_starting_needs_the_estimate_accepted_and_a_paid_one_the_cost_ac
     let (ok_status, started) =
         autopilot(&state, "POST", &start, &owner, Some(serde_json::json!({"accept_estimate": true, "accept_paid": true}))).await;
     let (again_status, again) = autopilot(&state, "POST", &start, &owner, Some(serde_json::json!({"accept_estimate": true, "accept_paid": true}))).await;
-    let finished = wait_for_autopilot(&state, project, &owner, &run_id, &["COMPLETED", "FAILED"]).await;
-    file.map(std::fs::remove_file);
+    let finished = wait_for_step(&state, project, &owner, &run_id, "GAP_CHECK", &["DONE"]).await;
+    stop_run(&state, project, &owner, &run_id).await;
+    drop(file);
 
     assert_eq!(none_status, StatusCode::BAD_REQUEST, "body={none}");
     assert!(none.to_string().contains("accept_estimate: true"), "body={none}");
@@ -13453,7 +13528,7 @@ async fn phase7c_starting_needs_the_estimate_accepted_and_a_paid_one_the_cost_ac
     assert_eq!(started["run"]["approved_paid"], true);
     assert!(started["run"]["approved_at"].is_string() && started["run"]["started_at"].is_string());
     assert_eq!(again_status, StatusCode::CONFLICT, "a run starts once: body={again}");
-    assert_eq!(finished["run"]["state"], "COMPLETED", "body={finished}");
+    assert_eq!(finished["steps"][2]["state"], "DONE", "body={finished}");
     let kinds: Vec<&str> = finished["events"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
     assert!(kinds.contains(&"run.started"), "{kinds:?}");
     let started_event = finished["events"].as_array().unwrap().iter().find(|e| e["kind"] == "run.started").unwrap();
@@ -13478,8 +13553,9 @@ async fn phase7c_a_free_run_needs_only_the_estimate_accepted() {
     let (status, started) = autopilot(&state, "POST", &format!("{path}/{run_id}/start"), &owner, Some(serde_json::json!({"accept_estimate": true}))).await;
     assert_eq!(status, StatusCode::OK, "body={started}");
     assert_eq!(started["run"]["approved_paid"], false);
-    wait_for_autopilot(&state, project, &owner, &run_id, &["COMPLETED", "FAILED"]).await;
-    file.map(std::fs::remove_file);
+    wait_for_step(&state, project, &owner, &run_id, "GAP_CHECK", &["DONE"]).await;
+    stop_run(&state, project, &owner, &run_id).await;
+    drop(file);
 }
 
 #[tokio::test]
@@ -13492,14 +13568,14 @@ async fn phase7c_a_started_run_reads_the_requirements_uses_the_crawl_and_checks_
     let (_, made) = autopilot(&state, "POST", &path, &owner, Some(autopilot_body(serde_json::json!({"crawl_run_id": crawl})))).await;
     let run_id = made["run"]["id"].as_str().unwrap().to_string();
     autopilot(&state, "POST", &format!("{path}/{run_id}/start"), &owner, Some(serde_json::json!({"accept_estimate": true}))).await;
-    let done = wait_for_autopilot(&state, project, &owner, &run_id, &["COMPLETED", "FAILED"]).await;
+    let done = wait_for_step(&state, project, &owner, &run_id, "GAP_CHECK", &["DONE"]).await;
     // The gap check the run made, made by hand, says the same.
     let (_, by_hand) = autopilot(&state, "POST", &format!("/api/v1/projects/{project}/gap-check"), &owner, Some(serde_json::json!({"crawl_run_id": crawl}))).await;
-    file.map(std::fs::remove_file);
+    stop_run(&state, project, &owner, &run_id).await;
+    drop(file);
 
-    assert_eq!(done["run"]["state"], "COMPLETED", "body={done}");
-    assert!(done["run"]["error"].is_null() && done["run"]["finished_at"].is_string());
-    assert_eq!(steps_of(&done), [("REQUIREMENTS", "DONE"), ("CRAWL", "SKIPPED"), ("GAP_CHECK", "DONE")].map(|(a, b)| (a.to_string(), b.to_string())));
+    assert!(done["run"]["error"].is_null(), "body={done}");
+    assert_eq!(steps_of(&done)[..3], [("REQUIREMENTS", "DONE"), ("CRAWL", "SKIPPED"), ("GAP_CHECK", "DONE")].map(|(a, b)| (a.to_string(), b.to_string())));
     let steps = done["steps"].as_array().unwrap();
     assert_eq!(steps[0]["detail"]["requirements"], 6);
     assert_eq!(steps[0]["detail"]["documents"], 1);
@@ -13507,12 +13583,10 @@ async fn phase7c_a_started_run_reads_the_requirements_uses_the_crawl_and_checks_
     assert_eq!(steps[1]["detail"], serde_json::json!({"crawl_run_id": crawl, "reused": true}));
     assert_eq!(steps[2]["detail"]["crawl_run_id"], crawl);
     assert_eq!(steps[2]["detail"]["summary"], by_hand["summary"]);
-    assert!(steps.iter().all(|s| s["attempts"] == 1));
+    assert!(steps[..3].iter().all(|s| s["attempts"] == 1));
     let kinds: Vec<&str> = done["events"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
     assert_eq!(kinds.first(), Some(&"run.created"));
-    assert_eq!(kinds.last(), Some(&"run.completed"));
-    assert_eq!(kinds.iter().filter(|k| **k == "step.started").count(), 3);
-    assert_eq!(done["working"], false, "nothing works on a run that has ended");
+    assert!(kinds.iter().filter(|k| **k == "step.started").count() >= 3, "{kinds:?}");
 }
 
 #[tokio::test]
@@ -13533,7 +13607,11 @@ async fn phase7c_a_run_that_fails_says_which_step_and_why_and_the_project_may_st
     assert!(error.starts_with("Checking the requirements against the crawl: "), "{error}");
     assert!(error.contains("recorded no crawl"), "the reason is the service's own: {error}");
     assert_eq!(failed["run"]["current_step"], "GAP_CHECK");
-    assert_eq!(steps_of(&failed), [("REQUIREMENTS", "DONE"), ("CRAWL", "SKIPPED"), ("GAP_CHECK", "FAILED")].map(|(a, b)| (a.to_string(), b.to_string())));
+    assert_eq!(
+        steps_of(&failed),
+        [("REQUIREMENTS", "DONE"), ("CRAWL", "SKIPPED"), ("GAP_CHECK", "FAILED"), ("GENERATE", "PENDING"), ("VALIDATE", "PENDING"), ("APPROVE", "PENDING")]
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+    );
     assert!(failed["steps"][2]["error"].as_str().unwrap().contains("recorded no crawl"));
     let kinds: Vec<&str> = failed["events"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
     assert_eq!(&kinds[kinds.len() - 2..], ["step.failed", "run.failed"]);
@@ -13630,8 +13708,9 @@ async fn phase7c_the_timeline_can_be_read_from_where_a_watcher_was() {
     let (_, made) = autopilot(&state, "POST", &path, &owner, Some(autopilot_body(serde_json::json!({"crawl_run_id": crawl})))).await;
     let run_id = made["run"]["id"].as_str().unwrap().to_string();
     autopilot(&state, "POST", &format!("{path}/{run_id}/start"), &owner, Some(serde_json::json!({"accept_estimate": true}))).await;
-    wait_for_autopilot(&state, project, &owner, &run_id, &["COMPLETED", "FAILED"]).await;
-    file.map(std::fs::remove_file);
+    wait_for_step(&state, project, &owner, &run_id, "GAP_CHECK", &["DONE"]).await;
+    stop_run(&state, project, &owner, &run_id).await;
+    drop(file);
 
     let (_, all) = autopilot(&state, "GET", &format!("{path}/{run_id}/events"), &owner, None).await;
     let events = all["events"].as_array().unwrap();
@@ -13725,11 +13804,11 @@ async fn phase7c_a_run_that_was_going_when_the_service_stopped_carries_on_after_
     let resumed = crate::autopilot_runner::resume_runs(&state).await.unwrap();
     assert_eq!(resumed, 1, "only the run that was going");
     let owner = mint_key(&state, "admin", None).await;
-    let done = wait_for_autopilot(&state, project, &owner, &run_id.to_string(), &["COMPLETED", "FAILED"]).await;
-    file.map(std::fs::remove_file);
+    let done = wait_for_step(&state, project, &owner, &run_id.to_string(), "GAP_CHECK", &["DONE"]).await;
+    let steps = done["steps"].as_array().unwrap().clone();
+    stop_run(&state, project, &owner, &run_id.to_string()).await;
+    drop(file);
 
-    assert_eq!(done["run"]["state"], "COMPLETED", "body={done}");
-    let steps = done["steps"].as_array().unwrap();
     assert_eq!(steps[0]["attempts"], 1, "the step that was done is not done again");
     assert_eq!(steps[0]["detail"], serde_json::json!({"requirements": 6}));
     assert_eq!(steps[1]["attempts"], 2, "the step that was cut short was started again");
@@ -13823,4 +13902,380 @@ async fn phase7d_a_requirement_id_that_no_selected_document_has_is_refused_and_s
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
     assert!(body["error"]["message"].as_str().unwrap().contains("requirement_document_ids"), "body={body}");
     assert_eq!(executor.prompts.lock().unwrap().len(), 0, "no model was asked");
+}
+
+// ------------------------------------------------- Phase 7D — generating, validating and the gate
+
+/// An AI provider that writes one case for every requirement the prompt shows (`[FR-001] (...)`), citing it, the way a good
+/// model would. The first `fail_calls` calls fail instead.
+struct CaseWriter {
+    fail_calls: std::sync::atomic::AtomicUsize,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl CaseWriter {
+    fn new(fail_calls: usize) -> Arc<Self> {
+        Arc::new(CaseWriter {
+            fail_calls: std::sync::atomic::AtomicUsize::new(fail_calls),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl AiExecutor for CaseWriter {
+    async fn execute(
+        &self,
+        _provider_id: &str,
+        _model_id: &str,
+        prompt: &str,
+    ) -> Result<crate::ai_router::ExecutionOutput, crate::ai_router::ExecutionError> {
+        use std::sync::atomic::Ordering;
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if self
+            .fail_calls
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+        {
+            return Err(crate::ai_router::ExecutionError::NonSuccessStatus(503));
+        }
+        let key = regex::Regex::new(r"(?m)^\[([^\]]+)\] \(").unwrap();
+        let cases: Vec<Value> = key
+            .captures_iter(prompt)
+            .map(|c| {
+                let id = c[1].to_string();
+                serde_json::json!({
+                    "title": format!("Check {id}"),
+                    "category": "Functional Testing",
+                    "skill_id": "skill-functional",
+                    "preconditions": [],
+                    "steps": [{"action": format!("Exercise {id}"), "expected_result": format!("{id} behaves as written")}],
+                    "expected_result": format!("{id} behaves as written"),
+                    "priority": "HIGH",
+                    "severity": "MAJOR",
+                    "evidence": "evidenced",
+                    "requirement_id": id,
+                    "technique": "positive",
+                })
+            })
+            .collect();
+        Ok(crate::ai_router::ExecutionOutput {
+            text: serde_json::json!({"test_cases": cases}).to_string(),
+            usage: crate::ai_router::TokenUsage::default(),
+        })
+    }
+}
+
+fn autopilot_skills() -> Value {
+    serde_json::json!([{"id": "skill-functional", "name": "Functional Testing", "description": ""}])
+}
+
+/// A key with a name of its own, so that who did what can be told apart in the audit log.
+async fn named_key(state: &AppState, name: &str, role: &str, project: Uuid) -> String {
+    let raw = crate::auth::generate_key();
+    state
+        .store
+        .insert_api_key(Uuid::new_v4(), name, &crate::auth::hash_key(&raw), role, Some(&project.to_string()))
+        .await
+        .unwrap();
+    raw
+}
+
+/// A project with the shop's requirements, a finished crawl of it, an AI that writes cases and a run made and started: the
+/// run's id and what to clean up. It goes on by itself to the gate.
+async fn run_at_the_gate(state: &AppState, project: Uuid, key: &str, config: Value) -> (String, CrawlFiles) {
+    let (crawl, file) = finished_crawl(state, project, key, Some(SHOP_GROUNDING)).await;
+    let mut body = autopilot_body(serde_json::json!({"crawl_run_id": crawl, "skills": autopilot_skills()}));
+    for (k, v) in config.as_object().cloned().unwrap_or_default() {
+        body[k] = v;
+    }
+    let path = format!("/api/v1/projects/{project}/autopilot/runs");
+    let (status, made) = autopilot(state, "POST", &path, key, Some(body)).await;
+    assert_eq!(status, StatusCode::CREATED, "body={made}");
+    let run_id = made["run"]["id"].as_str().unwrap().to_string();
+    let (status, started) = autopilot(state, "POST", &format!("{path}/{run_id}/start"), key, Some(serde_json::json!({"accept_estimate": true, "accept_paid": true}))).await;
+    assert_eq!(status, StatusCode::OK, "body={started}");
+    (run_id, file)
+}
+
+async fn cases_of(state: &AppState, project: Uuid, key: &str, suite: &str) -> Vec<Value> {
+    let (status, cases) = autopilot(state, "GET", &format!("/api/v1/projects/{project}/test-cases?suite_id={suite}"), key, None).await;
+    assert_eq!(status, StatusCode::OK, "body={cases}");
+    cases.as_array().unwrap().clone()
+}
+
+#[tokio::test]
+async fn phase7d_a_run_writes_the_cases_checks_them_and_waits_for_a_person_to_approve() {
+    let writer = CaseWriter::new(0);
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(writer.clone())).await;
+    fast_autopilot(&state);
+    let (project, _) = autopilot_project(&state, "Phase7D Gate").await;
+    let maker = named_key(&state, "maker", "operator", project).await;
+    let checker = named_key(&state, "checker", "operator", project).await;
+    let (run_id, file) = run_at_the_gate(&state, project, &maker, serde_json::json!({"name": "Release 5"})).await;
+    let at_gate = wait_for_autopilot(&state, project, &maker, &run_id, &["WAITING", "FAILED", "COMPLETED"]).await;
+
+    assert_eq!(at_gate["run"]["state"], "WAITING", "body={at_gate}");
+    assert!(at_gate["run"]["finished_at"].is_null(), "a run at a gate has not ended");
+    assert_eq!(
+        steps_of(&at_gate),
+        [("REQUIREMENTS", "DONE"), ("CRAWL", "SKIPPED"), ("GAP_CHECK", "DONE"), ("GENERATE", "DONE"), ("VALIDATE", "DONE"), ("APPROVE", "WAITING")]
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+    );
+    let steps = at_gate["steps"].as_array().unwrap();
+    let generate = &steps[3]["detail"];
+    let suite = generate["suite_id"].as_str().unwrap().to_string();
+    assert_eq!(generate["cases"], 5, "one for each requirement a skill offers: body={at_gate}");
+    assert_eq!(generate["groups"].as_array().unwrap().len(), 1, "six requirements are one group");
+    assert_eq!(generate["providers"], serde_json::json!({"mock/mock-model": 1}));
+    assert_eq!(generate["fallback_used"], false);
+    assert_eq!(steps[4]["detail"]["validated"], 5);
+    assert_eq!(steps[4]["detail"]["invalid"], serde_json::json!([]));
+    assert_eq!(steps[5]["detail"]["pending"], 5);
+    assert_eq!(steps[5]["detail"]["approved"], 0);
+    let events: Vec<&str> = at_gate["events"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
+    assert_eq!(events.last(), Some(&"step.waiting"), "{events:?}");
+    assert!(at_gate["events"].as_array().unwrap().last().unwrap()["message"].as_str().unwrap().starts_with("5 generated case(s) wait for approval"));
+
+    // The cases are in a suite named after the run, tagged with it, tied to their requirements, and validated.
+    let cases = cases_of(&state, project, &maker, &suite).await;
+    assert_eq!(cases.len(), 5);
+    for case in &cases {
+        assert_eq!(case["status"], "VALIDATED", "{case}");
+        assert!(case["tags"].as_array().unwrap().iter().any(|t| t == &serde_json::json!(format!("autopilot:{run_id}"))), "{case}");
+        assert!(case["requirement_reference"].as_str().unwrap().starts_with("FR-00"), "{case}");
+        assert_eq!(case["source_document"], "FRD.md");
+        assert_eq!(case["created_by"], "maker", "saved as the key that made the run");
+    }
+    let (_, suites) = autopilot(&state, "GET", &format!("/api/v1/projects/{project}/test-suites"), &maker, None).await;
+    assert!(suites.as_array().unwrap().iter().any(|s| s["name"] == "Autopilot: Release 5" && s["id"] == suite), "body={suites}");
+    assert_eq!(writer.calls.load(std::sync::atomic::Ordering::SeqCst), 1, "one call for the group: nothing was asked twice");
+
+    // Approving is the person's: another operator approves what the run made, and it is theirs in the audit log.
+    let path = format!("/api/v1/projects/{project}/autopilot/runs/{run_id}");
+    let (status, approved) = autopilot(&state, "POST", &format!("{path}/approve-cases"), &checker, None).await;
+    assert_eq!(status, StatusCode::OK, "body={approved}");
+    assert_eq!(approved["suite_id"], suite);
+    assert_eq!(approved["approved"].as_array().unwrap().len(), 5);
+    assert_eq!(approved["refused"], serde_json::json!([]));
+    let (_, still) = autopilot(&state, "GET", &path, &maker, None).await;
+    assert_eq!(still["run"]["state"], "WAITING", "approving the cases does not let the run go on: body={still}");
+    let audit_rows = state.store.list_audit(None, 200, 0).await.unwrap();
+    let approvals: Vec<_> = audit_rows.iter().filter(|a| a.action == "test_case.approve").collect();
+    assert_eq!(approvals.len(), 5, "{audit_rows:?}");
+    assert!(approvals.iter().all(|a| a.actor.as_deref() == Some("checker")), "the approver, not the run's key: {approvals:?}");
+    let bulk: Vec<_> = audit_rows.iter().filter(|a| a.action == "autopilot.approve_cases").collect();
+    assert_eq!(bulk.len(), 1);
+    assert_eq!(bulk[0].detail.as_deref(), Some("5 approved, 0 refused"));
+
+    // A second approval finds nothing left to approve, and the ones asked for by name say why they cannot be.
+    let (_, none) = autopilot(&state, "POST", &format!("{path}/approve-cases"), &checker, None).await;
+    assert_eq!(none["approved"], serde_json::json!([]));
+    let named = cases[0]["id"].as_str().unwrap();
+    let (_, again) = autopilot(&state, "POST", &format!("{path}/approve-cases"), &checker, Some(serde_json::json!({"case_ids": [named]}))).await;
+    assert_eq!(again["approved"], serde_json::json!([]));
+    assert_eq!(again["refused"][0]["id"], named);
+    assert!(again["refused"][0]["reason"].as_str().unwrap().contains("must be VALIDATED before approval"), "body={again}");
+    let (unknown_status, unknown) = autopilot(&state, "POST", &format!("{path}/approve-cases"), &checker, Some(serde_json::json!({"case_ids": [Uuid::new_v4()]}))).await;
+    assert_eq!(unknown_status, StatusCode::BAD_REQUEST, "body={unknown}");
+    assert!(unknown.to_string().contains("is not a case of this run"), "body={unknown}");
+
+    // The person lets the run go on: it finishes with every case approved.
+    let (status, continued) = autopilot(&state, "POST", &format!("{path}/continue"), &checker, None).await;
+    assert_eq!(status, StatusCode::OK, "body={continued}");
+    assert_eq!(continued["run"]["state"], "RUNNING");
+    let done = wait_for_autopilot(&state, project, &maker, &run_id, &["COMPLETED", "FAILED"]).await;
+    drop(file);
+    assert_eq!(done["run"]["state"], "COMPLETED", "body={done}");
+    let gate = &done["steps"][5];
+    assert_eq!(gate["state"], "DONE");
+    assert_eq!(gate["detail"]["approved"], 5);
+    assert_eq!(gate["detail"]["pending"], 0);
+    assert_eq!(gate["detail"]["released"], true);
+    assert_eq!(gate["attempts"], 2, "the step that waited was started again when the run went on");
+    let kinds: Vec<&str> = done["events"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
+    assert!(kinds.contains(&"run.continued") && kinds.last() == Some(&"run.completed"), "{kinds:?}");
+    let continues: Vec<_> = state.store.list_audit(None, 200, 0).await.unwrap().into_iter().filter(|a| a.action == "autopilot.continue").collect();
+    assert_eq!(continues.len(), 1);
+    assert_eq!(continues[0].actor.as_deref(), Some("checker"));
+}
+
+#[tokio::test]
+async fn phase7d_cases_left_undecided_when_the_person_lets_the_run_go_are_not_part_of_it() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(CaseWriter::new(0))).await;
+    fast_autopilot(&state);
+    let (project, owner) = autopilot_project(&state, "Phase7D Undecided").await;
+    let (run_id, file) = run_at_the_gate(&state, project, &owner, serde_json::json!({})).await;
+    let at_gate = wait_for_autopilot(&state, project, &owner, &run_id, &["WAITING", "FAILED", "COMPLETED"]).await;
+    assert_eq!(at_gate["run"]["state"], "WAITING", "body={at_gate}");
+    let suite = at_gate["steps"][3]["detail"]["suite_id"].as_str().unwrap().to_string();
+    let cases = cases_of(&state, project, &owner, &suite).await;
+    let path = format!("/api/v1/projects/{project}/autopilot/runs/{run_id}");
+
+    // Two approved by name, one rejected the ordinary way, the other two left alone.
+    let two: Vec<String> = cases[..2].iter().map(|c| c["id"].as_str().unwrap().to_string()).collect();
+    let (_, approved) = autopilot(&state, "POST", &format!("{path}/approve-cases"), &owner, Some(serde_json::json!({"case_ids": two}))).await;
+    assert_eq!(approved["approved"].as_array().unwrap().len(), 2, "body={approved}");
+    let (reject_status, _) = autopilot(&state, "POST", &format!("/api/v1/projects/{project}/test-cases/{}/reject", cases[2]["id"].as_str().unwrap()), &owner, None).await;
+    assert_eq!(reject_status, StatusCode::OK);
+
+    let (status, _) = autopilot(&state, "POST", &format!("{path}/continue"), &owner, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let done = wait_for_autopilot(&state, project, &owner, &run_id, &["COMPLETED", "FAILED"]).await;
+    drop(file);
+    assert_eq!(done["run"]["state"], "COMPLETED", "body={done}");
+    let gate = &done["steps"][5]["detail"];
+    assert_eq!((gate["approved"].as_u64(), gate["rejected"].as_u64(), gate["pending"].as_u64()), (Some(2), Some(1), Some(2)), "body={gate}");
+    assert_eq!(gate["released"], true);
+}
+
+#[tokio::test]
+async fn phase7d_a_run_made_with_automatic_approval_approves_what_passed_validation_and_does_not_wait() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(CaseWriter::new(0))).await;
+    fast_autopilot(&state);
+    let (project, owner) = autopilot_project(&state, "Phase7D Automatic").await;
+    let (run_id, file) = run_at_the_gate(&state, project, &owner, serde_json::json!({"approval": "auto_validated"})).await;
+    let done = wait_for_autopilot(&state, project, &owner, &run_id, &["COMPLETED", "FAILED", "WAITING"]).await;
+    drop(file);
+
+    assert_eq!(done["run"]["state"], "COMPLETED", "body={done}");
+    let gate = &done["steps"][5]["detail"];
+    assert_eq!(gate["automatic"], true);
+    assert_eq!(gate["approved_by_run"], 5);
+    assert_eq!(gate["approved"], 5);
+    assert_eq!(gate["pending"], 0);
+    let suite = done["steps"][3]["detail"]["suite_id"].as_str().unwrap();
+    assert!(cases_of(&state, project, &owner, suite).await.iter().all(|c| c["status"] == "APPROVED"));
+    let lines: Vec<&str> = done["events"].as_array().unwrap().iter().map(|e| e["message"].as_str().unwrap()).collect();
+    assert!(lines.contains(&"Approved 5 validated case(s), because the run was made with automatic approval"), "{lines:?}");
+}
+
+#[tokio::test]
+async fn phase7d_a_run_whose_ai_failed_is_taken_over_and_goes_on_from_that_step_keeping_what_was_done() {
+    // The provider fails the first call, so the run fails at its first group.
+    let writer = CaseWriter::new(1);
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(writer.clone())).await;
+    fast_autopilot(&state);
+    let (project, _) = autopilot_project(&state, "Phase7D Resume").await;
+    let maker = named_key(&state, "maker", "operator", project).await;
+    let second = named_key(&state, "second", "operator", project).await;
+    let (run_id, file) = run_at_the_gate(&state, project, &maker, serde_json::json!({})).await;
+    let failed = wait_for_autopilot(&state, project, &maker, &run_id, &["FAILED", "WAITING", "COMPLETED"]).await;
+    let path = format!("/api/v1/projects/{project}/autopilot/runs/{run_id}");
+
+    assert_eq!(failed["run"]["state"], "FAILED", "body={failed}");
+    assert!(failed["run"]["error"].as_str().unwrap().starts_with("Generating the test cases: the AI could not generate group 1/1"), "body={failed}");
+    assert_eq!(failed["run"]["current_step"], "GENERATE");
+    assert_eq!(failed["steps"][3]["state"], "FAILED");
+    let suite = failed["steps"][3]["detail"]["suite_id"].as_str().expect("the suite was made before the group failed").to_string();
+    assert_eq!(failed["steps"][3]["detail"]["groups"][0]["state"], "PENDING");
+
+    // Not while it is not failed, and only by an operator.
+    let viewer = mint_key(&state, "viewer", Some(&project.to_string())).await;
+    let (viewer_status, _) = autopilot(&state, "POST", &format!("{path}/resume"), &viewer, None).await;
+    assert_eq!(viewer_status, StatusCode::FORBIDDEN);
+
+    let (status, resumed) = autopilot(&state, "POST", &format!("{path}/resume"), &second, None).await;
+    assert_eq!(status, StatusCode::OK, "body={resumed}");
+    assert_eq!(resumed["run"]["state"], "RUNNING");
+    assert_eq!(resumed["run"]["created_by_name"], "second", "the run acts as the person who took it over");
+    assert!(resumed["run"]["error"].is_null());
+    let (again_status, again) = autopilot(&state, "POST", &format!("{path}/resume"), &second, None).await;
+    assert_eq!(again_status, StatusCode::CONFLICT, "body={again}");
+    assert!(again.to_string().contains("only a run that failed"), "body={again}");
+
+    let at_gate = wait_for_autopilot(&state, project, &second, &run_id, &["WAITING", "FAILED", "COMPLETED"]).await;
+    drop(file);
+    assert_eq!(at_gate["run"]["state"], "WAITING", "body={at_gate}");
+    assert_eq!(at_gate["steps"][3]["attempts"], 2, "the generate step was started again");
+    assert_eq!(at_gate["steps"][3]["detail"]["suite_id"], suite, "the same suite: nothing made twice");
+    assert_eq!(at_gate["steps"][2]["attempts"], 1, "the steps before it were not done again");
+    assert_eq!(cases_of(&state, project, &maker, &suite).await.len(), 5);
+    let (_, suites) = autopilot(&state, "GET", &format!("/api/v1/projects/{project}/test-suites"), &maker, None).await;
+    assert_eq!(suites.as_array().unwrap().iter().filter(|s| s["name"].as_str().unwrap().starts_with("Autopilot:")).count(), 1);
+    let kinds: Vec<&str> = at_gate["events"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
+    assert!(kinds.contains(&"run.retried"), "{kinds:?}");
+    let resumes: Vec<_> = state.store.list_audit(None, 200, 0).await.unwrap().into_iter().filter(|a| a.action == "autopilot.resume").collect();
+    assert_eq!(resumes.len(), 1);
+    assert_eq!(resumes[0].actor.as_deref(), Some("second"));
+}
+
+#[tokio::test]
+async fn phase7d_a_failed_run_may_not_start_again_beside_another_run_of_the_project() {
+    let writer = CaseWriter::new(1);
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(writer)).await;
+    fast_autopilot(&state);
+    let (project, owner) = autopilot_project(&state, "Phase7D Blocked").await;
+    let (run_id, file) = run_at_the_gate(&state, project, &owner, serde_json::json!({})).await;
+    wait_for_autopilot(&state, project, &owner, &run_id, &["FAILED"]).await;
+    drop(file);
+    let path = format!("/api/v1/projects/{project}/autopilot/runs");
+    let (_, other) = autopilot(&state, "POST", &path, &owner, Some(autopilot_body(serde_json::json!({"name": "The other one"})))).await;
+    assert!(other["run"]["id"].is_string(), "the failed run does not hold the project: body={other}");
+
+    let (status, blocked) = autopilot(&state, "POST", &format!("{path}/{run_id}/resume"), &owner, None).await;
+    assert_eq!(status, StatusCode::CONFLICT, "body={blocked}");
+    assert!(blocked.to_string().contains("The other one"), "the run in the way is named: body={blocked}");
+    let (_, still) = autopilot(&state, "GET", &format!("{path}/{run_id}"), &owner, None).await;
+    assert_eq!(still["run"]["state"], "FAILED");
+}
+
+#[tokio::test]
+async fn phase7d_only_an_operator_may_let_a_run_go_on_or_approve_its_cases_and_only_a_run_at_a_gate_goes_on() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(CaseWriter::new(0))).await;
+    fast_autopilot(&state);
+    let (project, owner) = autopilot_project(&state, "Phase7D Roles").await;
+    let viewer = mint_key(&state, "viewer", Some(&project.to_string())).await;
+    let (other, other_owner) = autopilot_project(&state, "Phase7D Roles Other").await;
+    let path = format!("/api/v1/projects/{project}/autopilot/runs");
+
+    // A run that has not started does not wait at any gate, and has no cases yet.
+    let (_, made) = autopilot(&state, "POST", &path, &owner, Some(autopilot_body(serde_json::json!({"skills": autopilot_skills()})))).await;
+    let early = made["run"]["id"].as_str().unwrap().to_string();
+    let (status, body) = autopilot(&state, "POST", &format!("{path}/{early}/continue"), &owner, None).await;
+    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+    assert!(body.to_string().contains("AWAITING_APPROVAL"), "body={body}");
+    let (status, body) = autopilot(&state, "POST", &format!("{path}/{early}/approve-cases"), &owner, None).await;
+    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+    assert!(body.to_string().contains("has not generated any"), "body={body}");
+
+    for tail in ["continue", "resume", "approve-cases"] {
+        let (viewer_status, _) = autopilot(&state, "POST", &format!("{path}/{early}/{tail}"), &viewer, None).await;
+        let (stranger_status, _) = autopilot(&state, "POST", &format!("{path}/{early}/{tail}"), &other_owner, None).await;
+        assert_eq!((viewer_status, stranger_status), (StatusCode::FORBIDDEN, StatusCode::FORBIDDEN), "{tail}");
+        let (elsewhere, _) = autopilot(&state, "POST", &format!("/api/v1/projects/{other}/autopilot/runs/{early}/{tail}"), &other_owner, None).await;
+        assert_eq!(elsewhere, StatusCode::NOT_FOUND, "a run is found only under its own project: {tail}");
+    }
+}
+
+#[tokio::test]
+async fn phase7d_a_run_at_a_gate_survives_a_restart_and_goes_on_when_a_person_lets_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("api.sqlite3");
+    let (project, run_id, file);
+    {
+        let state = restart_test_state_with_ai(&db_path, dir.path().join("evidence"), ai_infra_with_executor(CaseWriter::new(0))).await;
+        fast_autopilot(&state);
+        let made = autopilot_project(&state, "Phase7D Restart At Gate").await;
+        project = made.0;
+        let started = run_at_the_gate(&state, project, &made.1, serde_json::json!({})).await;
+        run_id = started.0;
+        file = started.1;
+        wait_for_autopilot(&state, project, &made.1, &run_id, &["WAITING", "FAILED", "COMPLETED"]).await;
+    }
+    let state = restart_test_state_with_ai(&db_path, dir.path().join("evidence"), ai_infra_with_executor(CaseWriter::new(0))).await;
+    fast_autopilot(&state);
+    assert_eq!(crate::autopilot_runner::resume_runs(&state).await.unwrap(), 0, "a run waiting for a person is not worked on");
+    let owner = mint_key(&state, "admin", None).await;
+    let path = format!("/api/v1/projects/{project}/autopilot/runs/{run_id}");
+    let (_, waiting) = autopilot(&state, "GET", &path, &owner, None).await;
+    assert_eq!(waiting["run"]["state"], "WAITING", "body={waiting}");
+    assert_eq!(waiting["working"], false);
+    let (_, approved) = autopilot(&state, "POST", &format!("{path}/approve-cases"), &owner, None).await;
+    assert_eq!(approved["approved"].as_array().unwrap().len(), 5, "body={approved}");
+    let (status, _) = autopilot(&state, "POST", &format!("{path}/continue"), &owner, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let done = wait_for_autopilot(&state, project, &owner, &run_id, &["COMPLETED", "FAILED"]).await;
+    drop(file);
+    assert_eq!(done["run"]["state"], "COMPLETED", "body={done}");
 }

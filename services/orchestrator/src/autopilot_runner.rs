@@ -546,6 +546,13 @@ mod tests {
         }
     }
 
+    /// `first` for the steps it names, then `rest` for every step after them.
+    fn states(first: &[&str], rest: &str) -> Vec<String> {
+        let mut states: Vec<String> = first.iter().map(|s| s.to_string()).collect();
+        states.resize(Step::ALL.len(), rest.to_string());
+        states
+    }
+
     fn valid_config() -> Value {
         json!({"base_url": "https://shop.example.test", "roles": [{"name": "anonymous"}]})
     }
@@ -613,19 +620,12 @@ mod tests {
         assert_eq!(done[0].detail, json!({"ran": "REQUIREMENTS"}));
         // The timeline reads like the run: created, each step started and done, completed.
         let kinds: Vec<String> = w.events().await.into_iter().map(|(k, _)| k).collect();
-        assert_eq!(
-            kinds,
-            [
-                "run.created",
-                "step.started",
-                "step.done",
-                "step.started",
-                "step.done",
-                "step.started",
-                "step.done",
-                "run.completed"
-            ]
-        );
+        let mut expected = vec!["run.created"];
+        for _ in Step::ALL {
+            expected.extend(["step.started", "step.done"]);
+        }
+        expected.push("run.completed");
+        assert_eq!(kinds, expected);
     }
 
     #[tokio::test]
@@ -675,8 +675,8 @@ mod tests {
             Some("CRAWL"),
             "which step it was in stays"
         );
-        let states: Vec<String> = w.step_states().await.into_iter().map(|(_, s)| s).collect();
-        assert_eq!(states, ["DONE", "FAILED", "PENDING"]);
+        let found: Vec<String> = w.step_states().await.into_iter().map(|(_, s)| s).collect();
+        assert_eq!(found, states(&["DONE", "FAILED"], "PENDING"));
         let crawl = &w.store.list_autopilot_steps(w.run).await.unwrap()[1];
         assert_eq!(crawl.error.as_deref(), Some("the crawl reached no page"));
         let kinds: Vec<String> = w.events().await.into_iter().map(|(k, _)| k).collect();
@@ -699,8 +699,8 @@ mod tests {
         let run = w.run_row().await;
         assert_eq!(run.state, "WAITING");
         assert!(run.finished_at.is_none(), "a run at a gate has not ended");
-        let states: Vec<String> = w.step_states().await.into_iter().map(|(_, s)| s).collect();
-        assert_eq!(states, ["DONE", "WAITING", "PENDING"]);
+        let found: Vec<String> = w.step_states().await.into_iter().map(|(_, s)| s).collect();
+        assert_eq!(found, states(&["DONE", "WAITING"], "PENDING"));
         let waiting = &w.store.list_autopilot_steps(w.run).await.unwrap()[1];
         assert_eq!(waiting.detail, json!({"cases": 40}));
         let events = w
@@ -779,8 +779,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(w.run_row().await.state, "CANCELLED");
-        let states: Vec<String> = w.step_states().await.into_iter().map(|(_, s)| s).collect();
-        assert_eq!(states, ["DONE", "SKIPPED", "SKIPPED"]);
+        let found: Vec<String> = w.step_states().await.into_iter().map(|(_, s)| s).collect();
+        assert_eq!(found, states(&["DONE"], "SKIPPED"));
     }
 
     #[tokio::test]
@@ -792,8 +792,8 @@ mod tests {
         let run = w.run_row().await;
         assert_eq!(run.state, "CANCELLED");
         assert!(run.error.is_none(), "a cancel is not a failure");
-        let states: Vec<String> = w.step_states().await.into_iter().map(|(_, s)| s).collect();
-        assert_eq!(states, ["DONE", "SKIPPED", "SKIPPED"]);
+        let found: Vec<String> = w.step_states().await.into_iter().map(|(_, s)| s).collect();
+        assert_eq!(found, states(&["DONE"], "SKIPPED"));
         assert_eq!(w.events().await.last().unwrap().0, "run.cancelled");
     }
 
@@ -827,7 +827,7 @@ mod tests {
 
         assert_eq!(
             steps.ran(),
-            [Step::Crawl, Step::GapCheck],
+            Step::ALL[1..].to_vec(),
             "the finished step is not done again"
         );
         let seen = steps.details.lock().unwrap().clone();

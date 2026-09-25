@@ -123,17 +123,33 @@ pub enum Step {
     Crawl,
     /// The requirements against what the crawl found.
     GapCheck,
+    /// The AI writes test cases for the requirements, and each is saved as a test case of the run's suite.
+    Generate,
+    /// Each case is checked for structure.
+    Validate,
+    /// The gate: the cases wait for a person to approve them (or the run approves the validated ones, when it was told to).
+    Approve,
 }
 
 impl Step {
     /// In the order they run.
-    pub const ALL: [Step; 3] = [Step::Requirements, Step::Crawl, Step::GapCheck];
+    pub const ALL: [Step; 6] = [
+        Step::Requirements,
+        Step::Crawl,
+        Step::GapCheck,
+        Step::Generate,
+        Step::Validate,
+        Step::Approve,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Step::Requirements => "REQUIREMENTS",
             Step::Crawl => "CRAWL",
             Step::GapCheck => "GAP_CHECK",
+            Step::Generate => "GENERATE",
+            Step::Validate => "VALIDATE",
+            Step::Approve => "APPROVE",
         }
     }
 
@@ -147,6 +163,9 @@ impl Step {
             Step::Requirements => "reading the requirements",
             Step::Crawl => "crawling the application",
             Step::GapCheck => "checking the requirements against the crawl",
+            Step::Generate => "generating the test cases",
+            Step::Validate => "validating the test cases",
+            Step::Approve => "approving the test cases",
         }
     }
 }
@@ -386,6 +405,10 @@ pub mod event {
     pub const FAILED: &str = "run.failed";
     pub const CANCELLED: &str = "run.cancelled";
     pub const RESUMED: &str = "run.resumed";
+    /// A person let a run at a gate go on.
+    pub const CONTINUED: &str = "run.continued";
+    /// A person took a failed run over and started it again.
+    pub const RETRIED: &str = "run.retried";
     pub const STEP_STARTED: &str = "step.started";
     pub const STEP_DONE: &str = "step.done";
     pub const STEP_SKIPPED: &str = "step.skipped";
@@ -472,7 +495,14 @@ mod tests {
     fn the_steps_run_in_the_order_the_run_needs_them() {
         assert_eq!(
             Step::ALL,
-            [Step::Requirements, Step::Crawl, Step::GapCheck],
+            [
+                Step::Requirements,
+                Step::Crawl,
+                Step::GapCheck,
+                Step::Generate,
+                Step::Validate,
+                Step::Approve
+            ],
             "the crawl needs the requirements read, the gap check needs the crawl"
         );
         assert_eq!(config().steps(), Step::ALL.to_vec());
