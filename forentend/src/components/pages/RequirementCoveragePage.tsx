@@ -221,7 +221,7 @@ const RequirementRow: React.FC<{
 
           <div className="space-y-1.5">
             <div className="text-[10px] font-mono uppercase text-slate-500">
-              Pages it points at {r.basis ? `· ${BASIS_LABEL[r.basis] ?? r.basis}` : ''}
+              Pages it points at {r.basis ? `· ${r.basis === 'ai' && r.status !== 'FOUND' ? 'checked by the AI' : (BASIS_LABEL[r.basis] ?? r.basis)}` : ''}
             </div>
             {r.matches.length > 0 ? (
               <ul className="space-y-1.5">

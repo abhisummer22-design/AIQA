@@ -637,6 +637,13 @@ describe('RequirementCoveragePage — the options that call a provider', () => {
         by: 'mock/mock-model',
       },
     });
+    const notFound = requirement({
+      key: 'FR-005',
+      status: 'MISSING',
+      basis: 'ai',
+      text: 'The system shall export any report as a CSV file.',
+      verification: { verdict: 'NOT_FOUND', pages: [], reason: 'No page offers an export.', by: 'mock/mock-model' },
+    });
     mockBackend({
       projects: [PROJECT_A],
       runsByProjectId: { [PROJECT_A.id]: [CRAWL_NEW] },
@@ -646,7 +653,7 @@ describe('RequirementCoveragePage — the options that call a provider', () => {
           body.verify
             ? {
                 ...REPORT,
-                requirements: [FR_LOGIN, checked, FR_MISSING, FR_PERF],
+                requirements: [FR_LOGIN, checked, notFound, FR_PERF],
                 method: {
                   embeddings: { requested: false, used: false, model: null, texts: 0, failed: 0, note: null },
                   verification: { requested: true, calls: 1, checked: 2, confirmed: 1, not_found: 0, unclear: 1, failed: 0, by: ['mock/mock-model'], note: null },
@@ -675,6 +682,15 @@ describe('RequirementCoveragePage — the options that call a provider', () => {
     expect(within(row).getByText('AI check: CONFIRMED')).toBeTruthy();
     expect(within(row).getByText('The product list has a heart button that adds a product to the wishlist.')).toBeTruthy();
     expect(within(row).getByText('mock/mock-model')).toBeTruthy();
+    // A page the AI named is "confirmed by the AI"; when it found none, the AI checked and confirmed nothing.
+    expect(row.textContent).toContain('confirmed by the AI');
+    const missingRow = document.getElementById('gap-requirement-2')!;
+    await act(async () => {
+      within(missingRow).getAllByRole('button')[0].click();
+    });
+    expect(within(missingRow).getByText('AI check: NOT FOUND')).toBeTruthy();
+    expect(missingRow.textContent).toContain('checked by the AI');
+    expect(missingRow.textContent).not.toContain('confirmed by the AI');
   });
 
   it('says an embedder that could not be used was not, with the reason', async () => {
