@@ -87,17 +87,18 @@ const addEntry = (task: string, provider: string, modelId: string) => {
 const GEN = 'TEST_CASE_GENERATION';
 
 describe('TaskRoutingChains', () => {
-  it('is collapsed when no task has a list, and expands to the five routed tasks, each on automatic', () => {
+  it('is collapsed when no task has a list, and expands to the six routed tasks, each on automatic', () => {
     render(<Harness />);
     expect(document.getElementById('task-chain-TEST_CASE_GENERATION')).toBeNull();
 
     expand();
-    for (const label of ['Test case generation', 'Requirement analysis', 'Test case compilation', 'Bug analysis', 'Requirement gap check']) {
+    for (const label of ['Test case generation', 'Requirement analysis', 'Test case compilation', 'Bug analysis', 'Requirement gap check', 'Login suggestion']) {
       expect(screen.getByText(label)).toBeTruthy();
     }
-    expect(screen.getAllByText('Automatic')).toHaveLength(5);
-    // The gap check's AI is the router's Traceability task.
+    expect(screen.getAllByText('Automatic')).toHaveLength(6);
+    // The gap check's AI is the router's Traceability task; the login suggestion's is its general one.
     expect(document.getElementById('task-chain-TRACEABILITY')).toBeTruthy();
+    expect(document.getElementById('task-chain-GENERAL_AI')).toBeTruthy();
     expect(document.getElementById('btn-toggle-task-routing')!.getAttribute('aria-expanded')).toBe('true');
   });
 

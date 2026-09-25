@@ -47,6 +47,7 @@ import {
   Sliders,
   Layers,
   ListChecks,
+  Rocket,
   FileText,
   ScrollText,
   FileSearch,
@@ -58,6 +59,7 @@ import {
 import { DashboardPage } from '../components/pages/DashboardPage';
 import { TestCaseGeneratorPage } from '../components/pages/TestCaseGeneratorPage';
 import { RequirementCoveragePage } from '../components/pages/RequirementCoveragePage';
+import { AutopilotPage } from '../components/pages/AutopilotPage';
 import { AIQAOrchestratorPage } from '../components/pages/AIQAOrchestratorPage';
 import { TestCaseValidatorPage } from '../components/pages/TestCaseValidatorPage';
 import { ExecutionHubPage } from '../components/pages/ExecutionHubPage';
@@ -171,6 +173,19 @@ export const routeDefs: RouteDef[] = [
     // Phase 6: real (`gap_check.rs`, `POST .../gap-check`), built following the
     // Dashboard/Test Generator visual language, same bucket as Audit/Evidence/
     // ExecutionHub/Reports.
+    designStatus: 'new-follows-approved-language',
+    protectedRoute: true,
+  },
+  {
+    id: 'autopilot',
+    path: '/autopilot',
+    label: 'Autopilot',
+    icon: Rocket,
+    badge: 'NEW',
+    badgeType: 'info',
+    Component: AutopilotPage,
+    // Phase 7: real (`autopilot*.rs`, `.../autopilot/*`), built following the Dashboard/Test
+    // Generator visual language, same bucket as Requirement Coverage.
     designStatus: 'new-follows-approved-language',
     protectedRoute: true,
   },

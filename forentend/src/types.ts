@@ -9,6 +9,7 @@ export type NavPage =
   | 'dashboard'
   | 'generator'
   | 'requirement-coverage'
+  | 'autopilot'
   | 'orchestrator'
   | 'validator'
   | 'execution'
