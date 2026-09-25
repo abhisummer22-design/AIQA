@@ -976,4 +976,101 @@ mod tests {
     fn the_same_input_always_gives_the_same_estimate() {
         assert_eq!(estimate(&input()), estimate(&input()));
     }
+
+    #[test]
+    fn a_division_by_nothing_is_a_division_by_one() {
+        assert_eq!(ceil_div(5, 0), 5, "an empty group size does not divide by zero");
+        assert_eq!(ceil_div(5, 2), 3);
+        assert_eq!(ceil_div(0, 4), 0);
+        // A run that goes none at a time is taken to go one at a time.
+        let mut none_at_once = input();
+        none_at_once.run_concurrency = 0;
+        let mut one_at_a_time = input();
+        one_at_a_time.run_concurrency = 1;
+        assert_eq!(estimate(&none_at_once), estimate(&one_at_a_time));
+    }
+
+    #[test]
+    fn validating_takes_a_twentieth_of_a_second_a_case() {
+        assert_eq!(VALIDATE_SECONDS_PER_CASE, 0.05);
+        let e = estimate(&input());
+        // 30 to 90 cases: 1.5 s and 4.5 s, each to the nearest second.
+        assert_eq!(step(&e, "VALIDATE").seconds, Range::new(2, 5));
+        assert_eq!(step(&e, "VALIDATE").ai_calls, Range::zero(), "no AI call");
+    }
+
+    #[test]
+    fn a_measured_average_is_given_to_the_hundredth_of_a_second() {
+        let mut i = input();
+        i.generation = Some(ProviderProfile {
+            observed: Some(Observed {
+                calls: 3,
+                avg_ms: 33_333.0,
+                avg_prompt_tokens: None,
+                avg_completion_tokens: None,
+            }),
+            ..local()
+        });
+        let g = task(&estimate(&i), "TEST_CASE_GENERATION").clone();
+        assert_eq!(
+            g.latency,
+            Latency::Measured {
+                calls: 3,
+                avg_seconds: 33.33
+            }
+        );
+    }
+
+    #[test]
+    fn dollars_are_given_to_the_hundredth_of_a_cent_and_add_up_from_those() {
+        let mut i = input();
+        i.first_pass_calls = 1;
+        i.first_pass_prompt_tokens = 1_234;
+        i.first_pass_completion_tokens = 567;
+        i.generation = Some(paid());
+        i.compile = Some(paid());
+        let e = estimate(&i);
+        let g = task(&e, "TEST_CASE_GENERATION");
+        // One call to two: 1,234-2,468 tokens in at $0.002 and 567-1,134 out at $0.01 a thousand.
+        // 0.008138 and 0.016276 dollars.
+        assert_eq!(g.cost_usd, Some(Range::new(0.0081, 0.0163)));
+        // Compiling: 0 to 90 calls of 2,500 in and 600 out.
+        let c = task(&e, "TEST_CASE_COMPILATION");
+        assert_eq!(c.cost_usd, Some(Range::new(0.0, 0.9900)));
+        assert_eq!(e.totals.cost_usd, Some(Range::new(0.0081, 1.0063)));
+    }
+
+    #[test]
+    fn the_warning_about_cost_names_only_the_providers_that_charge() {
+        let mut i = input();
+        i.generation = Some(paid());
+        let e = estimate(&i);
+        assert!(e.totals.paid);
+        assert_eq!(
+            e.warnings
+                .iter()
+                .filter(|w| w.starts_with("This run may cost"))
+                .collect::<Vec<_>>(),
+            ["This run may cost up to $0.36 on Paid AI."],
+            "compiling goes to a provider that is free, and is not named"
+        );
+    }
+
+    #[test]
+    fn the_time_to_run_the_cases_is_an_assumption_only_when_they_are_run() {
+        let e = estimate(&input());
+        assert!(
+            e.assumptions.iter().any(|a| a
+                == "Running: 10-45 s a case, 2 at a time; compiling makes at most one AI call a case (rules are tried first)."),
+            "{:?}",
+            e.assumptions
+        );
+        let mut off = input();
+        off.execute = false;
+        assert!(
+            estimate(&off).assumptions.iter().all(|a| !a.starts_with("Running:")),
+            "{:?}",
+            estimate(&off).assumptions
+        );
+    }
 }
