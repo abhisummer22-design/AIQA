@@ -9,6 +9,7 @@ pub mod api;
 pub mod api_testing;
 pub mod app_source;
 pub mod auth;
+pub mod autopilot_estimate;
 pub mod coverage;
 pub mod crawler;
 pub mod custom_testing;
