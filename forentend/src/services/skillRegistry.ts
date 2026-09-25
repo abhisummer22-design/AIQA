@@ -17,7 +17,8 @@ import type { SkillDefinition } from '../types/skills';
 /** The 8 initial built-in skills (brief §5), plus 5 more added in Phase 1
  *  gap-closing for categories that previously had no real skill counterpart
  *  at all (UI/UX, Negative, Positive, Spike, Load — see
- *  `categoryMatchedSkillIds`'s own doc comment for that gap). Two are
+ *  `categoryMatchedSkillIds`'s own doc comment for that gap), plus
+ *  Non-Functional Testing (Phase 4, the same kind of gap). Two are
  *  pre-selected by default in `useSkillSelection` (Functional Testing, Edge
  *  Case Analysis) — the same pair the brief's own layout mock shows checked;
  *  the rest start deselected, not because they are unavailable, but because
@@ -130,6 +131,18 @@ export const BUILT_IN_SKILLS: SkillDefinition[] = [
     id: 'skill-load-testing',
     name: 'Load Testing',
     description: 'Steady, sustained concurrent usage over time.',
+    type: 'BUILT_IN',
+    availability: 'AVAILABLE',
+    configurable: true,
+  },
+  // Phase 4 — the "Non-Functional" category (selected by default) had no
+  // skill at all, so ticking it generated nothing of the kind. The name is an
+  // exact stem match for that category, so `categoryMatchedSkillIds` includes
+  // it whenever the category is selected, like every other built-in here.
+  {
+    id: 'skill-non-functional-testing',
+    name: 'Non-Functional Testing',
+    description: 'Performance, reliability, security of data, usability, accessibility and compatibility scenarios.',
     type: 'BUILT_IN',
     availability: 'AVAILABLE',
     configurable: true,

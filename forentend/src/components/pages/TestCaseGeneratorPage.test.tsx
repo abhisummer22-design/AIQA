@@ -552,12 +552,14 @@ describe('TestCaseGeneratorPage — Phase 1 real AI generation', () => {
     await openAndSelectProject(PROJECT_A);
     await goToSourcesBranch();
 
+    // The skills panel has a "Select All (N)" of its own, and N is now 14 there too.
+    const categories = within(document.getElementById('test-generation-configuration-section')!);
     await act(async () => {
-      screen.getByText('Select All (14)').click();
+      categories.getByText('Select All (14)').click();
     });
 
     await act(async () => {
-      screen.getByText('Deselect All').click();
+      categories.getByText('Deselect All').click();
     });
 
     await act(async () => {
