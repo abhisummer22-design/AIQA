@@ -1422,4 +1422,36 @@ mod tests {
             "the step reports when ten more have finished since it last said"
         );
     }
+
+    #[tokio::test]
+    async fn the_step_says_how_far_it_has_got_when_ten_have_finished_and_not_when_nine_have() {
+        for (count, said) in [(9usize, false), (10, true)] {
+            let mut f = fixture(Step::Execute, config(json!({"run_concurrency": 8})), |_| {
+                ScriptedApi::new()
+            })
+            .await;
+            prepare(&f).await;
+            let ids: Vec<String> = (1..=count).map(|n| format!("c{n:02}")).collect();
+            let mut script = ScriptedApi::new().on(
+                "GET",
+                &listing(&f),
+                vec![ok(json!(ids.iter().map(|id| case(id, "APPROVED")).collect::<Vec<_>>()))],
+            );
+            for id in &ids {
+                script = script
+                    .on("POST", &f.p(&format!("test-cases/{id}/handoff")), vec![handoff_ok(&format!("run-{id}"))])
+                    .on("GET", &f.p(&format!("executions/run-{id}")), vec![run_reply("COMPLETED", "PASSED", None)]);
+            }
+            f.api = std::sync::Arc::new(script);
+            f.ctx.api = f.api.clone();
+            detail_of_done(execute(&f.ctx).await);
+            let lines = timeline(&f).await;
+            let progress: Vec<&String> = lines.iter().filter(|l| l.starts_with("Ran ")).collect();
+            if said {
+                assert_eq!(progress, [&format!("Ran {count} of {count} case(s)")], "{lines:?}");
+            } else {
+                assert!(progress.is_empty(), "{count} cases: {lines:?}");
+            }
+        }
+    }
 }
