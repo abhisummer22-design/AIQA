@@ -423,8 +423,10 @@ test("takeNext follows focus links first, within the usual limit plus the extra,
   // The usual limit is reached: a focused crawl goes on with focus links, an unfocused one stops.
   expect(takeNext(["o"], ["f"], 20, false)).toBeUndefined();
   expect(takeNext(["o"], ["f"], 20, true)).toBe("f");
-  // The extra is used up.
+  // The extra is used up: a focused crawl takes 30 pages at most.
+  expect(takeNext(["o"], ["f"], 29, true)).toBe("f");
   expect(takeNext(["o"], ["f"], 20 + MAX_FOCUS_EXTRA_PAGES, true)).toBeUndefined();
+  expect(takeNext(["o"], ["f"], 30, true)).toBeUndefined();
   // Ordinary links past the usual limit are never followed, focused or not.
   expect(takeNext(["o"], [], 20, true)).toBeUndefined();
   expect(takeNext([], [], 0, false)).toBeUndefined();
