@@ -19,6 +19,7 @@ pub mod errors;
 pub mod evidence;
 pub mod execution_plan;
 pub mod executor;
+pub mod gap_check;
 pub mod governed_healing;
 pub mod grounding;
 pub mod intelligence;

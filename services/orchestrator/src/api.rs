@@ -414,6 +414,14 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/projects/:project_id/requirements",
             get(list_requirements_scoped),
         )
+        // Phase 6 — the requirements against what a crawl of the
+        // application shows (`gap_check.rs`): which are on a page, which are
+        // not, which pages no document mentions, and which requirements have
+        // cases.
+        .route(
+            "/api/v1/projects/:project_id/gap-check",
+            post(gap_check_scoped),
+        )
         // Phase 3 — what a requirement-driven generation would do, without
         // calling any model: how many AI calls, what each skill is shown.
         .route(
@@ -6483,6 +6491,170 @@ async fn get_crawl_result_scoped(
         )
     })?;
     Ok(Json(output))
+}
+
+// ------------------------------------------------------------ gap check (Phase 6)
+//
+// The documents' requirements against what a crawl of the application shows. See `gap_check.rs` for what "found" means.
+
+/// `POST .../gap-check` body — optional, and every field of it too.
+#[derive(Debug, Default, Deserialize)]
+struct GapCheckRequestBody {
+    /// A crawl run of this project (`POST .../crawl`) that has finished; omitted, the project's most recent finished one.
+    #[serde(default)]
+    crawl_run_id: Option<Uuid>,
+    /// Only the pages this role's crawl reached; omitted, every role's.
+    #[serde(default)]
+    role: Option<String>,
+    /// Only the requirements of these documents (`GET .../requirements`); omitted, all of the project's.
+    #[serde(default)]
+    document_ids: Vec<Uuid>,
+}
+
+#[derive(Debug, Serialize)]
+struct GapCrawlInfo {
+    run_id: Uuid,
+    /// `grounding` (links, buttons and form fields) or `result` (links and buttons only: an older crawl).
+    source: &'static str,
+    /// The role the report was limited to, if it was.
+    role: Option<String>,
+    roles: Vec<crate::gap_check::RoleEvidence>,
+}
+
+#[derive(Debug, Serialize)]
+struct GapCheckResponse {
+    crawl: GapCrawlInfo,
+    #[serde(flatten)]
+    report: crate::gap_check::GapReport,
+    /// What a reader of the report should know about the crawl behind it.
+    notes: Vec<String>,
+}
+
+/// A run's crawl output: the grounding file when the crawl recorded one (links, buttons and form fields), the older
+/// result (links and buttons) when not. The `Err` says what is wrong and what to do.
+async fn gap_evidence_of_run(
+    state: &AppState,
+    project_id: Uuid,
+    run_id: Uuid,
+    role: Option<&str>,
+) -> Result<crate::gap_check::CrawlEvidence, ApiError> {
+    scoped_run_summary(state, run_id, project_id).await?;
+    let tasks = scoped_run_tasks(state, run_id).await?;
+    let task = tasks
+        .first()
+        .ok_or_else(|| ApiError::not_found("crawl run has no tasks"))?;
+    let evidence = match crate::grounding::read_crawl_grounding(&task.id) {
+        Ok(grounding) => crate::gap_check::evidence_from_grounding(&grounding, role),
+        Err(_) => match crate::crawler::read_crawl_result(&task.id) {
+            Ok(output) => crate::gap_check::evidence_from_result(&output, role),
+            Err(_) => {
+                return Err(ApiError::not_found(
+                    "this run recorded no crawl — it is not a crawl, or it is still running or did not finish",
+                ))
+            }
+        },
+    }
+    .map_err(ApiError::validation)?;
+    if evidence.pages.is_empty() {
+        return Err(ApiError::validation(
+            "the crawl reached no page (a login that failed leaves nothing to compare with): crawl again once it works",
+        ));
+    }
+    Ok(evidence)
+}
+
+/// The project's most recent crawl that left something to read (a crawl writes its result only when it has finished, so
+/// one still running is passed over). Whether a crawl can be used does not depend on the role asked for: a role it lacks,
+/// or one that reached no page, is reported by the crawl the check would have used, not passed over for an older one.
+async fn latest_crawl_run(
+    state: &AppState,
+    project_id: Uuid,
+    role: Option<&str>,
+) -> Result<(Uuid, crate::gap_check::CrawlEvidence), ApiError> {
+    let ids = state
+        .store
+        .list_run_ids(Some(&project_id.to_string()))
+        .await
+        .map_err(to_500)?;
+    for id in ids.into_iter().take(50) {
+        let Ok(summary) = scoped_run_summary(state, id, project_id).await else {
+            continue;
+        };
+        if !summary.name.starts_with("Crawl:") {
+            continue;
+        }
+        if gap_evidence_of_run(state, project_id, id, None).await.is_ok() {
+            let evidence = gap_evidence_of_run(state, project_id, id, role).await?;
+            return Ok((id, evidence));
+        }
+    }
+    Err(ApiError::not_found(
+        "this project has no finished crawl yet: crawl the application first (Test Case Generator, Crawl This Application)",
+    ))
+}
+
+/// POST /api/v1/projects/:project_id/gap-check — the project's requirements lined up against a crawl of the application:
+/// each requirement found, weak, missing or not checkable, with the pages and words behind it; the pages no requirement
+/// points at; and how many cases test each requirement. Read-only, and needs no AI provider.
+async fn gap_check_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    body: Option<ApiJson<GapCheckRequestBody>>,
+) -> Result<Json<GapCheckResponse>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let body = body.map(|ApiJson(b)| b).unwrap_or_default();
+    let pid = project_id.to_string();
+
+    let rows = state
+        .store
+        .list_requirements(&pid, &body.document_ids)
+        .await
+        .map_err(to_500)?;
+    if rows.is_empty() {
+        return Err(ApiError::validation(
+            "there are no requirements to check: upload a requirements document first (Test Case Generator, Source & Generation)",
+        ));
+    }
+    let requirements: Vec<crate::requirement_generation::RequirementItem> = rows
+        .into_iter()
+        .map(|r| crate::requirement_generation::RequirementItem {
+            key: r.key,
+            section: r.section,
+            kind: crate::requirements::RequirementKind::from_db(&r.kind),
+            text: r.text,
+        })
+        .collect();
+
+    let role = body.role.as_deref().map(str::trim).filter(|r| !r.is_empty());
+    let (run_id, evidence) = match body.crawl_run_id {
+        Some(run_id) => (
+            run_id,
+            gap_evidence_of_run(&state, project_id, run_id, role).await?,
+        ),
+        None => latest_crawl_run(&state, project_id, role).await?,
+    };
+
+    let cases: Vec<crate::gap_check::CaseInfo> = state
+        .store
+        .list_test_cases(&pid, None, None)
+        .await
+        .map_err(to_500)?
+        .iter()
+        .map(crate::gap_check::CaseInfo::from)
+        .collect();
+
+    let analysis = crate::gap_check::analyze(&requirements, &evidence, &cases);
+    Ok(Json(GapCheckResponse {
+        crawl: GapCrawlInfo {
+            run_id,
+            source: evidence.source,
+            role: role.map(str::to_string),
+            roles: evidence.roles.clone(),
+        },
+        report: analysis.report(),
+        notes: crate::gap_check::notes_for(&evidence),
+    }))
 }
 
 // ----------------------------------------------------------- intelligence
