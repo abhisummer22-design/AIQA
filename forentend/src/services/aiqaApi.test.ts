@@ -752,6 +752,83 @@ describe('aiqaApi.testCases.compile (Phase 5 — compile against a crawl)', () =
   });
 });
 
+describe('aiqaApi.gapCheck.run (Phase 6 — the requirements against a crawl)', () => {
+  const REPORT = {
+    crawl: { run_id: 'crawl-1', source: 'grounding', role: null, roles: [{ role: 'admin', login_succeeded: true, pages: 3 }] },
+    summary: { requirements: 1, checkable: 1, found: 0, weak: 0, missing: 1, not_checkable: 0, pages: 3, undocumented_pages: 3, cases: 0, with_cases: 0, shown_without_cases: 0, tested_without_evidence: 0 },
+    requirements: [
+      {
+        key: 'FR-001',
+        section: null,
+        kind: 'functional',
+        text: 'Users can add products to a wishlist.',
+        status: 'MISSING',
+        matches: [],
+        cases: { total: 0, approved: 0, executed: 0, techniques: {}, missing_techniques: ['positive'] },
+      },
+    ],
+    undocumented_pages: [],
+    notes: [],
+    method: {
+      embeddings: { requested: false, used: false, model: null, texts: 0, failed: 0, note: null },
+      verification: { requested: false, calls: 0, checked: 0, confirmed: 0, not_found: 0, unclear: 0, failed: 0, by: [], note: null },
+    },
+  };
+
+  it('posts to the project\'s gap-check path with an empty body when given none, and returns the report as sent', async () => {
+    setApiKey('aiqa_gapchecktest000000');
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, REPORT));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const report = await aiqaApi.gapCheck.run('proj-1');
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe('/api/v1/projects/proj-1/gap-check');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(String(init.body))).toEqual({});
+    expect(report).toEqual(REPORT);
+  });
+
+  it('sends the crawl, the role and the options it is given, and nothing else', async () => {
+    setApiKey('aiqa_gapchecktest000000');
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, REPORT));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await aiqaApi.gapCheck.run('proj-1', { crawl_run_id: 'crawl-1', role: 'admin', use_embeddings: true, verify: true, max_verifications: 5 });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({ crawl_run_id: 'crawl-1', role: 'admin', use_embeddings: true, verify: true, max_verifications: 5 });
+  });
+
+  it('maps a refusal to the kind the page tells apart: no requirements, no crawl, no permission', async () => {
+    setApiKey('aiqa_gapchecktest000000');
+    const respond = (status: number, code: string, message: string) => vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(status, envelope(code, message))));
+
+    respond(400, 'VALIDATION_ERROR', 'this project has no requirements: upload a requirements document first');
+    const noRequirements = await expectApiError(aiqaApi.gapCheck.run('proj-1'));
+    expect([noRequirements.kind, noRequirements.status]).toEqual(['validation_error', 400]);
+    expect(noRequirements.message).toContain('no requirements');
+
+    respond(404, 'NOT_FOUND', 'no finished crawl');
+    const noCrawl = await expectApiError(aiqaApi.gapCheck.run('proj-1'));
+    expect([noCrawl.kind, noCrawl.status]).toEqual(['not_found', 404]);
+
+    respond(403, 'FORBIDDEN', "role 'viewer' cannot perform this action");
+    const forbidden = await expectApiError(aiqaApi.gapCheck.run('proj-1', { verify: true }));
+    expect([forbidden.kind, forbidden.status]).toEqual(['forbidden', 403]);
+  });
+
+  it('never puts the API key in the URL', async () => {
+    setApiKey('aiqa_gapchecktest000000');
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, REPORT));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await aiqaApi.gapCheck.run('proj-1');
+
+    expect(String(fetchMock.mock.calls[0][0])).not.toContain('aiqa_gapchecktest000000');
+  });
+});
+
 describe('No hardcoded credential in source (FE-2 §6, §18 item 11)', () => {
   it('API_BASE contains no embedded secret and defaults to the contract-shaped path', async () => {
     const mod = await import('./aiqaApi');

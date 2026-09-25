@@ -1319,6 +1319,153 @@ export interface CrawlOutput {
   visibility_matrix: VisibilityDiffEntry[];
 }
 
+// ------------------------------------------------------------- gap check
+
+/** `gap_check.rs::Status` — how well the application shows a requirement. */
+export type GapStatus = 'FOUND' | 'WEAK' | 'MISSING' | 'NOT_CHECKABLE';
+
+/** `gap_check.rs::Basis` — what a page match rests on: words the requirement and
+ *  the page share (`text`), a page close in meaning to it (`embedding`), or a page
+ *  the AI read and agreed with (`ai`). */
+export type GapBasis = 'text' | 'embedding' | 'ai';
+
+/** `gap_check.rs::PageMatch` — one page a requirement points at. */
+export interface GapPageMatch {
+  url: string;
+  title: string;
+  /** How much of what the requirement is about the page carries, 0 to 1. */
+  score: number;
+  basis: GapBasis;
+  /** The requirement's words found on the page. */
+  terms: string[];
+  /** Up to three things on the page that carry them. */
+  elements: string[];
+  roles: string[];
+  /** For an `embedding` match: how close, 0 to 1. */
+  similarity?: number;
+}
+
+/** `gap_check.rs::CaseCoverage` — a requirement's saved cases (rejected ones count for nothing). */
+export interface GapCaseCoverage {
+  total: number;
+  approved: number;
+  executed: number;
+  techniques: Record<string, number>;
+  /** Techniques that apply to this kind of requirement and have no case. */
+  missing_techniques: string[];
+}
+
+/** `gap_verify.rs::Verification` — what the AI said about a requirement it was asked to check. */
+export interface GapVerification {
+  verdict: 'CONFIRMED' | 'NOT_FOUND' | 'UNCLEAR' | 'FAILED';
+  /** The addresses of the pages it named (only ones it was shown). */
+  pages: string[];
+  reason: string;
+  /** `provider/model`. */
+  by: string;
+}
+
+/** `gap_check.rs::RequirementFinding`. */
+export interface GapRequirement {
+  key: string;
+  section: string | null;
+  kind: string;
+  text: string;
+  status: GapStatus;
+  basis?: GapBasis;
+  matches: GapPageMatch[];
+  verification?: GapVerification;
+  cases: GapCaseCoverage;
+}
+
+/** `gap_check.rs::UndocumentedPage` — a page no requirement points at. */
+export interface GapUndocumentedPage {
+  url: string;
+  title: string;
+  roles: string[];
+  elements: string[];
+  element_count: number;
+}
+
+/** `gap_check.rs::GapSummary`. */
+export interface GapSummary {
+  requirements: number;
+  /** Requirements a crawl can show: functional, usability and data ones. */
+  checkable: number;
+  found: number;
+  weak: number;
+  missing: number;
+  not_checkable: number;
+  pages: number;
+  undocumented_pages: number;
+  cases: number;
+  with_cases: number;
+  /** Requirements the application shows that no case tests. */
+  shown_without_cases: number;
+  /** Requirements with cases that the crawl found no sign of. */
+  tested_without_evidence: number;
+}
+
+/** `api.rs::GapCrawlInfo`. */
+export interface GapCrawlInfo {
+  run_id: string;
+  /** `grounding` (links, buttons and form fields) or `result` (links and buttons only: an older crawl). */
+  source: 'grounding' | 'result';
+  role: string | null;
+  roles: { role: string; login_succeeded: boolean; pages: number }[];
+}
+
+/** `gap_verify.rs::EmbeddingReport` — what the optional embedder step did. */
+export interface GapEmbeddingReport {
+  requested: boolean;
+  used: boolean;
+  model: string | null;
+  /** Texts sent to the embedder, and how many of those failed. */
+  texts: number;
+  failed: number;
+  note: string | null;
+}
+
+/** `gap_verify.rs::VerificationReport` — what the optional AI step did. */
+export interface GapVerificationReport {
+  requested: boolean;
+  calls: number;
+  checked: number;
+  confirmed: number;
+  not_found: number;
+  unclear: number;
+  failed: number;
+  /** The `provider/model` that answered. */
+  by: string[];
+  note: string | null;
+}
+
+/** `POST .../gap-check` request — every field optional. */
+export interface GapCheckRequest {
+  /** A crawl run of this project; omitted, its newest one. */
+  crawl_run_id?: string;
+  /** Only the pages this role's crawl reached. */
+  role?: string;
+  /** Only these documents' requirements. */
+  document_ids?: string[];
+  /** Also compare meaning with the embedder (needs `GEMINI_API_KEY`). */
+  use_embeddings?: boolean;
+  /** Also ask the AI to check the requirements the words left unclear. */
+  verify?: boolean;
+  max_verifications?: number;
+}
+
+/** `api.rs::GapCheckResponse` — `POST .../gap-check`. */
+export interface GapCheckResponse {
+  crawl: GapCrawlInfo;
+  summary: GapSummary;
+  requirements: GapRequirement[];
+  undocumented_pages: GapUndocumentedPage[];
+  /** What to know when reading the report (a role that could not log in, an older crawl). */
+  notes: string[];
+  method?: { embeddings: GapEmbeddingReport; verification: GapVerificationReport };
+}
+
 // ---------------------------------------------------------- Phase 3: Custom Testing
 
 /** `api.rs::CustomTestingGenerateBody` — `POST .../custom-testing/generate`
