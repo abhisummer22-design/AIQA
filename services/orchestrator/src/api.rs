@@ -422,6 +422,12 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/projects/:project_id/gap-check",
             post(gap_check_scoped),
         )
+        // Phase 7 — a role's login steps, suggested from what a crawl saw on the
+        // login page (`login_suggest.rs`); the person confirms them.
+        .route(
+            "/api/v1/projects/:project_id/login-suggestion",
+            post(login_suggestion_scoped),
+        )
         // Phase 3 — what a requirement-driven generation would do, without
         // calling any model: how many AI calls, what each skill is shown.
         .route(
@@ -6733,6 +6739,169 @@ async fn gap_check_scoped(
         report: analysis.report(),
         notes: crate::gap_check::notes_for(&evidence),
         method,
+    }))
+}
+
+// --------------------------------------------------- login suggestion (Phase 7)
+//
+// The steps that log a role in, proposed from the login page a crawl recorded. See `login_suggest.rs`.
+
+/// `POST .../login-suggestion` body.
+#[derive(Debug, Deserialize)]
+struct LoginSuggestionBody {
+    /// The role the steps are for: its name gives the environment variables the login reads.
+    role: String,
+    /// A crawl run of this project; omitted, its newest one that has a page with a password field.
+    #[serde(default)]
+    crawl_run_id: Option<Uuid>,
+    /// Also ask the router's AI when the rules are not sure of their answer. Calls a provider: Operator role.
+    #[serde(default)]
+    use_ai: bool,
+}
+
+/// Whether the AI was asked and what came of it.
+#[derive(Debug, Default, Serialize)]
+struct LoginSuggestionAi {
+    requested: bool,
+    used: bool,
+    /// Why it was not asked, or why its answer was not used.
+    note: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct LoginSuggestionResponse {
+    crawl_run_id: Uuid,
+    suggestion: crate::login_suggest::LoginSuggestion,
+    /// The other answer, when the AI was asked and answered differently from the rules.
+    alternatives: Vec<crate::login_suggest::LoginSuggestion>,
+    ai: LoginSuggestionAi,
+    /// The variables the steps read that are not set in the orchestrator's environment (names only): a crawl or a run with
+    /// these steps is refused until they are.
+    missing_secrets: Vec<String>,
+}
+
+/// A finished crawl's grounding: the fields and buttons of every page it reached. The `Err` says what is wrong and what to
+/// do (still running, made before grounding was recorded, another project's).
+async fn grounding_of_run(
+    state: &AppState,
+    project_id: Uuid,
+    run_id: Uuid,
+) -> Result<crate::grounding::CrawlGrounding, ApiError> {
+    scoped_run_summary(state, run_id, project_id).await?;
+    let tasks = scoped_run_tasks(state, run_id).await?;
+    let task = tasks
+        .first()
+        .ok_or_else(|| ApiError::not_found("crawl run has no tasks"))?;
+    crate::grounding::read_crawl_grounding(&task.id).map_err(ApiError::not_found)
+}
+
+/// The project's newest crawl that has a page with a password field.
+async fn newest_crawl_with_login_page(
+    state: &AppState,
+    project_id: Uuid,
+    role: &str,
+) -> Result<(Uuid, crate::grounding::CrawlGrounding), ApiError> {
+    let ids = state
+        .store
+        .list_run_ids(Some(&project_id.to_string()))
+        .await
+        .map_err(to_500)?;
+    let mut newest_problem: Option<crate::login_suggest::SuggestError> = None;
+    for id in ids.into_iter().take(50) {
+        let Ok(summary) = scoped_run_summary(state, id, project_id).await else {
+            continue;
+        };
+        if !summary.name.starts_with("Crawl:") {
+            continue;
+        }
+        let Ok(grounding) = grounding_of_run(state, project_id, id).await else {
+            continue;
+        };
+        match crate::login_suggest::suggest_by_rules(&grounding, role) {
+            Ok(_) => return Ok((id, grounding)),
+            Err(problem) => {
+                newest_problem.get_or_insert(problem);
+            }
+        }
+    }
+    Err(match newest_problem {
+        Some(problem) => ApiError::validation(problem.message()),
+        None => ApiError::not_found(
+            "this project has no crawl with recorded fields yet: crawl the application first (Test Case Generator, Crawl This Application)",
+        ),
+    })
+}
+
+/// POST /api/v1/projects/:project_id/login-suggestion — the steps that log `role` in, from the page a crawl found a password
+/// field on: open the page, fill the user name and the password (as `env:NAME` references, never values), click the button.
+/// Says how sure it is and why, and which variables the person has to set. Reads only; `use_ai` also asks the router's AI
+/// when the rules are not sure (Operator role).
+async fn login_suggestion_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiJson(body): ApiJson<LoginSuggestionBody>,
+) -> Result<Json<LoginSuggestionResponse>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    if body.use_ai {
+        auth::require_role(&ctx, Role::Operator)?;
+    }
+    let role = body.role.trim();
+    if role.is_empty() {
+        return Err(ApiError::validation("role must not be empty"));
+    }
+    crate::login_suggest::secret_names_for(role).map_err(ApiError::validation)?;
+
+    let (run_id, grounding) = match body.crawl_run_id {
+        Some(run_id) => (run_id, grounding_of_run(&state, project_id, run_id).await?),
+        None => newest_crawl_with_login_page(&state, project_id, role).await?,
+    };
+    let by_rules = crate::login_suggest::suggest_by_rules(&grounding, role)
+        .map_err(|problem| ApiError::validation(problem.message()))?;
+
+    let mut ai = LoginSuggestionAi {
+        requested: body.use_ai,
+        ..LoginSuggestionAi::default()
+    };
+    let mut suggestion = by_rules;
+    let mut alternatives = Vec::new();
+    if body.use_ai {
+        if suggestion.confidence == crate::login_suggest::Confidence::High {
+            ai.note = Some("the rules were sure of their answer, so the AI was not asked".to_string());
+        } else {
+            match crate::login_suggest::suggest_with_ai(&state.ai_infra, &grounding, role).await {
+                Ok(by_ai) => {
+                    ai.used = true;
+                    audit(
+                        &state,
+                        &ctx,
+                        "login_suggestion.ai",
+                        Some(&run_id.to_string()),
+                        Some(&by_ai.by),
+                        "ok",
+                    )
+                    .await;
+                    if by_ai.actions != suggestion.actions {
+                        // Rules that were only unsure keep the first place; rules that had a doubt worth a `low` give it
+                        // to the AI, whose answer is at most `medium`.
+                        if suggestion.confidence == crate::login_suggest::Confidence::Low {
+                            alternatives.push(std::mem::replace(&mut suggestion, by_ai));
+                        } else {
+                            alternatives.push(by_ai);
+                        }
+                    }
+                }
+                Err(why) => ai.note = Some(why),
+            }
+        }
+    }
+    let missing_secrets = crate::execution_plan::missing_secrets(&suggestion.secrets);
+    Ok(Json(LoginSuggestionResponse {
+        crawl_run_id: run_id,
+        suggestion,
+        alternatives,
+        ai,
+        missing_secrets,
     }))
 }
 
