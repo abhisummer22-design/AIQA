@@ -161,6 +161,13 @@ Every external executor subprocess (`Playwright`, `Newman`, `Maestro`, `Pytest`,
 - **SSRF Network Protection**: Target URLs and action endpoints are verified against private network blacklists (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `127.0.0.1`, `169.254.169.254`).
 - **Resource Timeouts**: Tasks enforce hard execution ceilings (`AIQA_TASK_TIMEOUT_SECS`), transitioning exceeding tasks to `TIMEOUT`.
 
+### Compiling a Case Against a Real Application (`execution_plan.rs`, `grounding.rs`)
+A browser case is compiled from prose, and prose names no selector. Naming a finished crawl (`crawl_run_id`, and the `role` the case runs as) in `POST .../test-cases/:id/compile`, or in a `compile_and_execute` handoff, grounds the compile in it:
+- **Real selectors only**: the crawl records every link, button and form field with a locator it checked matches exactly one element; the AI is shown those most to do with the case and told to copy from them. A plan that uses a selector the crawl never found is `NOT_EXECUTABLE`, whatever the AI said. An element that only appears after an interaction is not in a crawl of a page's first state, so a case that needs one stays `NOT_EXECUTABLE` until it is crawled in that state.
+- **Login first, secrets at run time**: the role's login steps run before the case. Their credentials are `env:NAME` references (`NAME` starting `AIQA_LOGIN_` or `AIQA_SECRET_`) read from the orchestrator's environment when the test runs: the plan, the generated spec, the stored run and the evidence hold only the names, and a run whose variable is not set is refused before it starts. A role crawled with a literal password cannot be used for this — crawl it again with `env:` references.
+- **Task routing**: the compile is the `TestCaseCompilation` task, so Settings → task routing decides who answers it (a local model, Groq, ...).
+- **Evidence**: the run's log lists each step (`AIQA_STEP {...}`, never a value) and the page it ended on (`AIQA_FINAL`).
+
 ---
 
 ## 7. Specialized Diagnostic Tools & Agents
