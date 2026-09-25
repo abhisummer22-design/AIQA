@@ -52,6 +52,84 @@ use std::collections::BTreeMap;
 /// this same, pre-existing convention rather than a newly-invented one.
 pub const DEFAULT_TARGET: &str = "http://127.0.0.1:8080";
 
+// ----------------------------------------------------------------- secrets
+
+/// A `FILL` value written `env:NAME` is not text to type but a reference: the text is read from the environment
+/// variable `NAME` of the orchestrator when the test runs. A plan, the spec generated from it, the parameters a run
+/// stores and every log carry only the name; the value exists in the orchestrator's environment and in the browser
+/// that types it. (`crate::ai_router::env_key_name` is the same `env:NAME` convention, for provider keys.)
+///
+/// Only names starting with one of these may be referenced. Without that, a plan — which an AI writes — could ask for
+/// `env:GROQ_API_KEY` to be typed into whatever page it is testing.
+pub const SECRET_NAME_PREFIXES: [&str; 2] = ["AIQA_LOGIN_", "AIQA_SECRET_"];
+
+const MAX_SECRET_NAME_LEN: usize = 64;
+
+/// Whether a plan may reference the variable `name`: letters, digits and `_` (not starting with a digit), at most 64
+/// characters, and starting with one of `SECRET_NAME_PREFIXES`.
+pub fn is_valid_secret_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && name.len() <= MAX_SECRET_NAME_LEN
+        && SECRET_NAME_PREFIXES.iter().any(|p| name.starts_with(p))
+}
+
+/// The variable a `FILL` value refers to, when the value is a well-formed `env:NAME` reference.
+pub fn secret_name(value: &str) -> Option<&str> {
+    crate::ai_router::env_key_name(value).filter(|name| is_valid_secret_name(name))
+}
+
+/// What is wrong with a `FILL` value that starts `env:`, or `None` when it is an ordinary value or a good
+/// reference. The message never repeats the value: it may have been a password typed by mistake.
+pub fn secret_reference_problem(value: &str) -> Option<String> {
+    let name = crate::ai_router::env_key_name(value)?;
+    if is_valid_secret_name(name) {
+        None
+    } else {
+        Some(format!(
+            "a FILL value starting env: must be a secret reference, env:NAME, where NAME starts with {} (letters, digits and _)",
+            SECRET_NAME_PREFIXES.join(" or ")
+        ))
+    }
+}
+
+/// The variables `actions` refer to, each once, in name order. Names only — never a value.
+pub fn secret_names_of(actions: &[Action]) -> Vec<String> {
+    let mut names: Vec<String> = actions
+        .iter()
+        .filter_map(|action| match action {
+            Action::Fill { value, .. } => secret_name(value).map(str::to_string),
+            _ => None,
+        })
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// The variables among `names` that are not set (or hold only blanks) in the orchestrator's environment.
+pub fn missing_secrets(names: &[String]) -> Vec<String> {
+    names
+        .iter()
+        .filter(|name| !crate::ai_router::env_key_is_set(name))
+        .cloned()
+        .collect()
+}
+
+/// The message for a run that cannot start because `missing` are not set. Names only.
+pub fn missing_secrets_message(missing: &[String]) -> String {
+    format!(
+        "the secret{} {} {} not set in the orchestrator's environment — add {} to its .env (or environment) and restart it",
+        if missing.len() == 1 { "" } else { "s" },
+        missing.join(", "),
+        if missing.len() == 1 { "is" } else { "are" },
+        if missing.len() == 1 { "it" } else { "them" },
+    )
+}
+
 // ------------------------------------------------------------------ schema
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -405,6 +483,17 @@ async fn compile_with_ai(infra: &AiInfrastructure, case: &TestCaseRow) -> Compil
                 })
                 .collect();
             let target = target.map(|t| resolve_relative_url(&t));
+            // A secret reference is something only a login plan may carry. An AI-written plan naming one — from
+            // a prompt injection in the case text, say — would have the orchestrator type a variable's value into
+            // the page under test.
+            if !secret_names_of(&actions).is_empty() {
+                return CompilationOutcome::CompilationFailed {
+                    reasons: vec![
+                        "the AI plan referred to a secret (env:NAME); only a login plan may"
+                            .to_string(),
+                    ],
+                };
+            }
             let plan = ExecutionPlan {
                 test_case_id: case.id.to_string(),
                 execution_type,
@@ -453,6 +542,11 @@ pub async fn validate_plan(plan: &ExecutionPlan) -> Result<(), Vec<String>> {
     }
 
     for action in &plan.actions {
+        if let Action::Fill { value, .. } = action {
+            if let Some(problem) = secret_reference_problem(value) {
+                reasons.push(problem);
+            }
+        }
         let url = match action {
             Action::Navigate { url } => Some(url.as_str()),
             Action::Request { url, .. } => Some(url.as_str()),
@@ -516,13 +610,20 @@ pub fn materialize_task_def(
         }),
         ExecutionType::Browser => {
             let spec_path = crate::executor::materialize_playwright_spec(&task_id, plan)?;
+            let mut params = serde_json::json!({ "spec": spec_path });
+            // The names of the secrets the spec reads — never their values — so the executor can refuse a run
+            // whose secrets are not set and scrub them from the evidence (`PlaywrightExecutor`).
+            let secrets = secret_names_of(&plan.actions);
+            if !secrets.is_empty() {
+                params["secrets"] = serde_json::json!(secrets);
+            }
             Ok(TaskDef {
                 id: task_id,
                 name: task_name,
                 prerequisites: Vec::new(),
                 simulate: None,
                 executor: Some("playwright".to_string()),
-                params: serde_json::json!({ "spec": spec_path }),
+                params,
             })
         }
         ExecutionType::Python => {
@@ -905,6 +1006,217 @@ mod tests {
                 assert!(reasons.iter().any(|r| r.contains("disallowed")))
             }
             other => panic!("expected CompilationFailed (SSRF), got {other:?}"),
+        }
+    }
+
+    // ----------------------------------------------------------------- secrets
+
+    #[test]
+    fn a_secret_reference_names_a_prefixed_variable_and_nothing_else_is_one() {
+        assert_eq!(
+            secret_name("env:AIQA_LOGIN_ADMIN_PASSWORD"),
+            Some("AIQA_LOGIN_ADMIN_PASSWORD")
+        );
+        assert_eq!(
+            secret_name("env:AIQA_SECRET_TOKEN"),
+            Some("AIQA_SECRET_TOKEN")
+        );
+        assert_eq!(
+            secret_name("env: AIQA_LOGIN_X "),
+            Some("AIQA_LOGIN_X"),
+            "surrounding blanks are ignored, as for provider keys"
+        );
+        // Not a reference: a plain value.
+        assert_eq!(secret_name("hunter2"), None);
+        assert_eq!(
+            secret_name("ENV:AIQA_LOGIN_X"),
+            None,
+            "the prefix is lower case, as for provider keys"
+        );
+        // A variable outside the reserved prefixes can never be typed into a page.
+        assert_eq!(secret_name("env:GROQ_API_KEY"), None);
+        assert_eq!(secret_name("env:PATH"), None);
+        // Malformed names.
+        assert_eq!(secret_name("env:"), None);
+        assert_eq!(secret_name("env:AIQA_LOGIN_A B"), None);
+        assert_eq!(secret_name("env:AIQA_LOGIN_A-B"), None);
+        assert_eq!(
+            secret_name(&format!("env:AIQA_LOGIN_{}", "X".repeat(60))),
+            None,
+            "longer than 64 characters"
+        );
+    }
+
+    #[test]
+    fn only_a_value_that_starts_env_and_is_not_a_good_reference_is_a_problem() {
+        assert_eq!(secret_reference_problem("admin"), None);
+        assert_eq!(
+            secret_reference_problem("env:AIQA_LOGIN_ADMIN_PASSWORD"),
+            None
+        );
+        let problem = secret_reference_problem("env:GROQ_API_KEY").expect("a problem");
+        assert!(
+            problem.contains("AIQA_LOGIN_ or AIQA_SECRET_"),
+            "problem={problem}"
+        );
+        // The message never repeats what was written: it may have been a password.
+        let problem = secret_reference_problem("env:hunter2-is-my-password").expect("a problem");
+        assert!(!problem.contains("hunter2"), "problem={problem}");
+    }
+
+    #[test]
+    fn a_plans_secret_names_are_listed_once_in_order_and_only_from_fill_values() {
+        let actions = vec![
+            Action::Fill {
+                selector: "#u".into(),
+                value: "env:AIQA_LOGIN_ADMIN_USERNAME".into(),
+            },
+            Action::Fill {
+                selector: "#p".into(),
+                value: "env:AIQA_LOGIN_ADMIN_PASSWORD".into(),
+            },
+            Action::Fill {
+                selector: "#again".into(),
+                value: "env:AIQA_LOGIN_ADMIN_PASSWORD".into(),
+            },
+            Action::Fill {
+                selector: "#plain".into(),
+                value: "just text".into(),
+            },
+            Action::AssertText {
+                selector: "#t".into(),
+                text: "env:AIQA_LOGIN_NOT_A_FILL".into(),
+            },
+        ];
+        assert_eq!(
+            secret_names_of(&actions),
+            vec![
+                "AIQA_LOGIN_ADMIN_PASSWORD".to_string(),
+                "AIQA_LOGIN_ADMIN_USERNAME".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn a_secret_is_missing_when_its_variable_is_unset_or_blank_and_the_message_names_only_variables(
+    ) {
+        std::env::set_var("AIQA_LOGIN_T5A_SET", "value-1");
+        std::env::set_var("AIQA_LOGIN_T5A_BLANK", "   ");
+        std::env::remove_var("AIQA_LOGIN_T5A_UNSET");
+        let names = vec![
+            "AIQA_LOGIN_T5A_SET".to_string(),
+            "AIQA_LOGIN_T5A_BLANK".to_string(),
+            "AIQA_LOGIN_T5A_UNSET".to_string(),
+        ];
+        let missing = missing_secrets(&names);
+        assert_eq!(
+            missing,
+            vec![
+                "AIQA_LOGIN_T5A_BLANK".to_string(),
+                "AIQA_LOGIN_T5A_UNSET".to_string()
+            ]
+        );
+        let message = missing_secrets_message(&missing);
+        assert!(
+            message.contains("AIQA_LOGIN_T5A_BLANK, AIQA_LOGIN_T5A_UNSET are not set"),
+            "message={message}"
+        );
+        assert!(!message.contains("value-1"));
+        assert!(missing_secrets_message(&["AIQA_LOGIN_ONE".to_string()])
+            .contains("secret AIQA_LOGIN_ONE is not set"));
+    }
+
+    #[tokio::test]
+    async fn validate_plan_rejects_a_malformed_secret_reference_and_accepts_a_good_one() {
+        let plan = |value: &str| ExecutionPlan {
+            test_case_id: "t".into(),
+            execution_type: ExecutionType::Browser,
+            target: Some(DEFAULT_TARGET.into()),
+            actions: vec![
+                Action::Navigate {
+                    url: format!("{DEFAULT_TARGET}/login"),
+                },
+                Action::Fill {
+                    selector: "#password".into(),
+                    value: value.into(),
+                },
+            ],
+            compiler: CompilerMethod::Deterministic,
+            diagnostics: vec![],
+            provider: None,
+            model: None,
+        };
+        assert!(validate_plan(&plan("env:AIQA_LOGIN_ADMIN_PASSWORD"))
+            .await
+            .is_ok());
+        assert!(validate_plan(&plan("an ordinary value")).await.is_ok());
+        let reasons = validate_plan(&plan("env:GEMINI_API_KEY"))
+            .await
+            .expect_err("outside the reserved prefixes");
+        assert!(
+            reasons.iter().any(|r| r.contains("secret reference")),
+            "reasons={reasons:?}"
+        );
+    }
+
+    #[test]
+    fn a_browser_task_carries_the_names_of_its_secrets_and_never_a_value() {
+        std::env::set_var("AIQA_LOGIN_T5A_TASK_PW", "task-pw-value");
+        let plan = |value: &str| ExecutionPlan {
+            test_case_id: "t".into(),
+            execution_type: ExecutionType::Browser,
+            target: None,
+            actions: vec![
+                Action::Navigate {
+                    url: "https://example.com/login".into(),
+                },
+                Action::Fill {
+                    selector: "#password".into(),
+                    value: value.into(),
+                },
+            ],
+            compiler: CompilerMethod::Deterministic,
+            diagnostics: vec![],
+            provider: None,
+            model: None,
+        };
+        let task = materialize_task_def(
+            "t5a-task-def".into(),
+            "Login".into(),
+            &plan("env:AIQA_LOGIN_T5A_TASK_PW"),
+        )
+        .expect("a task");
+        assert_eq!(
+            task.params["secrets"],
+            serde_json::json!(["AIQA_LOGIN_T5A_TASK_PW"])
+        );
+        assert!(!task.params.to_string().contains("task-pw-value"));
+        // A plan that refers to nothing has no `secrets` key at all.
+        let plain =
+            materialize_task_def("t5a-task-def-plain".into(), "Plain".into(), &plan("text"))
+                .expect("a task");
+        assert!(plain.params.get("secrets").is_none(), "{}", plain.params);
+    }
+
+    #[tokio::test]
+    async fn an_ai_plan_that_names_a_secret_is_refused_because_only_a_login_plan_may() {
+        let c = case(
+            "Vague",
+            "UI",
+            vec![("Log in somehow", "Logged in")],
+            "Logged in",
+            vec![],
+        );
+        let ai_json = format!(
+            r##"{{"executable":true,"execution_type":"BROWSER","target":"{DEFAULT_TARGET}/login","actions":[{{"type":"NAVIGATE","url":"{DEFAULT_TARGET}/login"}},{{"type":"FILL","selector":"#password","value":"env:AIQA_LOGIN_ADMIN_PASSWORD"}}]}}"##
+        );
+        let infra = infra_with_ai(Ok(ai_json.as_str()));
+        match compile(&infra, &c).await {
+            CompilationOutcome::CompilationFailed { reasons } => assert!(
+                reasons.iter().any(|r| r.contains("only a login plan may")),
+                "reasons={reasons:?}"
+            ),
+            other => panic!("expected CompilationFailed, got {other:?}"),
         }
     }
 }
