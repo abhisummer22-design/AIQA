@@ -46,6 +46,7 @@ import {
   Smartphone,
   Sliders,
   Layers,
+  ListChecks,
   FileText,
   ScrollText,
   FileSearch,
@@ -56,6 +57,7 @@ import {
 } from 'lucide-react';
 import { DashboardPage } from '../components/pages/DashboardPage';
 import { TestCaseGeneratorPage } from '../components/pages/TestCaseGeneratorPage';
+import { RequirementCoveragePage } from '../components/pages/RequirementCoveragePage';
 import { AIQAOrchestratorPage } from '../components/pages/AIQAOrchestratorPage';
 import { TestCaseValidatorPage } from '../components/pages/TestCaseValidatorPage';
 import { ExecutionHubPage } from '../components/pages/ExecutionHubPage';
@@ -156,6 +158,20 @@ export const routeDefs: RouteDef[] = [
     badge: 'AI',
     Component: TestCaseGeneratorPage,
     designStatus: 'product-owner-approved',
+    protectedRoute: true,
+  },
+  {
+    id: 'requirement-coverage',
+    path: '/requirement-coverage',
+    label: 'Requirement Coverage',
+    icon: ListChecks,
+    badge: 'NEW',
+    badgeType: 'info',
+    Component: RequirementCoveragePage,
+    // Phase 6: real (`gap_check.rs`, `POST .../gap-check`), built following the
+    // Dashboard/Test Generator visual language, same bucket as Audit/Evidence/
+    // ExecutionHub/Reports.
+    designStatus: 'new-follows-approved-language',
     protectedRoute: true,
   },
   {

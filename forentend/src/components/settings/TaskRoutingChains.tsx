@@ -8,6 +8,8 @@ const CHAIN_TASKS: ReadonlyArray<{ task: string; label: string }> = [
   { task: 'REQUIREMENT_ANALYSIS', label: 'Requirement analysis' },
   { task: 'TEST_CASE_COMPILATION', label: 'Test case compilation' },
   { task: 'BUG_ANALYSIS', label: 'Bug analysis' },
+  // Phase 6: the AI that checks the requirements the gap check's words left unclear (`gap_verify.rs`).
+  { task: 'TRACEABILITY', label: 'Requirement gap check' },
 ];
 
 type TaskOverrides = Record<string, TaskProviderPreference>;

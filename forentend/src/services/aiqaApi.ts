@@ -71,6 +71,8 @@ import type {
   GenerateAiPlanResponse,
   GenerateAiTestCasesRequest,
   GenerateAiTestCasesResponse,
+  GapCheckRequest,
+  GapCheckResponse,
   ListRequirementsResponse,
   StartCrawlRequest,
   CrawlStartedResponse,
@@ -708,6 +710,16 @@ export const aiqaApi = {
         query: { document_ids: opts.documentIds && opts.documentIds.length > 0 ? opts.documentIds.join(',') : undefined },
         signal,
       }),
+  },
+
+  /** Phase 6 — the requirements lined up against a crawl of the application and
+   *  against the cases that test them (`api.rs::gap_check_scoped`): which
+   *  requirements the pages show, which they do not, which pages no document
+   *  mentions. With no body it is free and needs no AI provider; `use_embeddings`
+   *  and `verify` (Operator role) also call the embedder and the router's AI. */
+  gapCheck: {
+    run: (projectId: string, body: GapCheckRequest = {}, signal?: AbortSignal) =>
+      requestJson<GapCheckResponse>(`/projects/${projectId}/gap-check`, { method: 'POST', body, signal }),
   },
 
   /** Central AI Provider & Model Intelligence Layer
