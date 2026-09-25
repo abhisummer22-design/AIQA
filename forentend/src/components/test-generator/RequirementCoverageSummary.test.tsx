@@ -76,6 +76,38 @@ describe('RequirementCoverageSummary', () => {
     expect(text).toContain('FR-1, FR-2, FR-3, FR-4, FR-5, FR-6, FR-7, FR-8 and 142 more.');
   });
 
+  it('shows the coverage by technique when the run has a matrix, and nothing of the kind when it has none', () => {
+    const { unmount } = render(
+      <RequirementCoverageSummary
+        coverage={coverage({
+          // Four requirements never shown to a skill: `total` and `offered` differ, and the
+          // matrix must be told the first (the requirements the run had), not the second.
+          offered: 136,
+          covered: 136,
+          not_offered_keys: ['NFR-1', 'NFR-2', 'NFR-3', 'NFR-4'],
+          matrix: {
+            depth: 'STANDARD',
+            techniques: [{ technique: 'negative', applicable: 90, met: 60, short: 30, provided_by: 'Negative Testing' }],
+            gaps: [],
+            gap_total: 0,
+            complete: 100,
+            not_applicable: 8,
+            unlinked_cases: 0,
+          },
+        })}
+      />,
+    );
+    expect(document.getElementById('coverage-matrix')).toBeTruthy();
+    expect(summary().contains(document.getElementById('coverage-matrix'))).toBe(true);
+    // The matrix is told how many requirements the run had (140, not the 136 shown to a skill),
+    // to say how many are testable: 140 less the 8 that are only background.
+    expect(document.getElementById('coverage-matrix')!.textContent).toContain('100 of 132 testable requirements');
+    unmount();
+
+    render(<RequirementCoverageSummary coverage={coverage()} />);
+    expect(document.getElementById('coverage-matrix')).toBeNull();
+  });
+
   it('shows the run\'s notes, and none when there are none', () => {
     const { unmount } = render(
       <RequirementCoverageSummary coverage={coverage({ notes: ['Security Testing was skipped: nothing to test in these requirements.'] })} />,

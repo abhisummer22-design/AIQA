@@ -1,6 +1,7 @@
 import React from 'react';
 import { AlertTriangle, CheckCircle2 } from 'lucide-react';
 import type { RequirementCoverage } from '../../types/contract';
+import { CoverageMatrixSummary } from './CoverageMatrixSummary';
 
 interface RequirementCoverageSummaryProps {
   coverage: RequirementCoverage;
@@ -71,6 +72,9 @@ export const RequirementCoverageSummary: React.FC<RequirementCoverageSummaryProp
           ))}
         </ul>
       )}
+
+      {/* Phase 4 — by technique, when the request named a depth. */}
+      {coverage.matrix && <CoverageMatrixSummary matrix={coverage.matrix} total={coverage.total} />}
     </div>
   );
 };

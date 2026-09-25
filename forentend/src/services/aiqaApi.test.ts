@@ -672,6 +672,29 @@ describe('Phase 3 — requirements client (documents -> numbered requirements ->
     expect(bodies[0]).not.toHaveProperty('requirement_document_ids');
     expect(bodies[1].requirement_document_ids).toEqual([DOC_A]);
   });
+
+  it('generateAi and planGenerateAi pass the depth and the top-up through, and send neither unless given', async () => {
+    setApiKey('aiqa_phase3test000000');
+    const fetchMock = vi.fn().mockImplementation(async () => jsonResponse(200, { test_cases: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await aiqaApi.testCases.generateAi(PROJECT_ID, { requirement_text: 'x', skills: [], requirement_document_ids: [DOC_A] });
+    await aiqaApi.testCases.generateAi(PROJECT_ID, {
+      requirement_text: 'x',
+      skills: [],
+      requirement_document_ids: [DOC_A],
+      depth: 'EXHAUSTIVE',
+      coverage_top_up: true,
+    });
+    await aiqaApi.testCases.planGenerateAi(PROJECT_ID, { skills: [], requirement_document_ids: [DOC_A], depth: 'SMOKE' });
+
+    const bodies = fetchMock.mock.calls.map((c) => JSON.parse((c as [string, RequestInit])[1].body as string));
+    expect(bodies[0]).not.toHaveProperty('depth');
+    expect(bodies[0]).not.toHaveProperty('coverage_top_up');
+    expect(bodies[1]).toMatchObject({ depth: 'EXHAUSTIVE', coverage_top_up: true });
+    expect(bodies[2]).toMatchObject({ depth: 'SMOKE' });
+    expect(bodies[2]).not.toHaveProperty('coverage_top_up');
+  });
 });
 
 describe('No hardcoded credential in source (FE-2 §6, §18 item 11)', () => {

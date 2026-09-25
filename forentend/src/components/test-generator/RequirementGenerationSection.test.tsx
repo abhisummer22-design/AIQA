@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RequirementGenerationSection } from './RequirementGenerationSection';
 import { setApiKey } from '../../services/aiqaApi';
 import type { UploadedRequirementDoc } from '../../types';
-import type { GenerateAiPlanResponse, GenerateAiSkillInput, RequirementRecord } from '../../types/contract';
+import type { CoverageDepth, CoveragePlan, GenerateAiPlanResponse, GenerateAiSkillInput, RequirementRecord } from '../../types/contract';
 
 const PROJECT_ID = 'proj-req-gen';
 const DOC_FRD = '11111111-1111-4111-8111-111111111111';
@@ -77,8 +77,27 @@ function requirement(n: number, overrides: Partial<RequirementRecord> = {}): Req
   };
 }
 
+/** What the backend adds to a plan when the request named a depth. */
+function coveragePlan(overrides: Partial<CoveragePlan> = {}): CoveragePlan {
+  return {
+    depth: 'STANDARD',
+    techniques: [
+      { technique: 'positive', requirements: 140, per_requirement: 1, provided_by: 'Functional Testing' },
+      { technique: 'negative', requirements: 120, per_requirement: 1, provided_by: null },
+      { technique: 'security', requirements: 40, per_requirement: 1, provided_by: 'Security Testing' },
+    ],
+    top_up: false,
+    top_up_rounds: 2,
+    top_up_call_limit: 144,
+    ...overrides,
+  };
+}
+
 interface Requests {
-  plans: Array<{ url: string; body: { skills: unknown[]; requirement_document_ids: string[] } }>;
+  plans: Array<{
+    url: string;
+    body: { skills: unknown[]; requirement_document_ids: string[]; depth?: string; coverage_top_up?: boolean };
+  }>;
   lists: string[];
 }
 
@@ -112,19 +131,27 @@ function Harness({
   documents,
   skills = SKILLS,
   initiallyEnabled = false,
+  initiallyTopUp = false,
+  depth = 'STANDARD',
   disabled = false,
 }: {
   documents: UploadedRequirementDoc[];
   skills?: GenerateAiSkillInput[];
   initiallyEnabled?: boolean;
+  initiallyTopUp?: boolean;
+  depth?: CoverageDepth;
   disabled?: boolean;
 }) {
   const [enabled, setEnabled] = React.useState(initiallyEnabled);
+  const [topUp, setTopUp] = React.useState(initiallyTopUp);
   return (
     <RequirementGenerationSection
       projectId={PROJECT_ID}
       enabled={enabled}
       onEnabledChange={setEnabled}
+      depth={depth}
+      topUp={topUp}
+      onTopUpChange={setTopUp}
       documents={documents}
       skills={skills}
       disabled={disabled}
@@ -424,5 +451,122 @@ describe('RequirementGenerationSection — seeing the requirements', () => {
     await openList([requirement(1)]);
     fireEvent.click(screen.getByRole('button', { name: /Hide the requirements/ }));
     expect(document.getElementById('requirement-list')).toBeNull();
+  });
+});
+
+describe('RequirementGenerationSection — Phase 4, coverage', () => {
+  const topUpToggle = () => screen.getByLabelText('Fill coverage gaps with extra calls') as HTMLInputElement;
+
+  it('asks for the plan at the depth it is given, and again when the depth changes', async () => {
+    vi.useFakeTimers();
+    const seen = stubBackend();
+    const { rerender } = render(<Harness documents={[doc()]} initiallyEnabled depth="STANDARD" />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+    expect(seen.plans).toHaveLength(1);
+    expect(seen.plans[0].body.depth).toBe('STANDARD');
+
+    rerender(<Harness documents={[doc()]} initiallyEnabled depth="EXHAUSTIVE" />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    expect(seen.plans).toHaveLength(2);
+    expect(seen.plans[1].body.depth).toBe('EXHAUSTIVE');
+  });
+
+  it('offers to fill the coverage gaps only while the mode is on, and off by default', async () => {
+    stubBackend();
+    render(<Harness documents={[doc()]} />);
+    expect(screen.queryByLabelText('Fill coverage gaps with extra calls')).toBeNull();
+
+    fireEvent.click(toggle());
+
+    expect(topUpToggle().checked).toBe(false);
+    expect(screen.getByText(/asked about again, one technique at a time/)).toBeTruthy();
+  });
+
+  it('asks for a top-up plan when the option is ticked, and says how much it may add', async () => {
+    const seen = stubBackend({ plan: () => jsonResponse(200, planResponse({ coverage: coveragePlan({ top_up: true }) })) });
+    render(<Harness documents={[doc()]} initiallyEnabled />);
+    await screen.findByText(/140 requirements → 6 AI calls/, {}, { timeout: 3000 });
+    expect(seen.plans[0].body).not.toHaveProperty('coverage_top_up');
+
+    fireEvent.click(topUpToggle());
+
+    await waitFor(() => expect(seen.plans).toHaveLength(2), { timeout: 3000 });
+    expect(seen.plans[1].body.coverage_top_up).toBe(true);
+    expect(await screen.findByText(/Up to 2 rounds and 144 more calls in all\./, {}, { timeout: 3000 })).toBeTruthy();
+    expect(screen.getByText(/of the first pass \(a top-up adds to it\)/)).toBeTruthy();
+  });
+
+  it('says nothing about how much a top-up adds while the option is off', async () => {
+    stubBackend({ plan: () => jsonResponse(200, planResponse({ coverage: coveragePlan() })) });
+    render(<Harness documents={[doc()]} initiallyEnabled />);
+    await screen.findByText(/140 requirements → 6 AI calls/, {}, { timeout: 3000 });
+
+    expect(screen.queryByText(/Up to 2 rounds/)).toBeNull();
+    expect(screen.queryByText(/a top-up adds to it/)).toBeNull();
+  });
+
+  it('shows what the depth covers, technique by technique, and who provides each', async () => {
+    stubBackend({ plan: () => jsonResponse(200, planResponse({ coverage: coveragePlan() })) });
+    render(<Harness documents={[doc()]} initiallyEnabled />);
+
+    const box = (await screen.findByText(/Coverage at Standard depth/, {}, { timeout: 3000 })).closest('#coverage-plan') as HTMLElement;
+
+    expect(box.textContent).toContain('every technique that applies, once');
+    expect(box.textContent).toContain('Change it under Exploration Depth.');
+    const positive = within(box).getByText('Positive').closest('li') as HTMLElement;
+    expect(positive.textContent).toContain('140 requirements × 1');
+    expect(positive.textContent).toContain('via Functional Testing');
+    expect((within(box).getByText('Security').closest('li') as HTMLElement).textContent).toContain('via Security Testing');
+  });
+
+  it('says a technique no selected skill provides will not be attempted, and which skill to select', async () => {
+    stubBackend({ plan: () => jsonResponse(200, planResponse({ coverage: coveragePlan() })) });
+    render(<Harness documents={[doc()]} initiallyEnabled />);
+
+    const box = (await screen.findByText(/Coverage at Standard depth/, {}, { timeout: 3000 })).closest('#coverage-plan') as HTMLElement;
+
+    const negative = within(box).getByText('Negative').closest('li') as HTMLElement;
+    expect(negative.textContent).toContain('120 requirements × 1');
+    expect(negative.textContent).toContain('no selected skill provides it — select Negative Testing; it will not be attempted');
+  });
+
+  it('describes each depth by what it asks for', async () => {
+    stubBackend({
+      plan: () => jsonResponse(200, planResponse({ coverage: coveragePlan({ depth: 'CHAOS_EXPLORATORY' }) })),
+    });
+    render(<Harness documents={[doc()]} initiallyEnabled depth="CHAOS_EXPLORATORY" />);
+
+    const box = (await screen.findByText(/Coverage at Chaos \/ exploratory depth/, {}, { timeout: 3000 })).closest('#coverage-plan') as HTMLElement;
+    expect(box.textContent).toContain('every technique that applies, three times');
+  });
+
+  it('shows no coverage block when the plan has none — an older backend', async () => {
+    stubBackend();
+    render(<Harness documents={[doc()]} initiallyEnabled />);
+    await screen.findByText(/140 requirements → 6 AI calls/, {}, { timeout: 3000 });
+
+    expect(document.getElementById('coverage-plan')).toBeNull();
+  });
+
+  it('cannot be changed while a generation is running', () => {
+    stubBackend();
+    render(<Harness documents={[doc()]} initiallyEnabled disabled />);
+    expect(topUpToggle().disabled).toBe(true);
+  });
+
+  it('keeps the option ticked for the next plan and untickable again', async () => {
+    const seen = stubBackend();
+    render(<Harness documents={[doc()]} initiallyEnabled initiallyTopUp />);
+    await waitFor(() => expect(seen.plans.length).toBeGreaterThan(0), { timeout: 3000 });
+    expect(topUpToggle().checked).toBe(true);
+    expect(seen.plans[0].body.coverage_top_up).toBe(true);
+
+    fireEvent.click(topUpToggle());
+    expect(topUpToggle().checked).toBe(false);
   });
 });

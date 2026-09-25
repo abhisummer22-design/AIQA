@@ -127,6 +127,37 @@ describe('GenerationWaveResults', () => {
     expect(warning.textContent).toContain('Functional Testing (batch 2/3); Negative Testing');
   });
 
+  it('says a top-up call was for a technique, and its place among the calls of its round', () => {
+    render(
+      <GenerationWaveResults
+        waves={[
+          wave({ batch: '1/2', requirements: 14 }),
+          wave({ wave: 'top_up', skill_names: ['Negative Testing'], technique: 'negative', batch: '1/2', requirements: 40 }),
+          wave({ wave: 'top_up', skill_names: ['Edge Case Analysis'], technique: 'edge', batch: '2/2', requirements: 1 }),
+        ]}
+      />,
+    );
+
+    const row = (skill: string) => screen.getByText(skill).closest('li') as HTMLElement;
+    expect(within(row('Negative Testing')).getByText('top-up negative · call 1/2 · 40 requirements')).toBeTruthy();
+    expect(within(row('Edge Case Analysis')).getByText('top-up edge · call 2/2 · 1 requirement')).toBeTruthy();
+    expect(within(row('Functional Testing')).getByText('batch 1/2 · 14 requirements')).toBeTruthy();
+  });
+
+  it('names the technique of a failed top-up call in the warning, so it is clear what is still missing', () => {
+    render(
+      <GenerationWaveResults
+        waves={[
+          wave(),
+          { ...failed('Negative Testing', 'HTTP 400: refused'), wave: 'top_up', technique: 'negative', batch: '1/3', requirements: 9 },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText(/1 skill call failed/).textContent).toContain('Negative Testing (top-up negative, call 1/3)');
+    expect(screen.getByText('HTTP 400: refused')).toBeTruthy();
+  });
+
   describe('a run with many calls (one per skill per batch)', () => {
     const many = (n: number, failedAt: number[] = []) =>
       Array.from({ length: n }, (_, i) =>

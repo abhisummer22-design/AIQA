@@ -14,11 +14,19 @@ const ROWS_SHOWN = 12;
 const skillLabel = (w: GenerationWaveSummary): string =>
   w.skill_names.length > 0 ? w.skill_names.join(', ') : 'No skill selected';
 
-/** A call's skill, and — for a call from requirements — the batch it carried. */
-const callLabel = (w: GenerationWaveSummary): string => (w.batch ? `${skillLabel(w)} (batch ${w.batch})` : skillLabel(w));
+/** A call's skill, and — for a call from requirements — the batch it carried,
+ *  or, for a coverage top-up call, the technique it was for and its place
+ *  among its round's calls. */
+const callLabel = (w: GenerationWaveSummary): string => {
+  if (w.technique) return `${skillLabel(w)} (top-up ${w.technique}${w.batch ? `, call ${w.batch}` : ''})`;
+  return w.batch ? `${skillLabel(w)} (batch ${w.batch})` : skillLabel(w);
+};
 
-const batchLabel = (w: GenerationWaveSummary): string =>
-  `batch ${w.batch}${w.requirements !== undefined ? ` · ${w.requirements} ${w.requirements === 1 ? 'requirement' : 'requirements'}` : ''}`;
+const batchLabel = (w: GenerationWaveSummary): string => {
+  const requirements =
+    w.requirements !== undefined ? ` · ${w.requirements} ${w.requirements === 1 ? 'requirement' : 'requirements'}` : '';
+  return w.technique ? `top-up ${w.technique} · call ${w.batch}${requirements}` : `batch ${w.batch}${requirements}`;
+};
 
 const tokensLabel = (w: GenerationWaveSummary): string =>
   w.prompt_tokens !== null && w.completion_tokens !== null

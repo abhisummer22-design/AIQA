@@ -872,6 +872,13 @@ export type RequirementKind =
   | 'context'
   | 'reference';
 
+/** `coverage.rs::Technique` (snake_case on the wire) — one way of testing a
+ *  requirement. */
+export type CoverageTechnique = 'positive' | 'negative' | 'edge' | 'security' | 'performance' | 'accessibility';
+
+/** How much coverage a request asks for — the page's Exploration Depth. */
+export type CoverageDepth = 'SMOKE' | 'STANDARD' | 'EXHAUSTIVE' | 'CHAOS_EXPLORATORY';
+
 /** `api.rs::RequirementDocumentSummary` — what reading one whole document
  *  produced. `full_char_count` is the whole document (the `text` beside it
  *  stops at 20,000); `full_truncated` is true only past a 3,000,000-character
@@ -953,6 +960,13 @@ export interface GenerateAiTestCasesRequest {
    *  names the requirement it came from. Omitted or empty, the request is
    *  generated exactly as it always was. */
   requirement_document_ids?: string[];
+  /** Phase 4 — with `requirement_document_ids`: the depth asked for. It turns
+   *  on the coverage report (which techniques each requirement was tested
+   *  with, against that depth's targets). Ignored without documents. */
+  depth?: CoverageDepth;
+  /** Phase 4 — after the first pass, make extra calls for the requirements
+   *  that are short of the depth's targets. Needs `depth`. */
+  coverage_top_up?: boolean;
 }
 
 /** `POST .../test-cases/generate-ai/plan` request — the same documents and
@@ -960,6 +974,33 @@ export interface GenerateAiTestCasesRequest {
 export interface GenerateAiPlanRequest {
   skills: GenerateAiSkillInput[];
   requirement_document_ids: string[];
+  /** Phase 4 — with a depth, the plan also says which techniques would be
+   *  covered and what a top-up may add. */
+  depth?: CoverageDepth;
+  coverage_top_up?: boolean;
+}
+
+/** `coverage.rs::TechniquePlan` — one technique's line in the plan. */
+export interface CoverageTechniquePlan {
+  technique: CoverageTechnique;
+  /** Requirements it has a target for at this depth. */
+  requirements: number;
+  /** Cases each of those should get. */
+  per_requirement: number;
+  /** The selected skill that provides it; `null` when none does (it is then
+   *  never attempted). */
+  provided_by: string | null;
+}
+
+/** `coverage.rs::CoveragePlan` — what a depth would cover, worked out before
+ *  any model is called. `top_up_call_limit` is what is left of the request's
+ *  call limit after the first pass. */
+export interface CoveragePlan {
+  depth: CoverageDepth;
+  techniques: CoverageTechniquePlan[];
+  top_up: boolean;
+  top_up_rounds: number;
+  top_up_call_limit: number;
 }
 
 /** `requirement_generation.rs::SkillPlan` — what one skill would be shown.
@@ -995,6 +1036,8 @@ export interface GenerateAiPlanResponse {
   prompt_window_tokens: number | null;
   estimated_prompt_tokens: number;
   estimated_completion_tokens: number;
+  /** Present only when the request named a depth. */
+  coverage?: CoveragePlan;
 }
 
 /** `ai_generation.rs::DraftStep`. */
@@ -1027,6 +1070,10 @@ export interface GeneratedTestCaseDraft {
    *  when the case could not be tied to one requirement, and always absent
    *  for a request generated from pasted text. */
   requirement_id?: string | null;
+  /** Requirement-driven generation only: the technique the case counts for
+   *  (`CoverageTechnique`) — the model's own label, else what its skill is
+   *  about. Absent for a request generated from pasted text. */
+  technique?: CoverageTechnique | string | null;
 }
 
 /** `ai_generation::WaveSummary` — one selected skill's real generation call.
@@ -1052,6 +1099,63 @@ export interface GenerationWaveSummary {
    *  in it. */
   batch?: string;
   requirements?: number;
+  /** Coverage top-up calls only (`wave` is then `"top_up"`, and `batch` is the
+   *  call's place among its round's calls): the technique the call was for. */
+  technique?: string;
+}
+
+/** `coverage.rs::TechniqueSummary` — one technique across the whole
+ *  requirement set. `provided_by` is `null` when no selected skill provides
+ *  it: it is then never attempted, and `short` is what selecting one would
+ *  address. */
+export interface CoverageTechniqueSummary {
+  technique: CoverageTechnique;
+  /** Requirements the technique has a target for at this depth. */
+  applicable: number;
+  met: number;
+  short: number;
+  provided_by: string | null;
+}
+
+export interface CoverageMissingTechnique {
+  technique: CoverageTechnique;
+  have: number;
+  target: number;
+}
+
+/** `coverage.rs::RequirementGap` — a requirement below target for a technique
+ *  a selected skill provides. */
+export interface CoverageRequirementGap {
+  key: string;
+  kind: string;
+  missing: CoverageMissingTechnique[];
+}
+
+/** `coverage.rs::TopUpSummary` — what a coverage top-up did. */
+export interface CoverageTopUpSummary {
+  rounds: number;
+  calls: number;
+  cases_added: number;
+  /** Why it stopped, in words ("every target is met", "the call limit was
+   *  reached", ...). */
+  stopped: string;
+}
+
+/** `coverage.rs::CoverageMatrix` — which techniques each requirement was
+ *  tested with, against the depth asked for. `gaps` lists at most 200
+ *  requirements; `gap_total` is the real count. */
+export interface CoverageMatrix {
+  depth: CoverageDepth;
+  techniques: CoverageTechniqueSummary[];
+  gaps: CoverageRequirementGap[];
+  gap_total: number;
+  /** Requirements that reached the target for every technique that applies. */
+  complete: number;
+  /** Requirements no technique applies to (background text, reference). */
+  not_applicable: number;
+  /** Cases tied to no requirement, which count for none. */
+  unlinked_cases: number;
+  top_up?: CoverageTopUpSummary;
 }
 
 /** `requirement_generation.rs::RequirementCoverage` — how much of the
@@ -1068,6 +1172,8 @@ export interface RequirementCoverage {
   notes: string[];
   calls: number;
   budget_chars: number;
+  /** Present only when the request named a depth. */
+  matrix?: CoverageMatrix;
 }
 
 /** `api.rs::GenerateAiTestCasesResponse`. `generation_method` is always
