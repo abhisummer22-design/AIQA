@@ -13763,3 +13763,64 @@ async fn phase7c_the_internal_routes_are_not_reachable_without_a_key_and_the_pub
     assert_eq!(reply.status, 401);
     assert!(reply.problem().contains("has been revoked"), "{}", reply.problem());
 }
+
+// ------------------------------------------------- Phase 7D — generating a few of the requirements at a time
+
+#[tokio::test]
+async fn phase7d_generation_can_be_narrowed_to_some_of_the_requirements_of_the_documents() {
+    let _env = REQUIREMENT_ENV.lock().await;
+    let executor = Arc::new(RecordingExecutor::ok_sequence(vec![valid_ai_response(), valid_ai_response()]));
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
+    let project = make_project(&state, "Phase7D Narrow").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let (_, uploaded) = upload_document(&state, &owner, project, "FRD.md", PASSWORD_FRD.as_bytes(), Some("FRD")).await;
+    let doc_id = uploaded["requirements_document"]["document_id"].as_str().unwrap().to_string();
+
+    let mut narrowed = generate_ai_body(&[&doc_id], &["Functional Testing"]);
+    narrowed["requirement_keys"] = serde_json::json!(["FRD-2-02"]);
+    let (status, body) = post_generate(&state, &owner, project, narrowed).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["requirements"]["total"], 1, "body={body}");
+    assert_eq!(body["waves"][0]["requirements"], 1);
+    let prompts = executor.prompts.lock().unwrap().clone();
+    assert!(prompts[0].contains("[FRD-2-02] "), "{}", prompts[0]);
+    assert!(!prompts[0].contains("[FRD-2-01]"), "the requirement that was not asked for is not shown: {}", prompts[0]);
+
+    // An empty list is every requirement, as it always was.
+    let mut all = generate_ai_body(&[&doc_id], &["Functional Testing"]);
+    all["requirement_keys"] = serde_json::json!([]);
+    let (status, body) = post_generate(&state, &owner, project, all).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["requirements"]["total"], 2);
+}
+
+#[tokio::test]
+async fn phase7d_a_requirement_id_that_no_selected_document_has_is_refused_and_so_are_ids_without_documents() {
+    let _env = REQUIREMENT_ENV.lock().await;
+    let executor = Arc::new(RecordingExecutor::ok_sequence(vec![]));
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
+    let project = make_project(&state, "Phase7D Unknown Key").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let (_, uploaded) = upload_document(&state, &owner, project, "FRD.md", PASSWORD_FRD.as_bytes(), Some("FRD")).await;
+    let doc_id = uploaded["requirements_document"]["document_id"].as_str().unwrap().to_string();
+
+    let mut typo = generate_ai_body(&[&doc_id], &["Functional Testing"]);
+    typo["requirement_keys"] = serde_json::json!(["FRD-2-01", "FRD-9-99", "FR-000", "A", "B", "C", "D"]);
+    let (status, body) = post_generate(&state, &owner, project, typo).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(message.contains("FRD-9-99") && message.contains("FR-000"), "{message}");
+    assert!(!message.contains("FRD-2-01"), "a key that exists is not blamed: {message}");
+    assert!(message.contains("(and more)"), "only the first few are named: {message}");
+
+    let (status, body) = post_generate(
+        &state,
+        &owner,
+        project,
+        serde_json::json!({"requirement_text": "x", "skills": [], "requirement_keys": ["FRD-2-01"]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert!(body["error"]["message"].as_str().unwrap().contains("requirement_document_ids"), "body={body}");
+    assert_eq!(executor.prompts.lock().unwrap().len(), 0, "no model was asked");
+}
