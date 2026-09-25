@@ -60,6 +60,7 @@ import type {
   CreateExecutionResponse,
   CreateProjectRequest,
   CompilationOutcome,
+  CompileRequest,
   CustomTestingGenerateRequest,
   CustomTestingGenerateResponse,
   DashboardResponse,
@@ -615,9 +616,12 @@ export const aiqaApi = {
     /** Phase 2.1 — real, read-only compilation preview
      *  (`api.rs::compile_test_case_scoped`). Never mutates anything; safe
      *  to call to preview READY/NOT_EXECUTABLE/COMPILATION_FAILED/
-     *  COMPILATION_UNAVAILABLE before committing to a handoff. */
-    compile: (projectId: string, id: string, signal?: AbortSignal) =>
-      requestJson<CompilationOutcome>(`/projects/${projectId}/test-cases/${id}/compile`, { method: 'POST', signal }),
+     *  COMPILATION_UNAVAILABLE before committing to a handoff. Phase 5:
+     *  `body` may name a finished crawl (and the role the case runs as) to
+     *  compile against — omitted, nothing is sent and the compile is what it
+     *  always was. */
+    compile: (projectId: string, id: string, signal?: AbortSignal, body?: CompileRequest) =>
+      requestJson<CompilationOutcome>(`/projects/${projectId}/test-cases/${id}/compile`, { method: 'POST', body, signal }),
   },
 
   /** Phase 3 (Custom Testing) — real requirement -> AI strategy -> test
