@@ -21,7 +21,9 @@ import {
   formatTimestamp,
   outcomeLabel,
   plural,
+  providerLabel,
   reportTone,
+  withProviderNames,
   type Tone,
 } from './autopilotModel';
 
@@ -86,9 +88,13 @@ interface Props {
   autoLoad: boolean;
   /** Changes when the run's state or steps do, so a report shown for a running run is fetched again. */
   version: string;
+  /** The name a provider was given (Settings) for its id; the id itself when it is not known. */
+  providerName?: (id: string) => string;
 }
 
-export const ReportView: React.FC<Props> = ({ projectId, runId, autoLoad, version }) => {
+const AS_IS = (id: string) => id;
+
+export const ReportView: React.FC<Props> = ({ projectId, runId, autoLoad, version, providerName = AS_IS }) => {
   const [wanted, setWanted] = useState(autoLoad);
   const [report, setReport] = useState<AutopilotReport | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -174,7 +180,7 @@ export const ReportView: React.FC<Props> = ({ projectId, runId, autoLoad, versio
   const tone = reportTone(report.coverage_summary);
   const seconds = report.run.seconds;
   const { execution, generation, cost } = report;
-  const writers: Array<[string, number]> = Object.entries<number>(generation.providers ?? {});
+  const writers: Array<[string, number]> = Object.entries<number>(generation.providers ?? {}).map(([key, groups]) => [providerLabel(key, providerName), groups]);
 
   return (
     <section id="autopilot-report" className={`p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm space-y-3 ${loading ? 'opacity-70' : ''}`} aria-busy={loading}>
@@ -229,7 +235,7 @@ export const ReportView: React.FC<Props> = ({ projectId, runId, autoLoad, versio
           {report.notes.map((n) => (
             <li key={n} className="flex items-start gap-1.5 p-2 rounded bg-amber-950/30 border border-amber-800/60 text-[11px] text-amber-300">
               <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5" />
-              <span>{n}</span>
+              <span>{withProviderNames(n, providerName)}</span>
             </li>
           ))}
         </ul>

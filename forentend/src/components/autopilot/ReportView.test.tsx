@@ -205,6 +205,20 @@ describe('ReportView — cost and steps', () => {
     expect(text('report-providers')).toBe('Written by ollama/qwen3:14b (2 groups), groq/llama (1 group) — a fallback provider took over for some groups.');
   });
 
+  it('shows a custom provider by the name it was given, in the list of who wrote the cases and in the notes', async () => {
+    const id = 'custom-ai-0f1b4add-810d-44da-a369-4a33eda509d4';
+    const named = report({
+      generation: { ...report().generation, providers: { [`${id}/mock-autopilot-1`]: 2 }, fallback_used: true },
+      notes: [`The AI router used a provider other than its first choice for some of the generation (${id}/mock-autopilot-1).`],
+    });
+    backend({ [REPORT_ROUTE]: () => named });
+    render(<ReportView projectId={PROJECT_ID} runId={RUN_ID} autoLoad version="v1" providerName={(pid) => (pid === id ? 'Mock Autopilot' : pid)} />);
+    await waitFor(() => expect(document.getElementById('report-headline')).toBeTruthy());
+    expect(text('report-providers')).toBe('Written by Mock Autopilot/mock-autopilot-1 (2 groups) — a fallback provider took over for some groups.');
+    expect(text('report-notes')).toContain('(Mock Autopilot/mock-autopilot-1)');
+    expect(text('report-notes')).not.toContain('custom-ai-');
+  });
+
   it('says no estimate was kept when there is none', async () => {
     await showReport(report({ cost: { ...report().cost, estimated: null } }));
     expect(text('report-cost')).toContain('No estimate was kept with this run.');

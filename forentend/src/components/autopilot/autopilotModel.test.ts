@@ -43,6 +43,7 @@ import {
   outcomeLabel,
   plural,
   pollDelayMs,
+  providerLabel,
   reportTone,
   roleProblem,
   runPhase,
@@ -53,6 +54,7 @@ import {
   tallyCases,
   techniqueOf,
   toCrawlRole,
+  withProviderNames,
   type RoleDraft,
   type WizardDraft,
 } from './autopilotModel';
@@ -598,6 +600,37 @@ describe('the timeline', () => {
     for (const kind of ['run.created', 'run.started', 'run.resumed', 'run.continued', 'step.started', 'step.skipped', 'note', 'something.new']) {
       expect(eventTone(kind), kind).toBe('plain');
     }
+  });
+});
+
+describe('provider names', () => {
+  const ID = 'custom-ai-0f1b4add-810d-44da-a369-4a33eda509d4';
+  const names: Record<string, string> = { [ID]: 'Mock Autopilot', ollama: 'Ollama' };
+  const nameOf = (id: string) => names[id] ?? id;
+
+  it('puts the name a provider was given where the router wrote its id, wherever it is in the words', () => {
+    expect(withProviderNames(`Generated group 1/2: 10 case(s) via ${ID}/mock-autopilot-1`, nameOf)).toBe('Generated group 1/2: 10 case(s) via Mock Autopilot/mock-autopilot-1');
+    expect(withProviderNames(`fell back from ${ID} to ${ID}`, nameOf)).toBe('fell back from Mock Autopilot to Mock Autopilot');
+  });
+
+  it('leaves an id it does not know as it is, and words with no id alone', () => {
+    const other = 'custom-ai-11111111-2222-4333-8444-555555555555';
+    expect(withProviderNames(`via ${other}/m`, nameOf)).toBe(`via ${other}/m`);
+    expect(withProviderNames('no provider here: ollama/qwen', nameOf)).toBe('no provider here: ollama/qwen');
+    expect(withProviderNames('', nameOf)).toBe('');
+  });
+
+  it('does not take a lookalike for an id', () => {
+    expect(withProviderNames('custom-ai-1234 is not an id', nameOf)).toBe('custom-ai-1234 is not an id');
+    expect(withProviderNames(`${ID.slice(0, -1)}`, nameOf)).toBe(ID.slice(0, -1));
+  });
+
+  it('shows a provider and model as Name/model, for a custom provider and a built-in one, and a bare id as its name', () => {
+    expect(providerLabel(`${ID}/mock-autopilot-1`, nameOf)).toBe('Mock Autopilot/mock-autopilot-1');
+    expect(providerLabel('ollama/qwen3:14b', nameOf)).toBe('Ollama/qwen3:14b');
+    expect(providerLabel('ollama', nameOf)).toBe('Ollama');
+    expect(providerLabel('groq/llama-3/70b', nameOf)).toBe('groq/llama-3/70b'); // the model may hold a slash; only the id is named
+    expect(providerLabel('ollama/a/b', nameOf)).toBe('Ollama/a/b');
   });
 });
 

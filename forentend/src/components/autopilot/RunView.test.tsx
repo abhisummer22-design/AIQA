@@ -315,6 +315,23 @@ describe('RunView — the timeline', () => {
     expect(text('event-5')).toBe('10:00:05Requirements: Read 6 requirements');
   });
 
+  it('shows a custom provider by the name it was given (Settings) where a line of the timeline names its id', async () => {
+    const id = 'custom-ai-0f1b4add-810d-44da-a369-4a33eda509d4';
+    renderRun(
+      detail('RUNNING'),
+      { 'GET /ai/status': () => ({ providers: [{ id, name: 'Mock Autopilot' }], settings: {}, routing_preview: null }) },
+      [event(1, `Generated group 1/2: 10 case(s) via ${id}/mock-autopilot-1`)],
+    );
+    await waitFor(() => expect(text('event-1')).toContain('via Mock Autopilot/mock-autopilot-1'));
+    expect(text('event-1')).not.toContain('custom-ai-');
+  });
+
+  it('shows the id as it is until the names are known, and when they cannot be read', () => {
+    const id = 'custom-ai-0f1b4add-810d-44da-a369-4a33eda509d4';
+    renderRun(detail('RUNNING'), { 'GET /ai/status': () => failure(500, 'INTERNAL_ERROR', 'no names today') }, [event(1, `via ${id}/m`)]);
+    expect(text('event-1')).toContain(`via ${id}/m`);
+  });
+
   it('colours a failure, a wait and a success differently from a plain note', () => {
     renderRun(detail('RUNNING'), {}, [
       event(1, 'plain', { kind: 'note' }),

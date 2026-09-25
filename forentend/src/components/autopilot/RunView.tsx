@@ -9,6 +9,7 @@
 import React, { useMemo, useState } from 'react';
 import { AlertTriangle, CheckCircle2, Circle, CircleDashed, Loader2, Play, RotateCcw, Square, XCircle } from 'lucide-react';
 import { aiqaApi } from '../../services/aiqaApi';
+import { useProviderNames } from '../../hooks/useProviderNames';
 import type { AutopilotEvent, AutopilotRunDetail, AutopilotStep, AutopilotStepState } from '../../types/contract';
 import { EstimatePanel } from './EstimatePanel';
 import { GatePanel } from './GatePanel';
@@ -27,6 +28,7 @@ import {
   secondsBetween,
   stepSummary,
   suiteIdOf,
+  withProviderNames,
   type Tone,
 } from './autopilotModel';
 
@@ -94,7 +96,7 @@ const StepList: React.FC<{ steps: AutopilotStep[] }> = ({ steps }) => {
   );
 };
 
-const Timeline: React.FC<{ events: AutopilotEvent[] }> = ({ events }) => {
+const Timeline: React.FC<{ events: AutopilotEvent[]; providerName: (id: string) => string }> = ({ events, providerName }) => {
   const [all, setAll] = useState(false);
   const shown = all ? events : events.slice(-SHOWN_EVENTS);
   return (
@@ -121,7 +123,7 @@ const Timeline: React.FC<{ events: AutopilotEvent[] }> = ({ events }) => {
               <span className="font-mono text-slate-600 shrink-0">{formatTimestamp(e.at).slice(11)}</span>
               <span className={`${TONE_TEXT[eventTone(e.kind)]} break-words`}>
                 {e.step && <span className="font-mono text-slate-500">{STEP_LABEL[e.step]?.title ?? e.step}: </span>}
-                {e.message}
+                {withProviderNames(e.message, providerName)}
               </span>
             </li>
           ))}
@@ -150,6 +152,8 @@ export const RunView: React.FC<Props> = ({ projectId, detail, events, onDetail }
   const [notice, setNotice] = useState<string | null>(null);
 
   const acceptance = acceptanceState(run.estimate, acceptedEstimate, acceptedPaid);
+  // The router names a provider by its id in a timeline line or a note: a custom one shows the name it was given.
+  const providerName = useProviderNames(true);
 
   const act = async (what: string, action: () => Promise<void>) => {
     setBusy(what);
@@ -338,9 +342,9 @@ export const RunView: React.FC<Props> = ({ projectId, detail, events, onDetail }
         <StepList steps={steps} />
       </section>
 
-      {phase !== 'estimate' && <ReportView projectId={projectId} runId={run.id} autoLoad={isEnded(run.state)} version={version} />}
+      {phase !== 'estimate' && <ReportView projectId={projectId} runId={run.id} autoLoad={isEnded(run.state)} version={version} providerName={providerName} />}
 
-      <Timeline events={events} />
+      <Timeline events={events} providerName={providerName} />
     </div>
   );
 };

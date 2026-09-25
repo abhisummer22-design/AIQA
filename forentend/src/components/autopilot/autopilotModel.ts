@@ -540,6 +540,20 @@ export function eventTone(kind: string): Tone {
   return 'plain';
 }
 
+// ------------------------------------------------------------------------------------------------ provider names
+
+/** A custom provider's internal id (`custom-ai-<uuid>`), as the backend writes it in a timeline line or a note. */
+const PROVIDER_ID = /custom-ai-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;
+
+/** `text` with each provider id in it replaced by the name the provider was given (Settings). */
+export const withProviderNames = (text: string, providerName: (id: string) => string): string => text.replace(PROVIDER_ID, (id) => providerName(id));
+
+/** `provider-id/model` as `Name/model`: the id is a built-in provider's (`ollama`) or a custom one's, either way named if it is known. */
+export function providerLabel(key: string, providerName: (id: string) => string): string {
+  const slash = key.indexOf('/');
+  return slash < 0 ? providerName(key) : `${providerName(key.slice(0, slash))}${key.slice(slash)}`;
+}
+
 // ------------------------------------------------------------------------------------------------ small things
 
 /** The words to show for a call that failed: the backend's own message when it gave one. */
