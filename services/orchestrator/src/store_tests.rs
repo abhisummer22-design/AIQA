@@ -1256,3 +1256,49 @@ async fn another_projects_documents_and_requirements_are_never_returned() {
     let same_in_p1 = upsert_doc(&store, "p1", "Other.md", "h1", &parsed_doc(&[("O-1", "theirs")])).await;
     assert_ne!(same_in_p1, theirs);
 }
+
+// ------------------------------------------------------------------ Phase 7B — what AI calls took
+
+#[tokio::test]
+async fn recorded_ai_calls_add_up_per_provider_model_and_task() {
+    let (store, _dir) = temp_store().await;
+    store.record_ai_call("ollama", "qwen", "TEST_CASE_GENERATION", 60_000, Some(3_000), Some(1_500)).await.unwrap();
+    store.record_ai_call("ollama", "qwen", "TEST_CASE_GENERATION", 40_000, Some(1_000), Some(500)).await.unwrap();
+    // Another model, another provider and another task are rows of their own.
+    store.record_ai_call("ollama", "llama", "TEST_CASE_GENERATION", 10_000, Some(10), Some(10)).await.unwrap();
+    store.record_ai_call("groq", "qwen", "TEST_CASE_GENERATION", 5_000, Some(20), Some(20)).await.unwrap();
+    store.record_ai_call("ollama", "qwen", "TRACEABILITY", 7_000, Some(30), Some(30)).await.unwrap();
+
+    let generation = store.ai_call_stats("TEST_CASE_GENERATION").await.unwrap();
+    let names: Vec<(&str, &str)> = generation.iter().map(|r| (r.provider.as_str(), r.model.as_str())).collect();
+    assert_eq!(names, [("groq", "qwen"), ("ollama", "llama"), ("ollama", "qwen")], "sorted by provider then model");
+    let qwen = generation.iter().find(|r| r.provider == "ollama" && r.model == "qwen").unwrap();
+    assert_eq!((qwen.calls, qwen.total_ms, qwen.token_calls), (2, 100_000, 2));
+    assert_eq!((qwen.prompt_tokens, qwen.completion_tokens), (4_000, 2_000));
+    assert_eq!(qwen.task, "TEST_CASE_GENERATION");
+    let other_task = store.ai_call_stats("TRACEABILITY").await.unwrap();
+    assert_eq!(other_task.len(), 1);
+    assert_eq!(other_task[0].calls, 1);
+    assert!(store.ai_call_stats("NOTHING").await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_call_that_reported_no_tokens_counts_as_a_call_but_never_dilutes_the_token_average() {
+    let (store, _dir) = temp_store().await;
+    store.record_ai_call("p", "m", "T", 1_000, Some(100), Some(50)).await.unwrap();
+    store.record_ai_call("p", "m", "T", 3_000, None, None).await.unwrap();
+    // Only one of the two figures: not a usable pair either.
+    store.record_ai_call("p", "m", "T", 2_000, Some(999), None).await.unwrap();
+    store.record_ai_call("p", "m", "T", 2_000, None, Some(999)).await.unwrap();
+
+    let row = &store.ai_call_stats("T").await.unwrap()[0];
+    assert_eq!((row.calls, row.total_ms), (4, 8_000));
+    assert_eq!((row.token_calls, row.prompt_tokens, row.completion_tokens), (1, 100, 50));
+}
+
+#[tokio::test]
+async fn a_latency_too_large_to_store_is_kept_as_the_largest_that_can_be() {
+    let (store, _dir) = temp_store().await;
+    store.record_ai_call("p", "m", "T", u64::MAX, None, None).await.unwrap();
+    assert_eq!(store.ai_call_stats("T").await.unwrap()[0].total_ms, i64::MAX);
+}
