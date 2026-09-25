@@ -12480,3 +12480,280 @@ async fn phase6c_asking_for_the_focus_of_a_project_with_no_requirements_says_wha
     let (_, runs) = send(&state, req("GET", &format!("/api/v1/projects/{project}/executions"), Some(&owner), None)).await;
     assert_eq!(runs.as_array().unwrap().len(), 0, "{runs}");
 }
+
+// ------------------------------------------------- Phase 7A — a role's login steps, suggested from a crawl
+
+/// A crawl of a shop: the login page as `anonymous`, the shop as `standard`. (Its role's name in a test is chosen so the
+/// variables the suggestion names are ones no test environment has set.)
+const LOGIN_GROUNDING: &str = r##"{"roles":[
+  {"role":"anonymous","loginSucceeded":true,"loginUsesLiterals":false,"loginActions":[],
+   "pages":[{"url":"https://shop.example.test/","title":"Swag Labs","elements":[
+      {"kind":"input","text":"Username","locator":"[data-test=\"username\"]","inputType":"text"},
+      {"kind":"input","text":"Password","locator":"[data-test=\"password\"]","inputType":"password"},
+      {"kind":"button","text":"Login","locator":"[data-test=\"login-button\"]"}]}]},
+  {"role":"standard","loginSucceeded":true,"loginUsesLiterals":false,"loginActions":[],
+   "pages":[{"url":"https://shop.example.test/inventory.html","title":"Products","elements":[
+      {"kind":"button","text":"Add to cart","locator":"[data-test=\"add\"]"}]}]}]}"##;
+
+/// A login page in another language with two buttons that say nothing: what the rules are unsure of.
+const ODD_LOGIN_GROUNDING: &str = r##"{"roles":[
+  {"role":"anonymous","loginSucceeded":true,"loginUsesLiterals":false,"loginActions":[],
+   "pages":[{"url":"https://odd.example.test/entrar","title":"Acceso","elements":[
+      {"kind":"input","text":"Nom","locator":"#nom","inputType":"text"},
+      {"kind":"input","text":"Clave","locator":"#clave","inputType":"password"},
+      {"kind":"button","text":"Alfa","locator":"#alfa"},
+      {"kind":"button","text":"Beta","locator":"#beta"}]}]}]}"##;
+
+/// A crawl that reached pages with no password field on any.
+const NO_LOGIN_GROUNDING: &str = r##"{"roles":[
+  {"role":"anonymous","loginSucceeded":true,"loginUsesLiterals":false,"loginActions":[],
+   "pages":[{"url":"https://shop.example.test/about","title":"About","elements":[
+      {"kind":"link","text":"Home","locator":"a.home","href":"https://shop.example.test/"}]}]}]}"##;
+
+/// Two pages with no password field on either.
+const NO_LOGIN_TWO_PAGES: &str = r##"{"roles":[
+  {"role":"anonymous","loginSucceeded":true,"loginUsesLiterals":false,"loginActions":[],
+   "pages":[{"url":"https://shop.example.test/about","title":"About","elements":[]},
+            {"url":"https://shop.example.test/help","title":"Help","elements":[]}]}]}"##;
+
+async fn login_suggestion(state: &AppState, project: Uuid, key: &str, body: Value) -> (StatusCode, Value) {
+    send(
+        state,
+        req("POST", &format!("/api/v1/projects/{project}/login-suggestion"), Some(key), Some(body)),
+    )
+    .await
+}
+
+/// A project with a crawl whose grounding is `grounding`: its operator key, the crawl's run id and the file to remove.
+async fn crawled_project(state: &AppState, name: &str, grounding: &str) -> (Uuid, String, String, std::path::PathBuf) {
+    let project = make_project(state, name).await;
+    let owner = mint_key(state, "operator", Some(&project.to_string())).await;
+    let (run_id, task_id) = crawl_run_and_task(state, project, &owner).await;
+    let file = write_crawl_file(&crate::crawler::grounding_file_name(&task_id), grounding);
+    (project, owner, run_id, file)
+}
+
+#[tokio::test]
+async fn phase7a_a_crawl_with_a_login_page_gives_the_steps_and_the_variables_still_to_set() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let (project, owner, run_id, file) = crawled_project(&state, "Phase7A Login Steps", LOGIN_GROUNDING).await;
+
+    let (status, body) =
+        login_suggestion(&state, project, &owner, serde_json::json!({"role": "phase7a-zz", "crawl_run_id": run_id})).await;
+    std::fs::remove_file(file).ok();
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["crawl_run_id"], run_id);
+    let s = &body["suggestion"];
+    assert_eq!(s["confidence"], "high", "body={body}");
+    assert_eq!(s["by"], "rules");
+    assert_eq!(s["page_url"], "https://shop.example.test/");
+    assert_eq!(
+        s["actions"],
+        serde_json::json!([
+            {"type": "NAVIGATE", "url": "https://shop.example.test/"},
+            {"type": "FILL", "selector": "[data-test=\"username\"]", "value": "env:AIQA_LOGIN_PHASE7A_ZZ_USERNAME"},
+            {"type": "FILL", "selector": "[data-test=\"password\"]", "value": "env:AIQA_LOGIN_PHASE7A_ZZ_PASSWORD"},
+            {"type": "CLICK", "selector": "[data-test=\"login-button\"]"}
+        ]),
+        "body={body}"
+    );
+    assert_eq!(s["secrets"], serde_json::json!(["AIQA_LOGIN_PHASE7A_ZZ_PASSWORD", "AIQA_LOGIN_PHASE7A_ZZ_USERNAME"]));
+    // Not set in this environment, so the person is told to set them (names only).
+    assert_eq!(body["missing_secrets"], s["secrets"], "body={body}");
+    assert_eq!(body["alternatives"], serde_json::json!([]));
+    assert_eq!(body["ai"], serde_json::json!({"requested": false, "used": false, "note": null}));
+}
+
+#[tokio::test]
+async fn phase7a_with_no_crawl_named_the_newest_crawl_that_has_a_login_page_is_used() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Phase7A Newest Login Crawl").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    // No crawl at all.
+    let (status, body) = login_suggestion(&state, project, &owner, serde_json::json!({"role": "admin"})).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
+    assert!(body.to_string().contains("no crawl with recorded fields"), "body={body}");
+
+    // The older crawl has the login page; the newer one only saw an about page.
+    let (older_run, older_task) = crawl_run_and_task(&state, project, &owner).await;
+    let older_file = write_crawl_file(&crate::crawler::grounding_file_name(&older_task), LOGIN_GROUNDING);
+    let (newer_run, newer_task) = crawl_run_and_task(&state, project, &owner).await;
+    let newer_file = write_crawl_file(&crate::crawler::grounding_file_name(&newer_task), NO_LOGIN_GROUNDING);
+    let (status, body) = login_suggestion(&state, project, &owner, serde_json::json!({"role": "admin"})).await;
+    // Naming the newer crawl says what is wrong with it.
+    let (named_status, named) =
+        login_suggestion(&state, project, &owner, serde_json::json!({"role": "admin", "crawl_run_id": newer_run})).await;
+    std::fs::remove_file(older_file).ok();
+    std::fs::remove_file(newer_file).ok();
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["crawl_run_id"], older_run);
+    assert_eq!(body["suggestion"]["confidence"], "high");
+    assert_eq!(named_status, StatusCode::BAD_REQUEST, "body={named}");
+    assert!(named.to_string().contains("no page of the crawl has a password field"), "body={named}");
+}
+
+#[tokio::test]
+async fn phase7a_crawls_that_never_reached_a_login_page_say_so() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let (project, owner, _run_id, file) = crawled_project(&state, "Phase7A No Login Page", NO_LOGIN_GROUNDING).await;
+
+    let (status, body) = login_suggestion(&state, project, &owner, serde_json::json!({"role": "admin"})).await;
+    std::fs::remove_file(file).ok();
+
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    let text = body.to_string();
+    assert!(text.contains("no page of the crawl has a password field") && text.contains("1 page seen"), "body={body}");
+    assert!(text.contains("crawl the application again as `anonymous`"), "body={body}");
+}
+
+#[tokio::test]
+async fn phase7a_when_no_crawl_has_a_login_page_the_newest_crawls_problem_is_the_one_reported() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Phase7A Newest Problem").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let (_, older_task) = crawl_run_and_task(&state, project, &owner).await;
+    let older_file = write_crawl_file(&crate::crawler::grounding_file_name(&older_task), NO_LOGIN_TWO_PAGES);
+    let (_, newer_task) = crawl_run_and_task(&state, project, &owner).await;
+    let newer_file = write_crawl_file(&crate::crawler::grounding_file_name(&newer_task), NO_LOGIN_GROUNDING);
+
+    let (status, body) = login_suggestion(&state, project, &owner, serde_json::json!({"role": "admin"})).await;
+    std::fs::remove_file(older_file).ok();
+    std::fs::remove_file(newer_file).ok();
+
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    // The newest crawl saw one page; the older one two. The report is about the newest.
+    let text = body.to_string();
+    assert!(text.contains("(1 page seen") && !text.contains("2 pages seen"), "body={body}");
+}
+
+#[tokio::test]
+async fn phase7a_the_role_the_crawl_and_the_project_are_checked() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let (project, owner, run_id, file) = crawled_project(&state, "Phase7A Checks", LOGIN_GROUNDING).await;
+    let other = make_project(&state, "Phase7A Checks Other").await;
+    let other_owner = mint_key(&state, "operator", Some(&other.to_string())).await;
+    // A crawl that has left no grounding (still running, or made before grounding was recorded).
+    let (bare_run, _) = crawl_run_and_task(&state, project, &owner).await;
+
+    let (empty_status, empty) = login_suggestion(&state, project, &owner, serde_json::json!({"role": "  "})).await;
+    let (bad_status, bad) = login_suggestion(&state, project, &owner, serde_json::json!({"role": "!!!"})).await;
+    let (foreign_status, foreign) =
+        login_suggestion(&state, other, &other_owner, serde_json::json!({"role": "admin", "crawl_run_id": run_id})).await;
+    let (bare_status, bare) =
+        login_suggestion(&state, project, &owner, serde_json::json!({"role": "admin", "crawl_run_id": bare_run})).await;
+    let (scope_status, _) = login_suggestion(&state, project, &other_owner, serde_json::json!({"role": "admin"})).await;
+    // A role that cannot name variables is refused before any crawl is looked for.
+    let uncrawled = make_project(&state, "Phase7A Checks No Crawl").await;
+    let uncrawled_owner = mint_key(&state, "operator", Some(&uncrawled.to_string())).await;
+    let (early_status, early) =
+        login_suggestion(&state, uncrawled, &uncrawled_owner, serde_json::json!({"role": "!!!"})).await;
+    let (missing_status, _) = send(
+        &state,
+        req("POST", &format!("/api/v1/projects/{project}/login-suggestion"), Some(&owner), Some(serde_json::json!({}))),
+    )
+    .await;
+    std::fs::remove_file(file).ok();
+
+    assert_eq!(empty_status, StatusCode::BAD_REQUEST, "body={empty}");
+    assert!(empty.to_string().contains("role must not be empty"), "body={empty}");
+    assert_eq!(bad_status, StatusCode::BAD_REQUEST, "body={bad}");
+    assert!(bad.to_string().contains("role needs a name"), "body={bad}");
+    assert_eq!(early_status, StatusCode::BAD_REQUEST, "the role is checked first: body={early}");
+    assert!(early.to_string().contains("role needs a name"), "body={early}");
+    assert_eq!(foreign_status, StatusCode::NOT_FOUND, "another project's crawl: body={foreign}");
+    assert_eq!(bare_status, StatusCode::NOT_FOUND, "body={bare}");
+    assert!(bare.to_string().contains("recorded no grounding"), "body={bare}");
+    assert_eq!(scope_status, StatusCode::FORBIDDEN, "a key of another project");
+    assert!(missing_status.is_client_error(), "the role is required");
+}
+
+#[tokio::test]
+async fn phase7a_a_viewer_may_ask_for_the_rules_but_not_for_the_ai() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let (project, owner, run_id, file) = crawled_project(&state, "Phase7A Viewer", LOGIN_GROUNDING).await;
+    let viewer = mint_key(&state, "viewer", Some(&project.to_string())).await;
+
+    let (rules_status, rules) =
+        login_suggestion(&state, project, &viewer, serde_json::json!({"role": "admin", "crawl_run_id": run_id})).await;
+    let (ai_status, ai) = login_suggestion(
+        &state,
+        project,
+        &viewer,
+        serde_json::json!({"role": "admin", "crawl_run_id": run_id, "use_ai": true}),
+    )
+    .await;
+    let (operator_status, _) = login_suggestion(
+        &state,
+        project,
+        &owner,
+        serde_json::json!({"role": "admin", "crawl_run_id": run_id, "use_ai": true}),
+    )
+    .await;
+    std::fs::remove_file(file).ok();
+
+    assert_eq!(rules_status, StatusCode::OK, "body={rules}");
+    assert_eq!(ai_status, StatusCode::FORBIDDEN, "body={ai}");
+    // The default test router has no provider; the operator's request is a normal 200 and the rules were sure anyway.
+    assert_eq!(operator_status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn phase7a_the_ai_is_asked_only_when_the_rules_are_unsure_and_its_answer_is_checked_and_audited() {
+    // The AI is scripted: one answer for the odd page, and none for the plain one (a call there would panic).
+    let answer = r#"{"username":"E1","password":"E2","submit":"E4","reason":"Beta is the second, so the submit"}"#;
+    let agreeing = r#"{"username":"E1","password":"E2","submit":"E3"}"#;
+    let executor = Arc::new(RecordingExecutor::ok_sequence(vec![answer, r#"{"password":"E9"}"#, agreeing]));
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
+    let (project, owner, odd_run, odd_file) = crawled_project(&state, "Phase7A AI", ODD_LOGIN_GROUNDING).await;
+    let (plain_run, plain_task) = crawl_run_and_task(&state, project, &owner).await;
+    let plain_file = write_crawl_file(&crate::crawler::grounding_file_name(&plain_task), LOGIN_GROUNDING);
+
+    let ask = |run: &str| serde_json::json!({"role": "phase7a-ai", "crawl_run_id": run, "use_ai": true});
+    // Sure rules: the AI is not asked.
+    let (plain_status, plain) = login_suggestion(&state, project, &owner, ask(&plain_run)).await;
+    assert_eq!(executor.prompts.lock().unwrap().len(), 0);
+    // Rules with a doubt worth `low` (two buttons that say nothing): the AI is asked, and its answer takes the first place.
+    let (odd_status, odd) = login_suggestion(&state, project, &owner, ask(&odd_run)).await;
+    // An answer that names an element that is not on the page is not used: the rules stand, and the note says why.
+    let (bad_status, bad) = login_suggestion(&state, project, &owner, ask(&odd_run)).await;
+    // An answer that is the rules' own adds nothing to list.
+    let (same_status, same) = login_suggestion(&state, project, &owner, ask(&odd_run)).await;
+    let audit_rows = state.store.list_audit(None, 100, 0).await.expect("list_audit");
+    std::fs::remove_file(odd_file).ok();
+    std::fs::remove_file(plain_file).ok();
+
+    assert_eq!(plain_status, StatusCode::OK, "body={plain}");
+    assert_eq!(plain["ai"]["used"], false);
+    assert!(plain["ai"]["note"].as_str().unwrap().contains("rules were sure"), "body={plain}");
+
+    assert_eq!(odd_status, StatusCode::OK, "body={odd}");
+    assert_eq!(odd["ai"]["requested"], true);
+    assert_eq!(odd["ai"]["used"], true);
+    assert_eq!(odd["suggestion"]["by"], "mock/mock-model", "body={odd}");
+    assert_eq!(odd["suggestion"]["confidence"], "medium");
+    assert_eq!(odd["suggestion"]["actions"][3], serde_json::json!({"type": "CLICK", "selector": "#beta"}));
+    assert_eq!(odd["alternatives"].as_array().unwrap().len(), 1, "body={odd}");
+    assert_eq!(odd["alternatives"][0]["by"], "rules");
+    assert_eq!(odd["alternatives"][0]["actions"][3], serde_json::json!({"type": "CLICK", "selector": "#alfa"}));
+
+    assert_eq!(bad_status, StatusCode::OK, "body={bad}");
+    assert_eq!(bad["ai"]["used"], false);
+    assert!(bad["ai"]["note"].as_str().unwrap().contains("not one of the elements listed"), "body={bad}");
+    assert_eq!(bad["suggestion"]["by"], "rules");
+    assert_eq!(bad["alternatives"], serde_json::json!([]));
+
+    assert_eq!(same_status, StatusCode::OK, "body={same}");
+    assert_eq!(same["ai"]["used"], true, "the AI was asked and answered");
+    assert_eq!(same["suggestion"]["by"], "rules", "body={same}");
+    assert_eq!(same["alternatives"], serde_json::json!([]), "the same steps are listed once: body={same}");
+
+    // Every answer that was used is an audited action, against the crawl run; one that was refused is not.
+    let asked: Vec<_> = audit_rows.iter().filter(|a| a.action == "login_suggestion.ai").collect();
+    assert_eq!(asked.len(), 2, "{audit_rows:?}");
+    assert!(asked.iter().all(|a| a.target.as_deref() == Some(odd_run.as_str())));
+    assert!(asked.iter().all(|a| a.detail.as_deref() == Some("mock/mock-model")));
+    assert_eq!(executor.prompts.lock().unwrap().len(), 3);
+}
