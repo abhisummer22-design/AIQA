@@ -11,6 +11,9 @@ serde_json = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 tower-http = { version = "0.5", features = ["cors"] }
+# The autopilot (`autopilot_runner.rs`) calls this service's own routes in process: `ServiceExt::oneshot` on the router,
+# the way the API tests below do. Already in the tree through axum.
+tower = { version = "0.4", features = ["util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 async-trait = "0.1"

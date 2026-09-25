@@ -3563,6 +3563,22 @@ fn project_from_path_reads_only_a_real_project_id_from_a_project_url() {
     }
 }
 
+/// A call made in process (the autopilot's) has no `require_auth` to say which project its URL names, so `with_request_path` does
+/// it: inside, `request_project` gives the project, and outside it gives none.
+#[tokio::test]
+async fn with_request_path_makes_the_urls_project_known_only_inside_the_call() {
+    let id = "6f95ee30-3fc8-4bc6-9d6d-f8cb4c8ef988";
+    assert_eq!(crate::auth::request_project(), None);
+    let inside = crate::auth::with_request_path(&format!("/api/v1/projects/{id}/gap-check"), async {
+        crate::auth::request_project()
+    })
+    .await;
+    assert_eq!(inside.as_deref(), Some(id));
+    let elsewhere = crate::auth::with_request_path("/api/v1/logs", async { crate::auth::request_project() }).await;
+    assert_eq!(elsewhere, None, "a URL that names no project names none");
+    assert_eq!(crate::auth::request_project(), None, "and nothing leaks out of the call");
+}
+
 /// Category: real pagination — `offset` genuinely moves the window rather
 /// than being silently ignored, `total` is the real full count (not this
 /// response's own batch length), and paging all the way through with a
@@ -13161,4 +13177,589 @@ async fn phase7b_the_request_is_checked_and_needs_an_operator_of_the_project() {
     let (stranger_status, _) = autopilot_estimate(&state, project, &stranger, serde_json::json!({})).await;
     assert_eq!(viewer_status, StatusCode::FORBIDDEN);
     assert_eq!(stranger_status, StatusCode::FORBIDDEN);
+}
+
+// ------------------------------------------------- Phase 7C — an autopilot run: made, accepted, started, watched
+
+fn fast_autopilot(state: &AppState) {
+    state.autopilot.set_options(crate::autopilot_runner::RunnerOptions {
+        poll_every: std::time::Duration::from_millis(10),
+        crawl_timeout: std::time::Duration::from_secs(20),
+    });
+}
+
+async fn autopilot(state: &AppState, method: &str, path: &str, key: &str, body: Option<Value>) -> (StatusCode, Value) {
+    send(state, req(method, path, Some(key), body)).await
+}
+
+fn autopilot_body(extra: Value) -> Value {
+    let mut body = serde_json::json!({
+        "base_url": "http://127.0.0.1:8080/app",
+        "roles": [{"name": "anonymous"}],
+    });
+    for (key, value) in extra.as_object().cloned().unwrap_or_default() {
+        body[key] = value;
+    }
+    body
+}
+
+/// A project with the shop's requirements document and its operator key.
+async fn autopilot_project(state: &AppState, name: &str) -> (Uuid, String) {
+    let project = make_project(state, name).await;
+    let owner = mint_key(state, "operator", Some(&project.to_string())).await;
+    let (status, uploaded) = upload_document(state, &owner, project, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+    assert_eq!(status, StatusCode::OK, "body={uploaded}");
+    (project, owner)
+}
+
+/// A crawl run that has finished and left the grounding a crawl leaves: what a run can be told to use instead of crawling.
+async fn finished_crawl(state: &AppState, project: Uuid, key: &str, grounding: Option<&str>) -> (String, Option<std::path::PathBuf>) {
+    let (run_id, task_id) = crawl_run_and_task(state, project, key).await;
+    let file = grounding.map(|g| write_crawl_file(&crate::crawler::grounding_file_name(&task_id), g));
+    let id = Uuid::parse_str(&run_id).unwrap();
+    // The crawl cannot really run here: wait until the database says the run has ended however it ended (the engine writes
+    // that last, so a change made before it would be overwritten), then make it what a crawl that worked is.
+    for _ in 0..400 {
+        let stored = state.store.get_run_summary(id).await.unwrap();
+        if stored.is_some_and(|s| s.state.is_terminal()) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    state.store.set_run_finished(id, crate::domain::RunState::Completed, None).await.unwrap();
+    state.runs.write().await.remove(&id);
+    (run_id, file)
+}
+
+async fn wait_for_autopilot(state: &AppState, project: Uuid, key: &str, run: &str, wanted: &[&str]) -> Value {
+    let mut last = Value::Null;
+    for _ in 0..600 {
+        let (status, detail) = autopilot(state, "GET", &format!("/api/v1/projects/{project}/autopilot/runs/{run}"), key, None).await;
+        assert_eq!(status, StatusCode::OK, "body={detail}");
+        if wanted.contains(&detail["run"]["state"].as_str().unwrap_or("")) {
+            return detail;
+        }
+        last = detail;
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("the run never reached one of {wanted:?}: {last}");
+}
+
+fn steps_of(detail: &Value) -> Vec<(String, String)> {
+    detail["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| (s["name"].as_str().unwrap().to_string(), s["state"].as_str().unwrap().to_string()))
+        .collect()
+}
+
+#[tokio::test]
+async fn phase7c_a_run_is_made_with_its_estimate_and_nothing_starts() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    let (project, owner) = autopilot_project(&state, "Phase7C Make").await;
+    let (status, made) = autopilot(
+        &state,
+        "POST",
+        &format!("/api/v1/projects/{project}/autopilot/runs"),
+        &owner,
+        Some(autopilot_body(serde_json::json!({"name": "  Release 4  ", "depth": "STANDARD"}))),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CREATED, "body={made}");
+    let run = &made["run"];
+    assert_eq!(run["state"], "AWAITING_APPROVAL");
+    assert_eq!(run["name"], "Release 4");
+    assert_eq!(run["project_id"], project.to_string());
+    assert_eq!(run["created_by_name"], "test-key");
+    assert!(run.get("created_by_key").is_none(), "the key's id is not shown: {run}");
+    assert_eq!(run["config"]["base_url"], "http://127.0.0.1:8080/app");
+    assert_eq!(run["config"]["depth"], "STANDARD");
+    assert_eq!(run["estimate"]["requirements"], 6, "the estimate is stored with the run: {run}");
+    assert!(run["estimate"]["totals"]["ai_calls"].is_object());
+    assert!(run["approved_at"].is_null() && run["started_at"].is_null());
+    assert_eq!(steps_of(&made), [("REQUIREMENTS", "PENDING"), ("CRAWL", "PENDING"), ("GAP_CHECK", "PENDING")].map(|(a, b)| (a.to_string(), b.to_string())));
+    assert_eq!(made["events"][0]["kind"], "run.created");
+    assert_eq!(made["working"], false);
+
+    // Nothing has been started: no crawl run exists, and the run is still awaiting approval a moment later.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let (_, runs) = autopilot(&state, "GET", &format!("/api/v1/projects/{project}/executions"), &owner, None).await;
+    assert_eq!(runs.as_array().unwrap().len(), 0, "{runs}");
+    let (_, again) = autopilot(&state, "GET", &format!("/api/v1/projects/{project}/autopilot/runs/{}", run["id"].as_str().unwrap()), &owner, None).await;
+    assert_eq!(again["run"]["state"], "AWAITING_APPROVAL");
+
+    // The run appears in the project's list, newest first, and its creation is an audited action.
+    let (_, list) = autopilot(&state, "GET", &format!("/api/v1/projects/{project}/autopilot/runs"), &owner, None).await;
+    assert_eq!(list["runs"].as_array().unwrap().len(), 1);
+    assert_eq!(list["runs"][0]["id"], run["id"]);
+    let audit_rows = state.store.list_audit(None, 100, 0).await.unwrap();
+    let created: Vec<_> = audit_rows.iter().filter(|a| a.action == "autopilot.create").collect();
+    assert_eq!(created.len(), 1, "{audit_rows:?}");
+    assert_eq!(created[0].target.as_deref(), run["id"].as_str());
+    assert_eq!(created[0].detail.as_deref(), Some("Release 4"));
+}
+
+#[tokio::test]
+async fn phase7c_the_estimate_a_run_is_made_with_is_the_one_the_estimate_route_gives() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    let (project, owner) = autopilot_project(&state, "Phase7C Same Estimate").await;
+    let (_, from_route) = autopilot_estimate(
+        &state,
+        project,
+        &owner,
+        serde_json::json!({"depth": "STANDARD", "coverage_top_up": true, "roles": 2, "focus_requirements": true, "verify_gaps": 5, "run_concurrency": 4}),
+    )
+    .await;
+    let (status, made) = autopilot(
+        &state,
+        "POST",
+        &format!("/api/v1/projects/{project}/autopilot/runs"),
+        &owner,
+        Some(autopilot_body(serde_json::json!({
+            "depth": "STANDARD", "coverage_top_up": true, "focus_requirements": true, "verify_gaps": 5, "run_concurrency": 4,
+            "roles": [{"name": "anonymous"}, {"name": "second"}],
+        }))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={made}");
+    assert_eq!(made["run"]["estimate"], from_route, "the same estimate, whichever way it was asked for");
+}
+
+#[tokio::test]
+async fn phase7c_a_run_that_could_only_fail_is_refused_when_it_is_made() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    let (project, owner) = autopilot_project(&state, "Phase7C Refused").await;
+    let empty = make_project(&state, "Phase7C Refused Empty").await;
+    let empty_owner = mint_key(&state, "operator", Some(&empty.to_string())).await;
+    let path = format!("/api/v1/projects/{project}/autopilot/runs");
+    let make = |body: Value| autopilot(&state, "POST", &path, &owner, Some(body));
+
+    let (a, no_address) = make(autopilot_body(serde_json::json!({"base_url": "  "}))).await;
+    let (b, private_address) = make(autopilot_body(serde_json::json!({"base_url": "http://169.254.169.254/"}))).await;
+    let (c, no_roles) = make(autopilot_body(serde_json::json!({"roles": []}))).await;
+    let (d, secrets) = make(autopilot_body(serde_json::json!({"roles": [
+        {"name": "admin", "login_actions": [{"type": "FILL", "selector": "#u", "value": "env:AIQA_LOGIN_P7C_NEVER_SET_USERNAME"}]}
+    ]}))).await;
+    let (e, too_many) = make(autopilot_body(serde_json::json!({"run_concurrency": 9}))).await;
+    let (f, bad_depth) = make(autopilot_body(serde_json::json!({"depth": "EXTREME"}))).await;
+    let (g, no_requirements) = autopilot(
+        &state,
+        "POST",
+        &format!("/api/v1/projects/{empty}/autopilot/runs"),
+        &empty_owner,
+        Some(autopilot_body(serde_json::json!({}))),
+    )
+    .await;
+    let (h, chosen_none) = make(autopilot_body(serde_json::json!({"requirement_document_ids": [Uuid::new_v4()]}))).await;
+    let (i, not_a_crawl) = {
+        // A run of the project that is not a crawl: any other run will do.
+        let (_, plain) = send(&state, req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&owner), Some(simple_plan("not a crawl")))).await;
+        let plain_id = plain["run_id"].as_str().unwrap().to_string();
+        make(autopilot_body(serde_json::json!({"crawl_run_id": plain_id}))).await
+    };
+    let (j, unknown_crawl) = make(autopilot_body(serde_json::json!({"crawl_run_id": Uuid::new_v4()}))).await;
+
+    assert_eq!(a, StatusCode::BAD_REQUEST, "body={no_address}");
+    assert!(no_address.to_string().contains("base_url"), "body={no_address}");
+    assert_eq!(b, StatusCode::BAD_REQUEST, "an address the guard refuses: body={private_address}");
+    assert_eq!(c, StatusCode::BAD_REQUEST, "body={no_roles}");
+    assert!(no_roles.to_string().contains("needs at least one role"), "body={no_roles}");
+    assert_eq!(d, StatusCode::BAD_REQUEST, "body={secrets}");
+    assert!(secrets.to_string().contains("AIQA_LOGIN_P7C_NEVER_SET_USERNAME"), "the variable is named: body={secrets}");
+    assert_eq!(e, StatusCode::BAD_REQUEST, "body={too_many}");
+    assert!(too_many.to_string().contains("run_concurrency must be between 1 and 8"), "body={too_many}");
+    assert_eq!(f, StatusCode::BAD_REQUEST, "body={bad_depth}");
+    assert_eq!(g, StatusCode::BAD_REQUEST, "body={no_requirements}");
+    assert!(no_requirements.to_string().contains("upload a requirements document"), "body={no_requirements}");
+    assert_eq!(h, StatusCode::BAD_REQUEST, "body={chosen_none}");
+    assert!(chosen_none.to_string().contains("documents you chose have no requirements"), "body={chosen_none}");
+    assert_eq!(i, StatusCode::BAD_REQUEST, "body={not_a_crawl}");
+    assert!(not_a_crawl.to_string().contains("is not a crawl"), "body={not_a_crawl}");
+    assert_eq!(j, StatusCode::NOT_FOUND, "body={unknown_crawl}");
+
+    // Not one of them made a run.
+    let (_, list) = autopilot(&state, "GET", &path, &owner, None).await;
+    assert_eq!(list["runs"], serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn phase7c_a_project_has_one_run_that_has_not_ended() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    let (project, owner) = autopilot_project(&state, "Phase7C One At A Time").await;
+    let path = format!("/api/v1/projects/{project}/autopilot/runs");
+    let (first_status, first) = autopilot(&state, "POST", &path, &owner, Some(autopilot_body(serde_json::json!({"name": "First"})))).await;
+    let (second_status, second) = autopilot(&state, "POST", &path, &owner, Some(autopilot_body(serde_json::json!({"name": "Second"})))).await;
+    assert_eq!(first_status, StatusCode::CREATED, "body={first}");
+    assert_eq!(second_status, StatusCode::CONFLICT, "body={second}");
+    let message = second.to_string();
+    assert!(message.contains("First") && message.contains(first["run"]["id"].as_str().unwrap()), "the run in the way is named: {message}");
+
+    // Once it has ended, the project may have another.
+    let cancel = format!("{path}/{}/cancel", first["run"]["id"].as_str().unwrap());
+    let (cancel_status, cancelled) = autopilot(&state, "POST", &cancel, &owner, None).await;
+    assert_eq!(cancel_status, StatusCode::OK, "body={cancelled}");
+    let (third_status, third) = autopilot(&state, "POST", &path, &owner, Some(autopilot_body(serde_json::json!({"name": "Third"})))).await;
+    assert_eq!(third_status, StatusCode::CREATED, "body={third}");
+    // Another project is not held back by this one.
+    let (other, other_owner) = autopilot_project(&state, "Phase7C One At A Time Other").await;
+    let (other_status, _) = autopilot(&state, "POST", &format!("/api/v1/projects/{other}/autopilot/runs"), &other_owner, Some(autopilot_body(serde_json::json!({})))).await;
+    assert_eq!(other_status, StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn phase7c_starting_needs_the_estimate_accepted_and_a_paid_one_the_cost_accepted_too() {
+    // A router whose one provider charges: the estimate says the run is paid.
+    let (state, _dir) = test_state_with_ai_router(priced_ai_infra()).await;
+    fast_autopilot(&state);
+    let (project, owner) = autopilot_project(&state, "Phase7C Accept").await;
+    let (crawl, file) = finished_crawl(&state, project, &owner, Some(SHOP_GROUNDING)).await;
+    let path = format!("/api/v1/projects/{project}/autopilot/runs");
+    let (_, made) = autopilot(
+        &state,
+        "POST",
+        &path,
+        &owner,
+        Some(autopilot_body(serde_json::json!({"crawl_run_id": crawl, "depth": "STANDARD"}))),
+    )
+    .await;
+    let run_id = made["run"]["id"].as_str().unwrap().to_string();
+    assert_eq!(made["run"]["estimate"]["totals"]["paid"], true, "body={made}");
+    let start = format!("{path}/{run_id}/start");
+
+    let (none_status, none) = autopilot(&state, "POST", &start, &owner, None).await;
+    let (empty_status, _) = autopilot(&state, "POST", &start, &owner, Some(serde_json::json!({}))).await;
+    let (cost_only_status, cost_only) = autopilot(&state, "POST", &start, &owner, Some(serde_json::json!({"accept_paid": true}))).await;
+    let (free_only_status, free_only) = autopilot(&state, "POST", &start, &owner, Some(serde_json::json!({"accept_estimate": true}))).await;
+    // None of these started it.
+    let (_, still) = autopilot(&state, "GET", &format!("{path}/{run_id}"), &owner, None).await;
+    assert_eq!(still["run"]["state"], "AWAITING_APPROVAL");
+
+    let (ok_status, started) =
+        autopilot(&state, "POST", &start, &owner, Some(serde_json::json!({"accept_estimate": true, "accept_paid": true}))).await;
+    let (again_status, again) = autopilot(&state, "POST", &start, &owner, Some(serde_json::json!({"accept_estimate": true, "accept_paid": true}))).await;
+    let finished = wait_for_autopilot(&state, project, &owner, &run_id, &["COMPLETED", "FAILED"]).await;
+    file.map(std::fs::remove_file);
+
+    assert_eq!(none_status, StatusCode::BAD_REQUEST, "body={none}");
+    assert!(none.to_string().contains("accept_estimate: true"), "body={none}");
+    assert_eq!(empty_status, StatusCode::BAD_REQUEST);
+    assert_eq!(cost_only_status, StatusCode::BAD_REQUEST, "accepting the cost is not accepting the estimate: body={cost_only}");
+    assert_eq!(free_only_status, StatusCode::BAD_REQUEST, "body={free_only}");
+    assert!(free_only.to_string().contains("accept_paid: true"), "body={free_only}");
+    assert_eq!(ok_status, StatusCode::OK, "body={started}");
+    assert_eq!(started["run"]["state"], "RUNNING", "body={started}");
+    assert_eq!(started["run"]["approved_paid"], true);
+    assert!(started["run"]["approved_at"].is_string() && started["run"]["started_at"].is_string());
+    assert_eq!(again_status, StatusCode::CONFLICT, "a run starts once: body={again}");
+    assert_eq!(finished["run"]["state"], "COMPLETED", "body={finished}");
+    let kinds: Vec<&str> = finished["events"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
+    assert!(kinds.contains(&"run.started"), "{kinds:?}");
+    let started_event = finished["events"].as_array().unwrap().iter().find(|e| e["kind"] == "run.started").unwrap();
+    assert!(started_event["message"].as_str().unwrap().contains("including its cost"), "{started_event}");
+
+    let audit_rows = state.store.list_audit(None, 100, 0).await.unwrap();
+    let starts: Vec<_> = audit_rows.iter().filter(|a| a.action == "autopilot.start").collect();
+    assert_eq!(starts.len(), 1, "only the start that worked: {audit_rows:?}");
+    assert_eq!(starts[0].detail.as_deref(), Some("paid"));
+}
+
+#[tokio::test]
+async fn phase7c_a_free_run_needs_only_the_estimate_accepted() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    fast_autopilot(&state);
+    let (project, owner) = autopilot_project(&state, "Phase7C Free").await;
+    let (crawl, file) = finished_crawl(&state, project, &owner, Some(SHOP_GROUNDING)).await;
+    let path = format!("/api/v1/projects/{project}/autopilot/runs");
+    let (_, made) = autopilot(&state, "POST", &path, &owner, Some(autopilot_body(serde_json::json!({"crawl_run_id": crawl})))).await;
+    let run_id = made["run"]["id"].as_str().unwrap().to_string();
+    assert_eq!(made["run"]["estimate"]["totals"]["paid"], false, "an unmetered provider costs nothing: body={made}");
+    let (status, started) = autopilot(&state, "POST", &format!("{path}/{run_id}/start"), &owner, Some(serde_json::json!({"accept_estimate": true}))).await;
+    assert_eq!(status, StatusCode::OK, "body={started}");
+    assert_eq!(started["run"]["approved_paid"], false);
+    wait_for_autopilot(&state, project, &owner, &run_id, &["COMPLETED", "FAILED"]).await;
+    file.map(std::fs::remove_file);
+}
+
+#[tokio::test]
+async fn phase7c_a_started_run_reads_the_requirements_uses_the_crawl_and_checks_the_gaps() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    fast_autopilot(&state);
+    let (project, owner) = autopilot_project(&state, "Phase7C Flow").await;
+    let (crawl, file) = finished_crawl(&state, project, &owner, Some(SHOP_GROUNDING)).await;
+    let path = format!("/api/v1/projects/{project}/autopilot/runs");
+    let (_, made) = autopilot(&state, "POST", &path, &owner, Some(autopilot_body(serde_json::json!({"crawl_run_id": crawl})))).await;
+    let run_id = made["run"]["id"].as_str().unwrap().to_string();
+    autopilot(&state, "POST", &format!("{path}/{run_id}/start"), &owner, Some(serde_json::json!({"accept_estimate": true}))).await;
+    let done = wait_for_autopilot(&state, project, &owner, &run_id, &["COMPLETED", "FAILED"]).await;
+    // The gap check the run made, made by hand, says the same.
+    let (_, by_hand) = autopilot(&state, "POST", &format!("/api/v1/projects/{project}/gap-check"), &owner, Some(serde_json::json!({"crawl_run_id": crawl}))).await;
+    file.map(std::fs::remove_file);
+
+    assert_eq!(done["run"]["state"], "COMPLETED", "body={done}");
+    assert!(done["run"]["error"].is_null() && done["run"]["finished_at"].is_string());
+    assert_eq!(steps_of(&done), [("REQUIREMENTS", "DONE"), ("CRAWL", "SKIPPED"), ("GAP_CHECK", "DONE")].map(|(a, b)| (a.to_string(), b.to_string())));
+    let steps = done["steps"].as_array().unwrap();
+    assert_eq!(steps[0]["detail"]["requirements"], 6);
+    assert_eq!(steps[0]["detail"]["documents"], 1);
+    assert_eq!(steps[0]["detail"]["by_kind"], serde_json::json!({"data": 1, "functional": 3, "performance": 1, "security": 1}));
+    assert_eq!(steps[1]["detail"], serde_json::json!({"crawl_run_id": crawl, "reused": true}));
+    assert_eq!(steps[2]["detail"]["crawl_run_id"], crawl);
+    assert_eq!(steps[2]["detail"]["summary"], by_hand["summary"]);
+    assert!(steps.iter().all(|s| s["attempts"] == 1));
+    let kinds: Vec<&str> = done["events"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
+    assert_eq!(kinds.first(), Some(&"run.created"));
+    assert_eq!(kinds.last(), Some(&"run.completed"));
+    assert_eq!(kinds.iter().filter(|k| **k == "step.started").count(), 3);
+    assert_eq!(done["working"], false, "nothing works on a run that has ended");
+}
+
+#[tokio::test]
+async fn phase7c_a_run_that_fails_says_which_step_and_why_and_the_project_may_start_another() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    fast_autopilot(&state);
+    let (project, owner) = autopilot_project(&state, "Phase7C Fails").await;
+    // A finished crawl that left nothing to read: the gap check cannot run.
+    let (crawl, _) = finished_crawl(&state, project, &owner, None).await;
+    let path = format!("/api/v1/projects/{project}/autopilot/runs");
+    let (_, made) = autopilot(&state, "POST", &path, &owner, Some(autopilot_body(serde_json::json!({"crawl_run_id": crawl})))).await;
+    let run_id = made["run"]["id"].as_str().unwrap().to_string();
+    autopilot(&state, "POST", &format!("{path}/{run_id}/start"), &owner, Some(serde_json::json!({"accept_estimate": true}))).await;
+    let failed = wait_for_autopilot(&state, project, &owner, &run_id, &["COMPLETED", "FAILED"]).await;
+
+    assert_eq!(failed["run"]["state"], "FAILED", "body={failed}");
+    let error = failed["run"]["error"].as_str().unwrap();
+    assert!(error.starts_with("Checking the requirements against the crawl: "), "{error}");
+    assert!(error.contains("recorded no crawl"), "the reason is the service's own: {error}");
+    assert_eq!(failed["run"]["current_step"], "GAP_CHECK");
+    assert_eq!(steps_of(&failed), [("REQUIREMENTS", "DONE"), ("CRAWL", "SKIPPED"), ("GAP_CHECK", "FAILED")].map(|(a, b)| (a.to_string(), b.to_string())));
+    assert!(failed["steps"][2]["error"].as_str().unwrap().contains("recorded no crawl"));
+    let kinds: Vec<&str> = failed["events"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
+    assert_eq!(&kinds[kinds.len() - 2..], ["step.failed", "run.failed"]);
+
+    let (status, another) = autopilot(&state, "POST", &path, &owner, Some(autopilot_body(serde_json::json!({})))).await;
+    assert_eq!(status, StatusCode::CREATED, "a failed run does not hold the project: body={another}");
+}
+
+#[tokio::test]
+async fn phase7c_cancelling_a_run_that_awaits_approval_ends_it_and_an_ended_run_cannot_be_cancelled() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    let (project, owner) = autopilot_project(&state, "Phase7C Cancel").await;
+    let path = format!("/api/v1/projects/{project}/autopilot/runs");
+    let (_, made) = autopilot(&state, "POST", &path, &owner, Some(autopilot_body(serde_json::json!({})))).await;
+    let run_id = made["run"]["id"].as_str().unwrap().to_string();
+
+    let (status, cancelled) = autopilot(&state, "POST", &format!("{path}/{run_id}/cancel"), &owner, None).await;
+    assert_eq!(status, StatusCode::OK, "body={cancelled}");
+    assert_eq!(cancelled["outcome"], "cancelled");
+    assert_eq!(cancelled["run"]["state"], "CANCELLED");
+    assert!(cancelled["run"]["finished_at"].is_string());
+    assert!(cancelled["steps"].as_array().unwrap().iter().all(|s| s["state"] == "SKIPPED"));
+    let (again_status, again) = autopilot(&state, "POST", &format!("{path}/{run_id}/cancel"), &owner, None).await;
+    assert_eq!(again_status, StatusCode::CONFLICT, "body={again}");
+    assert!(again.to_string().contains("CANCELLED"), "body={again}");
+    // A cancelled run cannot be started.
+    let (start_status, start) = autopilot(&state, "POST", &format!("{path}/{run_id}/start"), &owner, Some(serde_json::json!({"accept_estimate": true}))).await;
+    assert_eq!(start_status, StatusCode::CONFLICT, "body={start}");
+    assert!(start.to_string().contains("CANCELLED"), "body={start}");
+    let audit_rows = state.store.list_audit(None, 100, 0).await.unwrap();
+    let cancels: Vec<_> = audit_rows.iter().filter(|a| a.action == "autopilot.cancel").collect();
+    assert_eq!(cancels.len(), 1, "{audit_rows:?}");
+    assert_eq!(cancels[0].detail.as_deref(), Some("cancelled"));
+}
+
+#[tokio::test]
+async fn phase7c_only_an_operator_of_the_project_may_make_start_or_cancel_a_run_and_a_run_stays_in_its_project() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    let (project, owner) = autopilot_project(&state, "Phase7C Roles").await;
+    let viewer = mint_key(&state, "viewer", Some(&project.to_string())).await;
+    let (other, other_owner) = autopilot_project(&state, "Phase7C Roles Other").await;
+    let path = format!("/api/v1/projects/{project}/autopilot/runs");
+    let (_, made) = autopilot(&state, "POST", &path, &owner, Some(autopilot_body(serde_json::json!({})))).await;
+    let run_id = made["run"]["id"].as_str().unwrap().to_string();
+    let body = Some(serde_json::json!({"accept_estimate": true}));
+
+    // A viewer may look, and may not change anything.
+    let (list, _) = autopilot(&state, "GET", &path, &viewer, None).await;
+    let (get, _) = autopilot(&state, "GET", &format!("{path}/{run_id}"), &viewer, None).await;
+    let (events, _) = autopilot(&state, "GET", &format!("{path}/{run_id}/events"), &viewer, None).await;
+    let (create, _) = autopilot(&state, "POST", &path, &viewer, Some(autopilot_body(serde_json::json!({})))).await;
+    let (start, _) = autopilot(&state, "POST", &format!("{path}/{run_id}/start"), &viewer, body.clone()).await;
+    let (cancel, _) = autopilot(&state, "POST", &format!("{path}/{run_id}/cancel"), &viewer, None).await;
+    assert_eq!((list, get, events), (StatusCode::OK, StatusCode::OK, StatusCode::OK));
+    assert_eq!((create, start, cancel), (StatusCode::FORBIDDEN, StatusCode::FORBIDDEN, StatusCode::FORBIDDEN));
+
+    // A key of another project may do nothing here.
+    let mut denied = Vec::new();
+    for (method, tail, body) in [
+        ("GET", String::new(), None),
+        ("POST", String::new(), Some(autopilot_body(serde_json::json!({})))),
+        ("GET", format!("/{run_id}"), None),
+        ("POST", format!("/{run_id}/start"), body.clone()),
+        ("POST", format!("/{run_id}/cancel"), None),
+        ("GET", format!("/{run_id}/events"), None),
+    ] {
+        denied.push(autopilot(&state, method, &format!("{path}{tail}"), &other_owner, body).await.0);
+    }
+    assert!(denied.iter().all(|s| *s == StatusCode::FORBIDDEN), "{denied:?}");
+
+    // A run is found only under its own project, even by a key that may see both.
+    let admin = mint_key(&state, "admin", None).await;
+    let (wrong_project, _) = autopilot(&state, "GET", &format!("/api/v1/projects/{other}/autopilot/runs/{run_id}"), &admin, None).await;
+    let (wrong_start, _) = autopilot(&state, "POST", &format!("/api/v1/projects/{other}/autopilot/runs/{run_id}/start"), &admin, body).await;
+    let (wrong_cancel, _) = autopilot(&state, "POST", &format!("/api/v1/projects/{other}/autopilot/runs/{run_id}/cancel"), &admin, None).await;
+    let (wrong_events, _) = autopilot(&state, "GET", &format!("/api/v1/projects/{other}/autopilot/runs/{run_id}/events"), &admin, None).await;
+    let (unknown, _) = autopilot(&state, "GET", &format!("{path}/{}", Uuid::new_v4()), &owner, None).await;
+    assert_eq!((wrong_project, wrong_start, wrong_cancel, wrong_events, unknown), (StatusCode::NOT_FOUND, StatusCode::NOT_FOUND, StatusCode::NOT_FOUND, StatusCode::NOT_FOUND, StatusCode::NOT_FOUND));
+    // Without a key at all.
+    let (anonymous, _) = send(&state, req("GET", &path, None, None)).await;
+    assert_eq!(anonymous, StatusCode::UNAUTHORIZED);
+    // Nothing above changed the run.
+    let (_, still) = autopilot(&state, "GET", &format!("{path}/{run_id}"), &owner, None).await;
+    assert_eq!(still["run"]["state"], "AWAITING_APPROVAL");
+}
+
+#[tokio::test]
+async fn phase7c_the_timeline_can_be_read_from_where_a_watcher_was() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    fast_autopilot(&state);
+    let (project, owner) = autopilot_project(&state, "Phase7C Events").await;
+    let (crawl, file) = finished_crawl(&state, project, &owner, Some(SHOP_GROUNDING)).await;
+    let path = format!("/api/v1/projects/{project}/autopilot/runs");
+    let (_, made) = autopilot(&state, "POST", &path, &owner, Some(autopilot_body(serde_json::json!({"crawl_run_id": crawl})))).await;
+    let run_id = made["run"]["id"].as_str().unwrap().to_string();
+    autopilot(&state, "POST", &format!("{path}/{run_id}/start"), &owner, Some(serde_json::json!({"accept_estimate": true}))).await;
+    wait_for_autopilot(&state, project, &owner, &run_id, &["COMPLETED", "FAILED"]).await;
+    file.map(std::fs::remove_file);
+
+    let (_, all) = autopilot(&state, "GET", &format!("{path}/{run_id}/events"), &owner, None).await;
+    let events = all["events"].as_array().unwrap();
+    assert!(events.len() >= 8, "{all}");
+    let ids: Vec<i64> = events.iter().map(|e| e["id"].as_i64().unwrap()).collect();
+    assert!(ids.windows(2).all(|w| w[0] < w[1]), "oldest first: {ids:?}");
+    let (_, after) = autopilot(&state, "GET", &format!("{path}/{run_id}/events?after={}", ids[2]), &owner, None).await;
+    let later: Vec<i64> = after["events"].as_array().unwrap().iter().map(|e| e["id"].as_i64().unwrap()).collect();
+    assert_eq!(later, ids[3..].to_vec(), "only what the watcher has not seen");
+    let (_, limited) = autopilot(&state, "GET", &format!("{path}/{run_id}/events?limit=2"), &owner, None).await;
+    let last_two: Vec<i64> = limited["events"].as_array().unwrap().iter().map(|e| e["id"].as_i64().unwrap()).collect();
+    assert_eq!(last_two, ids[ids.len() - 2..].to_vec(), "the latest two, still oldest first");
+    let (_, none) = autopilot(&state, "GET", &format!("{path}/{run_id}/events?after={}", ids[ids.len() - 1]), &owner, None).await;
+    assert_eq!(none["events"], serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn phase7c_a_key_that_has_been_revoked_stops_the_runs_it_made() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    fast_autopilot(&state);
+    let (project, starter) = autopilot_project(&state, "Phase7C Revoked").await;
+    // The key that makes the run, and another operator who accepts the estimate.
+    let maker_id = Uuid::new_v4();
+    let maker = crate::auth::generate_key();
+    state
+        .store
+        .insert_api_key(maker_id, "maker", &crate::auth::hash_key(&maker), "operator", Some(&project.to_string()))
+        .await
+        .unwrap();
+    let path = format!("/api/v1/projects/{project}/autopilot/runs");
+    let (_, made) = autopilot(&state, "POST", &path, &maker, Some(autopilot_body(serde_json::json!({})))).await;
+    let run_id = made["run"]["id"].as_str().unwrap().to_string();
+    assert_eq!(made["run"]["created_by_name"], "maker");
+
+    state.store.revoke_api_key(maker_id).await.unwrap();
+    let (status, started) = autopilot(&state, "POST", &format!("{path}/{run_id}/start"), &starter, Some(serde_json::json!({"accept_estimate": true}))).await;
+    assert_eq!(status, StatusCode::OK, "the operator who accepts is not the one whose identity the run uses: body={started}");
+    let failed = wait_for_autopilot(&state, project, &starter, &run_id, &["COMPLETED", "FAILED"]).await;
+
+    assert_eq!(failed["run"]["state"], "FAILED", "body={failed}");
+    let error = failed["run"]["error"].as_str().unwrap();
+    assert!(error.contains("the API key that started this run has been revoked"), "{error}");
+    assert_eq!(steps_of(&failed)[0], ("REQUIREMENTS".to_string(), "FAILED".to_string()));
+}
+
+#[tokio::test]
+async fn phase7c_a_run_that_was_going_when_the_service_stopped_carries_on_after_it_starts_again() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("api.sqlite3");
+    let (project, run_id, waiting_id, awaiting_id, crawl, file);
+    {
+        let state = restart_test_state(&db_path, dir.path().join("evidence")).await;
+        fast_autopilot(&state);
+        let made = autopilot_project(&state, "Phase7C Restart").await;
+        project = made.0;
+        let owner = made.1;
+        let finished = finished_crawl(&state, project, &owner, Some(SHOP_GROUNDING)).await;
+        crawl = finished.0;
+        file = finished.1;
+        let path = format!("/api/v1/projects/{project}/autopilot/runs");
+        let (_, run) = autopilot(&state, "POST", &path, &owner, Some(autopilot_body(serde_json::json!({"crawl_run_id": crawl})))).await;
+        run_id = Uuid::parse_str(run["run"]["id"].as_str().unwrap()).unwrap();
+        // The service stops after the run was accepted and its first step finished, in the middle of the second: what the
+        // database holds then, without a task working on it.
+        assert!(state.store.start_autopilot_run(run_id, false).await.unwrap());
+        state.store.begin_autopilot_step(run_id, "REQUIREMENTS").await.unwrap();
+        state
+            .store
+            .settle_autopilot_step(run_id, "REQUIREMENTS", crate::autopilot::StepState::Done, Some(&serde_json::json!({"requirements": 6})), None)
+            .await
+            .unwrap();
+        state.store.begin_autopilot_step(run_id, "CRAWL").await.unwrap();
+        // Runs of other projects, that wait for a person, are not picked up.
+        let other = make_project(&state, "Phase7C Restart Waiting").await;
+        let other_owner = mint_key(&state, "operator", Some(&other.to_string())).await;
+        upload_document(&state, &other_owner, other, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+        let (_, waiting) = autopilot(&state, "POST", &format!("/api/v1/projects/{other}/autopilot/runs"), &other_owner, Some(autopilot_body(serde_json::json!({})))).await;
+        waiting_id = Uuid::parse_str(waiting["run"]["id"].as_str().unwrap()).unwrap();
+        state.store.start_autopilot_run(waiting_id, false).await.unwrap();
+        state.store.wait_autopilot_run(waiting_id).await.unwrap();
+        let third = make_project(&state, "Phase7C Restart Awaiting").await;
+        let third_owner = mint_key(&state, "operator", Some(&third.to_string())).await;
+        upload_document(&state, &third_owner, third, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+        let (_, awaiting) = autopilot(&state, "POST", &format!("/api/v1/projects/{third}/autopilot/runs"), &third_owner, Some(autopilot_body(serde_json::json!({})))).await;
+        awaiting_id = Uuid::parse_str(awaiting["run"]["id"].as_str().unwrap()).unwrap();
+    }
+
+    // A new process: the same database, an empty registry.
+    let state = restart_test_state(&db_path, dir.path().join("evidence")).await;
+    fast_autopilot(&state);
+    let resumed = crate::autopilot_runner::resume_runs(&state).await.unwrap();
+    assert_eq!(resumed, 1, "only the run that was going");
+    let owner = mint_key(&state, "admin", None).await;
+    let done = wait_for_autopilot(&state, project, &owner, &run_id.to_string(), &["COMPLETED", "FAILED"]).await;
+    file.map(std::fs::remove_file);
+
+    assert_eq!(done["run"]["state"], "COMPLETED", "body={done}");
+    let steps = done["steps"].as_array().unwrap();
+    assert_eq!(steps[0]["attempts"], 1, "the step that was done is not done again");
+    assert_eq!(steps[0]["detail"], serde_json::json!({"requirements": 6}));
+    assert_eq!(steps[1]["attempts"], 2, "the step that was cut short was started again");
+    assert_eq!(steps[1]["state"], "SKIPPED");
+    assert_eq!(steps[2]["state"], "DONE");
+    let kinds: Vec<&str> = done["events"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
+    assert!(kinds.contains(&"run.resumed"), "{kinds:?}");
+    // The others are as they were.
+    assert_eq!(state.store.get_autopilot_run(waiting_id).await.unwrap().unwrap().state, "WAITING");
+    assert_eq!(state.store.get_autopilot_run(awaiting_id).await.unwrap().unwrap().state, "AWAITING_APPROVAL");
+    // Once done, a second look picks nothing up.
+    assert_eq!(crate::autopilot_runner::resume_runs(&state).await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn phase7c_the_internal_routes_are_not_reachable_without_a_key_and_the_public_ones_still_are_guarded() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    let (project, _owner) = autopilot_project(&state, "Phase7C Guard").await;
+    // The public router still refuses a request with no key, or with a key that does not exist.
+    let path = format!("/api/v1/projects/{project}/autopilot/runs");
+    let (none, _) = send(&state, req("GET", &path, None, None)).await;
+    let (wrong, _) = send(&state, req("GET", &path, Some("aiqa_not_a_key"), None)).await;
+    assert_eq!((none, wrong), (StatusCode::UNAUTHORIZED, StatusCode::UNAUTHORIZED));
+    // The internal one has no such check (its callers attach an identity themselves): a request with none is a server
+    // error, not a way in, and one that names a key that is not active is stopped before it is sent.
+    let internal = crate::api::internal_router(state.clone());
+    let response = internal.oneshot(req("GET", &path, None, None)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR, "no identity, no route");
+    let gone = crate::autopilot_pipeline::InternalApi::new(&state, Uuid::new_v4());
+    let reply = crate::autopilot_pipeline::PipelineApi::send(&gone, "GET", &path, None).await;
+    assert_eq!(reply.status, 401);
+    assert!(reply.problem().contains("has been revoked"), "{}", reply.problem());
 }

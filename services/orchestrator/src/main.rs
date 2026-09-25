@@ -211,6 +211,12 @@ async fn main() {
         ai_infra,
         embedder,
     );
+    // Phase 7 — autopilot runs that were going when the process stopped carry on where they were.
+    match aiqa_orchestrator::autopilot_runner::resume_runs(&state).await {
+        Ok(0) => {}
+        Ok(n) => tracing::info!("picked up {n} autopilot run(s) that were going when the service stopped"),
+        Err(e) => tracing::error!("startup autopilot-resume pass failed: {e}"),
+    }
     // B12 — explicit origin allow-list, not a wildcard. See
     // `api::cors_layer_from_env`'s doc comment for the default and the
     // `AIQA_CORS_ALLOWED_ORIGINS` override.

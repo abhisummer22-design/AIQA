@@ -80,6 +80,13 @@ pub fn request_project() -> Option<String> {
     REQUEST_PROJECT.try_with(|p| p.clone()).ok().flatten()
 }
 
+/// Runs `fut` the way a request to `path` runs: with the project its URL names available to `request_project`.
+/// `require_auth` does this for every request from outside; the autopilot's in-process calls do not pass through it,
+/// so they do it themselves.
+pub(crate) async fn with_request_path<F: std::future::Future>(path: &str, fut: F) -> F::Output {
+    REQUEST_PROJECT.scope(project_from_path(path), fut).await
+}
+
 /// `/api/v1/projects/<uuid>/...` gives `<uuid>` in its canonical form; anything else (`/api/v1/projects`, a
 /// path that names no project, a malformed id) gives `None`.
 pub(crate) fn project_from_path(path: &str) -> Option<String> {
@@ -191,9 +198,7 @@ pub async fn require_auth(
             let actor_project = ctx.project_id.clone();
             req.extensions_mut().insert(ctx);
 
-            let response = REQUEST_PROJECT
-                .scope(project_from_path(&path), next.run(req))
-                .await;
+            let response = with_request_path(&path, next.run(req)).await;
 
             // Authorization denials (403) are produced by `require_role` /
             // `require_project_access`, which are pure functions with no
