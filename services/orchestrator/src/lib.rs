@@ -11,7 +11,9 @@ pub mod app_source;
 pub mod auth;
 pub mod autopilot;
 pub mod autopilot_api;
+pub mod autopilot_cases;
 pub mod autopilot_estimate;
+pub mod autopilot_generate;
 pub mod autopilot_pipeline;
 pub mod autopilot_runner;
 pub mod autopilot_steps;
@@ -56,6 +58,8 @@ mod agent_execution_tests;
 mod agent_tests;
 #[cfg(test)]
 mod api_tests;
+#[cfg(test)]
+mod autopilot_test_support;
 #[cfg(test)]
 mod engine_tests;
 #[cfg(test)]

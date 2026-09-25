@@ -22,6 +22,9 @@ impl StepRunner for ApiSteps {
             Step::Requirements => requirements(ctx).await,
             Step::Crawl => crawl(ctx).await,
             Step::GapCheck => gap_check(ctx).await,
+            Step::Generate => crate::autopilot_generate::generate(ctx).await,
+            Step::Validate => crate::autopilot_generate::validate(ctx).await,
+            Step::Approve => crate::autopilot_generate::approve(ctx).await,
         }
     }
 }
@@ -315,117 +318,10 @@ pub async fn gap_check(ctx: &StepCtx) -> Result<StepOutcome, StepError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::autopilot::AutopilotConfig;
     use crate::autopilot_pipeline::scripted::ScriptedApi;
-    use crate::autopilot_pipeline::{PipelineApi, Reply};
-    use crate::autopilot_runner::RunnerOptions;
-    use crate::autopilot_store::NewAutopilotRun;
-    use crate::store::Store;
-    use std::sync::Arc;
+    use crate::autopilot_pipeline::Reply;
+    use crate::autopilot_test_support::*;
     use std::time::Duration;
-
-    fn config(extra: Value) -> AutopilotConfig {
-        let mut base = json!({
-            "base_url": "https://shop.example.test",
-            "roles": [{"name": "anonymous"}],
-        });
-        for (key, value) in extra.as_object().cloned().unwrap_or_default() {
-            base[key] = value;
-        }
-        serde_json::from_value(base).unwrap()
-    }
-
-    struct Fixture {
-        ctx: StepCtx,
-        api: Arc<ScriptedApi>,
-        _dir: tempfile::TempDir,
-    }
-
-    impl Fixture {
-        fn p(&self, tail: &str) -> String {
-            self.ctx.path(tail)
-        }
-    }
-
-    /// A running run in a real (temporary) database, with a step context whose API is scripted by `script`.
-    async fn fixture(
-        step: Step,
-        config: AutopilotConfig,
-        script: impl FnOnce(&dyn Fn(&str) -> String) -> ScriptedApi,
-    ) -> Fixture {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::connect(&dir.path().join("t.sqlite3")).await.unwrap();
-        let project = Uuid::new_v4();
-        let run_id = Uuid::new_v4();
-        store
-            .insert_autopilot_run(
-                &NewAutopilotRun {
-                    id: run_id,
-                    project_id: &project.to_string(),
-                    name: "t",
-                    config: &serde_json::to_value(&config).unwrap(),
-                    estimate: &json!({}),
-                    created_by_key: Uuid::new_v4(),
-                    created_by_name: "k",
-                },
-                &Step::ALL.map(Step::as_str),
-            )
-            .await
-            .unwrap();
-        store.start_autopilot_run(run_id, false).await.unwrap();
-        store
-            .begin_autopilot_step(run_id, step.as_str())
-            .await
-            .unwrap();
-        let api = Arc::new(script(&|tail| format!("/api/v1/projects/{project}/{tail}")));
-        let ctx = StepCtx {
-            run_id,
-            project_id: project,
-            step,
-            config,
-            detail: json!({}),
-            store,
-            api: api.clone() as Arc<dyn PipelineApi>,
-            options: RunnerOptions {
-                poll_every: Duration::from_millis(1),
-                crawl_timeout: Duration::from_secs(5),
-            },
-        };
-        Fixture {
-            ctx,
-            api,
-            _dir: dir,
-        }
-    }
-
-    fn ok(body: Value) -> Reply {
-        Reply::new(200, body)
-    }
-
-    fn failed(outcome: Result<StepOutcome, StepError>) -> String {
-        match outcome {
-            Err(StepError::Failed(why)) => why,
-            other => panic!("expected a failed step, got {other:?}"),
-        }
-    }
-
-    fn detail_of_done(outcome: Result<StepOutcome, StepError>) -> (Value, bool) {
-        match outcome {
-            Ok(StepOutcome::Done { detail, skipped }) => (detail, skipped),
-            other => panic!("expected a finished step, got {other:?}"),
-        }
-    }
-
-    async fn timeline(f: &Fixture) -> Vec<String> {
-        f.ctx
-            .store
-            .list_autopilot_events(f.ctx.run_id, None, 100)
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|e| e.message)
-            .collect()
-    }
 
     // ------------------------------------------------------------------------------ requirements
 

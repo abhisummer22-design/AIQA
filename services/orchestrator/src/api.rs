@@ -489,6 +489,18 @@ fn protected_routes() -> Router<AppState> {
             post(crate::autopilot_api::cancel_run),
         )
         .route(
+            "/api/v1/projects/:project_id/autopilot/runs/:run_id/continue",
+            post(crate::autopilot_api::continue_run),
+        )
+        .route(
+            "/api/v1/projects/:project_id/autopilot/runs/:run_id/resume",
+            post(crate::autopilot_api::resume_run),
+        )
+        .route(
+            "/api/v1/projects/:project_id/autopilot/runs/:run_id/approve-cases",
+            post(crate::autopilot_api::approve_cases),
+        )
+        .route(
             "/api/v1/projects/:project_id/autopilot/runs/:run_id/events",
             get(crate::autopilot_api::list_events),
         )
@@ -2465,6 +2477,11 @@ struct GenerateAiTestCasesBody {
     /// that are short of the depth's targets. Needs `depth`.
     #[serde(default)]
     coverage_top_up: bool,
+    /// Phase 7: only the requirements with these ids, of the documents named above (their ids are the ones people see, `FR-012`).
+    /// An autopilot run generates in groups so that what is done is kept if the service stops. Omitted or empty, all of them, as
+    /// it always was; it needs `requirement_document_ids`, and an id that none of those documents has is refused.
+    #[serde(default)]
+    requirement_keys: Vec<String>,
 }
 
 /// `generation_method` is always exactly `"ai"` or `"fallback"` — never
@@ -2945,10 +2962,16 @@ async fn generate_ai_test_cases_scoped(
 
     // Phase 3 — the numbered requirements this request is to be generated
     // from, when it names documents.
+    if !body.requirement_keys.is_empty() && body.requirement_document_ids.is_empty() {
+        return Err(ApiError::validation(
+            "requirement_keys narrows the requirements of the documents named in requirement_document_ids: name them too",
+        ));
+    }
     let requirement_items = if body.requirement_document_ids.is_empty() {
         None
     } else {
-        Some(load_requirement_items(&state, project_id, &body.requirement_document_ids).await?)
+        let items = load_requirement_items(&state, project_id, &body.requirement_document_ids).await?;
+        Some(narrow_to_requirement_keys(items, &body.requirement_keys)?)
     };
     // What similar past cases/documents are looked up by: the request's own
     // text, plus — when it carries no document text itself — the start of the
@@ -3286,6 +3309,34 @@ async fn load_requirement_items(
             kind: crate::requirements::RequirementKind::from_db(&r.kind),
             text: r.text,
         })
+        .collect())
+}
+
+/// The requirements whose id is in `keys`, in their own order; all of them when `keys` is empty. An id that none has is
+/// refused, so a typo is not a silently smaller request.
+fn narrow_to_requirement_keys(
+    items: Vec<crate::requirement_generation::RequirementItem>,
+    keys: &[String],
+) -> Result<Vec<crate::requirement_generation::RequirementItem>, ApiError> {
+    if keys.is_empty() {
+        return Ok(items);
+    }
+    let unknown: Vec<&str> = keys
+        .iter()
+        .map(String::as_str)
+        .filter(|key| !items.iter().any(|item| item.key == *key))
+        .collect();
+    if !unknown.is_empty() {
+        let shown: Vec<&str> = unknown.iter().copied().take(5).collect();
+        return Err(ApiError::validation(format!(
+            "no requirement of the selected documents has the id {}{}",
+            shown.join(", "),
+            if unknown.len() > shown.len() { " (and more)" } else { "" }
+        )));
+    }
+    Ok(items
+        .into_iter()
+        .filter(|item| keys.iter().any(|key| *key == item.key))
         .collect())
 }
 

@@ -94,6 +94,17 @@ pub enum CancelOutcome {
     NotFound,
 }
 
+/// What taking a failed run over to start it again did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResumeOutcome {
+    Resumed,
+    /// The run had not failed: it is in this state.
+    NotFailed(RunState),
+    /// The project has another run that has not ended, so this one may not start again beside it.
+    Blocked,
+    NotFound,
+}
+
 fn id_of(r: &sqlx::sqlite::SqliteRow, column: &str) -> Uuid {
     Uuid::parse_str(&r.get::<String, _>(column)).unwrap_or_default()
 }
@@ -272,6 +283,83 @@ impl Store {
         .await?
         .rows_affected();
         Ok(changed > 0)
+    }
+
+    /// A person lets a run that waits at a gate go on: it runs again, and the step that waits is told it was let through
+    /// (`released` in its detail). `false`: the run was not waiting, and nothing changed.
+    pub async fn continue_autopilot_run(&self, id: Uuid) -> Result<bool> {
+        let now = now_rfc3339();
+        let mut tx = self.pool.begin().await?;
+        let changed = sqlx::query(
+            "UPDATE autopilot_runs SET state = 'RUNNING', updated_at = ? WHERE id = ? AND state = 'WAITING'",
+        )
+        .bind(&now)
+        .bind(id.to_string())
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if changed == 0 {
+            return Ok(false);
+        }
+        let waiting = sqlx::query(
+            "SELECT name, detail FROM autopilot_steps WHERE run_id = ? AND state = 'WAITING'",
+        )
+        .bind(id.to_string())
+        .fetch_all(&mut *tx)
+        .await?;
+        for step in waiting {
+            let mut detail = json_of(&step.get::<String, _>("detail"));
+            if !detail.is_object() {
+                detail = Value::Object(Default::default());
+            }
+            detail["released"] = Value::Bool(true);
+            sqlx::query("UPDATE autopilot_steps SET detail = ? WHERE run_id = ? AND name = ?")
+                .bind(detail.to_string())
+                .bind(id.to_string())
+                .bind(step.get::<String, _>("name"))
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(true)
+    }
+
+    /// A person takes a run that failed over and starts it again, at the step that failed: what was done before it is kept.
+    /// From then on the run acts as `key`, the person's own (the key that made it may be gone). Refused while the project
+    /// has another run that has not ended.
+    pub async fn resume_failed_autopilot_run(
+        &self,
+        id: Uuid,
+        key: Uuid,
+        name: &str,
+    ) -> Result<ResumeOutcome> {
+        let changed = sqlx::query(concat!(
+            "UPDATE autopilot_runs SET state = 'RUNNING', error = NULL, finished_at = NULL, cancel_requested = 0,
+             created_by_key = ?, created_by_name = ?, updated_at = ?
+             WHERE id = ? AND state = 'FAILED'
+             AND NOT EXISTS (SELECT 1 FROM autopilot_runs other WHERE other.project_id = autopilot_runs.project_id
+                             AND other.id <> autopilot_runs.id AND other.state IN ",
+            active_states!(),
+            ")"
+        ))
+        .bind(key.to_string())
+        .bind(name)
+        .bind(now_rfc3339())
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        if changed > 0 {
+            return Ok(ResumeOutcome::Resumed);
+        }
+        Ok(match self.get_autopilot_run(id).await? {
+            None => ResumeOutcome::NotFound,
+            Some(run) => match RunState::parse(&run.state) {
+                Some(RunState::Failed) => ResumeOutcome::Blocked,
+                Some(state) => ResumeOutcome::NotFailed(state),
+                None => ResumeOutcome::NotFailed(RunState::Failed),
+            },
+        })
     }
 
     /// A run that has not ended ends, in `to` (which must be an ending state), with the reason it failed if it did.
@@ -839,6 +927,203 @@ mod tests {
         let run = store2.get_autopilot_run(done).await.unwrap().unwrap();
         assert_eq!(run.state, "COMPLETED");
         assert!(run.error.is_none() && run.finished_at.is_some());
+    }
+
+    async fn step_detail(store: &Store, run: Uuid, name: &str) -> Value {
+        store
+            .list_autopilot_steps(run)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|s| s.name == name)
+            .unwrap()
+            .detail
+    }
+
+    #[tokio::test]
+    async fn a_run_at_a_gate_goes_on_when_a_person_lets_it_and_the_step_that_waited_is_told_so() {
+        let (store, _dir) = temp_store().await;
+        let id = make_run(&store, "p1").await;
+        assert!(
+            !store.continue_autopilot_run(id).await.unwrap(),
+            "not waiting: awaiting approval"
+        );
+        store.start_autopilot_run(id, false).await.unwrap();
+        assert!(
+            !store.continue_autopilot_run(id).await.unwrap(),
+            "not waiting: running"
+        );
+
+        store
+            .begin_autopilot_step(id, "REQUIREMENTS")
+            .await
+            .unwrap();
+        store
+            .settle_autopilot_step(
+                id,
+                "REQUIREMENTS",
+                StepState::Done,
+                Some(&serde_json::json!({"requirements": 6})),
+                None,
+            )
+            .await
+            .unwrap();
+        store.begin_autopilot_step(id, "CRAWL").await.unwrap();
+        store
+            .settle_autopilot_step(
+                id,
+                "CRAWL",
+                StepState::Waiting,
+                Some(&serde_json::json!({"cases": 40})),
+                None,
+            )
+            .await
+            .unwrap();
+        store.wait_autopilot_run(id).await.unwrap();
+
+        assert!(store.continue_autopilot_run(id).await.unwrap());
+        assert_eq!(
+            store.get_autopilot_run(id).await.unwrap().unwrap().state,
+            "RUNNING"
+        );
+        assert_eq!(
+            step_detail(&store, id, "CRAWL").await,
+            serde_json::json!({"cases": 40, "released": true}),
+            "what it saved is kept"
+        );
+        assert_eq!(
+            step_detail(&store, id, "REQUIREMENTS").await,
+            serde_json::json!({"requirements": 6}),
+            "another step is left alone"
+        );
+        assert!(!store.continue_autopilot_run(id).await.unwrap(), "once");
+
+        // A step whose saved detail is not an object still gets the flag.
+        let (store2, _dir2) = temp_store().await;
+        let other = make_run(&store2, "p1").await;
+        store2.start_autopilot_run(other, false).await.unwrap();
+        store2.begin_autopilot_step(other, "CRAWL").await.unwrap();
+        sqlx::query("UPDATE autopilot_steps SET state = 'WAITING', detail = '[1]' WHERE run_id = ? AND name = 'CRAWL'")
+            .bind(other.to_string())
+            .execute(&store2.pool)
+            .await
+            .unwrap();
+        store2.wait_autopilot_run(other).await.unwrap();
+        assert!(store2.continue_autopilot_run(other).await.unwrap());
+        assert_eq!(
+            step_detail(&store2, other, "CRAWL").await,
+            serde_json::json!({"released": true})
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_run_is_taken_over_and_started_again_only_when_the_project_has_no_other_run_going(
+    ) {
+        let (store, _dir) = temp_store().await;
+        let id = make_run(&store, "p1").await;
+        let key = Uuid::new_v4();
+        assert_eq!(
+            store
+                .resume_failed_autopilot_run(id, key, "second")
+                .await
+                .unwrap(),
+            ResumeOutcome::NotFailed(RunState::AwaitingApproval)
+        );
+        store.start_autopilot_run(id, false).await.unwrap();
+        assert_eq!(
+            store
+                .resume_failed_autopilot_run(id, key, "second")
+                .await
+                .unwrap(),
+            ResumeOutcome::NotFailed(RunState::Running)
+        );
+        assert_eq!(
+            store
+                .resume_failed_autopilot_run(Uuid::new_v4(), key, "second")
+                .await
+                .unwrap(),
+            ResumeOutcome::NotFound
+        );
+
+        store.begin_autopilot_step(id, "CRAWL").await.unwrap();
+        store
+            .settle_autopilot_step(id, "CRAWL", StepState::Failed, None, Some("no page"))
+            .await
+            .unwrap();
+        store
+            .finish_autopilot_run(
+                id,
+                RunState::Failed,
+                Some("Crawling the application: no page"),
+            )
+            .await
+            .unwrap();
+        sqlx::query("UPDATE autopilot_runs SET cancel_requested = 1 WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+
+        // Another run of the project has been made since: this one may not start beside it.
+        let config = serde_json::json!({});
+        let estimate = serde_json::json!({});
+        let blocker = Uuid::new_v4();
+        assert!(store
+            .insert_autopilot_run(
+                &NewAutopilotRun {
+                    id: blocker,
+                    project_id: "p1",
+                    name: "b",
+                    config: &config,
+                    estimate: &estimate,
+                    created_by_key: Uuid::new_v4(),
+                    created_by_name: "k"
+                },
+                &STEPS,
+            )
+            .await
+            .unwrap());
+        assert_eq!(
+            store
+                .resume_failed_autopilot_run(id, key, "second")
+                .await
+                .unwrap(),
+            ResumeOutcome::Blocked
+        );
+        assert_eq!(
+            store.get_autopilot_run(id).await.unwrap().unwrap().state,
+            "FAILED"
+        );
+        store.cancel_autopilot_run(blocker).await.unwrap();
+
+        assert_eq!(
+            store
+                .resume_failed_autopilot_run(id, key, "second")
+                .await
+                .unwrap(),
+            ResumeOutcome::Resumed
+        );
+        let run = store.get_autopilot_run(id).await.unwrap().unwrap();
+        assert_eq!(run.state, "RUNNING");
+        assert!(run.error.is_none() && run.finished_at.is_none() && !run.cancel_requested);
+        assert_eq!(
+            (run.created_by_key, run.created_by_name.as_str()),
+            (key, "second"),
+            "the run acts as the person who took it over"
+        );
+        // The step that failed is started again, at that step, with the others as they were.
+        store.begin_autopilot_step(id, "CRAWL").await.unwrap();
+        let steps = store.list_autopilot_steps(id).await.unwrap();
+        assert_eq!(steps[1].attempts, 2);
+        assert!(steps[1].error.is_none());
+        // Once, and not from any other state.
+        assert_eq!(
+            store
+                .resume_failed_autopilot_run(id, key, "third")
+                .await
+                .unwrap(),
+            ResumeOutcome::NotFailed(RunState::Running)
+        );
     }
 
     #[tokio::test]
