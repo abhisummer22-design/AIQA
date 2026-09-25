@@ -1269,6 +1269,48 @@ pub fn analyze(
     analysis
 }
 
+/// The most words [`focus_terms`] gives, and the shortest stem worth looking for (a link's text or address is searched for
+/// it as a substring, and three letters match too much).
+const MAX_FOCUS_TERMS: usize = 200;
+const MIN_FOCUS_TERM_CHARS: usize = 4;
+/// With this many requirements or more, a word most of them share (more than [`FOCUS_TOO_COMMON`]) names no page.
+const FOCUS_COMMON_FROM: usize = 5;
+const FOCUS_TOO_COMMON: f32 = 0.4;
+
+/// The words a crawl should look for first, from what the requirements a crawl can speak to are about: the stems of their
+/// words (a stem is the start of most of the words it stands for, so it finds `reports` and `reporting`), those that recur
+/// across requirements first, without the words nearly every requirement shares. Each is 4 or more lower-case letters or
+/// digits; at most 200; the same requirements always give the same words in the same order.
+pub fn focus_terms(requirements: &[RequirementItem]) -> Vec<String> {
+    let lists: Vec<Vec<Term>> = requirements
+        .iter()
+        .filter(|r| !matches!(reach(r.kind), Reach::Nothing))
+        .map(|r| terms_of(&r.text))
+        .collect();
+    let mut df: BTreeMap<String, usize> = BTreeMap::new();
+    for terms in &lists {
+        for t in terms {
+            *df.entry(t.stem.clone()).or_insert(0) += 1;
+        }
+    }
+    let n = lists.len();
+    let mut kept: Vec<(String, usize)> = df
+        .into_iter()
+        .filter(|(stem, count)| {
+            stem.chars().count() >= MIN_FOCUS_TERM_CHARS
+                && stem
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+                && (n < FOCUS_COMMON_FROM || (*count as f32) / (n as f32) <= FOCUS_TOO_COMMON)
+        })
+        .collect();
+    kept.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    kept.into_iter()
+        .take(MAX_FOCUS_TERMS)
+        .map(|(stem, _)| stem)
+        .collect()
+}
+
 /// What a reader of a report should know about the crawl behind it.
 pub fn notes_for(evidence: &CrawlEvidence) -> Vec<String> {
     let mut notes = Vec::new();
@@ -2375,5 +2417,129 @@ mod tests {
             }
         }
         assert!(seen > 5);
+    }
+
+    // ------------------------------------------------- words to look for first (Phase 6C)
+
+    #[test]
+    fn a_crawl_is_told_to_look_first_for_the_words_the_requirements_recur_on() {
+        use RequirementKind::*;
+        let requirements = vec![
+            req("R-1", Functional, "Users can add a product to the cart."),
+            req(
+                "R-2",
+                Functional,
+                "Users can remove a product from the cart.",
+            ),
+            req("R-3", Functional, "Users can export the monthly report."),
+            req("R-4", Functional, "Users can email the monthly report."),
+            req("R-5", Functional, "Users can open the checkout."),
+        ];
+        // 5 requirements: cart, monthly, product and report are each in 2 (40%: not too common), the rest in 1 ("remove" is
+        // "delete" to the words, and "add" is too short to look for).
+        assert_eq!(
+            focus_terms(&requirements),
+            vec!["cart", "monthly", "product", "report", "checkout", "delete", "email", "export"]
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn words_nearly_every_requirement_shares_name_no_page_and_short_ones_match_too_much() {
+        use RequirementKind::*;
+        // Six requirements that all say "invoice": it names no page in particular. Three-letter words are left out.
+        let mut requirements: Vec<RequirementItem> = (1..=6)
+            .map(|i| {
+                req(
+                    &format!("R-{i}"),
+                    Functional,
+                    &format!(
+                        "Users can send the invoice by {}.",
+                        ["post", "fax", "courier", "hand", "van", "drone"][i - 1]
+                    ),
+                )
+            })
+            .collect();
+        let terms = focus_terms(&requirements);
+        assert!(!terms.contains(&"invoic".to_string()), "{terms:?}");
+        assert!(
+            terms.contains(&"post".to_string()) && terms.contains(&"courier".to_string()),
+            "{terms:?}"
+        );
+        assert!(
+            !terms.contains(&"fax".to_string()) && !terms.contains(&"van".to_string()),
+            "{terms:?}"
+        );
+        // With fewer than five requirements nothing is "too common".
+        requirements.truncate(4);
+        assert!(focus_terms(&requirements).contains(&"invoic".to_string()));
+    }
+
+    #[test]
+    fn only_requirements_a_crawl_can_speak_to_give_words_and_only_ascii_ones() {
+        use RequirementKind::*;
+        let requirements = vec![
+            req("R-1", Performance, "Pages shall respond quickly under heavy traffic."),
+            req("R-2", Context, "The shop sells umbrellas."),
+            req("R-3", Interface, "The gateway exposes webhooks."),
+            req("R-4", Functional, "Users can review the wishlist."),
+            req("R-5", Security, "Users can change the password."),
+            req("R-6", Functional, "\u{092a}\u{0902}\u{091c}\u{0940}\u{0915}\u{0930}\u{0923} \u{0915}\u{0930}\u{0947}\u{0902}"),
+        ];
+        let terms = focus_terms(&requirements);
+        assert_eq!(
+            terms,
+            vec!["chang", "password", "review", "wishlist"]
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<_>>()
+        );
+        assert!(focus_terms(&[req("R-1", Context, "Background only.")]).is_empty());
+        assert!(focus_terms(&[]).is_empty());
+    }
+
+    #[test]
+    fn a_word_in_most_of_five_requirements_names_no_page_but_one_in_two_does() {
+        use RequirementKind::*;
+        let with = |n: usize| -> Vec<RequirementItem> {
+            (0..5)
+                .map(|i| {
+                    let word = if i < n { "wishlist" } else { "catalogue" };
+                    req(
+                        &format!("R-{i}"),
+                        Functional,
+                        &format!("Users can browse the {word} number{i}."),
+                    )
+                })
+                .collect()
+        };
+        // In 2 of 5 (40%) "wishlist" is kept; in 3 of 5 (60%) it is not; the word in all five never is.
+        assert!(focus_terms(&with(2)).contains(&"wishlist".to_string()));
+        assert!(!focus_terms(&with(3)).contains(&"wishlist".to_string()));
+        assert!(!focus_terms(&with(3)).contains(&"brows".to_string()));
+    }
+
+    #[test]
+    fn at_most_two_hundred_words_and_always_the_same_ones() {
+        use RequirementKind::*;
+        let requirements: Vec<RequirementItem> = (0..250)
+            .map(|i| {
+                req(
+                    &format!("R-{i}"),
+                    Functional,
+                    &format!("Users can frobnicate gadgetnumber{i} today."),
+                )
+            })
+            .collect();
+        let a = focus_terms(&requirements);
+        assert_eq!(a.len(), 200);
+        assert_eq!(a, focus_terms(&requirements));
+        assert!(a.iter().all(|t| t.chars().count() >= 4
+            && t.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())));
+        // Every requirement shares "frobnicate" and "today": they are too common to name a page.
+        assert!(!a.contains(&"frobnicat".to_string()) && !a.contains(&"today".to_string()));
     }
 }

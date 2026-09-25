@@ -31,6 +31,9 @@ export interface CrawlRoleConfig {
 export interface CrawlPlan {
   baseUrl: string;
   roles: CrawlRoleConfig[];
+  /** Words (stems of what the requirements are about) to look for first: a link whose text or address mentions one is
+   * followed before the others, and may take a page beyond the usual limit. Absent or empty: the crawl is what it always was. */
+  focusTerms?: string[];
 }
 
 export interface CrawledElement {
@@ -78,6 +81,8 @@ export interface CrawlOutput {
 }
 
 const MAX_PAGES_PER_ROLE = 20;
+/** With focus terms, this many more pages than `MAX_PAGES_PER_ROLE` may be visited, if they are ones a focus term led to. */
+export const MAX_FOCUS_EXTRA_PAGES = 10;
 const NAV_TIMEOUT_MS = 8000;
 
 function sameOrigin(a: string, b: string): boolean {
@@ -169,6 +174,8 @@ export interface GroundedPage {
   url: string;
   title: string;
   elements: GroundedElement[];
+  /** The page's `h1`-`h3` headings (what it says it is about), when it has any. */
+  headings?: string[];
 }
 
 export interface GroundedRole {
@@ -343,6 +350,76 @@ export function groundingFileName(resultFileName: string): string {
     : `grounding-${resultFileName}`;
 }
 
+// ---- Requirement-driven crawling: which links to follow first -----------------------------------------------------------
+
+/** How many of `terms` a link mentions, in its text or in the path of its address. */
+export function focusScore(text: string, href: string, terms: string[]): number {
+  if (terms.length === 0) return 0;
+  let path = "";
+  try {
+    path = new URL(href).pathname;
+  } catch {
+    path = href;
+  }
+  const haystack = `${text} ${path}`.toLowerCase();
+  return terms.filter((t) => t.length > 0 && haystack.includes(t.toLowerCase())).length;
+}
+
+/** Puts newly found links in their queues: those that mention a focus term in `focusQueue`, most terms first (a link found
+ * earlier stays ahead of an equal one found later), the rest at the end of `queue`. */
+export function enqueueLinks(
+  queue: string[],
+  focusQueue: string[],
+  links: { text: string; href: string }[],
+  terms: string[]
+): void {
+  const scores = new Map<string, number>();
+  for (const url of focusQueue) scores.set(url, focusScore("", url, terms));
+  for (const link of links) {
+    const score = focusScore(link.text, link.href, terms);
+    if (score === 0) {
+      queue.push(link.href);
+      continue;
+    }
+    if (scores.has(link.href)) continue;
+    scores.set(link.href, score);
+    let at = focusQueue.length;
+    while (at > 0 && (scores.get(focusQueue[at - 1]) ?? 0) < score) at -= 1;
+    focusQueue.splice(at, 0, link.href);
+  }
+}
+
+/** The next address to visit, or `undefined` when the crawl is done: a focus link while the page budget (the usual limit
+ * plus the extra a focused crawl gets) has room, otherwise the next ordinary link while the usual limit has room. */
+export function takeNext(
+  queue: string[],
+  focusQueue: string[],
+  pagesSoFar: number,
+  focusing: boolean
+): string | undefined {
+  if (focusQueue.length > 0 && pagesSoFar < MAX_PAGES_PER_ROLE + (focusing ? MAX_FOCUS_EXTRA_PAGES : 0)) {
+    return focusQueue.shift();
+  }
+  if (queue.length > 0 && pagesSoFar < MAX_PAGES_PER_ROLE) return queue.shift();
+  return undefined;
+}
+
+/** The visible `h1`-`h3` headings of the page: what it says it is about. */
+export async function extractHeadings(page: import("@playwright/test").Page): Promise<string[]> {
+  return page.evaluate(() => {
+    const out: string[] = [];
+    document.querySelectorAll('h1, h2, h3, [role="heading"]').forEach((el) => {
+      const box = (el as HTMLElement).getClientRects();
+      if (box.length === 0) return;
+      const style = getComputedStyle(el as HTMLElement);
+      if (style.visibility === "hidden" || style.display === "none") return;
+      const text = (el.textContent || "").replace(/\s+/g, " ").trim().slice(0, 80);
+      if (text && !out.includes(text)) out.push(text);
+    });
+    return out.slice(0, 12);
+  });
+}
+
 /** One role's real crawl: real login (if configured), then a real,
  * bounded, same-origin breadth-first crawl from `baseUrl`, recording every
  * page's real title and real interactive elements. Never invents a page
@@ -351,7 +428,8 @@ async function crawlAsRole(
   browser: Browser,
   baseUrl: string,
   role: CrawlRoleConfig,
-  groundedPages: GroundedPage[]
+  groundedPages: GroundedPage[],
+  focusTerms: string[] = []
 ): Promise<RoleCrawlResult> {
   const context = await browser.newContext();
   const page = await context.newPage();
@@ -368,10 +446,13 @@ async function crawlAsRole(
 
   const visited = new Set<string>();
   const queue: string[] = [baseUrl];
+  const focusQueue: string[] = [];
+  const focusing = focusTerms.length > 0;
   const pages: CrawledPage[] = [];
 
-  while (queue.length > 0 && pages.length < MAX_PAGES_PER_ROLE) {
-    const url = queue.shift()!;
+  for (;;) {
+    const url = takeNext(queue, focusQueue, pages.length, focusing);
+    if (url === undefined) break;
     if (visited.has(url)) continue;
     visited.add(url);
 
@@ -392,16 +473,26 @@ async function crawlAsRole(
     // What a test can act on, for compiling test cases on this page (see the grounding types above). A page whose
     // grounding cannot be read is simply not offered for it; the crawl result above is unaffected.
     try {
-      groundedPages.push({ url: finalUrl, title, elements: await extractGroundedElements(page) });
+      const groundedElements = await extractGroundedElements(page);
+      let headings: string[] = [];
+      try {
+        headings = await extractHeadings(page);
+      } catch {
+        /* a page whose headings cannot be read is offered without them */
+      }
+      groundedPages.push({ url: finalUrl, title, elements: groundedElements, ...(headings.length > 0 ? { headings } : {}) });
     } catch {
       /* not offered for grounding */
     }
 
-    for (const el of elements) {
-      if (el.kind === "link" && el.href && sameOrigin(el.href, baseUrl) && !visited.has(el.href)) {
-        queue.push(el.href);
-      }
-    }
+    enqueueLinks(
+      queue,
+      focusQueue,
+      elements
+        .filter((el) => el.kind === "link" && el.href && sameOrigin(el.href, baseUrl) && !visited.has(el.href))
+        .map((el) => ({ text: el.text, href: el.href as string })),
+      focusTerms
+    );
   }
 
   await context.close();
@@ -458,7 +549,7 @@ export async function runCrawl(
   const groundedRoles: GroundedRole[] = [];
   for (const role of plan.roles) {
     const groundedPages: GroundedPage[] = [];
-    const result = await crawlAsRole(browser, plan.baseUrl, role, groundedPages);
+    const result = await crawlAsRole(browser, plan.baseUrl, role, groundedPages, plan.focusTerms ?? []);
     roles.push(result);
     const login = keptLogin(role.loginActions);
     groundedRoles.push({
