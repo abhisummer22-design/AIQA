@@ -1502,6 +1502,58 @@ mod tests {
     }
 
     #[test]
+    fn a_page_first_seen_with_no_title_takes_the_title_another_role_saw_and_keeps_one_it_has() {
+        let crawl = CrawlGrounding {
+            roles: vec![
+                grounded(
+                    "admin",
+                    true,
+                    vec![grounded_page(
+                        "https://app.example.com/reports",
+                        "",
+                        &[],
+                        &[],
+                    )],
+                ),
+                grounded(
+                    "user",
+                    true,
+                    vec![
+                        grounded_page("https://app.example.com/reports", "Reports", &[], &[]),
+                        grounded_page("https://app.example.com/help", "Help", &[], &[]),
+                    ],
+                ),
+                grounded(
+                    "guest",
+                    true,
+                    vec![grounded_page(
+                        "https://app.example.com/help",
+                        "Help centre",
+                        &[],
+                        &[],
+                    )],
+                ),
+            ],
+        };
+        let evidence = evidence_from_grounding(&crawl, None).unwrap();
+        let title_of = |path: &str| {
+            evidence
+                .pages
+                .iter()
+                .find(|p| p.url.ends_with(path))
+                .unwrap()
+                .title
+                .clone()
+        };
+        assert_eq!(title_of("/reports"), "Reports");
+        assert_eq!(
+            title_of("/help"),
+            "Help",
+            "a title already there is not replaced"
+        );
+    }
+
+    #[test]
     fn a_role_can_be_chosen_by_name_and_an_unknown_one_lists_the_roles() {
         let crawl = CrawlGrounding {
             roles: vec![
@@ -1831,6 +1883,7 @@ mod tests {
     fn a_requirements_cases_are_counted_by_status_and_technique_and_rejected_ones_not_at_all() {
         let cases = vec![
             case(Some("FR-03"), TestCaseStatus::Approved, Technique::Positive),
+            case(Some("FR-03"), TestCaseStatus::Approved, Technique::Negative),
             case(Some("FR-03"), TestCaseStatus::Executed, Technique::Negative),
             case(
                 Some("FR-03"),
@@ -1843,9 +1896,10 @@ mod tests {
         ];
         let analysis = analyze(&shop_requirements(), &shop(), &cases);
         let c = &finding(&analysis, "FR-03").cases;
-        assert_eq!((c.total, c.approved, c.executed), (3, 1, 1));
+        // Two approved, one executed, one still only generated: not a count that is the same for every status.
+        assert_eq!((c.total, c.approved, c.executed), (4, 2, 1));
         assert_eq!(c.techniques.get("positive"), Some(&2));
-        assert_eq!(c.techniques.get("negative"), Some(&1));
+        assert_eq!(c.techniques.get("negative"), Some(&2));
         assert_eq!(
             c.techniques.get("edge"),
             None,
