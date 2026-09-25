@@ -33,7 +33,7 @@ import { useAIQA } from '../../context/AIQAContext';
 import { useProject } from '../../context/ProjectContext';
 import { DocumentUploadSection } from '../test-generator/DocumentUploadSection';
 import { ApplicationSourceSection } from '../test-generator/ApplicationSourceSection';
-import { CrawlGroundingSection } from '../test-generator/CrawlGroundingSection';
+import { CrawlGroundingSection, type GroundingCrawl } from '../test-generator/CrawlGroundingSection';
 import { RequirementCoverageSummary } from '../test-generator/RequirementCoverageSummary';
 import { RequirementGenerationSection } from '../test-generator/RequirementGenerationSection';
 import { GenerationConfigSection, TEST_CATEGORIES } from '../test-generator/GenerationConfigSection';
@@ -63,6 +63,7 @@ import type {
   GeneratedTestCaseDraft,
   AiRoutingMode,
   CompilationOutcome,
+  CompileRequest,
   OrchestratorLogEntry,
   RequirementRecord,
 } from '../../types/contract';
@@ -190,7 +191,7 @@ export type HandoffChoice =
    *  reference fixture. See `GeneratedTestCasesView.tsx`'s own compile
    *  preview UI for the truthful READY/NOT_EXECUTABLE/... disclosure
    *  shown before this is sent. */
-  | { mode: 'compile' };
+  | { mode: 'compile'; grounding?: CompileRequest };
 
 // FE-4: the one, minimal, non-visual routing change made to this
 // product-owner-designed page — see `handleOpenExecutionHub` below.
@@ -235,6 +236,9 @@ export const TestCaseGeneratorPage: React.FC = () => {
   // `activeGenerationSession` yet (a session-restore concern out of this
   // increment's scope) — always starts fresh, same as `documents` does.
   const [crawlRunId, setCrawlRunId] = useState<string | null>(null);
+  // Phase 5 — the finished crawl (and its roles) a test case can be compiled against, whether or not it is also the one
+  // chosen for generation above.
+  const [groundingCrawl, setGroundingCrawl] = useState<GroundingCrawl | null>(null);
 
   // 3. Selected Test Categories (Defaults to all 14 or customizable)
   const [selectedCategories, setSelectedCategories] = useState<TestGenerationCategory[]>(
@@ -758,7 +762,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
       choice.mode === 'executor'
         ? { executor: choice.executor }
         : choice.mode === 'compile'
-          ? { compile_and_execute: true }
+          ? { compile_and_execute: true, ...(choice.grounding ?? {}) }
           : { simulate: { outcome: choice.outcome, delay_ms: 150 } };
     try {
       const created = await aiqaApi.testCases.handoff(realProjectId, id, body);
@@ -778,14 +782,14 @@ export const TestCaseGeneratorPage: React.FC = () => {
   const [compilePreviewForId, setCompilePreviewForId] = useState<string | null>(null);
   const [compilePreviewError, setCompilePreviewError] = useState<string | null>(null);
 
-  const handleCompilePreview = async (id: string) => {
+  const handleCompilePreview = async (id: string, grounding?: CompileRequest) => {
     if (!realProjectId) return;
     setCompilePreviewLoading(true);
     setCompilePreviewError(null);
     setCompilePreview(null);
     setCompilePreviewForId(id);
     try {
-      const outcome = await aiqaApi.testCases.compile(realProjectId, id);
+      const outcome = await aiqaApi.testCases.compile(realProjectId, id, undefined, grounding);
       setCompilePreview(outcome);
     } catch (err) {
       setCompilePreviewError(err instanceof ApiError ? err.message : 'Compilation preview failed.');
@@ -1543,6 +1547,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
                 projectId={realProjectId}
                 crawlRunId={crawlRunId}
                 onCrawlRunIdChange={setCrawlRunId}
+                onCrawlReady={setGroundingCrawl}
                 disabled={isGeneratingNow}
               />
             </div>
@@ -1642,6 +1647,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
           compilePreviewLoading={compilePreviewLoading}
           compilePreviewForId={compilePreviewForId}
           compilePreviewError={compilePreviewError}
+          groundingCrawl={groundingCrawl}
         />
       )}
     </div>

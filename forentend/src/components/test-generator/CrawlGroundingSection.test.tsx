@@ -226,3 +226,156 @@ describe('CrawlGroundingSection — login role builder', () => {
     expect((roleCards[0].querySelector('input[type="text"]') as HTMLInputElement).value).toBe('editor');
   });
 });
+
+describe('CrawlGroundingSection — Phase 5: env:NAME logins, and the crawl on offer', () => {
+  /** A fresh login role with the default four steps, filled from `values` (username, then password). */
+  async function addRole(values: { username: string; password: string }) {
+    await changeInput(document.getElementById('crawl-target-url')!, 'https://target.example.com');
+    await clickButton(document.getElementById('btn-add-login-role')!);
+    const roleCard = document.querySelector('[id^="login-role-"]')!;
+    await changeInput(roleCard.querySelector('input[type="text"]')!, 'admin');
+    const urlInputs = roleCard.querySelectorAll('input[placeholder="https://your-app.example.com/login"]');
+    const selectorInputs = roleCard.querySelectorAll('input[placeholder="#selector"]');
+    const valueInputs = roleCard.querySelectorAll('input[placeholder="value"]');
+    await changeInput(urlInputs[0], 'https://target.example.com/login');
+    await changeInput(selectorInputs[0], '#username');
+    await changeInput(valueInputs[0], values.username);
+    await changeInput(selectorInputs[1], '#password');
+    await changeInput(valueInputs[1], values.password);
+    await changeInput(selectorInputs[2], '#submit-login');
+  }
+
+  it('a login written as env:NAME references is sent as written — the browser never holds a password', async () => {
+    const sent: unknown[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (String(url).includes('/crawl') && init?.method === 'POST') {
+          sent.push(JSON.parse(String(init.body)));
+          return jsonResponse(201, { run_id: 'crawl-run-1' });
+        }
+        return jsonResponse(200, {});
+      }),
+    );
+    setApiKey(RAW_KEY);
+    render(<CrawlGroundingSection appSources={emptySources()} projectId={PROJECT_ID} crawlRunId={null} onCrawlRunIdChange={noop} />);
+
+    await addRole({ username: 'env:AIQA_LOGIN_ADMIN_USERNAME', password: 'env:AIQA_LOGIN_ADMIN_PASSWORD' });
+    await clickButton(document.getElementById('btn-start-crawl')!);
+
+    await waitFor(() => expect(sent.length).toBe(1));
+    const admin = (sent[0] as { roles: { name: string; login_actions: { type: string; value?: string }[] }[] }).roles[1];
+    expect(admin.login_actions.filter((a) => a.type === 'FILL').map((a) => a.value)).toEqual([
+      'env:AIQA_LOGIN_ADMIN_USERNAME',
+      'env:AIQA_LOGIN_ADMIN_PASSWORD',
+    ]);
+  });
+
+  it('a value starting env: that names no allowed variable is stopped here with a specific message, and nothing is sent', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => jsonResponse(200, {}));
+    vi.stubGlobal('fetch', fetchMock);
+    setApiKey(RAW_KEY);
+    render(<CrawlGroundingSection appSources={emptySources()} projectId={PROJECT_ID} crawlRunId={null} onCrawlRunIdChange={noop} />);
+
+    await addRole({ username: 'admin', password: 'env:GROQ_API_KEY' });
+    await clickButton(document.getElementById('btn-start-crawl')!);
+
+    const message = await screen.findByText(/must name a variable that starts AIQA_LOGIN_ or AIQA_SECRET_/);
+    expect(message.textContent).toContain('env:AIQA_LOGIN_ADMIN_PASSWORD');
+    expect(message.textContent).not.toContain('GROQ_API_KEY');
+    expect(fetchMock.mock.calls.some(([u, i]) => String(u).includes('/crawl') && (i as RequestInit)?.method === 'POST')).toBe(false);
+  });
+
+  it('a literal value is still accepted, as it always was', async () => {
+    const sent: unknown[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (String(url).includes('/crawl') && init?.method === 'POST') {
+          sent.push(JSON.parse(String(init.body)));
+          return jsonResponse(201, { run_id: 'crawl-run-1' });
+        }
+        return jsonResponse(200, {});
+      }),
+    );
+    setApiKey(RAW_KEY);
+    render(<CrawlGroundingSection appSources={emptySources()} projectId={PROJECT_ID} crawlRunId={null} onCrawlRunIdChange={noop} />);
+
+    await addRole({ username: 'admin', password: 'hunter2' });
+    await clickButton(document.getElementById('btn-start-crawl')!);
+    await waitFor(() => expect(sent.length).toBe(1));
+  });
+
+  it('explains env:NAME beside the login builder, and says what a literal password costs', async () => {
+    setApiKey(RAW_KEY);
+    render(<CrawlGroundingSection appSources={emptySources()} projectId={PROJECT_ID} crawlRunId={null} onCrawlRunIdChange={noop} />);
+    expect(document.getElementById('crawl-env-hint')).toBeNull();
+
+    await clickButton(document.getElementById('btn-add-login-role')!);
+    const hint = document.getElementById('crawl-env-hint')!.textContent!;
+    expect(hint).toContain('env:AIQA_LOGIN_ADMIN_PASSWORD');
+    expect(hint).toContain('nothing is embedded');
+    expect(hint).toContain('cannot be used to compile tests');
+  });
+
+  it('tells the page which finished crawl is on offer and its roles — whatever key style the result uses — and nothing once a new crawl starts', async () => {
+    const onCrawlReady = vi.fn();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        const u = String(url);
+        if (u.includes('/crawl') && u.endsWith('/result')) {
+          // The real API sends camelCase (`loginSucceeded`); the contract type says snake_case. Both are read.
+          return jsonResponse(200, {
+            roles: [
+              { role: 'anonymous', loginSucceeded: true, loginError: null, pages: [] },
+              { role: 'admin', loginSucceeded: true, loginError: null, pages: [] },
+              { role: 'auditor', loginSucceeded: false, loginError: 'selector never resolved', pages: [] },
+              { role: 'legacy', login_succeeded: true, login_error: null, pages: [] },
+            ],
+            visibilityMatrix: [],
+          });
+        }
+        if (u.includes('/crawl') && init?.method === 'POST') return jsonResponse(201, { run_id: 'crawl-run-1' });
+        if (u.includes('/executions/crawl-run-1')) {
+          return jsonResponse(200, { run_id: 'crawl-run-1', state: 'COMPLETED', tasks: [{ id: 't', name: 'Crawl', reason: null }] });
+        }
+        return jsonResponse(200, {});
+      }),
+    );
+    setApiKey(RAW_KEY);
+    render(
+      <CrawlGroundingSection
+        appSources={emptySources()}
+        projectId={PROJECT_ID}
+        crawlRunId={null}
+        onCrawlRunIdChange={noop}
+        onCrawlReady={onCrawlReady}
+      />,
+    );
+    // Nothing is on offer before a crawl.
+    expect(onCrawlReady).toHaveBeenLastCalledWith(null);
+
+    await changeInput(document.getElementById('crawl-target-url')!, 'https://target.example.com');
+    await clickButton(document.getElementById('btn-start-crawl')!);
+
+    await waitFor(
+      () =>
+        expect(onCrawlReady).toHaveBeenLastCalledWith({
+          runId: 'crawl-run-1',
+          roles: [
+            { name: 'anonymous', loggedIn: true },
+            { name: 'admin', loggedIn: true },
+            { name: 'auditor', loggedIn: false },
+            { name: 'legacy', loggedIn: true },
+          ],
+        }),
+      { timeout: 10000 },
+    );
+
+    // Starting another crawl takes the finished one off offer until the new one finishes.
+    onCrawlReady.mockClear();
+    await clickButton(document.getElementById('btn-start-crawl')!);
+    expect(onCrawlReady).toHaveBeenCalledWith(null);
+  }, 20000);
+});

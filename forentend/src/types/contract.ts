@@ -547,6 +547,11 @@ export interface TestCaseHandoffRequest {
    *  ignored and the real backend compiler determines the real executor
    *  from the test case's own actual content instead. */
   compile_and_execute?: boolean;
+  /** Phase 5 — with `compile_and_execute`: compile against this finished
+   *  crawl run (see `CompileRequest`). Ignored without it. */
+  crawl_run_id?: string;
+  /** Phase 5 — with `crawl_run_id`: the crawl's role the case runs as. */
+  role?: string;
 }
 
 // ---------------------------------------------------- Phase 2.1: execution plan compiler
@@ -593,11 +598,37 @@ export interface ExecutionPlan {
  *  `COMPILATION_UNAVAILABLE` into one generic "can't run" message — they
  *  mean different real things (the case genuinely lacks information, vs.
  *  no AI provider was reachable to even try). */
-export type CompilationOutcome =
+export type CompilationOutcome = (
   | { status: 'READY'; test_case_id: string; execution_type: PlanExecutionType; target: string | null; actions: PlanAction[]; compiler: PlanCompilerMethod; diagnostics: string[]; provider: string | null; model: string | null }
   | { status: 'NOT_EXECUTABLE'; reasons: string[] }
   | { status: 'COMPILATION_FAILED'; reasons: string[] }
-  | { status: 'COMPILATION_UNAVAILABLE'; reason: string };
+  | { status: 'COMPILATION_UNAVAILABLE'; reason: string }
+) & {
+  /** Phase 5 — present only for a compile that named a crawl. */
+  grounding?: CompileGrounding;
+};
+
+/** `grounding.rs::GroundingReport` — what a compile against a crawl was
+ *  given. `secrets` are the *names* of the environment variables the login
+ *  reads when the test runs (never a value). */
+export interface CompileGrounding {
+  /** The crawl's role the case signs in as; `null` when it runs without signing in. */
+  role: string | null;
+  pages_in_crawl: number;
+  pages_offered: number;
+  elements_offered: number;
+  login_steps: number;
+  secrets: string[];
+}
+
+/** `POST .../test-cases/:id/compile` body (Phase 5) — optional. Naming a
+ *  finished crawl grounds the compile in it: the plan may use only selectors
+ *  that crawl found, and `role`'s login runs first. */
+export interface CompileRequest {
+  crawl_run_id?: string;
+  /** The crawl's role the case runs as; omitted, the crawl's role that never logged in. */
+  role?: string;
+}
 
 // ---------------------------------------------------------- Phase 4: API Testing
 

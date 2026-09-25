@@ -697,6 +697,61 @@ describe('Phase 3 — requirements client (documents -> numbered requirements ->
   });
 });
 
+describe('aiqaApi.testCases.compile (Phase 5 — compile against a crawl)', () => {
+  const READY = {
+    status: 'READY',
+    test_case_id: 'case-1',
+    execution_type: 'BROWSER',
+    target: null,
+    actions: [],
+    compiler: 'AI',
+    diagnostics: [],
+    provider: 'local',
+    model: 'qwen',
+  };
+
+  it('with no body it sends none — the request is exactly what it always was', async () => {
+    setApiKey('aiqa_compilebodytest0000');
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, READY));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await aiqaApi.testCases.compile('proj-1', 'case-1');
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain('/projects/proj-1/test-cases/case-1/compile');
+    expect((init as RequestInit).method).toBe('POST');
+    expect((init as RequestInit).body).toBeUndefined();
+    expect(((init as RequestInit).headers as Record<string, string>)['Content-Type']).toBeUndefined();
+  });
+
+  it('given a crawl and a role it sends them as the request body, and returns the grounding the response reports', async () => {
+    setApiKey('aiqa_compilebodytest0000');
+    const grounded = {
+      ...READY,
+      grounding: { role: 'admin', pages_in_crawl: 3, pages_offered: 2, elements_offered: 47, login_steps: 4, secrets: ['AIQA_LOGIN_ADMIN_PASSWORD'] },
+    };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, grounded));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const outcome = await aiqaApi.testCases.compile('proj-1', 'case-1', undefined, { crawl_run_id: 'crawl-1', role: 'admin' });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(String((init as RequestInit).body))).toEqual({ crawl_run_id: 'crawl-1', role: 'admin' });
+    expect(outcome.grounding?.secrets).toEqual(['AIQA_LOGIN_ADMIN_PASSWORD']);
+  });
+
+  it('a handoff can carry the same two fields alongside compile_and_execute', async () => {
+    setApiKey('aiqa_compilebodytest0000');
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(201, { run_id: 'run-1', status: 'SCHEDULED', policy_notes: null }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await aiqaApi.testCases.handoff('proj-1', 'case-1', { compile_and_execute: true, crawl_run_id: 'crawl-1', role: 'admin' });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(String((init as RequestInit).body))).toEqual({ compile_and_execute: true, crawl_run_id: 'crawl-1', role: 'admin' });
+  });
+});
+
 describe('No hardcoded credential in source (FE-2 §6, §18 item 11)', () => {
   it('API_BASE contains no embedded secret and defaults to the contract-shaped path', async () => {
     const mod = await import('./aiqaApi');
