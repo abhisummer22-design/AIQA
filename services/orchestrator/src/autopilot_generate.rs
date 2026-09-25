@@ -1552,6 +1552,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn automatic_approval_that_approves_nothing_says_nothing_about_approving() {
+        let mut f = fixture(
+            Step::Approve,
+            config(json!({"approval": "auto_validated"})),
+            |p| {
+                ScriptedApi::new().on(
+                    "GET",
+                    &p(&format!("test-cases?suite_id={SUITE}")),
+                    vec![ok(json!([case("c", "GENERATED")])), ok(json!([case("c", "GENERATED")]))],
+                )
+            },
+        )
+        .await;
+        with_suite(&f).await;
+        f.ctx.detail = json!({});
+        let (detail, _) = detail_of_done(approve(&f.ctx).await);
+        assert_eq!(detail["automatic"], true);
+        assert_eq!(detail["approved_by_run"], 0);
+        assert_eq!(detail["pending"], 1, "the case that never validated is not run");
+        let lines = timeline(&f).await;
+        assert!(lines.iter().all(|l| !l.contains("Approved")), "{lines:?}");
+    }
+
+    #[tokio::test]
     async fn the_gate_needs_the_suite_and_can_be_cancelled_while_it_approves() {
         let f = fixture(Step::Approve, config(json!({})), |_| ScriptedApi::new()).await;
         assert!(failed(approve(&f.ctx).await).contains("the generate step did not record one"));

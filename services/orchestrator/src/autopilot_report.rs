@@ -853,7 +853,7 @@ mod tests {
         let run = run_row("COMPLETED", config_value());
         let mut steps = steps();
         steps[6].detail["finished"] = json!(4);
-        steps[6].detail["counts"] = json!({"NOT_EXECUTABLE": 1, "COMPILATION_FAILED": 1, "COMPILATION_UNAVAILABLE": 1, "NOT_RUN": 1, "PASSED": 5});
+        steps[6].detail["counts"] = json!({"NOT_EXECUTABLE": 2, "COMPILATION_FAILED": 1, "COMPILATION_UNAVAILABLE": 1, "NOT_RUN": 1, "PASSED": 5});
         let report = build(&ReportInput {
             run: &run,
             steps: &steps,
@@ -861,7 +861,7 @@ mod tests {
             cases: &cases(),
             finished: true,
         });
-        assert_eq!(report["execution"]["ran"], 0, "4 finished, 4 refused");
+        assert_eq!(report["execution"]["ran"], 0, "4 finished, more refused than that (the counts of an odd record): none ran, and nothing goes below none");
     }
 
     #[test]

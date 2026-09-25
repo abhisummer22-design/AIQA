@@ -464,6 +464,8 @@ mod tests {
     fn a_reason_is_read_without_the_terminals_colour_codes() {
         assert_eq!(tidy_reason("\u{1b}[31mexpected 1, got 2\u{1b}[0m"), "expected 1, got 2");
         assert_eq!(strip_terminal_codes("a\u{1b}[1A\u{1b}[2Kb\u{1b}[38;5;9mc"), "abc");
+        assert_eq!(strip_terminal_codes("a\u{1b}[3~b\u{1b}[@c"), "abc", "the final byte may be any of `@` to `~`");
+        assert_eq!(strip_terminal_codes("a\u{1b}[Hb"), "ab", "a sequence with no parameters");
         // An escape that is not a control sequence, and a lone one at the end, are left alone (nothing is swallowed).
         assert_eq!(strip_terminal_codes("x\u{1b}Ty"), "x\u{1b}Ty");
         assert_eq!(strip_terminal_codes("x\u{1b}"), "x\u{1b}");
@@ -486,6 +488,8 @@ mod tests {
         assert_eq!(tidy_reason("\u{1b}[31m\u{1b}[0m"), "");
         // A `>` that is not a marked code line (no line number before the bar) is just text.
         assert_eq!(tidy_reason("> a | b"), "> a | b");
+        assert_eq!(tidy_reason("> 2a | b"), "> 2a | b", "a number is all digits");
+        assert_eq!(tidy_reason("> | x"), "> | x", "and there is one");
     }
 
     #[test]

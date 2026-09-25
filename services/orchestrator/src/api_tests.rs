@@ -13825,6 +13825,23 @@ async fn phase7c_a_run_that_was_going_when_the_service_stopped_carries_on_after_
 }
 
 #[tokio::test]
+async fn phase7c_a_run_something_is_already_working_on_is_not_picked_up_again_and_not_counted() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
+    fast_autopilot(&state);
+    let (project, owner) = autopilot_project(&state, "Phase7C Claimed").await;
+    let (_, made) = autopilot(&state, "POST", &format!("/api/v1/projects/{project}/autopilot/runs"), &owner, Some(autopilot_body(serde_json::json!({})))).await;
+    let run_id = Uuid::parse_str(made["run"]["id"].as_str().unwrap()).unwrap();
+    // A run that is going, with something already working on it.
+    assert!(state.store.start_autopilot_run(run_id, false).await.unwrap());
+    let claim = state.autopilot.claim(run_id).expect("nothing worked on it yet");
+    assert_eq!(crate::autopilot_runner::resume_runs(&state).await.unwrap(), 0, "it is being worked on: nothing is picked up, so nothing is counted");
+    // Once nothing works on it, the next pick-up takes it.
+    drop(claim);
+    assert_eq!(crate::autopilot_runner::resume_runs(&state).await.unwrap(), 1);
+    stop_run(&state, project, &owner, &run_id.to_string()).await;
+}
+
+#[tokio::test]
 async fn phase7c_the_internal_routes_are_not_reachable_without_a_key_and_the_public_ones_still_are_guarded() {
     let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
     let (project, _owner) = autopilot_project(&state, "Phase7C Guard").await;
@@ -14429,6 +14446,10 @@ async fn phase7e_a_run_runs_the_approved_cases_runs_an_infrastructure_failure_ag
     assert_eq!(status, StatusCode::OK, "body={report}");
     assert_eq!(report["final"], true);
     assert_eq!(report["run"]["state"], "COMPLETED");
+    // What is served is the report the last step wrote, not one worked out again from the cases as they are by now.
+    let written = state.store.list_autopilot_steps(Uuid::parse_str(&run_id).unwrap()).await.unwrap().into_iter().find(|s| s.name == "REPORT").unwrap().detail["report"].clone();
+    assert!(written.is_object(), "the last step kept its report");
+    assert_eq!(report, written);
     assert_eq!(report["execution"]["passed"], 3);
     assert_eq!(report["execution"]["failed"], 1);
     assert_eq!(report["findings"][0]["title"], "Check FR-002");
