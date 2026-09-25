@@ -56,6 +56,9 @@ pub struct GroundedPage {
     pub url: String,
     pub title: String,
     pub elements: Vec<GroundedElement>,
+    /// The page's headings (`h1` to `h3`): what it says it is about. Empty for a crawl made before they were recorded.
+    #[serde(default)]
+    pub headings: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -317,6 +320,7 @@ impl Grounding {
                     url: page.url.clone(),
                     title: page.title.clone(),
                     elements: shown,
+                    headings: Vec::new(),
                 });
             }
         }
@@ -450,6 +454,7 @@ mod tests {
             url: url.to_string(),
             title: title.to_string(),
             elements,
+            headings: Vec::new(),
         }
     }
 
