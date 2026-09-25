@@ -2501,6 +2501,27 @@ mod tests {
     }
 
     #[test]
+    fn a_word_in_most_of_five_requirements_names_no_page_but_one_in_two_does() {
+        use RequirementKind::*;
+        let with = |n: usize| -> Vec<RequirementItem> {
+            (0..5)
+                .map(|i| {
+                    let word = if i < n { "wishlist" } else { "catalogue" };
+                    req(
+                        &format!("R-{i}"),
+                        Functional,
+                        &format!("Users can browse the {word} number{i}."),
+                    )
+                })
+                .collect()
+        };
+        // In 2 of 5 (40%) "wishlist" is kept; in 3 of 5 (60%) it is not; the word in all five never is.
+        assert!(focus_terms(&with(2)).contains(&"wishlist".to_string()));
+        assert!(!focus_terms(&with(3)).contains(&"wishlist".to_string()));
+        assert!(!focus_terms(&with(3)).contains(&"brows".to_string()));
+    }
+
+    #[test]
     fn at_most_two_hundred_words_and_always_the_same_ones() {
         use RequirementKind::*;
         let requirements: Vec<RequirementItem> = (0..250)

@@ -7,6 +7,7 @@ import {
   MAX_FOCUS_EXTRA_PAGES,
   enqueueLinks,
   extractGroundedElements,
+  extractHeadings,
   focusScore,
   groundingFileName,
   runCrawl,
@@ -472,4 +473,22 @@ test("a crawl records each page's headings beside its elements", async ({ browse
   expect(byPath("/dashboard").headings).toEqual(["Dashboard"]);
   expect(byPath("/settings").headings).toEqual(["Settings"]);
   expect(byPath("/users").headings).toEqual(["Manage Users"]);
+});
+
+test("headings are the visible h1-h3 and role=heading texts, squashed, each once, the first twelve, cut at 80 characters", async ({
+  page,
+}) => {
+  const many = Array.from({ length: 20 }, (_, i) => `<h2>Section ${i}</h2>`).join("");
+  await page.setContent(
+    `<h1>Shown</h1><h2 style="display:none">Hidden</h2><h3>  Shown   twice </h3><h3>Shown twice</h3>` +
+      `<div role="heading">Role heading</div><h4>Not a heading here</h4><h3></h3><h3 style="visibility:hidden">Also hidden</h3>` +
+      `<h2>${"x".repeat(200)}</h2>`
+  );
+  const few = await extractHeadings(page);
+  expect(few).toEqual(["Shown", "Shown twice", "Role heading", "x".repeat(80)]);
+  await page.setContent(many);
+  const capped = await extractHeadings(page);
+  expect(capped).toHaveLength(12);
+  expect(capped[0]).toBe("Section 0");
+  expect(capped[11]).toBe("Section 11");
 });
