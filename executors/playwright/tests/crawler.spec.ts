@@ -2,7 +2,16 @@ import { test, expect } from "@playwright/test";
 import { ChildProcess, spawn } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
-import { CrawlPlan, extractGroundedElements, runCrawl } from "../helpers/crawler";
+import {
+  CrawlPlan,
+  MAX_FOCUS_EXTRA_PAGES,
+  enqueueLinks,
+  extractGroundedElements,
+  focusScore,
+  groundingFileName,
+  runCrawl,
+  takeNext,
+} from "../helpers/crawler";
 import { resolveValue } from "../helpers/secrets";
 
 // Real, self-contained verification (same "own fixture, real browser, real
@@ -360,4 +369,107 @@ test("grounded elements: a locator is offered only when it is unique, hidden thi
   for (const element of found) {
     expect(await page.locator(element.locator).count(), element.locator).toBe(1);
   }
+});
+
+// ---- Requirement-driven crawling (Phase 6): which links a crawl follows first ---------------------------------------------
+
+test("focusScore counts the focus terms a link mentions in its text or in the path of its address", () => {
+  expect(focusScore("Manage Users", "http://x.test/admin/users", ["users"])).toBe(1);
+  expect(focusScore("", "http://x.test/reports/monthly", ["report", "monthly"])).toBe(2);
+  expect(focusScore("REPORTS", "http://x.test/", ["report"])).toBe(1);
+  // The query string is not part of what a link is about.
+  expect(focusScore("Home", "http://x.test/?q=report", ["report"])).toBe(0);
+  expect(focusScore("Home", "http://x.test/", [])).toBe(0);
+  expect(focusScore("Home", "http://x.test/", [""])).toBe(0);
+  expect(focusScore("x", "not a url/reports", ["report"])).toBe(1);
+});
+
+test("enqueueLinks puts links that mention a focus term first, most terms first, and the rest after", () => {
+  const queue = ["http://x.test/a"];
+  const focus: string[] = [];
+  const terms = ["report", "monthly"];
+  enqueueLinks(
+    queue,
+    focus,
+    [
+      { text: "About", href: "http://x.test/about" },
+      { text: "Reports", href: "http://x.test/reports" },
+      { text: "Monthly reports", href: "http://x.test/reports/monthly" },
+      { text: "Help", href: "http://x.test/help" },
+      { text: "Reports again", href: "http://x.test/reports" },
+    ],
+    terms
+  );
+  expect(focus).toEqual(["http://x.test/reports/monthly", "http://x.test/reports"]);
+  expect(queue).toEqual(["http://x.test/a", "http://x.test/about", "http://x.test/help"]);
+  // A link found later that scores the same as one found earlier stays behind it.
+  enqueueLinks(queue, focus, [{ text: "More", href: "http://x.test/other-reports" }], terms);
+  expect(focus).toEqual(["http://x.test/reports/monthly", "http://x.test/reports", "http://x.test/other-reports"]);
+  // With no terms every link is an ordinary one, in the order found.
+  const plain: string[] = [];
+  const none: string[] = [];
+  enqueueLinks(plain, none, [{ text: "Reports", href: "http://x.test/r" }, { text: "Help", href: "http://x.test/h" }], []);
+  expect(plain).toEqual(["http://x.test/r", "http://x.test/h"]);
+  expect(none).toEqual([]);
+});
+
+test("takeNext follows focus links first, within the usual limit plus the extra, and ordinary links only within the usual limit", () => {
+  const queue = ["o1", "o2"];
+  const focus = ["f1", "f2"];
+  expect(takeNext(queue, focus, 0, true)).toBe("f1");
+  expect(takeNext(queue, focus, 0, true)).toBe("f2");
+  expect(takeNext(queue, focus, 0, true)).toBe("o1");
+  // The usual limit is reached: a focused crawl goes on with focus links, an unfocused one stops.
+  expect(takeNext(["o"], ["f"], 20, false)).toBeUndefined();
+  expect(takeNext(["o"], ["f"], 20, true)).toBe("f");
+  // The extra is used up.
+  expect(takeNext(["o"], ["f"], 20 + MAX_FOCUS_EXTRA_PAGES, true)).toBeUndefined();
+  // Ordinary links past the usual limit are never followed, focused or not.
+  expect(takeNext(["o"], [], 20, true)).toBeUndefined();
+  expect(takeNext([], [], 0, false)).toBeUndefined();
+});
+
+test("a focused crawl visits the pages its focus terms lead to first; without focus terms the order is what it always was", async ({
+  browser,
+}) => {
+  const plan = (focusTerms?: string[]): CrawlPlan => ({
+    baseUrl: BASE_URL,
+    roles: [{ name: "admin", loginActions: loginActions("admin", "admin-pass") }],
+    ...(focusTerms ? { focusTerms } : {}),
+  });
+  const visited = async (file: string, p: CrawlPlan): Promise<string[]> => {
+    await runCrawl(browser, p, file);
+    const output = JSON.parse(fs.readFileSync(path.join(RESULT_DIR, file), "utf-8"));
+    return output.roles[0].pages.map((pg: { url: string }) => new URL(pg.url).pathname);
+  };
+  const off = await visited("crawl-result-focus-off.json", plan());
+  const on = await visited("crawl-result-focus-on.json", plan(["users"]));
+  for (const f of ["focus-off", "focus-on"]) {
+    fs.rmSync(path.join(RESULT_DIR, `crawl-result-${f}.json`), { force: true });
+    fs.rmSync(path.join(RESULT_DIR, groundingFileName(`crawl-result-${f}.json`)), { force: true });
+  }
+  // The dashboard links to Profile, Settings, Manage Users in that order.
+  expect(off.indexOf("/profile")).toBeLessThan(off.indexOf("/settings"));
+  expect(off.indexOf("/settings")).toBeLessThan(off.indexOf("/users"));
+  expect(on.indexOf("/users")).toBeGreaterThan(-1);
+  expect(on.indexOf("/users")).toBeLessThan(on.indexOf("/profile"));
+  expect(on.indexOf("/users")).toBeLessThan(on.indexOf("/settings"));
+  // A small application: the same pages either way, only in a different order.
+  expect([...on].sort()).toEqual([...off].sort());
+});
+
+test("a crawl records each page's headings beside its elements", async ({ browser }) => {
+  const plan: CrawlPlan = {
+    baseUrl: BASE_URL,
+    roles: [{ name: "admin", loginActions: loginActions("admin", "admin-pass") }],
+  };
+  const file = "crawl-result-headings.json";
+  await runCrawl(browser, plan, file);
+  const grounding = JSON.parse(fs.readFileSync(path.join(RESULT_DIR, groundingFileName(file)), "utf-8"));
+  fs.rmSync(path.join(RESULT_DIR, file), { force: true });
+  fs.rmSync(path.join(RESULT_DIR, groundingFileName(file)), { force: true });
+  const byPath = (p: string) => grounding.roles[0].pages.find((pg: { url: string }) => new URL(pg.url).pathname === p);
+  expect(byPath("/dashboard").headings).toEqual(["Dashboard"]);
+  expect(byPath("/settings").headings).toEqual(["Settings"]);
+  expect(byPath("/users").headings).toEqual(["Manage Users"]);
 });
