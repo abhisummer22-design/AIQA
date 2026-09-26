@@ -230,8 +230,10 @@ pub fn parse_response_body_preview(log: &str) -> Option<String> {
         .skip(response_idx + 1)
         .find(|(_, l)| {
             l.starts_with("ASSERT_STATUS ")
+                || l.starts_with("ASSERT_STATUS_IN ")
                 || l.starts_with("ASSERT_HEADER ")
                 || l.starts_with("ASSERT_BODY_FIELD ")
+                || l.starts_with("ASSERT_BODY_SCHEMA ")
                 || l.starts_with("RESULT_SUMMARY_JSON:")
                 || l.starts_with("FAILED ASSERTIONS:")
         })

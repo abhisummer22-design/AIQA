@@ -41,6 +41,11 @@ import type {
   AiStatusResponse,
   AiUsageQuery,
   AiUsageReport,
+  OpenApiPlan,
+  OpenApiReport,
+  OpenApiRequestBody,
+  OpenApiRunCreated,
+  OpenApiRunListRow,
   ApiErrorEnvelope,
   AuditLogResponse,
   CancelRunResponse,
@@ -743,6 +748,24 @@ export const aiqaApi = {
   loginSuggestion: {
     suggest: (projectId: string, body: LoginSuggestionRequest, signal?: AbortSignal) =>
       requestJson<LoginSuggestionResponse>(`/projects/${projectId}/login-suggestion`, { method: 'POST', body, signal }),
+  },
+
+  /** Phase 8B — API tests made from an OpenAPI/Swagger document, by rule and with no AI (`openapi_api.rs`). `plan` shows the cases
+   *  that would be made and does nothing; `runs.create` runs them as one execution; `runs.get` is the report (fills in while the run
+   *  goes; `final` says when it has ended). A request that changes data is run only with `include_unsafe`, and a credential is only
+   *  ever an `env:NAME` header value. */
+  openapi: {
+    plan: (projectId: string, body: OpenApiRequestBody, signal?: AbortSignal) =>
+      requestJson<OpenApiPlan>(`/projects/${projectId}/openapi/plan`, { method: 'POST', body, signal }),
+    runs: {
+      create: (projectId: string, body: OpenApiRequestBody, signal?: AbortSignal) =>
+        requestJson<OpenApiRunCreated>(`/projects/${projectId}/openapi/runs`, { method: 'POST', body, signal }),
+      list: (projectId: string, signal?: AbortSignal) => requestJson<{ runs: OpenApiRunListRow[] }>(`/projects/${projectId}/openapi/runs`, { signal }),
+      get: (projectId: string, id: string, signal?: AbortSignal) => requestJson<OpenApiReport>(`/projects/${projectId}/openapi/runs/${id}`, { signal }),
+      /** The same report as Markdown, to paste. */
+      markdown: (projectId: string, id: string, signal?: AbortSignal) =>
+        requestText(`/projects/${projectId}/openapi/runs/${id}`, { query: { format: 'markdown' }, signal }),
+    },
   },
 
   /** Phase 7 — autopilot: from the uploaded requirements to a report of executed tests, in one run a person starts

@@ -1686,6 +1686,141 @@ export interface AiUsageQuery {
   tz_offset_minutes?: number;
 }
 
+// ------------------------------------------------- API tests from an OpenAPI document (Phase 8B)
+
+/** The kinds of case `openapi_cases.rs` makes. */
+export type OpenApiCaseKind = 'HAPPY' | 'NO_AUTH' | 'MISSING_REQUIRED' | 'WRONG_TYPE' | 'NOT_FOUND';
+
+/** The body of `POST .../openapi/plan` and `POST .../openapi/runs`: the document (`spec`, its text, or `spec_url`), where the API is, which
+ *  cases to make, and the headers that carry a credential (each value an `env:NAME` reference, never the credential). */
+export interface OpenApiRequestBody {
+  spec?: string;
+  spec_url?: string;
+  base_url?: string;
+  kinds?: OpenApiCaseKind[];
+  operations?: string[];
+  include_unsafe?: boolean;
+  auth_headers?: Record<string, string>;
+  max_cases_per_operation?: number;
+  concurrency?: number;
+  name?: string;
+}
+
+export interface OpenApiCase {
+  /** `GET /pets#MISSING_REQUIRED:limit` */
+  id: string;
+  operation: string;
+  kind: OpenApiCaseKind;
+  title: string;
+  request: { method: string; url: string; headers: Record<string, string>; body: unknown };
+  /** What the answer must be: one of these statuses, and (when the document gives a schema) a body that fits it. */
+  expect: { statuses: number[]; schema: unknown; why: string };
+  /** Why the case is not run, when it is not (its request changes data). */
+  skipped: string | null;
+}
+
+export interface OpenApiOperation {
+  id: string;
+  method: string;
+  path: string;
+  summary: string | null;
+  tags: string[];
+  deprecated: boolean;
+  requires_auth: boolean;
+}
+
+/** `POST .../openapi/plan`: what would be tested. Nothing is run. */
+export interface OpenApiPlan {
+  spec: { title: string; version: string; servers: string[] };
+  base_url: string;
+  operations: OpenApiOperation[];
+  cases: OpenApiCase[];
+  skipped: Array<{ operation: string; reason: string }>;
+  notes: string[];
+  counts: { cases: number; runnable: number; not_run: number };
+  /** Variables the credential headers name that the orchestrator's environment does not have. */
+  missing_secrets: string[];
+}
+
+/** `POST .../openapi/runs` */
+export interface OpenApiRunCreated {
+  id: string;
+  run_id: string;
+  cases: number;
+  cases_run: number;
+  not_run: number;
+  state: string;
+  notes: string[];
+}
+
+export type OpenApiOutcome = 'PASSED' | 'FAILED' | 'ERROR' | 'PENDING' | 'NOT_RUN';
+/** What an operation as a whole came to; `SKIPPED`: no case could be made for it, `NOT_SELECTED`: it was not asked for. */
+export type OpenApiVerdict = OpenApiOutcome | 'SKIPPED' | 'NOT_SELECTED';
+
+export interface OpenApiCounts {
+  passed: number;
+  failed: number;
+  error: number;
+  pending: number;
+  not_run: number;
+}
+
+export interface OpenApiReportCase {
+  id: string;
+  kind: OpenApiCaseKind;
+  title: string;
+  outcome: OpenApiOutcome;
+  reason: string | null;
+  request: { method: string; url: string };
+  expect: { statuses: number[]; schema: boolean; why: string };
+  /** What came back; only read for the cases that did not pass. */
+  actual: { status: number; duration_ms: number; assertions: Array<{ description: string; actual: string; passed: boolean }> } | null;
+  skipped: string | null;
+  task_id: string | null;
+}
+
+export interface OpenApiReportOperation {
+  id: string;
+  summary: string | null;
+  tags: string[];
+  verdict: OpenApiVerdict;
+  counts: OpenApiCounts | null;
+  why_no_cases: string | null;
+  cases: OpenApiReportCase[];
+}
+
+/** `GET .../openapi/runs/:id` */
+export interface OpenApiReport {
+  id: string;
+  run_id: string;
+  project_id: string;
+  spec: { title: string; version: string; base_url: string };
+  created_at: string;
+  created_by: string;
+  run_state: string;
+  /** False while the run is going: the report is then what it has found so far. */
+  final: boolean;
+  summary: { cases: number; ran: number; passed: number; failed: number; error: number; pending: number; not_run: number; pass_rate: number | null };
+  by_kind: Record<string, OpenApiCounts>;
+  operations: OpenApiReportOperation[];
+  coverage: { operations: number; tested: number; not_tested: Array<{ operation: string; reason: string }> };
+  notes: string[];
+}
+
+/** A run in `GET .../openapi/runs`. */
+export interface OpenApiRunListRow {
+  id: string;
+  run_id: string;
+  title: string;
+  version: string;
+  base_url: string;
+  cases: number;
+  cases_run: number;
+  created_by: string;
+  created_at: string;
+  run_state: string | null;
+}
+
 // ------------------------------------------------------------------ rbac
 
 /** `api.rs::WhoAmIResponse` — the caller's own real identity as resolved

@@ -97,13 +97,28 @@ pub fn secret_reference_problem(value: &str) -> Option<String> {
     }
 }
 
-/// The variables `actions` refer to, each once, in name order. Names only — never a value.
+/// What is wrong with a request header value that starts `env:`, or `None` when it is an ordinary value or a good reference
+/// (`env:NAME`, read from the orchestrator's environment when the request is made). Never repeats the value.
+pub fn header_reference_problem(name: &str, value: &str) -> Option<String> {
+    let variable = crate::ai_router::env_key_name(value)?;
+    if is_valid_secret_name(variable) {
+        None
+    } else {
+        Some(format!(
+            "the value of the header {name} starts env: so it must be a secret reference, env:NAME, where NAME starts with {} (letters, digits and _)",
+            SECRET_NAME_PREFIXES.join(" or ")
+        ))
+    }
+}
+
+/// The variables `actions` refer to (in a `FILL` value or a request header), each once, in name order. Names only — never a value.
 pub fn secret_names_of(actions: &[Action]) -> Vec<String> {
     let mut names: Vec<String> = actions
         .iter()
-        .filter_map(|action| match action {
-            Action::Fill { value, .. } => secret_name(value).map(str::to_string),
-            _ => None,
+        .flat_map(|action| match action {
+            Action::Fill { value, .. } => secret_name(value).map(str::to_string).into_iter().collect::<Vec<_>>(),
+            Action::Request { headers, .. } => headers.values().filter_map(|v| secret_name(v)).map(str::to_string).collect(),
+            _ => Vec::new(),
         })
         .collect();
     names.sort();
@@ -192,6 +207,16 @@ pub enum Action {
     AssertBodyField {
         path: String,
         equals: serde_json::Value,
+    },
+    /// Phase 8B — the status is one of these. (`ASSERT_STATUS` is one exact status; the cases derived from an OpenAPI document accept
+    /// every success status the document lists, or every client error it documents.)
+    AssertStatusIn {
+        statuses: Vec<u16>,
+    },
+    /// Phase 8B — the JSON body fits this schema (`json_schema.rs`): its types, required properties, items, enums and bounds. What
+    /// `ASSERT_BODY_FIELD` (one field equals one value) cannot say: that the response has the shape the specification promises.
+    AssertBodySchema {
+        schema: serde_json::Value,
     },
 }
 
@@ -601,6 +626,18 @@ pub async fn validate_plan(plan: &ExecutionPlan) -> Result<(), Vec<String>> {
         if let Action::Fill { value, .. } = action {
             if let Some(problem) = secret_reference_problem(value) {
                 reasons.push(problem);
+            }
+        }
+        if let Action::Request { headers, .. } = action {
+            for (name, value) in headers {
+                if let Some(problem) = header_reference_problem(name, value) {
+                    reasons.push(problem);
+                }
+            }
+        }
+        if let Action::AssertStatusIn { statuses } = action {
+            if statuses.is_empty() {
+                reasons.push("ASSERT_STATUS_IN needs at least one status".to_string());
             }
         }
         let url = match action {
@@ -1205,6 +1242,92 @@ mod tests {
                 "AIQA_LOGIN_ADMIN_USERNAME".to_string()
             ]
         );
+    }
+
+    fn api_plan(headers: &[(&str, &str)], expect: Vec<Action>) -> ExecutionPlan {
+        let mut actions = vec![Action::Request {
+            method: "GET".into(),
+            url: "http://93.184.216.34/pets".into(),
+            headers: headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            body: None,
+        }];
+        actions.extend(expect);
+        ExecutionPlan {
+            test_case_id: "t".into(),
+            execution_type: ExecutionType::Api,
+            target: Some("http://93.184.216.34/pets".into()),
+            actions,
+            compiler: CompilerMethod::Deterministic,
+            diagnostics: vec![],
+            provider: None,
+            model: None,
+        }
+    }
+
+    #[test]
+    fn a_plans_secret_names_include_the_ones_its_request_headers_refer_to() {
+        let plan = api_plan(
+            &[
+                ("Authorization", "env:AIQA_SECRET_API_TOKEN"),
+                ("X-Plain", "plain"),
+                ("X-Not-Allowed", "env:GROQ_API_KEY"),
+            ],
+            vec![],
+        );
+        let mut actions = plan.actions;
+        actions.push(Action::Fill {
+            selector: "#p".into(),
+            value: "env:AIQA_LOGIN_ADMIN_PASSWORD".into(),
+        });
+        assert_eq!(
+            secret_names_of(&actions),
+            vec![
+                "AIQA_LOGIN_ADMIN_PASSWORD".to_string(),
+                "AIQA_SECRET_API_TOKEN".to_string()
+            ],
+            "a name a plan may not use is not listed"
+        );
+    }
+
+    #[test]
+    fn only_a_header_value_that_starts_env_and_is_not_a_good_reference_is_a_problem() {
+        assert_eq!(header_reference_problem("Authorization", "Bearer abc"), None);
+        assert_eq!(
+            header_reference_problem("Authorization", "env:AIQA_SECRET_API_TOKEN"),
+            None
+        );
+        let problem = header_reference_problem("Authorization", "env:GROQ_API_KEY").expect("a problem");
+        assert!(problem.contains("the header Authorization"), "problem={problem}");
+        assert!(problem.contains("AIQA_LOGIN_ or AIQA_SECRET_"), "problem={problem}");
+        assert!(!problem.contains("GROQ_API_KEY"), "the variable asked for is not repeated: {problem}");
+    }
+
+    #[tokio::test]
+    async fn validate_plan_rejects_a_bad_header_reference_and_an_empty_status_list_and_accepts_the_new_assertions() {
+        assert!(validate_plan(&api_plan(&[("Authorization", "env:AIQA_SECRET_API_TOKEN")], vec![])).await.is_ok());
+        assert!(validate_plan(&api_plan(&[("X", "plain")], vec![Action::AssertStatusIn { statuses: vec![200, 201] }, Action::AssertBodySchema { schema: serde_json::json!({"type": "object"}) }]))
+            .await
+            .is_ok());
+        let reasons = validate_plan(&api_plan(&[("Authorization", "env:GEMINI_API_KEY")], vec![]))
+            .await
+            .unwrap_err();
+        assert_eq!(reasons.len(), 1);
+        assert!(reasons[0].contains("the header Authorization"), "{reasons:?}");
+        assert!(!reasons[0].contains("GEMINI_API_KEY"), "{reasons:?}");
+        let reasons = validate_plan(&api_plan(&[], vec![Action::AssertStatusIn { statuses: vec![] }]))
+            .await
+            .unwrap_err();
+        assert_eq!(reasons, vec!["ASSERT_STATUS_IN needs at least one status".to_string()]);
+    }
+
+    #[test]
+    fn the_new_assertions_are_written_and_read_by_their_wire_names() {
+        let in_list = serde_json::to_value(Action::AssertStatusIn { statuses: vec![200, 404] }).unwrap();
+        assert_eq!(in_list, serde_json::json!({"type": "ASSERT_STATUS_IN", "statuses": [200, 404]}));
+        let schema = serde_json::to_value(Action::AssertBodySchema { schema: serde_json::json!({"type": "object"}) }).unwrap();
+        assert_eq!(schema, serde_json::json!({"type": "ASSERT_BODY_SCHEMA", "schema": {"type": "object"}}));
+        let back: Action = serde_json::from_value(in_list).unwrap();
+        assert_eq!(back, Action::AssertStatusIn { statuses: vec![200, 404] });
     }
 
     #[test]

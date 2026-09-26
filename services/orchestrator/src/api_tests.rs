@@ -7766,6 +7766,103 @@ const HEALTH_URL: &str = "http://127.0.0.1:8080/health";
 /// tears down, so it genuinely outlives every individual test.
 static HEALTH_TARGET_STARTED: std::sync::Once = std::sync::Once::new();
 
+/// Phase 8B — a small JSON API on the same self-contained :8080 target, for the tests of API tests made from an OpenAPI document. It
+/// keeps to its own document (`OPENAPI_FIXTURE`) on purpose in one place, so that a case fails for a reason a person can read: a
+/// bad path is answered 400 where the document promises only a 404.
+fn openapi_fixture_router() -> axum::Router {
+    use axum::extract::{Path, Query};
+    use axum::http::{HeaderMap, StatusCode};
+    use axum::response::{IntoResponse, Response};
+    use axum::routing::get;
+    use axum::Json;
+    use serde_json::{json, Value};
+    use std::collections::HashMap;
+
+    async fn pets(Query(q): Query<HashMap<String, String>>) -> Response {
+        match q.get("limit").map(|l| l.parse::<i64>()) {
+            Some(Ok(_)) => Json(json!([{"id": 1, "name": "Rex"}])).into_response(),
+            _ => (StatusCode::BAD_REQUEST, Json(json!({"error": "limit must be a whole number"}))).into_response(),
+        }
+    }
+    async fn new_pet(Json(body): Json<Value>) -> Response {
+        if body.get("name").and_then(Value::as_str).is_some() && body.get("age").and_then(Value::as_i64).is_some() {
+            (StatusCode::CREATED, Json(json!({"id": 2, "name": body["name"]}))).into_response()
+        } else {
+            (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"error": "name and age are needed"}))).into_response()
+        }
+    }
+    async fn pet(Path(id): Path<String>) -> Response {
+        match id.parse::<i64>() {
+            Ok(1) => Json(json!({"id": 1, "name": "Rex"})).into_response(),
+            Ok(_) => (StatusCode::NOT_FOUND, Json(json!({"error": "no such pet"}))).into_response(),
+            Err(_) => (StatusCode::BAD_REQUEST, Json(json!({"error": "the id must be a whole number"}))).into_response(),
+        }
+    }
+    async fn secure(headers: HeaderMap) -> Response {
+        if headers.get("authorization").and_then(|v| v.to_str().ok()) == Some("Bearer t8b-test-token") {
+            Json(json!({"ok": true})).into_response()
+        } else {
+            (StatusCode::UNAUTHORIZED, Json(json!({"error": "no credential"}))).into_response()
+        }
+    }
+    // The document itself, its server written the way many documents write it: relative to where the document is served from.
+    async fn document() -> Json<Value> {
+        let mut document = openapi_fixture_document();
+        document["servers"] = json!([{"url": "/fixture"}]);
+        Json(document)
+    }
+    axum::Router::new()
+        .route("/fixture/openapi.json", get(document))
+        .route("/fixture/pets", get(pets).post(new_pet))
+        .route("/fixture/pets/:id", get(pet))
+        .route("/fixture/secure", get(secure))
+}
+
+/// The document of the fixture API above, as its people would write it. Its one lie is on purpose: `GET /pets/{petId}` documents a
+/// 404 and no 400, and the fixture answers a bad id with 400.
+fn openapi_fixture_document() -> serde_json::Value {
+    let pet = serde_json::json!({"type": "object", "required": ["id", "name"], "properties": {"id": {"type": "integer"}, "name": {"type": "string"}}});
+    serde_json::json!({
+        "openapi": "3.0.3",
+        "info": {"title": "Fixture Pets", "version": "1.0"},
+        "servers": [{"url": "http://127.0.0.1:8080/fixture"}],
+        "paths": {
+            "/pets": {
+                "get": {
+                    "operationId": "listPets",
+                    "parameters": [{"name": "limit", "in": "query", "required": true, "schema": {"type": "integer", "minimum": 1}}],
+                    "responses": {
+                        "200": {"description": "ok", "content": {"application/json": {"schema": {"type": "array", "items": pet}}}},
+                        "400": {"description": "bad"},
+                    },
+                },
+                "post": {
+                    "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["name", "age"], "properties": {"name": {"type": "string"}, "age": {"type": "integer"}}}}}},
+                    "responses": {
+                        "201": {"description": "created", "content": {"application/json": {"schema": {"type": "object", "required": ["id"], "properties": {"id": {"type": "integer"}}}}}},
+                        "422": {"description": "invalid"},
+                    },
+                },
+            },
+            "/pets/{petId}": {
+                "get": {
+                    "parameters": [{"name": "petId", "in": "path", "required": true, "schema": {"type": "integer"}}],
+                    "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": pet}}}, "404": {"description": "none"}},
+                },
+            },
+            "/secure": {
+                "get": {
+                    "security": [{"bearer": []}],
+                    "responses": {
+                        "200": {"description": "ok", "content": {"application/json": {"schema": {"type": "object", "required": ["ok"], "properties": {"ok": {"type": "boolean"}}}}}},
+                        "401": {"description": "no"},
+                    },
+                },
+            },
+        },
+    })
+}
+
 async fn ensure_local_health_target() {
     HEALTH_TARGET_STARTED.call_once(|| {
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
@@ -7774,8 +7871,9 @@ async fn ensure_local_health_target() {
                 "build a dedicated runtime for the self-contained :8080 health test target",
             );
             rt.block_on(async move {
-                let app =
-                    axum::Router::new().route("/health", axum::routing::get(|| async { "ok" }));
+                let app = axum::Router::new()
+                    .route("/health", axum::routing::get(|| async { "ok" }))
+                    .merge(openapi_fixture_router());
                 match tokio::net::TcpListener::bind("127.0.0.1:8080").await {
                     Ok(listener) => {
                         let _ = ready_tx.send(());
@@ -14754,4 +14852,414 @@ async fn phase8a_a_provider_with_no_price_is_used_and_counted_but_never_given_a_
         ["3 calls went to models with no price (a local model, or a hosted one whose price is not entered in Settings), so no cost is counted for them."],
         "{body}"
     );
+}
+
+// ------------------------------------------------- Phase 8B: API tests made from an OpenAPI document
+
+async fn openapi_call(state: &AppState, method: &str, path: &str, key: &str, body: Option<Value>) -> (StatusCode, Value) {
+    send(state, req(method, path, Some(key), body)).await
+}
+
+/// A request for the fixture API's document, with the credential given as a reference to `secret_variable`.
+fn openapi_body(secret_variable: &str, extra: Value) -> Value {
+    let mut body = serde_json::json!({
+        "spec": openapi_fixture_document().to_string(),
+        "auth_headers": {"Authorization": format!("env:{secret_variable}")},
+    });
+    for (key, value) in extra.as_object().cloned().unwrap_or_default() {
+        body[key] = value;
+    }
+    body
+}
+
+/// The report of an OpenAPI run once its execution has ended.
+async fn openapi_report_when_done(state: &AppState, project: Uuid, id: &str, key: &str) -> Value {
+    for _ in 0..200 {
+        let (status, report) = openapi_call(state, "GET", &format!("/api/v1/projects/{project}/openapi/runs/{id}"), key, None).await;
+        assert_eq!(status, StatusCode::OK, "body={report}");
+        if report["final"] == true {
+            return report;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    panic!("the OpenAPI run did not end in 40 s");
+}
+
+fn case_of<'a>(report: &'a Value, id: &str) -> &'a Value {
+    report["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|op| op["cases"].as_array().unwrap().iter())
+        .find(|c| c["id"] == id)
+        .unwrap_or_else(|| panic!("no case {id} in {report}"))
+}
+
+fn verdict_of<'a>(report: &'a Value, operation: &str) -> &'a str {
+    report["operations"].as_array().unwrap().iter().find(|op| op["id"] == operation).unwrap()["verdict"].as_str().unwrap()
+}
+
+const FIXTURE_CASE_IDS: [&str; 12] = [
+    "GET /pets#HAPPY",
+    "GET /pets#MISSING_REQUIRED:limit",
+    "GET /pets#WRONG_TYPE:limit",
+    "POST /pets#HAPPY",
+    "POST /pets#MISSING_REQUIRED:body.name",
+    "POST /pets#MISSING_REQUIRED:body.age",
+    "POST /pets#WRONG_TYPE:body.age",
+    "GET /pets/{petId}#HAPPY",
+    "GET /pets/{petId}#WRONG_TYPE:petId",
+    "GET /pets/{petId}#NOT_FOUND:petId",
+    "GET /secure#HAPPY",
+    "GET /secure#NO_AUTH",
+];
+
+#[tokio::test]
+async fn phase8b_the_plan_shows_the_cases_that_would_be_made_and_runs_nothing() {
+    ensure_local_health_target().await;
+    std::env::set_var("AIQA_SECRET_T8B_PLAN", "Bearer t8b-test-token");
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Phase8B Plan").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, plan) = openapi_call(&state, "POST", &format!("/api/v1/projects/{project}/openapi/plan"), &owner, Some(openapi_body("AIQA_SECRET_T8B_PLAN", serde_json::json!({})))).await;
+    assert_eq!(status, StatusCode::OK, "body={plan}");
+    assert_eq!(plan["spec"]["title"], "Fixture Pets");
+    assert_eq!(plan["spec"]["version"], "1.0");
+    assert_eq!(plan["base_url"], "http://127.0.0.1:8080/fixture", "the document's own server when none is given");
+    let operations: Vec<&str> = plan["operations"].as_array().unwrap().iter().map(|o| o["id"].as_str().unwrap()).collect();
+    assert_eq!(operations, ["GET /pets", "POST /pets", "GET /pets/{petId}", "GET /secure"]);
+    let cases: Vec<&str> = plan["cases"].as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap()).collect();
+    assert_eq!(cases, FIXTURE_CASE_IDS);
+    assert_eq!(plan["counts"], serde_json::json!({"cases": 12, "runnable": 8, "not_run": 4}));
+    assert_eq!(plan["missing_secrets"], serde_json::json!([]));
+    let happy = plan["cases"].as_array().unwrap().iter().find(|c| c["id"] == "GET /pets#HAPPY").unwrap();
+    assert_eq!(happy["request"]["url"], "http://127.0.0.1:8080/fixture/pets?limit=1");
+    assert_eq!(happy["request"]["headers"]["Authorization"], "env:AIQA_SECRET_T8B_PLAN", "the credential is a reference, in the plan as anywhere");
+    assert_eq!(happy["expect"]["statuses"], serde_json::json!([200]));
+    assert_eq!(plan["cases"].as_array().unwrap().iter().filter(|c| !c["skipped"].is_null()).count(), 4, "the four that change data are not run");
+
+    // Nothing was made: no run, no execution.
+    let (_, runs) = openapi_call(&state, "GET", &format!("/api/v1/projects/{project}/openapi/runs"), &owner, None).await;
+    assert_eq!(runs["runs"], serde_json::json!([]));
+    let (_, executions) = openapi_call(&state, "GET", &format!("/api/v1/projects/{project}/executions"), &owner, None).await;
+    assert_eq!(executions.as_array().map(Vec::len), Some(0), "{executions}");
+
+    // A variable that is not set is named, and is not a reason to refuse the plan.
+    std::env::remove_var("AIQA_SECRET_T8B_PLAN");
+    let (status, plan) = openapi_call(&state, "POST", &format!("/api/v1/projects/{project}/openapi/plan"), &owner, Some(openapi_body("AIQA_SECRET_T8B_PLAN", serde_json::json!({})))).await;
+    assert_eq!(status, StatusCode::OK, "body={plan}");
+    assert_eq!(plan["missing_secrets"], serde_json::json!(["AIQA_SECRET_T8B_PLAN"]));
+}
+
+#[tokio::test]
+async fn phase8b_a_document_in_yaml_and_the_kinds_and_operations_asked_for_are_honoured() {
+    ensure_local_health_target().await;
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Phase8B Yaml").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let yaml = "openapi: 3.0.0\ninfo:\n  title: Tiny\n  version: \"2\"\npaths:\n  /pets:\n    get:\n      responses:\n        \"200\":\n          description: ok\n";
+    let (status, plan) = openapi_call(
+        &state,
+        "POST",
+        &format!("/api/v1/projects/{project}/openapi/plan"),
+        &owner,
+        Some(serde_json::json!({"spec": yaml, "base_url": "http://127.0.0.1:8080/fixture"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={plan}");
+    assert_eq!(plan["spec"]["title"], "Tiny");
+    assert_eq!(plan["cases"][0]["id"], "GET /pets#HAPPY");
+
+    let (status, plan) = openapi_call(
+        &state,
+        "POST",
+        &format!("/api/v1/projects/{project}/openapi/plan"),
+        &owner,
+        Some(openapi_body("AIQA_SECRET_T8B_YAML", serde_json::json!({"kinds": ["NOT_FOUND"], "operations": ["GET /pets/{petId}"]}))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={plan}");
+    let ids: Vec<&str> = plan["cases"].as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["GET /pets/{petId}#NOT_FOUND:petId"]);
+}
+
+#[tokio::test]
+async fn phase8b_the_cases_run_as_one_execution_and_the_report_says_what_each_operation_came_to() {
+    ensure_local_health_target().await;
+    std::env::set_var("AIQA_SECRET_T8B_RUN", "Bearer t8b-test-token");
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Phase8B Run").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    let (status, created) = openapi_call(&state, "POST", &format!("/api/v1/projects/{project}/openapi/runs"), &owner, Some(openapi_body("AIQA_SECRET_T8B_RUN", serde_json::json!({})))).await;
+    assert_eq!(status, StatusCode::CREATED, "body={created}");
+    assert_eq!((created["cases"].clone(), created["cases_run"].clone(), created["not_run"].clone()), (serde_json::json!(12), serde_json::json!(8), serde_json::json!(4)));
+    let id = created["id"].as_str().unwrap().to_string();
+    let run_id = created["run_id"].as_str().unwrap().to_string();
+
+    // It is an ordinary execution of the project: one task for each case that is run.
+    let (status, execution) = openapi_call(&state, "GET", &format!("/api/v1/projects/{project}/executions/{run_id}"), &owner, None).await;
+    assert_eq!(status, StatusCode::OK, "body={execution}");
+    assert_eq!(execution["tasks"].as_array().unwrap().len(), 8);
+    assert!(execution["name"].as_str().unwrap().starts_with("OpenAPI tests: Fixture Pets 1.0"), "{}", execution["name"]);
+
+    let report = openapi_report_when_done(&state, project, &id, &owner).await;
+    assert_eq!(report["spec"]["base_url"], "http://127.0.0.1:8080/fixture");
+    let s = &report["summary"];
+    assert_eq!(
+        (s["cases"].clone(), s["ran"].clone(), s["passed"].clone(), s["failed"].clone(), s["error"].clone(), s["pending"].clone(), s["not_run"].clone()),
+        (serde_json::json!(12), serde_json::json!(8), serde_json::json!(7), serde_json::json!(1), serde_json::json!(0), serde_json::json!(0), serde_json::json!(4)),
+        "{report}"
+    );
+    assert_eq!(s["pass_rate"], 0.875);
+    assert_eq!(report["final"], true);
+
+    assert_eq!(verdict_of(&report, "GET /pets"), "PASSED");
+    assert_eq!(verdict_of(&report, "POST /pets"), "NOT_RUN");
+    assert_eq!(verdict_of(&report, "GET /pets/{petId}"), "FAILED");
+    assert_eq!(verdict_of(&report, "GET /secure"), "PASSED");
+    assert_eq!(report["by_kind"]["HAPPY"], serde_json::json!({"passed": 3, "failed": 0, "error": 0, "pending": 0, "not_run": 1}));
+    assert_eq!(report["by_kind"]["WRONG_TYPE"], serde_json::json!({"passed": 1, "failed": 1, "error": 0, "pending": 0, "not_run": 1}));
+    assert_eq!(report["by_kind"]["NO_AUTH"]["passed"], 1);
+
+    // The case that does not pass says why, in the words of what the document promised and what came back.
+    let drift = case_of(&report, "GET /pets/{petId}#WRONG_TYPE:petId");
+    assert_eq!(drift["outcome"], "FAILED");
+    assert_eq!(drift["expect"]["statuses"], serde_json::json!([404]));
+    assert_eq!(drift["actual"]["status"], 400);
+    assert!(drift["reason"].as_str().unwrap().contains("Status is one of 404: got 400"), "{}", drift["reason"]);
+    assert!(drift["request"]["url"].as_str().unwrap().ends_with("/fixture/pets/not-a-number"));
+    assert_eq!(case_of(&report, "GET /secure#NO_AUTH")["outcome"], "PASSED");
+    assert_eq!(case_of(&report, "GET /pets#HAPPY")["expect"]["schema"], true, "the answer was also checked against the document's schema");
+    assert_eq!(case_of(&report, "POST /pets#HAPPY")["outcome"], "NOT_RUN");
+    assert!(case_of(&report, "POST /pets#HAPPY")["reason"].as_str().unwrap().contains("changes data"));
+
+    assert_eq!(report["coverage"]["operations"], 4);
+    assert_eq!(report["coverage"]["tested"], 3);
+    assert_eq!(report["coverage"]["not_tested"], serde_json::json!([{"operation": "POST /pets", "reason": "none of its cases was run"}]));
+    let notes: Vec<&str> = report["notes"].as_array().unwrap().iter().map(|n| n.as_str().unwrap()).collect();
+    assert!(notes.iter().any(|n| n.starts_with("4 case(s) were not run because their request changes data")), "{notes:?}");
+
+    // The report as text to paste.
+    let response = router(state.clone()).oneshot(req("GET", &format!("/api/v1/projects/{project}/openapi/runs/{id}?format=markdown"), Some(&owner), None)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.headers().get("content-type").unwrap().to_str().unwrap().starts_with("text/markdown"));
+    let markdown = String::from_utf8(response.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
+    assert!(markdown.contains("# API tests from Fixture Pets 1.0"), "{markdown}");
+    assert!(markdown.contains("| GET /pets/{petId} | FAILED | 2 | 1 | 0 | 0 |"), "{markdown}");
+    assert!(markdown.contains("## What did not pass"), "{markdown}");
+    assert!(markdown.contains("Operations tested: 3 of 4."), "{markdown}");
+
+    // What was remembered, and what was kept out of it: no credential anywhere, in the run's record or in its evidence.
+    let row = state.store.get_openapi_run(Uuid::parse_str(&id).unwrap()).await.unwrap().unwrap();
+    assert!(!serde_json::to_string(&row.cases).unwrap().contains("t8b-test-token"));
+    assert_eq!(row.options["auth_headers"], serde_json::json!(["Authorization"]), "only the name of the header is kept");
+    let evidence = state.store.list_evidence_for_run(Uuid::parse_str(&run_id).unwrap()).await.unwrap();
+    assert!(!evidence.is_empty());
+    for e in &evidence {
+        let text = String::from_utf8_lossy(&state.evidence.read(&e.object_key).unwrap()).to_string();
+        assert!(!text.contains("t8b-test-token"), "the credential reached the evidence: {text}");
+    }
+
+    // Audited, and in the project's list.
+    let (_, audit) = openapi_call(&state, "GET", &format!("/api/v1/projects/{project}/audit"), &owner, None).await;
+    assert!(audit["rows"].as_array().unwrap().iter().any(|r| r["action"] == "openapi.run"), "{audit}");
+    let (_, list) = openapi_call(&state, "GET", &format!("/api/v1/projects/{project}/openapi/runs"), &owner, None).await;
+    assert_eq!(list["runs"].as_array().unwrap().len(), 1);
+    assert_eq!(list["runs"][0]["id"], id.as_str());
+    assert_eq!((list["runs"][0]["cases"].clone(), list["runs"][0]["cases_run"].clone()), (serde_json::json!(12), serde_json::json!(8)));
+    assert_eq!(list["runs"][0]["title"], "Fixture Pets");
+}
+
+#[tokio::test]
+async fn phase8b_the_requests_that_change_data_are_run_only_when_asked_for() {
+    ensure_local_health_target().await;
+    std::env::set_var("AIQA_SECRET_T8B_UNSAFE", "Bearer t8b-test-token");
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Phase8B Unsafe").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let (status, created) = openapi_call(&state, "POST", &format!("/api/v1/projects/{project}/openapi/runs"), &owner, Some(openapi_body("AIQA_SECRET_T8B_UNSAFE", serde_json::json!({"include_unsafe": true})))).await;
+    assert_eq!(status, StatusCode::CREATED, "body={created}");
+    assert_eq!((created["cases_run"].clone(), created["not_run"].clone()), (serde_json::json!(12), serde_json::json!(0)));
+    let report = openapi_report_when_done(&state, project, created["id"].as_str().unwrap(), &owner).await;
+    assert_eq!(
+        (report["summary"]["passed"].clone(), report["summary"]["failed"].clone(), report["summary"]["not_run"].clone()),
+        (serde_json::json!(11), serde_json::json!(1), serde_json::json!(0)),
+        "{report}"
+    );
+    assert_eq!(verdict_of(&report, "POST /pets"), "PASSED");
+    assert_eq!(case_of(&report, "POST /pets#HAPPY")["outcome"], "PASSED");
+    assert_eq!(case_of(&report, "POST /pets#MISSING_REQUIRED:body.name")["outcome"], "PASSED", "the API refuses it with the 422 the document promises");
+    assert_eq!(report["coverage"]["tested"], 4);
+    let notes: Vec<&str> = report["notes"].as_array().unwrap().iter().map(|n| n.as_str().unwrap()).collect();
+    assert!(!notes.iter().any(|n| n.contains("changes data")), "{notes:?}");
+    let (_, audit) = openapi_call(&state, "GET", &format!("/api/v1/projects/{project}/audit"), &owner, None).await;
+    let detail = audit["rows"].as_array().unwrap().iter().find(|r| r["action"] == "openapi.run").unwrap()["detail"].as_str().unwrap().to_string();
+    assert!(detail.contains("unsafe methods allowed"), "{detail}");
+}
+
+#[tokio::test]
+async fn phase8b_a_relative_server_is_worked_out_from_the_address_the_document_was_fetched_from() {
+    ensure_local_health_target().await;
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Phase8B Relative Server").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let path = format!("/api/v1/projects/{project}/openapi/plan");
+    let message = |body: &Value| body["error"]["message"].as_str().unwrap_or("").to_string();
+
+    // Fetched from an address, the server `/fixture` is that path on the address's own host.
+    let fetched = serde_json::json!({"spec_url": "http://127.0.0.1:8080/fixture/openapi.json", "kinds": ["HAPPY"]});
+    let (status, plan) = openapi_call(&state, "POST", &path, &owner, Some(fetched.clone())).await;
+    assert_eq!(status, StatusCode::OK, "body={plan}");
+    assert_eq!(plan["spec"]["servers"], serde_json::json!(["/fixture"]), "the document says what it says");
+    assert_eq!(plan["base_url"], "http://127.0.0.1:8080/fixture");
+    let happy = plan["cases"].as_array().unwrap().iter().find(|c| c["id"] == "GET /pets#HAPPY").unwrap();
+    assert_eq!(happy["request"]["url"], "http://127.0.0.1:8080/fixture/pets?limit=1");
+
+    // A base address that is given still wins.
+    let mut given = fetched.clone();
+    given["base_url"] = serde_json::json!("http://127.0.0.1:8080/elsewhere");
+    let (status, plan) = openapi_call(&state, "POST", &path, &owner, Some(given)).await;
+    assert_eq!(status, StatusCode::OK, "body={plan}");
+    assert_eq!(plan["base_url"], "http://127.0.0.1:8080/elsewhere");
+
+    // The same document pasted has no address to work `/fixture` out from: the person is told what to give.
+    let mut pasted = openapi_fixture_document();
+    pasted["servers"] = serde_json::json!([{"url": "/fixture"}]);
+    let (status, body) = openapi_call(&state, "POST", &path, &owner, Some(serde_json::json!({"spec": pasted.to_string()}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(message(&body).contains("give `base_url`") && message(&body).contains("`spec_url`"), "{body}");
+}
+
+#[tokio::test]
+async fn phase8b_a_run_is_refused_in_words_before_anything_starts() {
+    ensure_local_health_target().await;
+    std::env::set_var("AIQA_SECRET_T8B_REFUSE", "Bearer t8b-test-token");
+    std::env::remove_var("AIQA_SECRET_T8B_UNSET");
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Phase8B Refusals").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let path = format!("/api/v1/projects/{project}/openapi/runs");
+    let run = |body: Value| openapi_call(&state, "POST", &path, &owner, Some(body));
+    let message = |body: &Value| body["error"]["message"].as_str().unwrap_or("").to_string();
+
+    let (status, body) = run(serde_json::json!({})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(message(&body).contains("`spec` (its text) or as `spec_url`"), "{body}");
+    let (status, body) = run(serde_json::json!({"spec": "{}", "spec_url": "https://x.test/a.json"})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(message(&body).contains("not both"), "{body}");
+    let (status, body) = run(serde_json::json!({"spec": "{\"hello\": 1}"})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(message(&body).contains("missing required OpenAPI/Swagger root fields") || message(&body).contains("not an OpenAPI"), "{body}");
+    let (status, body) = run(serde_json::json!({"spec": "not json or yaml at all: [", "base_url": "http://127.0.0.1:8080"})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, body) = run(serde_json::json!({"spec_url": "http://127.0.0.1:1/spec.json"})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(message(&body).contains("could not fetch the document"), "{body}");
+
+    let (status, body) = run(openapi_body("AIQA_SECRET_T8B_REFUSE", serde_json::json!({"operations": ["GET /nowhere"]}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(message(&body).contains("the document has no operation \"GET /nowhere\""), "{body}");
+    let (status, body) = run(openapi_body("AIQA_SECRET_T8B_REFUSE", serde_json::json!({"base_url": "http://127.0.0.1:9/elsewhere"}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(message(&body).starts_with("TARGET_NOT_ALLOWED:"), "{body}");
+    let (status, body) = run(openapi_body("AIQA_SECRET_T8B_UNSET", serde_json::json!({}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(message(&body).contains("AIQA_SECRET_T8B_UNSET is not set"), "{body}");
+    let (status, body) = run(serde_json::json!({"spec": openapi_fixture_document().to_string(), "auth_headers": {"Authorization": "Bearer a-typed-in-token"}})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(message(&body).contains("must be a secret reference"), "{body}");
+    assert!(!message(&body).contains("a-typed-in-token"), "a value typed by mistake is never repeated: {body}");
+    let (status, body) = run(serde_json::json!({"spec": openapi_fixture_document().to_string(), "auth_headers": {"Bad:Name": "env:AIQA_SECRET_T8B_REFUSE"}})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "a header name that cannot be sent is refused now, not by every case later: {body}");
+    assert!(message(&body).contains("needs a name HTTP allows") && message(&body).contains("\"Bad:Name\""), "{body}");
+    let (status, body) = run(openapi_body("AIQA_SECRET_T8B_REFUSE", serde_json::json!({"kinds": ["HAPPY"], "operations": ["POST /pets"]}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(message(&body).contains("there is nothing to run: all 1 case(s) change data on the server"), "{body}");
+    for bad in [0, 9] {
+        let (status, body) = run(openapi_body("AIQA_SECRET_T8B_REFUSE", serde_json::json!({"concurrency": bad}))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {body}");
+        assert!(message(&body).contains("concurrency must be from 1 to 8"), "{body}");
+    }
+
+    // None of that made a run.
+    let (_, list) = openapi_call(&state, "GET", &path, &owner, None).await;
+    assert_eq!(list["runs"], serde_json::json!([]));
+    let (_, executions) = openapi_call(&state, "GET", &format!("/api/v1/projects/{project}/executions"), &owner, None).await;
+    assert_eq!(executions.as_array().map(Vec::len), Some(0), "{executions}");
+}
+
+#[tokio::test]
+async fn phase8b_deleting_a_project_removes_its_openapi_runs_and_only_its_own() {
+    ensure_local_health_target().await;
+    std::env::set_var("AIQA_SECRET_T8B_DELETE", "Bearer t8b-test-token");
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let rows = |project: Uuid| {
+        let pool = state.store.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM openapi_runs WHERE project_id = ?")
+                .bind(project.to_string())
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+    let mut projects = Vec::new();
+    for name in ["Phase8B Delete A", "Phase8B Delete B"] {
+        let project = make_project(&state, name).await;
+        let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+        let body = openapi_body("AIQA_SECRET_T8B_DELETE", serde_json::json!({"kinds": ["HAPPY"], "operations": ["GET /pets"]}));
+        let (status, made) = openapi_call(&state, "POST", &format!("/api/v1/projects/{project}/openapi/runs"), &owner, Some(body)).await;
+        assert_eq!(status, StatusCode::CREATED, "body={made}");
+        // Its execution has ended before the project goes.
+        openapi_report_when_done(&state, project, made["id"].as_str().unwrap(), &owner).await;
+        projects.push(project);
+    }
+    assert_eq!((rows(projects[0]).await, rows(projects[1]).await), (1, 1));
+    assert!(state.store.delete_project(projects[0]).await.unwrap());
+    assert_eq!(rows(projects[0]).await, 0, "the deleted project's OpenAPI runs are gone with it");
+    assert_eq!(rows(projects[1]).await, 1, "another project's are not touched");
+}
+
+#[tokio::test]
+async fn phase8b_who_may_plan_run_and_read_is_the_projects_operator_and_its_viewer() {
+    ensure_local_health_target().await;
+    std::env::set_var("AIQA_SECRET_T8B_ACCESS", "Bearer t8b-test-token");
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Phase8B Access").await;
+    let other = make_project(&state, "Phase8B Access Other").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let viewer = mint_key(&state, "viewer", Some(&project.to_string())).await;
+    let stranger = mint_key(&state, "operator", Some(&other.to_string())).await;
+    let body = openapi_body("AIQA_SECRET_T8B_ACCESS", serde_json::json!({"kinds": ["HAPPY"], "operations": ["GET /pets"]}));
+    let base = format!("/api/v1/projects/{project}/openapi");
+
+    let (status, _) = openapi_call(&state, "POST", &format!("{base}/plan"), &viewer, Some(body.clone())).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "a viewer cannot plan (an address is fetched)");
+    let (status, _) = openapi_call(&state, "POST", &format!("{base}/runs"), &viewer, Some(body.clone())).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "a viewer cannot run");
+    let (status, _) = openapi_call(&state, "POST", &format!("{base}/runs"), &stranger, Some(body.clone())).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "another project's key cannot run here");
+    let (status, created) = openapi_call(&state, "POST", &format!("{base}/runs"), &owner, Some(body)).await;
+    assert_eq!(status, StatusCode::CREATED, "body={created}");
+    let id = created["id"].as_str().unwrap();
+
+    let (status, _) = openapi_call(&state, "GET", &format!("{base}/runs"), &viewer, None).await;
+    assert_eq!(status, StatusCode::OK, "a viewer reads the list");
+    let (status, report) = openapi_call(&state, "GET", &format!("{base}/runs/{id}"), &viewer, None).await;
+    assert_eq!(status, StatusCode::OK, "a viewer reads a report: {report}");
+    let (status, _) = openapi_call(&state, "GET", &format!("{base}/runs/{id}"), &stranger, None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "another project's key cannot read it");
+    let (status, _) = openapi_call(&state, "GET", &format!("/api/v1/projects/{other}/openapi/runs/{id}"), &stranger, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "a run is not found under another project");
+    let (status, _) = openapi_call(&state, "GET", &format!("{base}/runs/{}", Uuid::new_v4()), &owner, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, body) = openapi_call(&state, "GET", &format!("{base}/runs/{id}?format=pdf"), &owner, None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"]["message"].as_str().unwrap().contains("format must be json or markdown"), "{body}");
+    let (status, body) = send(&state, req("GET", &format!("{base}/runs"), None, None)).await;
+    assert_envelope(status, &body, StatusCode::UNAUTHORIZED, "UNAUTHENTICATED");
+    openapi_report_when_done(&state, project, id, &owner).await;
 }
