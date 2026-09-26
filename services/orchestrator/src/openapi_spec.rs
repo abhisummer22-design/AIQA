@@ -185,6 +185,27 @@ fn servers_of(root: &Value) -> Vec<String> {
     servers
 }
 
+/// Where the API is when the document says so: its first absolute server. A relative server (`/api/v3`, or a Swagger `basePath` with no
+/// `host`) is, as OpenAPI defines it, relative to where the document is served from, so for a document fetched from an address it is
+/// resolved against that address; a document that names no server at all is served from the root of its address (the default `/`).
+/// A document that was pasted has no address, so a relative server is left for the person to give.
+pub fn base_address(servers: &[String], document_address: Option<&str>) -> Option<String> {
+    if let Some(absolute) = servers
+        .iter()
+        .find(|s| s.starts_with("http://") || s.starts_with("https://"))
+    {
+        return Some(absolute.clone());
+    }
+    let address = reqwest::Url::parse(document_address?.trim()).ok()?;
+    if !matches!(address.scheme(), "http" | "https") {
+        return None;
+    }
+    let resolved = address
+        .join(servers.first().map(String::as_str).unwrap_or("/"))
+        .ok()?;
+    Some(resolved.as_str().trim_end_matches('/').to_string())
+}
+
 /// A Swagger 2.0 parameter carries its type beside `name` and `in`, not under `schema`: the schema it means.
 fn swagger_parameter_schema(parameter: &Value) -> Value {
     if let Some(schema) = parameter.get("schema") {
@@ -782,6 +803,76 @@ mod tests {
         assert_eq!(parse(&doc).unwrap().servers, ["https://h.test/api"]);
         doc["schemes"] = json!(["http"]);
         assert_eq!(parse(&doc).unwrap().servers, ["http://h.test/api"]);
+    }
+
+    #[test]
+    fn the_api_is_where_the_first_absolute_server_says() {
+        let servers = vec![
+            "/relative".to_string(),
+            "https://api.example.test/v1".to_string(),
+            "http://other.test".to_string(),
+        ];
+        assert_eq!(
+            base_address(&servers, None).as_deref(),
+            Some("https://api.example.test/v1")
+        );
+        assert_eq!(
+            base_address(&servers, Some("https://docs.example.test/openapi.json")).as_deref(),
+            Some("https://api.example.test/v1"),
+            "an absolute server wins over where the document was fetched from"
+        );
+    }
+
+    #[test]
+    fn a_relative_server_is_resolved_against_the_address_the_document_was_fetched_from() {
+        let at = |server: &str, address: &str| base_address(&[server.to_string()], Some(address));
+        assert_eq!(
+            at(
+                "/api/v3",
+                "https://petstore3.swagger.io/api/v3/openapi.json"
+            )
+            .as_deref(),
+            Some("https://petstore3.swagger.io/api/v3")
+        );
+        assert_eq!(
+            at("/api/v3/", "http://h.test:8081/x/openapi.json?rev=2#top").as_deref(),
+            Some("http://h.test:8081/api/v3"),
+            "the port is kept; the query, the fragment and a trailing slash are not"
+        );
+        assert_eq!(
+            at("v2", "https://h.test/docs/openapi.json").as_deref(),
+            Some("https://h.test/docs/v2"),
+            "a path with no leading slash is relative to the document's folder"
+        );
+        assert_eq!(
+            at("../v2", "https://h.test/docs/openapi.json").as_deref(),
+            Some("https://h.test/v2")
+        );
+        assert_eq!(
+            at("/", "https://h.test/docs/openapi.json").as_deref(),
+            Some("https://h.test")
+        );
+    }
+
+    #[test]
+    fn a_document_with_no_server_is_served_from_the_root_of_its_address() {
+        assert_eq!(
+            base_address(&[], Some("https://h.test:8443/some/where/openapi.json")).as_deref(),
+            Some("https://h.test:8443")
+        );
+    }
+
+    #[test]
+    fn a_relative_server_of_a_document_that_was_pasted_has_nothing_to_be_resolved_against() {
+        let relative = vec!["/api".to_string()];
+        assert_eq!(base_address(&relative, None), None);
+        assert_eq!(base_address(&[], None), None);
+        assert_eq!(base_address(&relative, Some("not an address")), None);
+        assert_eq!(
+            base_address(&relative, Some("ftp://h.test/openapi.json")),
+            None
+        );
+        assert_eq!(base_address(&relative, Some("   ")), None);
     }
 
     #[test]

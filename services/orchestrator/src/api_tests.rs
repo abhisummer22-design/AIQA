@@ -7805,7 +7805,14 @@ fn openapi_fixture_router() -> axum::Router {
             (StatusCode::UNAUTHORIZED, Json(json!({"error": "no credential"}))).into_response()
         }
     }
+    // The document itself, its server written the way many documents write it: relative to where the document is served from.
+    async fn document() -> Json<Value> {
+        let mut document = openapi_fixture_document();
+        document["servers"] = json!([{"url": "/fixture"}]);
+        Json(document)
+    }
     axum::Router::new()
+        .route("/fixture/openapi.json", get(document))
         .route("/fixture/pets", get(pets).post(new_pet))
         .route("/fixture/pets/:id", get(pet))
         .route("/fixture/secure", get(secure))
@@ -15090,6 +15097,39 @@ async fn phase8b_the_requests_that_change_data_are_run_only_when_asked_for() {
     let (_, audit) = openapi_call(&state, "GET", &format!("/api/v1/projects/{project}/audit"), &owner, None).await;
     let detail = audit["rows"].as_array().unwrap().iter().find(|r| r["action"] == "openapi.run").unwrap()["detail"].as_str().unwrap().to_string();
     assert!(detail.contains("unsafe methods allowed"), "{detail}");
+}
+
+#[tokio::test]
+async fn phase8b_a_relative_server_is_worked_out_from_the_address_the_document_was_fetched_from() {
+    ensure_local_health_target().await;
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Phase8B Relative Server").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let path = format!("/api/v1/projects/{project}/openapi/plan");
+    let message = |body: &Value| body["error"]["message"].as_str().unwrap_or("").to_string();
+
+    // Fetched from an address, the server `/fixture` is that path on the address's own host.
+    let fetched = serde_json::json!({"spec_url": "http://127.0.0.1:8080/fixture/openapi.json", "kinds": ["HAPPY"]});
+    let (status, plan) = openapi_call(&state, "POST", &path, &owner, Some(fetched.clone())).await;
+    assert_eq!(status, StatusCode::OK, "body={plan}");
+    assert_eq!(plan["spec"]["servers"], serde_json::json!(["/fixture"]), "the document says what it says");
+    assert_eq!(plan["base_url"], "http://127.0.0.1:8080/fixture");
+    let happy = plan["cases"].as_array().unwrap().iter().find(|c| c["id"] == "GET /pets#HAPPY").unwrap();
+    assert_eq!(happy["request"]["url"], "http://127.0.0.1:8080/fixture/pets?limit=1");
+
+    // A base address that is given still wins.
+    let mut given = fetched.clone();
+    given["base_url"] = serde_json::json!("http://127.0.0.1:8080/elsewhere");
+    let (status, plan) = openapi_call(&state, "POST", &path, &owner, Some(given)).await;
+    assert_eq!(status, StatusCode::OK, "body={plan}");
+    assert_eq!(plan["base_url"], "http://127.0.0.1:8080/elsewhere");
+
+    // The same document pasted has no address to work `/fixture` out from: the person is told what to give.
+    let mut pasted = openapi_fixture_document();
+    pasted["servers"] = serde_json::json!([{"url": "/fixture"}]);
+    let (status, body) = openapi_call(&state, "POST", &path, &owner, Some(serde_json::json!({"spec": pasted.to_string()}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(message(&body).contains("give `base_url`") && message(&body).contains("`spec_url`"), "{body}");
 }
 
 #[tokio::test]

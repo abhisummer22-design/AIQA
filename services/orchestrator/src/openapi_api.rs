@@ -124,16 +124,11 @@ fn options_of(body: &OpenApiBody, spec: &Spec) -> Result<Options, ApiError> {
         .filter(|b| !b.is_empty())
     {
         Some(base) => base.to_string(),
-        None => spec
-            .servers
-            .iter()
-            .find(|s| s.starts_with("http://") || s.starts_with("https://"))
-            .cloned()
-            .ok_or_else(|| {
-                ApiError::validation(
-                    "the document names no absolute server address: give `base_url`",
-                )
-            })?,
+        None => openapi_spec::base_address(&spec.servers, body.spec_url.as_deref()).ok_or_else(|| {
+            ApiError::validation(
+                "the document names no absolute server address: give `base_url` (or give the document by its address, `spec_url`, so that its own server can be worked out from it)",
+            )
+        })?,
     };
     let options = Options {
         base_url,
