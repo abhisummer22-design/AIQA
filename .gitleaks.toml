@@ -1,5 +1,11 @@
 title = "AIQA Gitleaks Configuration"
 
+# Keep Gitleaks' own detection rules and add this repository's allowlist on top of them. A custom config REPLACES the default
+# rules unless it extends them: with only the [allowlist] below there were no rules at all, so Gitleaks found nothing and the
+# CI "Secret scanning" job passed whatever was committed (checked with a planted fake token: 0 findings without this, 1 with it).
+[extend]
+useDefault = true
+
 [allowlist]
 description = "Allowlist for test fixtures and dummy mock tokens"
 paths = [

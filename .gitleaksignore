@@ -1,0 +1,10 @@
+# Findings of the first full-history scan (2026-09-26) that were looked at and are not secrets. One fingerprint per line
+# (commit:file:rule:line). All are in the very first commit ("Baseline: AIQA repository as-received") and in old apps/web demo
+# code that is no longer in the tree: keys already shortened for display (sk-proj-49...a9B2), an example HTTP request and
+# idempotency-key samples. They are listed so that a scan of the whole history is clean and a NEW finding stands out.
+8f1d2c724eb849f64045bdd7875df49c4b36d28e:apps/web/src/services/api.ts:generic-api-key:244
+8f1d2c724eb849f64045bdd7875df49c4b36d28e:apps/web/server/brainEngine.ts:generic-api-key:161
+8f1d2c724eb849f64045bdd7875df49c4b36d28e:apps/web/server/brainEngine.ts:generic-api-key:218
+8f1d2c724eb849f64045bdd7875df49c4b36d28e:apps/web/server/brainEngine.ts:generic-api-key:237
+8f1d2c724eb849f64045bdd7875df49c4b36d28e:apps/web/src/components/views/TestCaseGeneratorView.tsx:generic-api-key:58
+8f1d2c724eb849f64045bdd7875df49c4b36d28e:apps/web/src/components/views/TestCaseGeneratorView.tsx:generic-api-key:826
