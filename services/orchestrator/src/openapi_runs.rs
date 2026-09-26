@@ -6,7 +6,9 @@
 //! assertions' own words (`ApiResultSummary`) are what say why a case failed.
 
 use crate::domain::TaskStatus;
-use crate::executor::ApiResultSummary;
+use crate::executor::{
+    ApiAssertionResult, ApiResultSummary, BODY_SCHEMA_DESCRIPTION, STATUS_IN_DESCRIPTION,
+};
 use crate::openapi_cases::{Case, CaseKind};
 use crate::store::{now_rfc3339, parse_ts, Store};
 use anyhow::Result;
@@ -201,17 +203,22 @@ fn shorten(text: &str) -> String {
     }
 }
 
-/// Why a case that ran did not pass, in the words of the assertions that did not hold.
+/// Why a case that ran did not pass, in the words of the assertions that did not hold. A body that does not fit the schema of the success
+/// answer says nothing when the status already says that was not the answer (an error page is not the success body), so it is left out.
 fn failure_reason(outcome: &TaskOutcome) -> Option<String> {
     if let Some(result) = &outcome.result {
-        let failed: Vec<String> = result
-            .assertions
+        let failed: Vec<&ApiAssertionResult> =
+            result.assertions.iter().filter(|a| !a.passed).collect();
+        let wrong_status = failed
             .iter()
-            .filter(|a| !a.passed)
+            .any(|a| a.description.starts_with(STATUS_IN_DESCRIPTION));
+        let told: Vec<String> = failed
+            .iter()
+            .filter(|a| !(wrong_status && a.description == BODY_SCHEMA_DESCRIPTION))
             .map(|a| format!("{}: got {}", a.description, a.actual))
             .collect();
-        if !failed.is_empty() {
-            return Some(shorten(&failed.join("; ")));
+        if !told.is_empty() {
+            return Some(shorten(&told.join("; ")));
         }
     }
     outcome
@@ -452,6 +459,15 @@ pub fn to_markdown(report: &Value) -> String {
         num(&coverage["tested"]),
         num(&coverage["operations"])
     ));
+    let not_tested: Vec<String> = coverage["not_tested"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|n| format!("{} ({})", text(&n["operation"]), text(&n["reason"])))
+        .collect();
+    if !not_tested.is_empty() {
+        out.push_str(&format!("Not tested: {}.\n", not_tested.join("; ")));
+    }
     out.push_str("\n| Operation | Verdict | Passed | Failed | Error | Not run |\n|---|---|---|---|---|---|\n");
     for op in report["operations"].as_array().into_iter().flatten() {
         let c = &op["counts"];
@@ -497,4 +513,780 @@ pub fn to_markdown(report: &Value) -> String {
         out.push('\n');
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::openapi_cases::{CaseRequest, Expect};
+
+    fn case(operation: &str, kind: CaseKind, skipped: bool) -> Case {
+        let (method, path) = operation.split_once(' ').unwrap();
+        Case {
+            id: format!("{operation}#{}", kind.name()),
+            operation: operation.to_string(),
+            kind,
+            title: format!("{operation}: {}", kind.name().to_lowercase()),
+            request: CaseRequest {
+                method: method.to_string(),
+                url: format!("https://api.test/v1{path}"),
+                headers: BTreeMap::new(),
+                body: None,
+            },
+            expect: Expect {
+                statuses: vec![200],
+                schema: Some(json!({"type": "object"})),
+                why: "the document lists 200 as the success response".to_string(),
+            },
+            skipped: skipped.then(|| {
+                format!("{method} changes data on the server: it is run only when unsafe methods are allowed")
+            }),
+        }
+    }
+
+    /// A case that is run by `task`, or, with none, one that is held back.
+    fn stored(operation: &str, kind: CaseKind, task: Option<&str>) -> StoredCase {
+        StoredCase {
+            case: case(operation, kind, task.is_none()),
+            task_id: task.map(str::to_string),
+        }
+    }
+
+    fn operation(id: &str, selected: bool, skipped: Option<&str>) -> StoredOperation {
+        StoredOperation {
+            id: id.to_string(),
+            summary: None,
+            tags: Vec::new(),
+            selected,
+            skipped: skipped.map(str::to_string),
+        }
+    }
+
+    fn row(
+        operations: Vec<StoredOperation>,
+        cases: Vec<StoredCase>,
+        notes: &[&str],
+    ) -> OpenApiRunRow {
+        OpenApiRunRow {
+            id: Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap(),
+            project_id: "proj".to_string(),
+            run_id: Uuid::parse_str("22222222-2222-4222-8222-222222222222").unwrap(),
+            title: "Pets".to_string(),
+            version: "1".to_string(),
+            base_url: "https://api.test/v1".to_string(),
+            options: json!({}),
+            operations,
+            cases,
+            notes: notes.iter().map(|n| n.to_string()).collect(),
+            created_by: "tester".to_string(),
+            created_at: DateTime::parse_from_rfc3339("2026-09-26T10:15:03Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        }
+    }
+
+    fn assertion(description: &str, actual: &str, passed: bool) -> ApiAssertionResult {
+        ApiAssertionResult {
+            description: description.to_string(),
+            actual: actual.to_string(),
+            passed,
+        }
+    }
+
+    fn outcome(
+        status: TaskStatus,
+        reason: Option<&str>,
+        result: Option<ApiResultSummary>,
+    ) -> TaskOutcome {
+        TaskOutcome {
+            status,
+            reason: reason.map(str::to_string),
+            result,
+        }
+    }
+
+    fn answer(http: u16, assertions: Vec<ApiAssertionResult>) -> ApiResultSummary {
+        ApiResultSummary {
+            status: http,
+            request_duration_ms: 12,
+            response_headers: Vec::new(),
+            assertions,
+        }
+    }
+
+    fn tasks(list: Vec<(&str, TaskOutcome)>) -> BTreeMap<String, TaskOutcome> {
+        list.into_iter()
+            .map(|(id, t)| (id.to_string(), t))
+            .collect()
+    }
+
+    fn status_assertion(list: &str, actual: &str, passed: bool) -> ApiAssertionResult {
+        assertion(&format!("{STATUS_IN_DESCRIPTION} {list}"), actual, passed)
+    }
+
+    fn body_assertion(actual: &str, passed: bool) -> ApiAssertionResult {
+        assertion(BODY_SCHEMA_DESCRIPTION, actual, passed)
+    }
+
+    // ------------------------------------------------------------------------------------------------- outcomes and verdicts
+
+    #[test]
+    fn every_status_a_task_can_end_in_is_one_outcome_of_a_case() {
+        use TaskStatus::*;
+        let table = [
+            (Passed, "PASSED"),
+            (Failed, "FAILED"),
+            (Timeout, "ERROR"),
+            (InfraError, "ERROR"),
+            (Queued, "PENDING"),
+            (Running, "PENDING"),
+            (Blocked, "NOT_RUN"),
+            (Skipped, "NOT_RUN"),
+            (Cancelled, "NOT_RUN"),
+            (NeedsReview, "NOT_RUN"),
+        ];
+        for (status, want) in table {
+            assert_eq!(outcome_of(status), want, "{status:?}");
+        }
+    }
+
+    #[test]
+    fn an_operation_comes_to_its_worst_outcome() {
+        let counts = |passed, failed, error, pending, not_run| Counts {
+            passed,
+            failed,
+            error,
+            pending,
+            not_run,
+        };
+        assert_eq!(counts(9, 1, 1, 1, 1).verdict(), "FAILED");
+        assert_eq!(counts(9, 0, 1, 1, 1).verdict(), "ERROR");
+        assert_eq!(counts(9, 0, 0, 1, 1).verdict(), "PENDING");
+        assert_eq!(counts(1, 0, 0, 0, 9).verdict(), "PASSED");
+        assert_eq!(counts(0, 0, 0, 0, 3).verdict(), "NOT_RUN");
+        assert_eq!(counts(0, 0, 0, 0, 0).verdict(), "NOT_RUN");
+    }
+
+    #[test]
+    fn counts_add_each_outcome_to_its_own_and_ran_is_all_that_answered_or_tried() {
+        let mut counts = Counts::default();
+        for outcome in [
+            "PASSED",
+            "PASSED",
+            "FAILED",
+            "ERROR",
+            "PENDING",
+            "NOT_RUN",
+            "anything else",
+        ] {
+            counts.add(outcome);
+        }
+        assert_eq!(
+            counts.json(),
+            json!({"passed": 2, "failed": 1, "error": 1, "pending": 1, "not_run": 2})
+        );
+        assert_eq!(counts.ran(), 4, "pending and not run have not run");
+    }
+
+    // ------------------------------------------------------------------------------------------------- the reason a case gives
+
+    #[test]
+    fn a_failed_case_says_which_assertions_did_not_hold_in_their_words() {
+        let failed = outcome(
+            TaskStatus::Failed,
+            Some("the task's own reason"),
+            Some(answer(
+                200,
+                vec![
+                    status_assertion("400", "200 OK", false),
+                    assertion("Header X is set", "(absent)", false),
+                    assertion("Something that held", "fine", true),
+                ],
+            )),
+        );
+        assert_eq!(
+            failure_reason(&failed).as_deref(),
+            Some("Status is one of 400: got 200 OK; Header X is set: got (absent)"),
+            "only the assertions that failed, each as it says itself"
+        );
+    }
+
+    #[test]
+    fn a_body_that_does_not_fit_is_left_out_when_the_status_already_says_it_was_not_the_answer() {
+        let both = outcome(
+            TaskStatus::Failed,
+            None,
+            Some(answer(
+                404,
+                vec![
+                    status_assertion("200", "404 Not Found", false),
+                    body_assertion(
+                        "(not valid JSON, content type application/json: expected value)",
+                        false,
+                    ),
+                ],
+            )),
+        );
+        assert_eq!(
+            failure_reason(&both).as_deref(),
+            Some("Status is one of 200: got 404 Not Found")
+        );
+        // With the right status, a body that does not fit is the whole story.
+        let body_only = outcome(
+            TaskStatus::Failed,
+            None,
+            Some(answer(
+                200,
+                vec![
+                    status_assertion("200", "200 OK", true),
+                    body_assertion("$.id: expected integer, got string", false),
+                ],
+            )),
+        );
+        assert_eq!(
+            failure_reason(&body_only).as_deref(),
+            Some("Body fits its schema: got $.id: expected integer, got string")
+        );
+        // A status that held does not hide a body that did not, and a body that held is not told.
+        let status_ok_body_ok_other_bad = outcome(
+            TaskStatus::Failed,
+            None,
+            Some(answer(
+                200,
+                vec![
+                    status_assertion("200", "200 OK", true),
+                    body_assertion("fits", true),
+                    assertion("Header X is set", "(absent)", false),
+                ],
+            )),
+        );
+        assert_eq!(
+            failure_reason(&status_ok_body_ok_other_bad).as_deref(),
+            Some("Header X is set: got (absent)")
+        );
+    }
+
+    #[test]
+    fn when_the_evidence_says_nothing_the_tasks_own_reason_is_used_and_when_there_is_none_there_is_none(
+    ) {
+        let passed_assertions_only = outcome(
+            TaskStatus::Failed,
+            Some("REQUEST_TIMEOUT: took too long"),
+            Some(answer(200, vec![status_assertion("200", "200 OK", true)])),
+        );
+        assert_eq!(
+            failure_reason(&passed_assertions_only).as_deref(),
+            Some("REQUEST_TIMEOUT: took too long")
+        );
+        let no_evidence = outcome(
+            TaskStatus::InfraError,
+            Some("CONNECTION_FAILED: refused"),
+            None,
+        );
+        assert_eq!(
+            failure_reason(&no_evidence).as_deref(),
+            Some("CONNECTION_FAILED: refused")
+        );
+        assert_eq!(
+            failure_reason(&outcome(TaskStatus::Failed, None, None)),
+            None
+        );
+        assert_eq!(
+            failure_reason(&outcome(TaskStatus::Failed, Some("  \n "), None)),
+            None,
+            "a reason that is only white space is none"
+        );
+    }
+
+    #[test]
+    fn a_reason_is_on_one_line_and_not_longer_than_the_limit() {
+        let flat = outcome(TaskStatus::Failed, Some("a\n  b\t\tc\r\nd"), None);
+        assert_eq!(failure_reason(&flat).as_deref(), Some("a b c d"));
+        let exactly = "x".repeat(MAX_REASON_CHARS);
+        assert_eq!(shorten(&exactly), exactly, "at the limit it is whole");
+        let over = "x".repeat(MAX_REASON_CHARS + 1);
+        assert_eq!(shorten(&over), format!("{}…", "x".repeat(MAX_REASON_CHARS)));
+        let words = "word ".repeat(200);
+        let cut = shorten(&words);
+        assert!(
+            cut.ends_with("word…")
+                || cut.ends_with("wor…")
+                || cut.ends_with("wo…")
+                || cut.ends_with("w…"),
+            "{cut}"
+        );
+        assert!(
+            !cut.contains(" …"),
+            "the white space before the cut is not kept: {cut}"
+        );
+        assert!(cut.chars().count() <= MAX_REASON_CHARS + 1);
+    }
+
+    // ------------------------------------------------------------------------------------------------- the report
+
+    /// Five cases of three operations, one that is run and passes, one that fails on a wrong status, one that could not be run, one
+    /// that was cancelled and one that changes data; and three operations that have no case at all.
+    fn ended_run() -> (OpenApiRunRow, BTreeMap<String, TaskOutcome>) {
+        let row = row(
+            vec![
+                operation("GET /pets", true, None),
+                operation("POST /pets", true, None),
+                operation("GET /pets/{id}", true, None),
+                operation("GET /old", true, Some("the operation is marked deprecated")),
+                operation("GET /other", false, None),
+                operation("GET /bare", true, None),
+            ],
+            vec![
+                stored("GET /pets", CaseKind::Happy, Some("api-0001")),
+                stored("GET /pets", CaseKind::MissingRequired, Some("api-0002")),
+                stored("POST /pets", CaseKind::Happy, None),
+                stored("GET /pets/{id}", CaseKind::Happy, Some("api-0003")),
+                stored("GET /pets/{id}", CaseKind::NotFound, Some("api-0004")),
+            ],
+            &["a note from the derivation"],
+        );
+        let tasks = tasks(vec![
+            ("api-0001", outcome(TaskStatus::Passed, None, None)),
+            (
+                "api-0002",
+                outcome(
+                    TaskStatus::Failed,
+                    None,
+                    Some(answer(
+                        200,
+                        vec![
+                            status_assertion("400", "200 OK", false),
+                            body_assertion("(not valid JSON, content type text/plain: x)", false),
+                        ],
+                    )),
+                ),
+            ),
+            (
+                "api-0003",
+                outcome(TaskStatus::Timeout, Some("REQUEST_TIMEOUT: slow"), None),
+            ),
+            ("api-0004", outcome(TaskStatus::Cancelled, None, None)),
+        ]);
+        (row, tasks)
+    }
+
+    fn case_of<'a>(report: &'a Value, id: &str) -> &'a Value {
+        report["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|op| op["cases"].as_array().unwrap().iter())
+            .find(|c| c["id"] == id)
+            .unwrap_or_else(|| panic!("no case {id}"))
+    }
+
+    fn operation_of<'a>(report: &'a Value, id: &str) -> &'a Value {
+        report["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|op| op["id"] == id)
+            .unwrap_or_else(|| panic!("no operation {id}"))
+    }
+
+    #[test]
+    fn a_report_names_the_run_the_document_and_where_it_was_tested() {
+        let (row, tasks) = ended_run();
+        let report = build_report(&row, "FAILED", true, &tasks);
+        assert_eq!(report["id"], "11111111-1111-4111-8111-111111111111");
+        assert_eq!(report["run_id"], "22222222-2222-4222-8222-222222222222");
+        assert_eq!(report["project_id"], "proj");
+        assert_eq!(
+            report["spec"],
+            json!({"title": "Pets", "version": "1", "base_url": "https://api.test/v1"})
+        );
+        assert_eq!(report["created_by"], "tester");
+        assert_eq!(report["created_at"], "2026-09-26T10:15:03Z");
+        assert_eq!(report["run_state"], "FAILED");
+        assert_eq!(report["final"], true);
+    }
+
+    #[test]
+    fn a_report_counts_every_case_once() {
+        let (row, tasks) = ended_run();
+        let report = build_report(&row, "FAILED", true, &tasks);
+        assert_eq!(
+            report["summary"],
+            json!({"cases": 5, "ran": 3, "passed": 1, "failed": 1, "error": 1, "pending": 0, "not_run": 2, "pass_rate": 1.0 / 3.0})
+        );
+        assert_eq!(
+            report["by_kind"]["HAPPY"],
+            json!({"passed": 1, "failed": 0, "error": 1, "pending": 0, "not_run": 1})
+        );
+        assert_eq!(
+            report["by_kind"]["MISSING_REQUIRED"],
+            json!({"passed": 0, "failed": 1, "error": 0, "pending": 0, "not_run": 0})
+        );
+        assert_eq!(
+            report["by_kind"]["NOT_FOUND"],
+            json!({"passed": 0, "failed": 0, "error": 0, "pending": 0, "not_run": 1})
+        );
+        for quiet in ["NO_AUTH", "WRONG_TYPE"] {
+            assert_eq!(
+                report["by_kind"][quiet],
+                json!({"passed": 0, "failed": 0, "error": 0, "pending": 0, "not_run": 0}),
+                "a kind that was not made is there, with nothing in it"
+            );
+        }
+    }
+
+    #[test]
+    fn each_case_says_what_it_expected_what_came_back_and_why_it_did_not_pass() {
+        let (row, tasks) = ended_run();
+        let report = build_report(&row, "FAILED", true, &tasks);
+
+        let passed = case_of(&report, "GET /pets#HAPPY");
+        assert_eq!(passed["outcome"], "PASSED");
+        assert_eq!(passed["reason"], Value::Null);
+        assert_eq!(
+            passed["actual"],
+            Value::Null,
+            "the evidence of a case that passed is not read"
+        );
+        assert_eq!(passed["task_id"], "api-0001");
+        assert_eq!(passed["kind"], "HAPPY");
+        assert_eq!(passed["title"], "GET /pets: happy");
+        assert_eq!(
+            passed["request"],
+            json!({"method": "GET", "url": "https://api.test/v1/pets"})
+        );
+        assert_eq!(
+            passed["expect"],
+            json!({"statuses": [200], "schema": true, "why": "the document lists 200 as the success response"})
+        );
+
+        let failed = case_of(&report, "GET /pets#MISSING_REQUIRED");
+        assert_eq!(failed["outcome"], "FAILED");
+        assert_eq!(failed["reason"], "Status is one of 400: got 200 OK");
+        assert_eq!(failed["actual"]["status"], 200);
+        assert_eq!(failed["actual"]["duration_ms"], 12);
+        assert_eq!(
+            failed["actual"]["assertions"],
+            json!([
+                {"description": "Status is one of 400", "actual": "200 OK", "passed": false},
+                {"description": "Body fits its schema", "actual": "(not valid JSON, content type text/plain: x)", "passed": false},
+            ]),
+            "the reason leaves the moot body check out, the answer keeps everything that was found"
+        );
+
+        let error = case_of(&report, "GET /pets/{id}#HAPPY");
+        assert_eq!(error["outcome"], "ERROR");
+        assert_eq!(error["reason"], "REQUEST_TIMEOUT: slow");
+
+        let cancelled = case_of(&report, "GET /pets/{id}#NOT_FOUND");
+        assert_eq!(cancelled["outcome"], "NOT_RUN");
+        assert_eq!(cancelled["reason"], "the task ended cancelled");
+
+        let held = case_of(&report, "POST /pets#HAPPY");
+        assert_eq!(held["outcome"], "NOT_RUN");
+        assert_eq!(
+            held["reason"],
+            "POST changes data on the server: it is run only when unsafe methods are allowed"
+        );
+        assert_eq!(held["skipped"], held["reason"]);
+        assert_eq!(held["task_id"], Value::Null);
+    }
+
+    #[test]
+    fn an_operation_is_what_its_cases_came_to_and_one_with_none_says_why() {
+        let (row, tasks) = ended_run();
+        let report = build_report(&row, "FAILED", true, &tasks);
+        let ids: Vec<&str> = report["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| o["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "GET /pets",
+                "POST /pets",
+                "GET /pets/{id}",
+                "GET /old",
+                "GET /other",
+                "GET /bare"
+            ],
+            "in the order of the document"
+        );
+        let verdict = |id: &str| {
+            operation_of(&report, id)["verdict"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(verdict("GET /pets"), "FAILED");
+        assert_eq!(verdict("POST /pets"), "NOT_RUN");
+        assert_eq!(verdict("GET /pets/{id}"), "ERROR");
+        assert_eq!(verdict("GET /old"), "SKIPPED");
+        assert_eq!(verdict("GET /other"), "NOT_SELECTED");
+        assert_eq!(verdict("GET /bare"), "SKIPPED");
+        assert_eq!(
+            operation_of(&report, "GET /pets")["counts"],
+            json!({"passed": 1, "failed": 1, "error": 0, "pending": 0, "not_run": 0})
+        );
+        assert_eq!(
+            operation_of(&report, "GET /pets")["cases"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            operation_of(&report, "GET /pets")["why_no_cases"],
+            Value::Null
+        );
+        assert_eq!(
+            operation_of(&report, "GET /old")["why_no_cases"],
+            "the operation is marked deprecated"
+        );
+        assert_eq!(
+            operation_of(&report, "GET /other")["why_no_cases"],
+            "not selected"
+        );
+        assert_eq!(
+            operation_of(&report, "GET /bare")["why_no_cases"],
+            Value::Null
+        );
+        for none in ["GET /old", "GET /other", "GET /bare"] {
+            assert_eq!(operation_of(&report, none)["counts"], Value::Null, "{none}");
+            assert_eq!(operation_of(&report, none)["cases"], json!([]), "{none}");
+        }
+    }
+
+    #[test]
+    fn coverage_says_how_much_of_the_document_was_tested_and_what_was_not_and_why() {
+        let (row, tasks) = ended_run();
+        let report = build_report(&row, "FAILED", true, &tasks);
+        assert_eq!(report["coverage"]["operations"], 6);
+        assert_eq!(
+            report["coverage"]["tested"], 2,
+            "an operation whose case could not be run to the end was still tried"
+        );
+        assert_eq!(
+            report["coverage"]["not_tested"],
+            json!([
+                {"operation": "POST /pets", "reason": "none of its cases was run"},
+                {"operation": "GET /old", "reason": "the operation is marked deprecated"},
+                {"operation": "GET /other", "reason": "not selected"},
+                {"operation": "GET /bare", "reason": "no case could be made for it"},
+            ])
+        );
+    }
+
+    #[test]
+    fn the_notes_are_the_derivations_and_one_for_what_was_held_back_and_a_run_that_is_still_going_says_so(
+    ) {
+        let (row, tasks) = ended_run();
+        let ended = build_report(&row, "FAILED", true, &tasks);
+        assert_eq!(
+            ended["notes"],
+            json!([
+                "a note from the derivation",
+                "1 case(s) were not run because their request changes data (POST, PUT, PATCH, DELETE): run again with unsafe methods allowed to run them.",
+            ])
+        );
+        let going = build_report(&row, "RUNNING", false, &tasks);
+        assert_eq!(going["final"], false);
+        assert_eq!(going["run_state"], "RUNNING");
+        assert_eq!(
+            going["notes"][1],
+            "The run has not ended: this is what it has found so far."
+        );
+        assert_eq!(going["notes"].as_array().unwrap().len(), 3);
+        let nothing_held = build_report(
+            &row_with_no_held_case(),
+            "COMPLETED",
+            true,
+            &tasks_for_no_held_case(),
+        );
+        assert_eq!(
+            nothing_held["notes"],
+            json!([]),
+            "no note when there is nothing to say"
+        );
+    }
+
+    fn row_with_no_held_case() -> OpenApiRunRow {
+        row(
+            vec![operation("GET /pets", true, None)],
+            vec![stored("GET /pets", CaseKind::Happy, Some("api-0001"))],
+            &[],
+        )
+    }
+
+    fn tasks_for_no_held_case() -> BTreeMap<String, TaskOutcome> {
+        tasks(vec![("api-0001", outcome(TaskStatus::Passed, None, None))])
+    }
+
+    #[test]
+    fn a_case_that_has_no_answer_yet_is_pending_while_the_run_goes_and_not_run_once_it_has_ended() {
+        let row = row(
+            vec![
+                operation("GET /pets", true, None),
+                operation("GET /things", true, None),
+            ],
+            vec![
+                stored("GET /pets", CaseKind::Happy, Some("api-0001")),
+                stored("GET /things", CaseKind::Happy, Some("api-0002")),
+            ],
+            &[],
+        );
+        let so_far = tasks(vec![("api-0001", outcome(TaskStatus::Running, None, None))]);
+        let going = build_report(&row, "RUNNING", false, &so_far);
+        assert_eq!(
+            case_of(&going, "GET /pets#HAPPY")["outcome"],
+            "PENDING",
+            "its task is running"
+        );
+        assert_eq!(
+            case_of(&going, "GET /things#HAPPY")["outcome"],
+            "PENDING",
+            "its task is not even listed yet"
+        );
+        assert_eq!(going["summary"]["pending"], 2);
+        assert_eq!(going["summary"]["ran"], 0);
+        assert_eq!(operation_of(&going, "GET /pets")["verdict"], "PENDING");
+        assert_eq!(
+            going["coverage"]["not_tested"],
+            json!([
+                {"operation": "GET /pets", "reason": "its cases have not run yet"},
+                {"operation": "GET /things", "reason": "its cases have not run yet"},
+            ])
+        );
+        let ended = build_report(&row, "COMPLETED", true, &so_far);
+        assert_eq!(
+            case_of(&ended, "GET /things#HAPPY")["outcome"],
+            "NOT_RUN",
+            "a task that never appeared and a run that has ended: it did not run"
+        );
+        assert_eq!(
+            case_of(&ended, "GET /pets#HAPPY")["outcome"],
+            "PENDING",
+            "a task still running is pending, ended run or not"
+        );
+    }
+
+    #[test]
+    fn the_pass_rate_is_of_the_cases_that_ran_and_none_when_none_did() {
+        let one = row(
+            vec![operation("GET /pets", true, None)],
+            vec![
+                stored("GET /pets", CaseKind::Happy, Some("api-0001")),
+                stored("GET /pets", CaseKind::NoAuth, Some("api-0002")),
+                stored("GET /pets", CaseKind::WrongType, None),
+            ],
+            &[],
+        );
+        let all_pass = tasks(vec![
+            ("api-0001", outcome(TaskStatus::Passed, None, None)),
+            ("api-0002", outcome(TaskStatus::Passed, None, None)),
+        ]);
+        let report = build_report(&one, "COMPLETED", true, &all_pass);
+        assert_eq!(
+            report["summary"]["pass_rate"], 1.0,
+            "one held back does not count against it"
+        );
+        assert_eq!(report["summary"]["ran"], 2);
+        let half = tasks(vec![
+            ("api-0001", outcome(TaskStatus::Passed, None, None)),
+            ("api-0002", outcome(TaskStatus::Failed, None, None)),
+        ]);
+        assert_eq!(
+            build_report(&one, "FAILED", true, &half)["summary"]["pass_rate"],
+            0.5
+        );
+        let none_ran = build_report(&one, "CANCELLED", true, &BTreeMap::new());
+        assert_eq!(none_ran["summary"]["pass_rate"], Value::Null);
+        assert_eq!(none_ran["summary"]["ran"], 0);
+    }
+
+    // ------------------------------------------------------------------------------------------------- Markdown
+
+    #[test]
+    fn the_markdown_says_what_ran_what_did_not_pass_and_what_to_know() {
+        let (row, tasks) = ended_run();
+        let markdown = to_markdown(&build_report(&row, "FAILED", true, &tasks));
+        let want = "# API tests from Pets 1
+
+Against https://api.test/v1. 5 cases: 1 passed, 1 failed, 1 error, 2 not run.
+
+Operations tested: 2 of 6.
+Not tested: POST /pets (none of its cases was run); GET /old (the operation is marked deprecated); GET /other (not selected); GET /bare (no case could be made for it).
+
+| Operation | Verdict | Passed | Failed | Error | Not run |
+|---|---|---|---|---|---|
+| GET /pets | FAILED | 1 | 1 | 0 | 0 |
+| POST /pets | NOT_RUN | 0 | 0 | 0 | 1 |
+| GET /pets/{id} | ERROR | 0 | 0 | 1 | 1 |
+| GET /old | SKIPPED | 0 | 0 | 0 | 0 |
+| GET /other | NOT_SELECTED | 0 | 0 | 0 | 0 |
+| GET /bare | SKIPPED | 0 | 0 | 0 | 0 |
+
+## What did not pass
+
+- **GET /pets: missing_required** (FAILED): Status is one of 400: got 200 OK
+  GET https://api.test/v1/pets
+- **GET /pets/{id}: happy** (ERROR): REQUEST_TIMEOUT: slow
+  GET https://api.test/v1/pets/{id}
+
+## Notes
+
+- a note from the derivation
+- 1 case(s) were not run because their request changes data (POST, PUT, PATCH, DELETE): run again with unsafe methods allowed to run them.
+";
+        assert_eq!(markdown, want);
+    }
+
+    #[test]
+    fn a_markdown_report_of_a_run_that_is_going_says_so_and_has_no_sections_it_has_nothing_for() {
+        let row = row(
+            vec![operation("GET /a|b", true, None)],
+            vec![stored("GET /a|b", CaseKind::Happy, Some("api-0001"))],
+            &[],
+        );
+        let markdown = to_markdown(&build_report(&row, "RUNNING", false, &BTreeMap::new()));
+        assert!(
+            markdown.contains("Against https://api.test/v1. 1 cases: 0 passed, 0 failed, 0 error, 0 not run (the run has not ended).\n"),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains("| GET /a\\|b | PENDING | 0 | 0 | 0 | 0 |\n"),
+            "a pipe in a name does not break the table: {markdown}"
+        );
+        assert!(!markdown.contains("## What did not pass"), "{markdown}");
+        assert!(
+            markdown.contains(
+                "## Notes\n\n- The run has not ended: this is what it has found so far.\n"
+            ),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains("Not tested: GET /a|b (its cases have not run yet).\n"),
+            "{markdown}"
+        );
+    }
+
+    #[test]
+    fn a_failure_with_no_reason_says_so_and_a_report_with_everything_tested_has_no_not_tested_line()
+    {
+        let row = row(
+            vec![operation("GET /pets", true, None)],
+            vec![stored("GET /pets", CaseKind::Happy, Some("api-0001"))],
+            &[],
+        );
+        let tasks = tasks(vec![("api-0001", outcome(TaskStatus::Failed, None, None))]);
+        let markdown = to_markdown(&build_report(&row, "FAILED", true, &tasks));
+        assert!(
+            markdown.contains("(FAILED): no reason was given\n  GET https://api.test/v1/pets\n"),
+            "{markdown}"
+        );
+        assert!(!markdown.contains("Not tested"), "{markdown}");
+        assert!(!markdown.contains("## Notes"), "{markdown}");
+    }
 }

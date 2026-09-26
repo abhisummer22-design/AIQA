@@ -986,6 +986,11 @@ pub struct ApiAssertionResult {
     pub passed: bool,
 }
 
+/// How `ASSERT_STATUS_IN` (followed by the statuses) and `ASSERT_BODY_SCHEMA` are named in a result. A report that reads the results says
+/// which it means by these, so they are written here once.
+pub(crate) const STATUS_IN_DESCRIPTION: &str = "Status is one of";
+pub(crate) const BODY_SCHEMA_DESCRIPTION: &str = "Body fits its schema";
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ApiResultSummary {
     pub status: u16,
@@ -1290,7 +1295,7 @@ pub async fn execute_plan_once(
                 }
                 log.push_str(&format!("ASSERT_STATUS_IN [{list}] -> actual {actual}\n"));
                 assertion_results.push(ApiAssertionResult {
-                    description: format!("Status is one of {list}"),
+                    description: format!("{STATUS_IN_DESCRIPTION} {list}"),
                     actual: actual.to_string(),
                     passed,
                 });
@@ -1316,7 +1321,7 @@ pub async fn execute_plan_once(
                         }
                         log.push_str(&format!("ASSERT_BODY_SCHEMA -> {summary}\n"));
                         assertion_results.push(ApiAssertionResult {
-                            description: "Body fits its schema".to_string(),
+                            description: BODY_SCHEMA_DESCRIPTION.to_string(),
                             actual: summary,
                             passed,
                         });
@@ -1335,7 +1340,7 @@ pub async fn execute_plan_once(
                             "ASSERT_BODY_SCHEMA -> not valid JSON (content type {content_type}): {e}\n"
                         ));
                         assertion_results.push(ApiAssertionResult {
-                            description: "Body fits its schema".to_string(),
+                            description: BODY_SCHEMA_DESCRIPTION.to_string(),
                             actual: format!("(not valid JSON, content type {content_type}: {e})"),
                             passed: false,
                         });
