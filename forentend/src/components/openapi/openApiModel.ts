@@ -28,7 +28,8 @@ export const DEFAULT_MAX_CASES = 8;
 
 /** The names a credential's variable may start with (`execution_plan::SECRET_NAME_PREFIXES`): a plan may not ask for any other. */
 export const VARIABLE_PATTERN = /^(AIQA_LOGIN_|AIQA_SECRET_)[A-Za-z0-9_]*$/;
-const HEADER_NAME_PATTERN = /^[A-Za-z0-9-]+$/;
+// A header name HTTP allows (a token): the same set the orchestrator accepts, so a name it would take is never held back here.
+const HEADER_NAME_PATTERN = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
 
 export interface CredentialRow {
   id: number;
@@ -80,7 +81,7 @@ export function formProblems(form: OpenApiFormState): string[] {
     const header = row.header.trim();
     const variable = row.variable.trim();
     if (header === '' && variable === '') continue;
-    if (!HEADER_NAME_PATTERN.test(header)) problems.push(`“${header}” is not a header name (letters, digits and hyphens).`);
+    if (!HEADER_NAME_PATTERN.test(header)) problems.push(`“${header}” is not a header name (letters, digits, hyphens, underscores and dots).`);
     else if (seen.has(header.toLowerCase())) problems.push(`The header ${header} is given twice.`);
     else seen.add(header.toLowerCase());
     if (!VARIABLE_PATTERN.test(variable)) problems.push(`The variable of ${header || 'a header'} must start with AIQA_SECRET_ or AIQA_LOGIN_ (letters, digits and _).`);

@@ -127,6 +127,15 @@ pub struct Derived {
 }
 
 /// What is wrong with `options`, or `None`.
+/// Whether `name` is a header name HTTP allows (a token: letters, digits and ``!#$%&'*+-.^_`|~``). Anything else can only make every
+/// request fail when it is built, so it is refused before a run starts.
+fn is_header_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
+}
+
 pub fn options_problem(options: &Options) -> Option<String> {
     let base = options.base_url.trim();
     match reqwest::Url::parse(base) {
@@ -138,9 +147,9 @@ pub fn options_problem(options: &Options) -> Option<String> {
         }
     }
     for (name, value) in &options.auth_headers {
-        if name.trim().is_empty() || name.contains(char::is_whitespace) {
+        if !is_header_name(name) {
             return Some(format!(
-                "an authentication header needs a name without spaces (got {name:?})"
+                "an authentication header needs a name HTTP allows: letters, digits and - _ . ! # $ % & ' * + ^ ` | ~ (got {name:?})"
             ));
         }
         if crate::execution_plan::secret_name(value).is_none() {
@@ -1253,9 +1262,33 @@ mod tests {
             })
         };
         assert!(with_header("", "x").unwrap().contains("needs a name"));
-        assert!(with_header("Bad Name", "x")
-            .unwrap()
-            .contains("needs a name"));
+        for bad in [
+            "Bad Name",
+            "Bad:Name",
+            "Bad(Name)",
+            "X-Ünï",
+            "Tab\tName",
+            "a,b",
+            "a/b",
+            "quote\"d",
+        ] {
+            let problem = with_header(bad, "env:AIQA_SECRET_KEY").unwrap_or_default();
+            assert!(
+                problem.contains("needs a name HTTP allows"),
+                "{bad:?}: {problem}"
+            );
+        }
+        for good in [
+            "Authorization",
+            "X-Api-Key",
+            "api_key",
+            "x.y",
+            "A1",
+            "X~Token",
+            "Upper-and-lower",
+        ] {
+            assert_eq!(with_header(good, "env:AIQA_SECRET_KEY"), None, "{good}");
+        }
         assert!(with_header("Authorization", "env:GROQ_API_KEY")
             .unwrap()
             .contains("secret reference"));

@@ -15172,6 +15172,9 @@ async fn phase8b_a_run_is_refused_in_words_before_anything_starts() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(message(&body).contains("must be a secret reference"), "{body}");
     assert!(!message(&body).contains("a-typed-in-token"), "a value typed by mistake is never repeated: {body}");
+    let (status, body) = run(serde_json::json!({"spec": openapi_fixture_document().to_string(), "auth_headers": {"Bad:Name": "env:AIQA_SECRET_T8B_REFUSE"}})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "a header name that cannot be sent is refused now, not by every case later: {body}");
+    assert!(message(&body).contains("needs a name HTTP allows") && message(&body).contains("\"Bad:Name\""), "{body}");
     let (status, body) = run(openapi_body("AIQA_SECRET_T8B_REFUSE", serde_json::json!({"kinds": ["HAPPY"], "operations": ["POST /pets"]}))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(message(&body).contains("there is nothing to run: all 1 case(s) change data on the server"), "{body}");

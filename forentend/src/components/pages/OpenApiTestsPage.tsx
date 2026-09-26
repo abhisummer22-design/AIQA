@@ -41,7 +41,7 @@ const RunList: React.FC<{ runs: OpenApiRunListRow[]; chosen: string | null; onCh
   onNew,
   loading,
 }) => (
-  <nav id="openapi-runs" aria-label="OpenAPI test runs" className="p-3 rounded-lg bg-[#0B1120] border border-slate-800 space-y-2">
+  <nav id="openapi-runs" aria-label="OpenAPI test runs" className="min-w-0 p-3 rounded-lg bg-[#0B1120] border border-slate-800 space-y-2">
     <button
       type="button"
       id="openapi-new"
@@ -271,7 +271,7 @@ export const OpenApiTestsPage: React.FC = () => {
       );
     }
     return (
-      <div className="grid gap-4 lg:grid-cols-[16rem_minmax(0,1fr)] items-start">
+      <div className="grid gap-4 grid-cols-1 lg:grid-cols-[16rem_minmax(0,1fr)] items-start">
         <RunList runs={list.runs ?? []} chosen={chosenId} onChoose={choose} onNew={() => choose(null)} loading={list.loading && !list.runs} />
         <div className="min-w-0">{chosenId ? renderReport() : renderNew()}</div>
       </div>
@@ -285,7 +285,7 @@ export const OpenApiTestsPage: React.FC = () => {
         className="flex flex-col md:flex-row md:items-center justify-between gap-3 p-4 rounded-lg bg-[#0B1120] border border-slate-800/90 shadow-sm"
       >
         <div className="space-y-1">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="p-1.5 rounded bg-violet-950/80 border border-violet-700/60 text-violet-400">
               <FileJson className="w-4 h-4" />
             </span>

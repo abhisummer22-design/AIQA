@@ -96,10 +96,17 @@ describe('formProblems', () => {
     const rows = (...pairs: Array<[string, string]>) => pairs.map(([header, variable], i) => ({ id: i + 1, header, variable }));
     expect(formProblems(valid({ credentials: rows(['Authorization', 'AIQA_SECRET_API_TOKEN']) }))).toEqual([]);
     expect(formProblems(valid({ credentials: rows(['X-Api-Key', 'AIQA_LOGIN_KEY_2']) }))).toEqual([]);
+    // What HTTP allows in a header name, and the orchestrator with it: Swagger Petstore's own header is api_key.
+    for (const header of ['api_key', 'x.y', 'X~Token', 'A1', "it's"]) {
+      expect(formProblems(valid({ credentials: rows([header, 'AIQA_SECRET_X']) })), header).toEqual([]);
+    }
+    for (const header of ['Bad:Name', 'Bad(Name)', 'X-Ünï', 'a,b', 'a/b', 'a b']) {
+      expect(formProblems(valid({ credentials: rows([header, 'AIQA_SECRET_X']) })), header).toHaveLength(1);
+    }
     // A row left empty is not a problem, it is nothing.
     expect(formProblems(valid({ credentials: rows(['', ''], ['  ', ' ']) }))).toEqual([]);
-    expect(formProblems(valid({ credentials: rows(['Bad Header', 'AIQA_SECRET_X']) }))).toEqual(['“Bad Header” is not a header name (letters, digits and hyphens).']);
-    expect(formProblems(valid({ credentials: rows(['', 'AIQA_SECRET_X']) }))).toEqual(['“” is not a header name (letters, digits and hyphens).']);
+    expect(formProblems(valid({ credentials: rows(['Bad Header', 'AIQA_SECRET_X']) }))).toEqual(['“Bad Header” is not a header name (letters, digits, hyphens, underscores and dots).']);
+    expect(formProblems(valid({ credentials: rows(['', 'AIQA_SECRET_X']) }))).toEqual(['“” is not a header name (letters, digits, hyphens, underscores and dots).']);
     expect(formProblems(valid({ credentials: rows(['Authorization', 'GROQ_API_KEY']) }))).toEqual([
       'The variable of Authorization must start with AIQA_SECRET_ or AIQA_LOGIN_ (letters, digits and _).',
     ]);
