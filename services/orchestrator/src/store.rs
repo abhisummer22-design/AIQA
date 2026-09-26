@@ -363,6 +363,20 @@ impl Store {
         Ok(Self { pool })
     }
 
+    /// A transaction that holds SQLite's write lock from its first statement (`BEGIN IMMEDIATE`). Use it
+    /// for every transaction that reads before it writes.
+    ///
+    /// A plain `self.pool.begin()` is deferred: it takes a read snapshot at its first `SELECT` and asks
+    /// for the write lock only at its first write. If another connection holds the lock or has committed
+    /// since that read (the background writers still finishing after a run do), SQLite refuses the write
+    /// at once with `database is locked` (SQLITE_BUSY, or SQLITE_BUSY_SNAPSHOT, code 517): it never runs
+    /// the busy handler for a read that is being upgraded to a write, so the `busy_timeout` set in
+    /// `connect` does not apply. Taking the lock at `BEGIN`, before anything is read, waits for it under
+    /// that timeout instead. A transaction whose first statement is a write needs none of this.
+    pub(crate) async fn begin_write(&self) -> Result<sqlx::Transaction<'static, sqlx::Sqlite>> {
+        Ok(self.pool.begin_with("BEGIN IMMEDIATE").await?)
+    }
+
     // ---------------------------------------------------------------- runs
 
     #[allow(clippy::too_many_arguments)]
@@ -1125,7 +1139,8 @@ impl Store {
     /// Deletes a project and all associated project-scoped data atomically.
     /// Returns `true` if deleted, `false` if the project was not found.
     pub async fn delete_project(&self, id: Uuid) -> Result<bool> {
-        let mut tx = self.pool.begin().await?;
+        // Reads before it writes, so the write lock is taken at BEGIN (see `begin_write`).
+        let mut tx = self.begin_write().await?;
         let pid_str = id.to_string();
 
         let exists = sqlx::query("SELECT id FROM projects WHERE id = ?")
@@ -1523,7 +1538,7 @@ impl Store {
     }
 
     /// Transactional (Vector Store v1 added a second real row this must
-    /// also clean up — same `self.pool.begin()` pattern `delete_project`
+    /// also clean up — same transaction pattern `delete_project`
     /// already uses for its own multi-table delete, not a bare
     /// single-statement `DELETE` anymore): a test case's own
     /// `test_case_embeddings` row (if any — most cases never reach
@@ -1761,7 +1776,8 @@ impl Store {
         text: &str,
         parsed: &crate::requirements::ParsedDocument,
     ) -> Result<Uuid> {
-        let mut tx = self.pool.begin().await?;
+        // Reads before it writes, so the write lock is taken at BEGIN (see `begin_write`).
+        let mut tx = self.begin_write().await?;
         let now = now_rfc3339();
         let skipped = serde_json::to_string(&parsed.skipped_sections)?;
 
