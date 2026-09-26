@@ -33,6 +33,9 @@ base64 = "0.22"
 # Text-based PDFs are read directly too (a scanned, image-only PDF has no text
 # to read and is reported as such). See `doc_extract.rs`.
 pdf-extract = "0.7"
+# OpenAPI documents are mostly YAML: `openapi_spec.rs` reads them with a real YAML reader (the simple one the tools use does not
+# take a sequence written at the indentation of its key, block text or flow style). Only that module uses it.
+serde_yaml = "0.9"
 
 # Critical-finding remediation (Architecture Audit "PRIORITY 1" — executor
 # isolation). No container runtime is available in this dev environment

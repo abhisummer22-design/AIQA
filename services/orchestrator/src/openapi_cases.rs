@@ -610,7 +610,8 @@ struct Maker<'a> {
     options: &'a Options,
     kinds: &'a [CaseKind],
     cases: Vec<Case>,
-    notes: Vec<String>,
+    /// The operation documents no client error, so no case that expects one (a missing required value) could be made for it.
+    no_client_error: bool,
     limit: usize,
 }
 
@@ -678,7 +679,7 @@ fn derive_operation(
     options: &Options,
     kinds: &[CaseKind],
     limit: usize,
-) -> Result<(Vec<Case>, Vec<String>), String> {
+) -> Result<(Vec<Case>, bool), String> {
     let base = options.base_url.as_str();
     let draft = valid_draft(operation);
     let auth = &options.auth_headers;
@@ -688,7 +689,7 @@ fn derive_operation(
         options,
         kinds,
         cases: Vec::new(),
-        notes: Vec::new(),
+        no_client_error: false,
         limit,
     };
     let title = |what: &str| format!("{}: {what}", operation.id);
@@ -726,9 +727,11 @@ fn derive_operation(
     let validation_statuses = client_errors(operation, &[400, 422]);
     if maker.wants(CaseKind::MissingRequired) {
         match &validation_statuses {
-            None => maker.notes.push(format!("{}: no client-error response is documented, so no \"missing required\" case is made", operation.id)),
+            None => maker.no_client_error = true,
             Some(statuses) => {
-                for parameter in operation.parameters.iter().filter(|p| p.required && matches!(p.location, Location::Query | Location::Header)) {
+                for parameter in operation.parameters.iter().filter(|p| {
+                    p.required && matches!(p.location, Location::Query | Location::Header)
+                }) {
                     if !maker.room() {
                         break;
                     }
@@ -736,13 +739,22 @@ fn derive_operation(
                     spoiled.query.retain(|(name, _)| name != &parameter.name);
                     spoiled.headers.remove(&parameter.name);
                     let request = build_request(operation, &spoiled, base, auth)?;
-                    let place = if parameter.location == Location::Query { "query parameter" } else { "header" };
+                    let place = if parameter.location == Location::Query {
+                        "query parameter"
+                    } else {
+                        "header"
+                    };
                     maker.push(
                         CaseKind::MissingRequired,
                         Some(&parameter.name),
                         title(&format!("without the required {place} {}", parameter.name)),
                         request,
-                        Expect { statuses: statuses.clone(), schema: None, why: "the document documents a client error for a bad request".to_string() },
+                        Expect {
+                            statuses: statuses.clone(),
+                            schema: None,
+                            why: "the document documents a client error for a bad request"
+                                .to_string(),
+                        },
                     );
                 }
                 if let Some((required, _)) = body_properties(operation) {
@@ -760,7 +772,12 @@ fn derive_operation(
                             Some(&format!("body.{name}")),
                             title(&format!("without the required body property {name}")),
                             request,
-                            Expect { statuses: statuses.clone(), schema: None, why: "the document documents a client error for a bad request".to_string() },
+                            Expect {
+                                statuses: statuses.clone(),
+                                schema: None,
+                                why: "the document documents a client error for a bad request"
+                                    .to_string(),
+                            },
                         );
                     }
                 }
@@ -887,7 +904,7 @@ fn derive_operation(
             );
         }
     }
-    Ok((maker.cases, maker.notes))
+    Ok((maker.cases, maker.no_client_error))
 }
 
 /// The cases the document lets one expect an answer to, for the operations asked for.
@@ -907,6 +924,7 @@ pub fn derive(spec: &Spec, options: &Options) -> Derived {
         notes: spec.notes.clone(),
     };
     let mut made_up: Vec<String> = Vec::new();
+    let mut without_client_error: Vec<String> = Vec::new();
     for operation in &spec.operations {
         if !options.operations.is_empty() && !options.operations.contains(&operation.id) {
             continue;
@@ -919,8 +937,10 @@ pub fn derive(spec: &Spec, options: &Options) -> Derived {
             continue;
         }
         match derive_operation(operation, options, &kinds, limit) {
-            Ok((cases, notes)) => {
-                derived.notes.extend(notes);
+            Ok((cases, no_client_error)) => {
+                if no_client_error {
+                    without_client_error.push(operation.id.clone());
+                }
                 // A case whose own values are the point (a wrong type, an id that is not there) does not depend on the made-up one.
                 if has_made_up_path_value(operation)
                     && cases.iter().any(|c| {
@@ -945,6 +965,11 @@ pub fn derive(spec: &Spec, options: &Options) -> Derived {
                 reason,
             }),
         }
+    }
+    match without_client_error.len() {
+        0 => {}
+        1 => derived.notes.push(format!("{}: no client-error response is documented, so no \"missing required\" case is made", without_client_error[0])),
+        n => derived.notes.push(format!("{n} operations ({}) document no client-error response, so no \"missing required\" case is made for them", some_of(&without_client_error, 3))),
     }
     if !made_up.is_empty() {
         let (who, has, their) = if made_up.len() == 1 {
@@ -1626,6 +1651,54 @@ mod tests {
             d.notes
                 .iter()
                 .any(|n| n.starts_with("GET /pets: no client-error response is documented")),
+            "{:?}",
+            d.notes
+        );
+    }
+
+    #[test]
+    fn many_operations_without_a_documented_client_error_are_one_note_not_one_each() {
+        let paths: serde_json::Map<String, Value> = (1..=6)
+            .map(|n| {
+                (
+                    format!("/thing{n}"),
+                    json!({"get": {"responses": {"200": {"description": "ok"}}}}),
+                )
+            })
+            .collect();
+        let doc = json!({"openapi": "3.0.0", "paths": paths});
+        let no_auth = || Options {
+            auth_headers: BTreeMap::new(),
+            ..options()
+        };
+        let d = derive(&parse(&doc).unwrap(), &no_auth());
+        let notes: Vec<&String> = d
+            .notes
+            .iter()
+            .filter(|n| n.contains("client-error"))
+            .collect();
+        assert_eq!(notes.len(), 1, "{:?}", d.notes);
+        assert_eq!(
+            notes[0],
+            "6 operations (GET /thing1, GET /thing2, GET /thing3 and 3 more) document no client-error response, so no \"missing required\" case is made for them"
+        );
+        // Two are named in full; asked not to make that kind of case, there is nothing to say.
+        let two = json!({"openapi": "3.0.0", "paths": {"/a": {"get": {"responses": {"200": {"description": "ok"}}}}, "/b": {"get": {"responses": {"200": {"description": "ok"}}}}}});
+        let d = derive(&parse(&two).unwrap(), &no_auth());
+        assert!(
+            d.notes.contains(&"2 operations (GET /a, GET /b) document no client-error response, so no \"missing required\" case is made for them".to_string()),
+            "{:?}",
+            d.notes
+        );
+        let d = derive(
+            &parse(&doc).unwrap(),
+            &Options {
+                kinds: vec![CaseKind::Happy],
+                ..no_auth()
+            },
+        );
+        assert!(
+            d.notes.iter().all(|n| !n.contains("client-error")),
             "{:?}",
             d.notes
         );

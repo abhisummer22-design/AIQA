@@ -111,8 +111,7 @@ async fn spec_text(body: &OpenApiBody) -> Result<String, ApiError> {
 
 async fn read_spec(body: &OpenApiBody) -> Result<Spec, ApiError> {
     let text = spec_text(body).await?;
-    let document = crate::tools::schema_inspector::parse_openapi_document(&text)
-        .map_err(|e| ApiError::validation(tool_error_text(&e)))?;
+    let document = openapi_spec::read_document(&text).map_err(ApiError::validation)?;
     openapi_spec::parse(&document).map_err(ApiError::validation)
 }
 
@@ -126,7 +125,7 @@ fn options_of(body: &OpenApiBody, spec: &Spec) -> Result<Options, ApiError> {
         Some(base) => base.to_string(),
         None => openapi_spec::base_address(&spec.servers, body.spec_url.as_deref()).ok_or_else(|| {
             ApiError::validation(
-                "the document names no absolute server address: give `base_url` (or give the document by its address, `spec_url`, so that its own server can be worked out from it)",
+                "the document names no server address that can be used as it stands (an absolute one, with every {variable} given a default): give `base_url` (or give the document by its address, `spec_url`, so that a relative one can be worked out from it)",
             )
         })?,
     };

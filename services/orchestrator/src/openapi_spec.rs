@@ -142,11 +142,85 @@ fn resolve_at(root: &Value, value: &Value, depth: usize, unresolved: &mut Vec<St
 }
 
 fn text(value: &Value, key: &str) -> Option<String> {
-    value
-        .get(key)
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .filter(|s| !s.trim().is_empty())
+    let found = match value.get(key)? {
+        Value::String(s) => Some(s.clone()),
+        // YAML writes `version: 1.0` without quotes.
+        Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    };
+    found.filter(|s| !s.trim().is_empty())
+}
+
+/// The text of an OpenAPI or Swagger document as a value: JSON when it is JSON, else YAML, read by a real YAML reader (documents are mostly
+/// YAML: sequences at the indentation of their key, block text, flow style, anchors, and unquoted numbers as response codes).
+pub fn read_document(text: &str) -> Result<Value, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("the document is empty".to_string());
+    }
+    let document = match serde_json::from_str::<Value>(text) {
+        Ok(json) => json,
+        Err(json_error) => {
+            let mut yaml: serde_yaml::Value = serde_yaml::from_str(text).map_err(|yaml_error| {
+                // A document that starts like JSON was meant to be JSON: its own error is the useful one.
+                if text.starts_with('{') || text.starts_with('[') {
+                    format!("the document is not valid JSON: {json_error}")
+                } else {
+                    format!("the document is neither valid JSON nor valid YAML: {yaml_error}")
+                }
+            })?;
+            // `<<: *anchor` copies what the anchor names into the mapping, which is how a document shares a piece.
+            yaml.apply_merge()
+                .map_err(|e| format!("the document's YAML could not be read: {e}"))?;
+            yaml_to_json(yaml)
+        }
+    };
+    if document.is_object() {
+        Ok(document)
+    } else {
+        Err("the document's root must be an object (a mapping)".to_string())
+    }
+}
+
+/// A YAML value as JSON. A mapping's key that is not text (`200:` as a response code) is written as text, as JSON has it.
+fn yaml_to_json(value: serde_yaml::Value) -> Value {
+    match value {
+        serde_yaml::Value::Null => Value::Null,
+        serde_yaml::Value::Bool(b) => Value::Bool(b),
+        serde_yaml::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Value::from(i)
+            } else if let Some(u) = n.as_u64() {
+                Value::from(u)
+            } else {
+                n.as_f64()
+                    .and_then(serde_json::Number::from_f64)
+                    .map_or(Value::Null, Value::Number)
+            }
+        }
+        serde_yaml::Value::String(s) => Value::String(s),
+        serde_yaml::Value::Sequence(items) => {
+            Value::Array(items.into_iter().map(yaml_to_json).collect())
+        }
+        serde_yaml::Value::Mapping(map) => Value::Object(
+            map.into_iter()
+                .map(|(key, value)| (yaml_key_text(key), yaml_to_json(value)))
+                .collect(),
+        ),
+        serde_yaml::Value::Tagged(tagged) => yaml_to_json(tagged.value),
+    }
+}
+
+fn yaml_key_text(key: serde_yaml::Value) -> String {
+    match key {
+        serde_yaml::Value::String(s) => s,
+        serde_yaml::Value::Number(n) => n.to_string(),
+        serde_yaml::Value::Bool(b) => b.to_string(),
+        serde_yaml::Value::Null => "null".to_string(),
+        other => serde_yaml::to_string(&other)
+            .map(|text| text.trim().to_string())
+            .unwrap_or_default(),
+    }
 }
 
 /// The base addresses of a document: OpenAPI 3 `servers` (with `{variable}`s given their default), Swagger 2 `schemes`, `host`, `basePath`.
@@ -192,7 +266,7 @@ fn servers_of(root: &Value) -> Vec<String> {
 pub fn base_address(servers: &[String], document_address: Option<&str>) -> Option<String> {
     if let Some(absolute) = servers
         .iter()
-        .find(|s| s.starts_with("http://") || s.starts_with("https://"))
+        .find(|s| (s.starts_with("http://") || s.starts_with("https://")) && is_settled(s))
     {
         return Some(absolute.clone());
     }
@@ -200,10 +274,18 @@ pub fn base_address(servers: &[String], document_address: Option<&str>) -> Optio
     if !matches!(address.scheme(), "http" | "https") {
         return None;
     }
-    let resolved = address
-        .join(servers.first().map(String::as_str).unwrap_or("/"))
-        .ok()?;
+    let first = servers.first().map(String::as_str).unwrap_or("/");
+    if !is_settled(first) {
+        return None;
+    }
+    let resolved = address.join(first).ok()?;
     Some(resolved.as_str().trim_end_matches('/').to_string())
+}
+
+/// Whether a server address is a place as it stands: a `{variable}` that the document gave no default for is still in it if it has a
+/// brace, and what is left is not an address to be resolved against anything.
+fn is_settled(server: &str) -> bool {
+    !server.contains(|c: char| c == '{' || c == '}')
 }
 
 /// A Swagger 2.0 parameter carries its type beside `name` and `in`, not under `schema`: the schema it means.
@@ -896,6 +978,233 @@ mod tests {
             None
         );
         assert_eq!(base_address(&relative, Some("   ")), None);
+    }
+
+    #[test]
+    fn a_server_with_a_variable_left_in_it_is_not_an_address() {
+        let doc = Some("https://docs.example.test/openapi.yaml");
+        let unsettled = vec!["{scheme}://developer.example.test/ds-api".to_string()];
+        assert_eq!(
+            base_address(&unsettled, doc),
+            None,
+            "not resolved against the document as if it were a path"
+        );
+        let templated = vec!["https://{env}.example.test/api".to_string()];
+        assert_eq!(base_address(&templated, doc), None);
+        assert_eq!(base_address(&templated, None), None);
+        let both = vec![
+            "https://{env}.example.test/api".to_string(),
+            "https://prod.example.test/api".to_string(),
+        ];
+        assert_eq!(
+            base_address(&both, None).as_deref(),
+            Some("https://prod.example.test/api"),
+            "a server that is settled is used, whatever comes before it"
+        );
+        assert_eq!(
+            base_address(&["/api}".to_string()], doc),
+            None,
+            "a closing brace alone is enough"
+        );
+        assert_eq!(
+            base_address(&["/{version}/api".to_string()], doc),
+            None,
+            "an opening brace alone is enough"
+        );
+    }
+
+    #[test]
+    fn json_is_read_as_json_and_anything_that_is_not_an_object_is_refused() {
+        assert_eq!(
+            read_document(r#"  {"openapi": "3.0.0"}  "#).unwrap(),
+            json!({"openapi": "3.0.0"})
+        );
+        assert_eq!(read_document("  \n ").unwrap_err(), "the document is empty");
+        for not_an_object in ["[1, 2]", "42", "\"text\"", "- a\n- b", "just text"] {
+            let error = read_document(not_an_object).unwrap_err();
+            assert!(
+                error.contains("root must be an object"),
+                "{not_an_object}: {error}"
+            );
+        }
+        let broken = read_document("{\"openapi\": \"3.0.0\", ").unwrap_err();
+        assert!(
+            broken.starts_with("the document is not valid JSON:"),
+            "a document that starts like JSON is told as JSON: {broken}"
+        );
+        let neither = read_document("a: [1, 2\nb: {").unwrap_err();
+        assert!(
+            neither.starts_with("the document is neither valid JSON nor valid YAML:"),
+            "{neither}"
+        );
+    }
+
+    #[test]
+    fn yaml_written_the_way_documents_are_written_is_read() {
+        let text = r#"
+# A document as people write them.
+openapi: 3.0.3
+info:
+  title: 'Pets: the API'
+  version: 1.0
+  description: |
+    Many lines
+    of text.
+servers:
+- url: https://api.example.test/v1
+paths:
+  /pets/{id}:
+    get:
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: integer, minimum: 1}
+      - name: tags
+        in: query
+        schema:
+          type: array
+          items: {type: string}
+      responses:
+        200:
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pet'
+        "404": {description: none}
+components:
+  schemas:
+    Pet:
+      type: object
+      required: [id, name]
+      properties:
+        id: {type: integer}
+        name: {type: string, example: "Rex: the dog"}
+"#;
+        let doc = read_document(text).unwrap();
+        assert_eq!(doc["info"]["title"], "Pets: the API");
+        assert_eq!(doc["info"]["description"], "Many lines\nof text.\n");
+        assert_eq!(
+            doc["paths"]["/pets/{id}"]["get"]["responses"]["200"]["description"], "ok",
+            "an unquoted 200 is the key \"200\""
+        );
+        let spec = parse(&doc).unwrap();
+        assert_eq!(spec.title, "Pets: the API");
+        assert_eq!(
+            spec.version, "1.0",
+            "an unquoted version is text all the same"
+        );
+        assert_eq!(spec.servers, ["https://api.example.test/v1"]);
+        let op = &spec.operations[0];
+        assert_eq!(op.id, "GET /pets/{id}");
+        assert_eq!(op.parameters.len(), 2);
+        assert_eq!(
+            op.parameters[0].schema,
+            json!({"type": "integer", "minimum": 1})
+        );
+        assert_eq!(op.parameters[1].schema["items"], json!({"type": "string"}));
+        let mut statuses: Vec<&str> = op.responses.iter().map(|r| r.status.as_str()).collect();
+        statuses.sort_unstable();
+        assert_eq!(statuses, ["200", "404"]);
+        let ok = op.responses.iter().find(|r| r.status == "200").unwrap();
+        let pet = ok.schema.as_ref().unwrap();
+        assert_eq!(pet["required"], json!(["id", "name"]));
+        assert_eq!(pet["properties"]["name"]["example"], "Rex: the dog");
+    }
+
+    #[test]
+    fn yaml_anchors_aliases_and_merge_keys_are_expanded() {
+        let text = r#"
+openapi: 3.0.0
+x-common: &common
+  description: shared
+  content:
+    application/json:
+      schema: {type: object}
+paths:
+  /a:
+    get:
+      responses:
+        200: *common
+        400:
+          <<: *common
+          description: bad
+"#;
+        let doc = read_document(text).unwrap();
+        let responses = &doc["paths"]["/a"]["get"]["responses"];
+        assert_eq!(responses["200"]["description"], "shared");
+        assert_eq!(
+            responses["400"]["description"], "bad",
+            "what is written beside a merge wins"
+        );
+        assert_eq!(
+            responses["400"]["content"]["application/json"]["schema"]["type"],
+            "object"
+        );
+        assert!(responses["400"].get("<<").is_none());
+    }
+
+    #[test]
+    fn a_yaml_document_that_expands_into_a_flood_or_nests_without_end_is_refused_not_followed() {
+        let mut flood = String::from("openapi: 3.0.0\nl0: &l0 [x, x, x, x, x, x, x, x, x]\n");
+        for n in 1..=9 {
+            let p = n - 1;
+            flood.push_str(&format!(
+                "l{n}: &l{n} [*l{p}, *l{p}, *l{p}, *l{p}, *l{p}, *l{p}, *l{p}, *l{p}, *l{p}]\n"
+            ));
+        }
+        let error = read_document(&flood).unwrap_err();
+        assert!(error.contains("repetition limit"), "{error}");
+        let deep_yaml = format!(
+            "openapi: 3.0.0\nx: {}{}",
+            "[".repeat(5000),
+            "]".repeat(5000)
+        );
+        assert!(read_document(&deep_yaml).is_err());
+        let deep_json = format!("{}1{}", "{\"a\":".repeat(3000), "}".repeat(3000));
+        assert!(read_document(&deep_json).is_err());
+    }
+
+    #[test]
+    fn a_yaml_key_that_is_not_text_and_a_number_of_any_kind_are_read_as_json_has_them() {
+        let doc = read_document(
+            "openapi: 3.0.0\n1: a\ntrue: b\nnull: c\n1.5: d\nbig: 18446744073709551615\nneg: -3\nreal: 2.5\ninf: .inf\ntagged: !custom foo\n",
+        )
+        .unwrap();
+        assert_eq!(doc["1"], "a");
+        assert_eq!(doc["true"], "b");
+        assert_eq!(doc["null"], "c");
+        assert_eq!(doc["1.5"], "d");
+        assert_eq!(doc["big"], json!(18446744073709551615u64));
+        assert_eq!(doc["neg"], -3);
+        assert_eq!(doc["real"], 2.5);
+        assert_eq!(doc["inf"], Value::Null, "JSON has no infinity");
+        assert_eq!(doc["tagged"], "foo", "a tag is left off, its value kept");
+    }
+
+    #[test]
+    fn a_title_or_version_written_as_a_number_is_text_and_anything_else_is_not() {
+        let with = |info: Value| {
+            parse(&json!({"openapi": "3.0.0", "info": info, "paths": {"/a": {"get": {"responses": {}}}}})).unwrap()
+        };
+        let numbers = with(json!({"title": 7, "version": 2}));
+        assert_eq!(
+            (numbers.title.as_str(), numbers.version.as_str()),
+            ("7", "2")
+        );
+        let floats = with(json!({"title": "T", "version": 1.5}));
+        assert_eq!(floats.version, "1.5");
+        let not_text = with(json!({"title": true, "version": ["1"]}));
+        assert_eq!(
+            (not_text.title.as_str(), not_text.version.as_str()),
+            ("Untitled API", "unknown")
+        );
+        let blank = with(json!({"title": "  ", "version": ""}));
+        assert_eq!(
+            (blank.title.as_str(), blank.version.as_str()),
+            ("Untitled API", "unknown")
+        );
     }
 
     #[test]
