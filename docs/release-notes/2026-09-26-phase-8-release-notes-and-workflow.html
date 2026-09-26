@@ -505,7 +505,7 @@ echo "exit code: $?"</code></pre>
   <h3>How it was checked</h3>
   <ul>
     <li><b>Backend:</b> 1,591 tests passed, 0 failed, 2 ignored on purpose (<code>cargo test --lib</code>). Clippy has no error. When every test runs at once on a very busy machine, two older timing-based tests (<code>be12</code>, <code>be13</code>) can fail; they pass alone and with fewer threads.</li>
-    <li><b>Frontend:</b> 1,476 tests in 70 files passed, the type-check (<code>npm run lint</code>) is clean, and the production build (<code>npm run build</code>) works.</li>
+    <li><b>Frontend:</b> 1,478 tests in 70 files passed, the type-check (<code>npm run lint</code>) is clean, and the production build (<code>npm run build</code>) works.</li>
     <li><b>CI scripts:</b> both scripts were run against a small stand-in server in 30+ situations each (pass, regression, failing, nothing ran, unknown verdict, timeout, a read that fails once, refusals, wrong key, server down, bad settings, the request body for an address and for a file). The PowerShell script was tried on Windows PowerShell 5.1 only.</li>
     <li>Commands: <code>cargo test --lib</code> in <code>services/orchestrator</code>, and <code>npm run lint</code>, <code>npm test</code>, <code>npm run build</code> in <code>forentend</code>.</li>
   </ul>
