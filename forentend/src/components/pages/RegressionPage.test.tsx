@@ -99,6 +99,7 @@ async function openPage(project: Project = PROJECT_A, entries?: string[]) {
   await waitFor(() => expect(el('aiqa-regression-page')).toBeTruthy());
 }
 
+const readBlob = (blob: Blob) => new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error); reader.readAsText(blob); });
 const fillName = (name: string) => act(async () => void fireEvent.change(el('regression-name')!, { target: { value: name } }));
 
 beforeEach(() => {
@@ -296,6 +297,27 @@ describe('RegressionPage — a schedule', () => {
     expect(button(`regression-schedule-${SCHEDULE_ID}`).getAttribute('aria-current')).toBe('true');
   });
 
+  it('has the lines that run it from a CI job, with this project and this schedule in them, and copies them', async () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText: write }, configurable: true });
+    open({}, { schedules: [scheduleFor(), scheduleFor({ id: OTHER_SCHEDULE_ID, name: 'Weekly' })] });
+    await openPage(PROJECT_A, [`/regression?schedule=${SCHEDULE_ID}`]);
+    await waitFor(() => expect(el('regression-ci')).toBeTruthy());
+    expect((el('regression-ci') as HTMLDetailsElement).open, 'shut until it is wanted').toBe(false);
+    const snippet = text('regression-ci-snippet');
+    expect(snippet).toContain('export AIQA_PROJECT="proj-a"');
+    expect(snippet).toContain(`bash scripts/ci/aiqa-ci.sh regression ${SCHEDULE_ID}`);
+    expect(text('regression-ci')).toContain('docs/ci/README.md');
+    expect(text('regression-ci-copy')).toBe('Copy these lines');
+    await act(async () => button('regression-ci-copy').click());
+    await waitFor(() => expect(text('regression-ci-copy')).toBe('Copied'));
+    expect(write).toHaveBeenCalledWith(snippet);
+    // Another schedule has its own id in the lines, and has not been copied.
+    await act(async () => button(`regression-schedule-${OTHER_SCHEDULE_ID}`).click());
+    await waitFor(() => expect(text('regression-ci-snippet')).toContain(`regression ${OTHER_SCHEDULE_ID}`));
+    expect(text('regression-ci-copy')).toBe('Copy these lines');
+  });
+
   it('says a schedule of one suite repeats that suite, and one that is paused runs only when asked', async () => {
     open({ suite_id: 'suite-1', enabled: false });
     await openPage(PROJECT_A, [`/regression?schedule=${SCHEDULE_ID}`]);
@@ -487,6 +509,35 @@ describe('RegressionPage — the report of a run', () => {
     await act(async () => button('regression-copy').click());
     await waitFor(() => expect(el('regression-copy-error')).toBeTruthy());
     expect(text('regression-copy-error')).toContain('no text today');
+    expect(el('regression-report')).toBeTruthy();
+  });
+
+  it('saves the report as a JUnit file, and says so when it could not be read', async () => {
+    const xml = '<?xml version="1.0" encoding="UTF-8"?>\n<testsuites name="AIQA regression: Nightly"/>\n';
+    const made: Blob[] = [];
+    const saved: string[] = [];
+    (URL as unknown as { createObjectURL: (b: Blob) => string }).createObjectURL = vi.fn((b: Blob) => (made.push(b), 'blob:junit'));
+    (URL as unknown as { revokeObjectURL: (u: string) => void }).revokeObjectURL = vi.fn();
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      saved.push(this.download);
+    });
+    const fetchMock = withReport({ reports: { [RUN_ID]: (req) => (req.query.format === 'junit' ? textResponse(200, xml) : reportFor()) } });
+    await openPage(PROJECT_A, [`/regression?schedule=${SCHEDULE_ID}&run=${RUN_ID}`]);
+    await waitFor(() => expect(el('regression-report')).toBeTruthy());
+    expect(text('regression-junit')).toBe('Download JUnit');
+    await act(async () => button('regression-junit').click());
+    await waitFor(() => expect(saved).toEqual(['regression-Nightly.xml']));
+    expect(await readBlob(made[0])).toBe(xml);
+    expect(requests(fetchMock, `GET /regression/runs/${RUN_ID}$`).filter((r) => r.query.format === 'junit')).toHaveLength(1);
+    expect(el('regression-copy-error')).toBeNull();
+    cleanup();
+    withReport({ reports: { [RUN_ID]: (req) => (req.query.format === 'junit' ? failure(500, 'INTERNAL_ERROR', 'no xml today') : reportFor()) } });
+    await openPage(PROJECT_A, [`/regression?schedule=${SCHEDULE_ID}&run=${RUN_ID}`]);
+    await waitFor(() => expect(el('regression-report')).toBeTruthy());
+    await act(async () => button('regression-junit').click());
+    await waitFor(() => expect(el('regression-copy-error')).toBeTruthy());
+    expect(text('regression-copy-error')).toContain('no xml today');
+    expect(saved, 'nothing was saved').toHaveLength(1);
     expect(el('regression-report')).toBeTruthy();
   });
 

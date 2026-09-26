@@ -23,6 +23,7 @@ import { CasePreview } from '../openapi/CasePreview';
 import { OpenApiReportView } from '../openapi/OpenApiReportView';
 import { buildBody, emptyForm, formProblems, type OpenApiFormState } from '../openapi/openApiModel';
 import { errorText, formatTimestamp } from '../autopilot/autopilotModel';
+import { fileNameOf, saveTextFile } from '../common/saveTextFile';
 import type { OpenApiPlan, OpenApiRunListRow } from '../../types/contract';
 
 const STATE_DOT: Record<string, string> = {
@@ -212,6 +213,18 @@ export const OpenApiTestsPage: React.FC = () => {
     }
   }, [selectedProjectId, chosenId]);
 
+  // The report as JUnit XML, saved as a file: what a CI system reads (Phase 8D).
+  const downloadJunit = useCallback(async () => {
+    if (!selectedProjectId || !chosenId) return;
+    try {
+      const xml = await aiqaApi.openapi.runs.junit(selectedProjectId, chosenId);
+      saveTextFile(fileNameOf(`api-tests-${look.report?.spec.title ?? 'run'}`, 'xml'), xml);
+      setCopy((c) => ({ ...c, error: null }));
+    } catch (e) {
+      setCopy((c) => ({ ...c, error: errorText(e, 'The report could not be read as JUnit XML.') }));
+    }
+  }, [selectedProjectId, chosenId, look.report?.spec.title]);
+
   const renderReport = () => {
     if (look.loading && !look.report) {
       return (
@@ -246,7 +259,7 @@ export const OpenApiTestsPage: React.FC = () => {
             {copy.error}
           </p>
         )}
-        <OpenApiReportView report={look.report} onCopyMarkdown={() => void copyMarkdown()} copyState={copy.state} markdown={copy.text} />
+        <OpenApiReportView report={look.report} onCopyMarkdown={() => void copyMarkdown()} copyState={copy.state} markdown={copy.text} onDownloadJunit={() => void downloadJunit()} />
       </div>
     );
   };

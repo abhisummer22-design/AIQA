@@ -8,6 +8,7 @@ import {
   EVERY_CHOICES,
   buildBody,
   changeLine,
+  ciSnippet,
   emptyForm,
   everyMinutes,
   everyText,
@@ -116,6 +117,22 @@ describe('changeLine', () => {
     expect(changeLine({ ...CASES[0], before: 'PASSED', outcome: 'ERROR' })).toBe('passed last time, could not run now');
     expect(changeLine({ ...CASES[0], before: 'ERROR', outcome: 'PASSED' })).toBe('could not run last time, passes now');
     expect(changeLine({ ...CASES[0], before: 'PASSED', outcome: 'PENDING' })).toBe('passed last time, is waiting to run now');
+  });
+});
+
+describe('ciSnippet', () => {
+  it('gives the lines that run the schedule from a CI job, with the project and the schedule filled in and the rest left to its owner', () => {
+    const lines = ciSnippet('proj-a', '11111111-1111-4111-8111-111111111111').split('\n');
+    expect(lines).toHaveLength(5);
+    expect(lines[2]).toBe('export AIQA_PROJECT="proj-a"');
+    expect(lines[4]).toBe('bash scripts/ci/aiqa-ci.sh regression 11111111-1111-4111-8111-111111111111');
+    expect(lines[0]).toMatch(/^export AIQA_URL="<where AIQA can be reached/);
+    expect(lines[1]).toMatch(/^export AIQA_KEY="<an API key with the operator role/);
+    expect(lines[3]).toMatch(/^export AIQA_FAIL_ON=regressed/);
+  });
+
+  it('never has a key in it: it is a placeholder for a secret', () => {
+    expect(ciSnippet('p', 's')).not.toMatch(/aiqa_[A-Za-z0-9]{8,}/);
   });
 });
 

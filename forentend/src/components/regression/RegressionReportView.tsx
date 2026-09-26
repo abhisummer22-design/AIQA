@@ -3,7 +3,7 @@
  * regressions first; what could not be repeated is listed with why.
  */
 import React from 'react';
-import { AlertTriangle, ClipboardCopy, Loader2 } from 'lucide-react';
+import { AlertTriangle, ClipboardCopy, Download, Loader2 } from 'lucide-react';
 import type { RegressionCase, RegressionReport } from '../../types/contract';
 import { formatTimestamp } from '../autopilot/autopilotModel';
 import { CHANGE_LABEL, OUTCOME_LABEL, VERDICT_LABEL, changeLine, verdictTone, type Tone } from './regressionModel';
@@ -62,7 +62,9 @@ export const RegressionReportView: React.FC<{
   onCopyMarkdown: () => void;
   copyState: CopyState;
   markdown: string;
-}> = ({ report, onCopyMarkdown, copyState, markdown }) => {
+  /** Phase 8D: saves the report as JUnit XML (what a CI system reads). The button is there only when this is given. */
+  onDownloadJunit?: () => void;
+}> = ({ report, onCopyMarkdown, copyState, markdown, onDownloadJunit }) => {
   const s = report.summary;
   return (
     <section id="regression-report" className="space-y-3">
@@ -84,6 +86,18 @@ export const RegressionReportView: React.FC<{
           <ClipboardCopy className="w-3 h-3" />
           {copyState === 'copied' ? 'Copied' : 'Copy as Markdown'}
         </button>
+        {onDownloadJunit && (
+          <button
+            type="button"
+            id="regression-junit"
+            onClick={onDownloadJunit}
+            title="The report as JUnit XML, which CI systems show as a test page"
+            className="inline-flex items-center gap-1 px-2 py-1 rounded border border-slate-700 text-[11px] text-slate-200 hover:bg-slate-800 cursor-pointer"
+          >
+            <Download className="w-3 h-3" />
+            Download JUnit
+          </button>
+        )}
       </div>
       {copyState === 'shown' && <textarea id="regression-markdown" readOnly value={markdown} rows={8} className="w-full rounded border border-slate-800 bg-[#020617] p-2 text-[11px] font-mono text-slate-300" />}
 

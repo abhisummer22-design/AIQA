@@ -285,7 +285,7 @@ pub fn base_address(servers: &[String], document_address: Option<&str>) -> Optio
 /// Whether a server address is a place as it stands: a `{variable}` that the document gave no default for is still in it if it has a
 /// brace, and what is left is not an address to be resolved against anything.
 fn is_settled(server: &str) -> bool {
-    !server.contains(|c: char| c == '{' || c == '}')
+    !server.contains(['{', '}'])
 }
 
 /// A Swagger 2.0 parameter carries its type beside `name` and `in`, not under `schema`: the schema it means.
@@ -768,7 +768,7 @@ mod tests {
             depth += 1;
             assert!(depth <= MAX_DEPTH, "never stops");
         }
-        assert!(depth >= 2 && depth <= MAX_DEPTH, "followed {depth} levels");
+        assert!((2..=MAX_DEPTH).contains(&depth), "followed {depth} levels");
         assert_eq!(node, json!({}), "the end of the chain is an empty schema");
     }
 

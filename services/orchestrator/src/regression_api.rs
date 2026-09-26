@@ -7,6 +7,7 @@ use crate::api::{
     audit, require_scoped_project, scoped_run_summary, scoped_run_tasks, scoped_test_suite, to_500,
 };
 use crate::auth::{self, AuthContext, Role};
+use crate::ci;
 use crate::domain::TaskStatus;
 use crate::errors::{ApiError, ApiJson, ApiPath, ApiQuery};
 use crate::openapi_runs::{outcome_of, TaskOutcome};
@@ -463,10 +464,14 @@ pub(crate) async fn list_runs(
 #[derive(Debug, Deserialize)]
 pub(crate) struct ReportQuery {
     format: Option<String>,
+    /// Seconds to wait for the run to end (at most 300): the report comes when it has, or when the wait is over.
+    wait: Option<u64>,
 }
 
-/// GET /api/v1/projects/:project_id/regression/runs/:id (Viewer role; `?format=markdown` gives text to paste): what each case came to,
-/// beside what it came to the last time, regressions first. While the run goes it says what it has so far, and that it has not ended.
+/// GET /api/v1/projects/:project_id/regression/runs/:id (Viewer role; `?format=markdown` gives text to paste, `?format=junit` gives
+/// JUnit XML for a CI system, `?wait=` waits for the run to end): what each case came to, beside what it came to the last time,
+/// regressions first. While the run goes it says what it has so far, and that it has not ended. `X-AIQA-Verdict` and `X-AIQA-Final`
+/// say how it came out without reading the body.
 pub(crate) async fn get_run(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -475,9 +480,12 @@ pub(crate) async fn get_run(
 ) -> Result<Response, ApiError> {
     require_scoped_project(&state, &ctx, project_id).await?;
     let format = query.format.as_deref().unwrap_or("json");
-    if !matches!(format, "json" | "markdown") {
-        return Err(ApiError::validation("format must be json or markdown"));
+    if !matches!(format, "json" | "markdown" | "junit") {
+        return Err(ApiError::validation(
+            "format must be json, markdown or junit",
+        ));
     }
+    let wait = ci::check_wait(query.wait)?;
     let row = state
         .store
         .get_regression_run(id)
@@ -485,15 +493,21 @@ pub(crate) async fn get_run(
         .map_err(to_500)?
         .filter(|r| r.project_id == project_id.to_string())
         .ok_or_else(|| ApiError::not_found("regression run not found in this project"))?;
-    let report = report_of(&state, project_id, &row).await?;
-    if format == "markdown" {
-        return Ok((
+    let report = ci::until_final(wait, || report_of(&state, project_id, &row)).await?;
+    let response = match format {
+        "markdown" => (
             [(header::CONTENT_TYPE, "text/markdown; charset=utf-8")],
             to_markdown(&report),
         )
-            .into_response());
-    }
-    Ok(Json(report).into_response())
+            .into_response(),
+        "junit" => (
+            [(header::CONTENT_TYPE, "application/xml; charset=utf-8")],
+            crate::junit::regression_junit(&report),
+        )
+            .into_response(),
+        _ => Json(&report).into_response(),
+    };
+    Ok(ci::with_verdict(response, &report))
 }
 
 #[derive(Debug, Deserialize)]

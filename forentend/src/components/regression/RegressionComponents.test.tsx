@@ -170,6 +170,21 @@ describe('the head of the report', () => {
   });
 });
 
+describe('the JUnit download', () => {
+  it('is there when it is given something to do, and does it when it is pressed', () => {
+    const onDownload = vi.fn();
+    show(reportFor(), { onDownloadJunit: onDownload });
+    expect(text('regression-junit')).toBe('Download JUnit');
+    fireEvent.click(el('regression-junit'));
+    expect(onDownload).toHaveBeenCalledTimes(1);
+  });
+
+  it('is not there when there is nothing to do', () => {
+    show();
+    expect(document.getElementById('regression-junit')).toBeNull();
+  });
+});
+
 describe('the tiles', () => {
   it('count the cases run, passed, failed (errors with them), regressed, fixed and still failing', () => {
     show();

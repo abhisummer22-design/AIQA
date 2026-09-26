@@ -4,7 +4,7 @@
  * really sends and shows.
  */
 import React from 'react';
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, useLocation, useNavigationType } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppShell } from '../../App';
@@ -67,6 +67,7 @@ function renderApp(initialEntries: string[] = ['/openapi-tests']) {
 const probe = () => screen.getByTestId('location-probe');
 const currentPath = () => probe().getAttribute('data-pathname') ?? '';
 const currentSearch = () => probe().getAttribute('data-search') ?? '';
+const readBlob = (blob: Blob) => new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error); reader.readAsText(blob); });
 const el = (id: string) => document.getElementById(id);
 const text = (id: string) => el(id)?.textContent ?? '';
 const button = (id: string) => el(id) as HTMLButtonElement;
@@ -463,6 +464,35 @@ describe('OpenApiTestsPage — the report of a run', () => {
     expect(write).toHaveBeenCalledWith(markdown);
     expect(requests(fetchMock, `GET /openapi/runs/${RUN_ID}$`).filter((r) => r.query.format === 'markdown')).toHaveLength(1);
     expect(el('openapi-markdown')).toBeNull();
+  });
+
+  it('saves the report as a JUnit file, and says so when it could not be read', async () => {
+    const xml = '<?xml version="1.0" encoding="UTF-8"?>\n<testsuites name="AIQA API tests: Fixture Pets 1.0"/>\n';
+    const made: Blob[] = [];
+    const saved: string[] = [];
+    (URL as unknown as { createObjectURL: (b: Blob) => string }).createObjectURL = vi.fn((b: Blob) => (made.push(b), 'blob:junit'));
+    (URL as unknown as { revokeObjectURL: (u: string) => void }).revokeObjectURL = vi.fn();
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      saved.push(this.download);
+    });
+    const fetchMock = mockBackend({ reports: { [RUN_ID]: (req) => (req.query.format === 'junit' ? textResponse(200, xml) : reportFor()) } });
+    await openPage(PROJECT_A, [`/openapi-tests?run=${RUN_ID}`]);
+    await waitFor(() => expect(el('openapi-report')).toBeTruthy());
+    expect(text('openapi-junit')).toBe('Download JUnit');
+    await act(async () => button('openapi-junit').click());
+    await waitFor(() => expect(saved).toEqual(['api-tests-Fixture-Pets.xml']));
+    expect(await readBlob(made[0])).toBe(xml);
+    expect(requests(fetchMock, `GET /openapi/runs/${RUN_ID}$`).filter((r) => r.query.format === 'junit')).toHaveLength(1);
+    expect(el('openapi-copy-error')).toBeNull();
+    cleanup();
+    mockBackend({ reports: { [RUN_ID]: (req) => (req.query.format === 'junit' ? failure(500, 'INTERNAL_ERROR', 'no xml today') : reportFor()) } });
+    await openPage(PROJECT_A, [`/openapi-tests?run=${RUN_ID}`]);
+    await waitFor(() => expect(el('openapi-report')).toBeTruthy());
+    await act(async () => button('openapi-junit').click());
+    await waitFor(() => expect(el('openapi-copy-error')).toBeTruthy());
+    expect(text('openapi-copy-error')).toContain('no xml today');
+    expect(saved, 'nothing was saved').toHaveLength(1);
+    expect(el('openapi-report')).toBeTruthy();
   });
 
   it('shows the Markdown to copy by hand when the browser will not copy it', async () => {

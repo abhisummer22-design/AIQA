@@ -15273,7 +15273,7 @@ async fn phase8b_who_may_plan_run_and_read_is_the_projects_operator_and_its_view
     assert_eq!(status, StatusCode::NOT_FOUND);
     let (status, body) = openapi_call(&state, "GET", &format!("{base}/runs/{id}?format=pdf"), &owner, None).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(body["error"]["message"].as_str().unwrap().contains("format must be json or markdown"), "{body}");
+    assert!(body["error"]["message"].as_str().unwrap().contains("format must be json, markdown or junit"), "{body}");
     let (status, body) = send(&state, req("GET", &format!("{base}/runs"), None, None)).await;
     assert_envelope(status, &body, StatusCode::UNAUTHORIZED, "UNAUTHENTICATED");
     openapi_report_when_done(&state, project, id, &owner).await;
@@ -15472,7 +15472,7 @@ async fn phase8c_schedules_are_made_changed_and_removed_by_an_operator_and_read_
         assert_eq!(status, StatusCode::FORBIDDEN, "a viewer: {method} {tail}: {out}");
     }
     for (method, tail) in [("GET", "schedules".to_string()), ("GET", format!("schedules/{id}/runs")), ("PATCH", format!("schedules/{id}")), ("DELETE", format!("schedules/{id}"))] {
-        let (status, out) = regression_call(&state, method, project, &tail, &stranger, Some(serde_json::json!({"name": "x"})).filter(|_| method == "PATCH")).await;
+        let (status, out) = regression_call(&state, method, project, &tail, &stranger, (method == "PATCH").then_some(serde_json::json!({"name": "x"}))).await;
         assert!(status == StatusCode::FORBIDDEN || status == StatusCode::NOT_FOUND, "another project's key: {method} {tail}: {status} {out}");
     }
     let (status, _) = regression_call(&state, "PATCH", other, &format!("schedules/{id}"), &other_owner, Some(serde_json::json!({"name": "x"}))).await;
@@ -15797,4 +15797,136 @@ async fn phase8c_deleting_a_project_removes_its_schedules_and_runs_and_only_its_
     assert!(state.store.delete_project(projects[0]).await.unwrap());
     assert_eq!((count("regression_schedules", projects[0]).await, count("regression_runs", projects[0]).await), (0, 0));
     assert_eq!((count("regression_schedules", projects[1]).await, count("regression_runs", projects[1]).await), (1, 1), "another project's are not touched");
+}
+
+// ------------------------------------------------- Phase 8D: CI integration (JUnit, waiting for a run, the verdict in the headers)
+
+/// A response's status, its body as text and its headers.
+async fn text_and_headers(state: &AppState, path: &str, key: &str) -> (StatusCode, String, axum::http::HeaderMap) {
+    let response = router(state.clone()).oneshot(req("GET", path, Some(key), None)).await.expect("router call");
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = response.into_body().collect().await.expect("collect body").to_bytes();
+    (status, String::from_utf8_lossy(&bytes).to_string(), headers)
+}
+
+fn header_text(headers: &axum::http::HeaderMap, name: &str) -> String {
+    headers.get(name).and_then(|v| v.to_str().ok()).unwrap_or("(none)").to_string()
+}
+
+#[tokio::test]
+async fn phase8d_a_regression_report_is_read_as_junit_and_waited_for_and_says_how_it_came_out_in_its_headers() {
+    ensure_local_health_target().await;
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Phase8D Regression").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let viewer = mint_key(&state, "viewer", Some(&project.to_string())).await;
+    set_fixture_flip("t8d-a", true);
+    set_fixture_flip("t8d-b", true);
+    executed_case(&state, project, &owner, "Case A", "/fixture/flip/t8d-a").await;
+    executed_case(&state, project, &owner, "Case B", "/fixture/flip/t8d-b").await;
+    approved_case(&state, project, &owner, sample_test_case_body("Never run")).await;
+    let sid = a_schedule(&state, project, &owner, serde_json::json!({"name": "CI gate", "every_minutes": 60, "enabled": false})).await;
+    let report_path = |run: &str, query: &str| format!("/api/v1/projects/{project}/regression/runs/{run}{query}");
+    let how = |headers: &axum::http::HeaderMap| (header_text(headers, "x-aiqa-verdict"), header_text(headers, "x-aiqa-final"));
+
+    // A run that passed: a test for each case, and a skipped one for the case that was not repeated.
+    let (_, first) = run_schedule_call(&state, project, &sid, &owner).await;
+    let first_id = first["id"].as_str().unwrap().to_string();
+    regression_report_when_done(&state, project, &first_id, &owner).await;
+    let (status, xml, headers) = text_and_headers(&state, &report_path(&first_id, "?format=junit"), &viewer).await;
+    assert_eq!(status, StatusCode::OK, "a viewer may read it: {xml}");
+    assert_eq!(header_text(&headers, "content-type"), "application/xml; charset=utf-8");
+    assert_eq!(how(&headers), ("PASSING".to_string(), "true".to_string()));
+    assert!(xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"), "{xml}");
+    assert!(xml.contains("<testsuites name=\"AIQA regression: CI gate\" tests=\"3\" failures=\"0\" errors=\"0\" skipped=\"1\">"), "{xml}");
+    assert!(xml.contains("<testcase classname=\"regression.CI gate\" name=\"Case A\""), "{xml}");
+    assert!(xml.contains("<skipped message=\"approved, but not run yet"), "{xml}");
+    assert!(xml.contains("<property name=\"verdict\" value=\"PASSING\"/>"), "{xml}");
+    // The other formats say it in the headers too.
+    let (_, json, headers) = text_and_headers(&state, &report_path(&first_id, ""), &viewer).await;
+    assert!(json.contains("\"verdict\":\"PASSING\""), "{json}");
+    assert_eq!(how(&headers), ("PASSING".to_string(), "true".to_string()));
+    let (_, _, headers) = text_and_headers(&state, &report_path(&first_id, "?format=markdown"), &viewer).await;
+    assert_eq!(how(&headers), ("PASSING".to_string(), "true".to_string()));
+
+    // Case B breaks. The report is asked for at once, with a wait: it comes when the run has ended, and says so.
+    set_fixture_flip("t8d-b", false);
+    let (_, second) = run_schedule_call(&state, project, &sid, &owner).await;
+    let second_id = second["id"].as_str().unwrap().to_string();
+    let (status, xml, headers) = text_and_headers(&state, &report_path(&second_id, "?format=junit&wait=30"), &owner).await;
+    assert_eq!(status, StatusCode::OK, "{xml}");
+    assert_eq!(how(&headers), ("REGRESSED".to_string(), "true".to_string()));
+    assert!(xml.contains("tests=\"3\" failures=\"1\" errors=\"0\" skipped=\"1\""), "{xml}");
+    assert!(xml.contains("<failure message=\"") && xml.contains("500"), "the case that broke says why: {xml}");
+    assert!(xml.contains("<system-out>REGRESSED; before: passed (previous run)</system-out>"), "and that it broke since last time: {xml}");
+
+    // A run that has not ended says so, in its body and its headers; asked to wait, it comes when the run has ended.
+    set_fixture_flip("t8d-b", true);
+    executed_case(&state, project, &owner, "Slow one", "/fixture/slow").await;
+    let (_, third) = run_schedule_call(&state, project, &sid, &owner).await;
+    let third_id = third["id"].as_str().unwrap().to_string();
+    let (status, json, headers) = text_and_headers(&state, &report_path(&third_id, ""), &owner).await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert!(json.contains("\"final\":false"), "{json}");
+    assert_eq!(how(&headers), ("RUNNING".to_string(), "false".to_string()));
+    let (status, xml, headers) = text_and_headers(&state, &report_path(&third_id, "?format=junit&wait=60"), &owner).await;
+    assert_eq!(status, StatusCode::OK, "{xml}");
+    assert_eq!(how(&headers), ("PASSING".to_string(), "true".to_string()), "{xml}");
+    assert!(xml.contains("name=\"Slow one\""), "{xml}");
+
+    // A wait longer than a request may make, one that is not a number, and a format there is not.
+    let (status, body, _) = text_and_headers(&state, &report_path(&third_id, "?wait=301"), &owner).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.contains("at most 300 seconds"), "{body}");
+    let (status, body, _) = text_and_headers(&state, &report_path(&third_id, "?wait=soon"), &owner).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, body, _) = text_and_headers(&state, &report_path(&third_id, "?format=pdf"), &owner).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.contains("json, markdown or junit"), "{body}");
+}
+
+#[tokio::test]
+async fn phase8d_an_openapi_report_is_waited_for_and_read_as_junit_and_says_how_it_came_out_in_its_headers() {
+    ensure_local_health_target().await;
+    std::env::set_var("AIQA_SECRET_T8D_RUN", "Bearer t8b-test-token");
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Phase8D OpenApi").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let viewer = mint_key(&state, "viewer", Some(&project.to_string())).await;
+    let path = |run: &str, query: &str| format!("/api/v1/projects/{project}/openapi/runs/{run}{query}");
+    let how = |headers: &axum::http::HeaderMap| (header_text(headers, "x-aiqa-verdict"), header_text(headers, "x-aiqa-final"));
+
+    // The whole document, with its one lie: asked for at once with a wait, the report comes when the run has ended and it fails.
+    let (status, created) = openapi_call(&state, "POST", &format!("/api/v1/projects/{project}/openapi/runs"), &owner, Some(openapi_body("AIQA_SECRET_T8D_RUN", serde_json::json!({})))).await;
+    assert_eq!(status, StatusCode::CREATED, "body={created}");
+    let id = created["id"].as_str().unwrap().to_string();
+    let (status, xml, headers) = text_and_headers(&state, &path(&id, "?format=junit&wait=60"), &viewer).await;
+    assert_eq!(status, StatusCode::OK, "a viewer may read it: {xml}");
+    assert_eq!(header_text(&headers, "content-type"), "application/xml; charset=utf-8");
+    assert_eq!(how(&headers), ("FAILING".to_string(), "true".to_string()), "{xml}");
+    assert!(xml.contains("<testsuites name=\"AIQA API tests: Fixture Pets 1.0\" tests=\"12\" failures=\"1\" errors=\"0\" skipped=\"4\">"), "{xml}");
+    assert!(xml.contains("classname=\"GET /pets/{petId}\""), "an operation of the document is the class: {xml}");
+    assert!(xml.contains("<failure message=\"Status is one of 404: got 400"), "the failure says what the document promised and what came back: {xml}");
+    assert!(xml.contains("<property name=\"base_url\" value=\"http://127.0.0.1:8080/fixture\"/>"), "{xml}");
+    let (_, json, headers) = text_and_headers(&state, &path(&id, ""), &viewer).await;
+    assert!(json.contains("\"verdict\":\"FAILING\""), "{json}");
+    assert_eq!(how(&headers), ("FAILING".to_string(), "true".to_string()));
+
+    // A run that only passes.
+    let only_one = serde_json::json!({"kinds": ["HAPPY"], "operations": ["GET /pets"]});
+    let (status, created) = openapi_call(&state, "POST", &format!("/api/v1/projects/{project}/openapi/runs"), &owner, Some(openapi_body("AIQA_SECRET_T8D_RUN", only_one))).await;
+    assert_eq!(status, StatusCode::CREATED, "body={created}");
+    let (status, xml, headers) = text_and_headers(&state, &path(created["id"].as_str().unwrap(), "?format=junit&wait=60"), &owner).await;
+    assert_eq!(status, StatusCode::OK, "{xml}");
+    assert_eq!(how(&headers), ("PASSING".to_string(), "true".to_string()), "{xml}");
+    assert!(xml.contains("tests=\"1\" failures=\"0\" errors=\"0\" skipped=\"0\""), "{xml}");
+
+    // A wait longer than a request may make, and a format there is not.
+    let (status, body, _) = text_and_headers(&state, &path(&id, "?wait=301"), &owner).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.contains("at most 300 seconds"), "{body}");
+    let (status, body, _) = text_and_headers(&state, &path(&id, "?format=pdf"), &owner).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.contains("json, markdown or junit"), "{body}");
 }

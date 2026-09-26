@@ -431,7 +431,7 @@ fn grouped<K: Ord>(rows: &[&AiUsageRow], key_of: impl Fn(&AiUsageRow) -> K) -> V
         groups.entry(key_of(row)).or_default().add(row);
     }
     let mut groups: Vec<(K, Tally)> = groups.into_iter().collect();
-    groups.sort_by(|a, b| b.1.calls.cmp(&a.1.calls));
+    groups.sort_by_key(|g| std::cmp::Reverse(g.1.calls));
     groups
 }
 
@@ -950,7 +950,11 @@ mod tests {
                 .ai_usage_since("2026-09-26T13:00", Some("p1"))
                 .await
                 .unwrap()),
-            ["2026-09-26T13:00 p1", "2026-09-26T13:15 p1", "2026-09-26T13:30 p1"]
+            [
+                "2026-09-26T13:00 p1",
+                "2026-09-26T13:15 p1",
+                "2026-09-26T13:30 p1"
+            ]
         );
         assert!(store
             .ai_usage_since("2026-09-26T13:45", None)

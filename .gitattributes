@@ -2,3 +2,4 @@
 *.sqlite3 binary
 *.png binary
 *.gz binary
+*.sh text eol=lf

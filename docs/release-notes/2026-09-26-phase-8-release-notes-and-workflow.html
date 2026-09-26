@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AIQA Phase 8 Release Notes</title>
+<meta name="description" content="What is new in AIQA Phase 8 (AI usage and cost, OpenAPI tests, scheduled regression, CI integration), how each part works, and how to try it.">
+<style>
+  :root {
+    --bg: #f6f7fb;
+    --card: #ffffff;
+    --text: #1b2236;
+    --muted: #5a6479;
+    --line: #dde2ee;
+    --accent: #5a3fd4;
+    --accent-soft: #eee9ff;
+    --good: #0d7a49;
+    --good-soft: #e0f5ea;
+    --warn: #9a5a00;
+    --warn-soft: #fff2d9;
+    --bad: #b3261e;
+    --bad-soft: #fde7e5;
+    --code-bg: #eef0f7;
+    --shadow: 0 1px 2px rgba(20, 30, 60, 0.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0c1120;
+      --card: #141b2f;
+      --text: #e7eaf4;
+      --muted: #98a2ba;
+      --line: #263049;
+      --accent: #a992ff;
+      --accent-soft: #211b47;
+      --good: #4cd98b;
+      --good-soft: #10291f;
+      --warn: #f0b354;
+      --warn-soft: #2e2410;
+      --bad: #ff8a80;
+      --bad-soft: #341716;
+      --code-bg: #1b2440;
+      --shadow: none;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0c1120;
+    --card: #141b2f;
+    --text: #e7eaf4;
+    --muted: #98a2ba;
+    --line: #263049;
+    --accent: #a992ff;
+    --accent-soft: #211b47;
+    --good: #4cd98b;
+    --good-soft: #10291f;
+    --warn: #f0b354;
+    --warn-soft: #2e2410;
+    --bad: #ff8a80;
+    --bad-soft: #341716;
+    --code-bg: #1b2440;
+    --shadow: none;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: 16px; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 16px 64px; }
+  header.top { padding: 32px 0 8px; }
+  header.top h1 { margin: 0 0 6px; font-size: 28px; line-height: 1.2; letter-spacing: -0.01em; }
+  header.top p { margin: 0; color: var(--muted); max-width: 70ch; }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+  .pill { display: inline-block; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--card); font-size: 12px; color: var(--muted); }
+  .pill.good { color: var(--good); background: var(--good-soft); border-color: transparent; }
+  .pill.warn { color: var(--warn); background: var(--warn-soft); border-color: transparent; }
+  .layout { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 28px; margin-top: 20px; align-items: start; }
+  nav.toc { position: sticky; top: 16px; font-size: 13px; }
+  nav.toc strong { display: block; margin-bottom: 6px; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+  nav.toc a { display: block; padding: 4px 8px; border-left: 2px solid var(--line); color: var(--muted); text-decoration: none; }
+  nav.toc a:hover { color: var(--accent); border-left-color: var(--accent); }
+  main { min-width: 0; }
+  section { margin-bottom: 40px; }
+  h2 { margin: 0 0 14px; font-size: 22px; letter-spacing: -0.01em; }
+  h3 { margin: 24px 0 8px; font-size: 17px; }
+  h4 { margin: 16px 0 6px; font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  p { margin: 8px 0; }
+  ul, ol { margin: 8px 0; padding-left: 22px; }
+  li { margin: 4px 0; }
+  code, kbd { font: 12.5px/1.4 ui-monospace, "Cascadia Code", Consolas, monospace; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+  pre { margin: 10px 0; padding: 12px 14px; background: var(--code-bg); border-radius: 8px; overflow-x: auto; font: 12.5px/1.5 ui-monospace, "Cascadia Code", Consolas, monospace; }
+  pre code { padding: 0; background: none; }
+  a { color: var(--accent); }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; box-shadow: var(--shadow); }
+  .card h3 { margin: 0 0 4px; font-size: 15px; }
+  .card p { margin: 4px 0 0; color: var(--muted); font-size: 14px; }
+  .tag { display: inline-block; margin-bottom: 6px; padding: 1px 8px; border-radius: 6px; background: var(--accent-soft); color: var(--accent); font-size: 12px; font-weight: 600; }
+  .tag.off { background: var(--warn-soft); color: var(--warn); }
+  .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); background: var(--code-bg); }
+  tr:last-child td { border-bottom: 0; }
+  .box { border-radius: 10px; padding: 10px 14px; margin: 12px 0; border: 1px solid var(--line); background: var(--card); }
+  .box.good { background: var(--good-soft); border-color: transparent; }
+  .box.warn { background: var(--warn-soft); border-color: transparent; }
+  .box.bad { background: var(--bad-soft); border-color: transparent; }
+  .box b:first-child { margin-right: 4px; }
+  .flow { display: flex; flex-wrap: wrap; align-items: stretch; gap: 8px 0; margin: 12px 0; }
+  .flow .step { position: relative; flex: 1 1 130px; min-width: 130px; margin-right: 22px; padding: 10px 12px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; font-size: 13px; }
+  .flow .step:last-child { margin-right: 0; }
+  .flow .step:not(:last-child)::after { content: "\2192"; position: absolute; right: -19px; top: 50%; transform: translateY(-50%); color: var(--accent); font-size: 18px; font-weight: 700; }
+  .flow .step b { display: block; margin-bottom: 2px; font-size: 13px; }
+  .flow .step span { color: var(--muted); }
+  .flow .step.end { background: var(--good-soft); border-color: transparent; }
+  .flow .step.stop { background: var(--warn-soft); border-color: transparent; }
+  .steps { counter-reset: s; list-style: none; padding: 0; }
+  .steps > li { counter-increment: s; position: relative; margin: 10px 0; padding: 10px 14px 10px 46px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
+  .steps > li::before { content: counter(s); position: absolute; left: 12px; top: 10px; width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: #fff; font-weight: 700; font-size: 13px; text-align: center; line-height: 24px; }
+  .expect { display: block; margin-top: 6px; padding: 6px 10px; border-radius: 8px; background: var(--good-soft); color: var(--text); font-size: 14px; }
+  .expect::before { content: "You should see: "; font-weight: 700; color: var(--good); }
+  details { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 8px 14px; margin: 10px 0; }
+  summary { cursor: pointer; font-weight: 600; }
+  footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+  @media (max-width: 860px) {
+    .layout { grid-template-columns: minmax(0, 1fr); }
+    nav.toc { position: static; display: flex; flex-wrap: wrap; gap: 4px 6px; }
+    nav.toc strong { width: 100%; }
+    nav.toc a { border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; }
+    .flow { flex-direction: column; gap: 22px; }
+    .flow .step { margin-right: 0; }
+    .flow .step:not(:last-child)::after { content: "\2193"; right: auto; left: 50%; top: auto; bottom: -22px; transform: translateX(-50%); }
+  }
+  @media print {
+    nav.toc { display: none; }
+    .layout { display: block; }
+    .card, .box, .steps > li, details { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <h1>AIQA Phase 8: Release Notes and Workflow Guide</h1>
+  <p>What is new, how each new part works from start to end, and how you can try every one of them yourself. Written on 26 September 2026 for the <code>Demo</code> branch.</p>
+  <div class="meta">
+    <span class="pill good">8A AI usage and cost</span>
+    <span class="pill good">8B OpenAPI tests</span>
+    <span class="pill good">8C Scheduled regression</span>
+    <span class="pill good">8D CI integration</span>
+    <span class="pill warn">8E Mobile (Maestro): not built</span>
+  </div>
+</header>
+
+<div class="layout">
+<nav class="toc" aria-label="On this page">
+  <strong>On this page</strong>
+  <a href="#summary">In one minute</a>
+  <a href="#notes">Release notes</a>
+  <a href="#flows">How each part works</a>
+  <a href="#try">Try it yourself</a>
+  <a href="#dev">For developers</a>
+  <a href="#limits">Limits and open points</a>
+</nav>
+
+<main>
+
+<!-- ============================================================ SUMMARY -->
+<section id="summary">
+  <h2>In one minute</h2>
+  <div class="cards">
+    <div class="card">
+      <span class="tag">8A</span>
+      <h3>AI Usage &amp; Cost</h3>
+      <p>Every AI call is counted. A new page shows how many calls were made, how long they took, how many tokens they used and what the priced ones cost.</p>
+    </div>
+    <div class="card">
+      <span class="tag">8B</span>
+      <h3>OpenAPI Tests</h3>
+      <p>Give an OpenAPI or Swagger document. AIQA makes API tests from it by rules (no AI, no cost), runs them, and reports what each operation did.</p>
+    </div>
+    <div class="card">
+      <span class="tag">8C</span>
+      <h3>Scheduled Regression</h3>
+      <p>The test cases you already approved and ran once are run again on a schedule, and every run says what changed since the last time.</p>
+    </div>
+    <div class="card">
+      <span class="tag">8D</span>
+      <h3>CI Integration</h3>
+      <p>GitHub Actions, GitLab, Jenkins or any CI can start these runs, wait, show the cases as a test page (JUnit XML) and fail the build.</p>
+    </div>
+    <div class="card">
+      <span class="tag off">8E</span>
+      <h3>Mobile (Maestro)</h3>
+      <p>Not built in this release. It needs a real phone or an emulator to build and check, so it is left for a session where one is connected.</p>
+    </div>
+  </div>
+
+  <h3>The four things at a glance</h3>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Part</th><th>Where you find it</th><th>Uses AI?</th><th>Anything to set up?</th></tr></thead>
+    <tbody>
+      <tr><td><b>8A</b> AI usage and cost</td><td>Left menu: <b>AI Usage &amp; Cost</b></td><td>It only counts AI calls</td><td>Nothing. Prices for a custom provider are entered in Settings.</td></tr>
+      <tr><td><b>8B</b> OpenAPI tests</td><td>Left menu: <b>OpenAPI Tests</b></td><td>No</td><td>Only if the API needs a token: one environment variable on the AIQA server.</td></tr>
+      <tr><td><b>8C</b> Scheduled regression</td><td>Left menu: <b>Scheduled Regression</b></td><td>No</td><td>Cases must be approved and run once first.</td></tr>
+      <tr><td><b>8D</b> CI integration</td><td>Buttons on the two report pages, a panel on each schedule, and <code>scripts/ci/</code></td><td>No</td><td>An operator API key for the CI job.</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="box good"><b>Nothing is removed or changed for old users.</b> Everything in Phase 8 is added next to what was already there. Old pages, old routes and old settings work as before.</div>
+</section>
+
+<!-- ============================================================ RELEASE NOTES -->
+<section id="notes">
+  <h2>Release notes</h2>
+
+  <h3>8A. AI Usage &amp; Cost</h3>
+  <h4>What is new</h4>
+  <ul>
+    <li><b>Every call to an AI provider is counted</b> when it ends: the ones that answer and the ones that fail (in a fallback chain, each try is one call). It is counted in the single place all provider calls pass through, so no page, run or fallback is missed and nothing is counted twice.</li>
+    <li><b>Only numbers are kept, never text.</b> No prompt and no answer is saved. A row holds counts per quarter of an hour, project, provider, model and task: calls, failed calls, time, tokens and cost.</li>
+    <li><b>Cost is shown only when it is really known.</b> A call gets a cost only if it answered, went to a provider with a price, and reported its token counts. Groq and Gemini use a list price; a custom provider uses the two prices you type in Settings. Ollama or another model with no price is counted but shows <code>&mdash;</code> as cost, never a made-up <code>0</code>.</li>
+    <li><b>New page: AI Usage &amp; Cost.</b> Tiles for calls, tokens, estimated cost and AI time; a bar for each day; tables by provider and model, by task, and (for admins, all projects) by project. Buttons choose <i>This project</i> or <i>All projects</i>, the number of days, and <i>Refresh</i>.</li>
+    <li><b>New routes:</b> <code>GET /api/v1/projects/:project_id/ai-usage</code> (viewer role) and <code>GET /api/v1/ai/usage</code> (admin key).</li>
+  </ul>
+  <h4>Good to know</h4>
+  <ul>
+    <li>Counting starts when this version starts. Earlier calls are not in it, and a price that changes later does not change the cost of calls already made.</li>
+    <li>If writing a count fails, the AI call itself is never lost or slowed down.</li>
+    <li>Embeddings do not go through the router, so they are not counted.</li>
+    <li>New table <code>ai_usage</code> (migration 0023), created automatically when the server starts.</li>
+  </ul>
+
+  <h3>8B. API tests from an OpenAPI document</h3>
+  <h4>What is new</h4>
+  <ul>
+    <li><b>Give a document, get tests.</b> Paste an OpenAPI 3.x or Swagger 2.0 document (JSON or YAML, up to 5 MB) or give its address. AIQA works out test cases <b>by rules</b>, with no AI and no cost. It only makes a case when the document says what the answer must be.</li>
+    <li><b>Five kinds of case:</b>
+      <code>HAPPY</code> (a valid request), <code>NO_AUTH</code> (no credential, expects 401 or 403), <code>MISSING_REQUIRED</code> (a required parameter left out), <code>WRONG_TYPE</code> (a value of the wrong kind) and <code>NOT_FOUND</code> (an id that does not exist).</li>
+    <li><b>Look before you run.</b> <i>Show the cases</i> lists every case, operation by operation, with the request and the answer it expects. Nothing is sent to your API at that point. You can leave operations out.</li>
+    <li><b>Safe by default.</b> Requests that change data (POST, PUT, PATCH, DELETE) are shown but are <b>not run</b> unless you tick the box. The box carries a warning that they are really sent.</li>
+    <li><b>Credentials are only references.</b> You give a header name and the name of an environment variable on the AIQA server (it must start with <code>AIQA_SECRET_</code> or <code>AIQA_LOGIN_</code>). The value is read when a request is made and is never stored, shown, or written to evidence.</li>
+    <li><b>A clear report.</b> For each operation: what it came to, and for each case what was expected and what came back, in plain words (for example <i>Status is one of 404: got 400</i>). It also shows how many operations of the document were tested, the pass rate, and notes on what to know before trusting it. It can be copied as Markdown.</li>
+    <li><b>New page: OpenAPI Tests</b>, with the list of earlier runs beside the form. The open run is in the address (<code>?run=</code>), so a link or a reload lands on it.</li>
+    <li><b>New routes:</b> <code>POST .../openapi/plan</code>, <code>POST .../openapi/runs</code>, <code>GET .../openapi/runs</code>, <code>GET .../openapi/runs/:id</code>.</li>
+  </ul>
+  <h4>Good to know</h4>
+  <ul>
+    <li>A run is one ordinary execution of the project (one task for each case), so the normal policy, evidence and audit apply. A target AIQA may not reach is refused, as for any other test.</li>
+    <li>Two new actions were added to the closed plan language (<code>ASSERT_STATUS_IN</code>, <code>ASSERT_BODY_SCHEMA</code>) and a small JSON Schema checker checks response bodies against the document.</li>
+    <li><b>One new dependency:</b> <code>serde_yaml</code> (with <code>unsafe-libyaml</code> in the lock file). It is used only to read YAML documents.</li>
+    <li>New table <code>openapi_runs</code> (migration 0024). Deleting a project deletes its OpenAPI runs.</li>
+  </ul>
+
+  <h3>8C. Scheduled Regression</h3>
+  <h4>What is new</h4>
+  <ul>
+    <li><b>Run the same cases again.</b> A schedule repeats the cases a project has approved and run once. Nothing is compiled again and no AI is asked: the run repeats the same tasks the cases last ran as. It is an ordinary execution, so policy, evidence, audit and the Execution Hub apply.</li>
+    <li><b>Every run says what changed since the last time</b>, case by case: <code>REGRESSED</code> (passed before, fails now), <code>FIXED</code>, <code>STILL_FAILING</code>, <code>STILL_PASSING</code> or <code>NEW</code>. Regressions come first. The run gets one verdict: <code>REGRESSED</code>, <code>FAILING</code>, <code>PASSING</code>, <code>RUNNING</code> or <code>NOTHING_RAN</code>.</li>
+    <li><b>Schedules:</b> a name; how often (every 5 minutes up to every 31 days); an optional first run time; how many cases at a time (1 to 8); every case or one suite; and whether it starts by itself. A schedule that does not start by itself runs only when asked, which is how a CI job uses it. At most 20 schedules per project.</li>
+    <li><b>Cases that cannot be repeated are listed with the reason</b>, for example <i>approved, but not run yet</i> or <i>only simulated, not executed</i>.</li>
+    <li><b>New page: Scheduled Regression</b>, with <i>Run now</i>, <i>Pause</i> / <i>Resume</i> and <i>Remove</i> (asks first), the history of runs, and each run's report (<code>?schedule=</code> and <code>?run=</code> are in the address).</li>
+    <li><b>New routes</b> under <code>.../regression/</code>: <code>scope</code>, <code>schedules</code> (make, list, change, remove), <code>schedules/:id/run</code>, <code>schedules/:id/runs</code>, <code>runs/:id</code>.</li>
+  </ul>
+  <h4>Good to know</h4>
+  <ul>
+    <li>A background loop looks every 30 seconds for schedules that are due. It keeps the time of day (a nightly schedule stays nightly), and after downtime it makes <b>one</b> run, not a queue of missed ones.</li>
+    <li>It never piles a run on top of one that has not ended.</li>
+    <li>It runs as the API key that made the schedule. If that key is revoked, the schedule pauses itself and says why in its note.</li>
+    <li>Repeating a case leaves the case as it was (it is still <code>EXECUTED</code>).</li>
+    <li>New tables <code>regression_schedules</code> and <code>regression_runs</code> (migration 0025). Deleting a project deletes both.</li>
+  </ul>
+
+  <h3>8D. CI integration</h3>
+  <h4>What is new</h4>
+  <ul>
+    <li><b>JUnit XML.</b> Add <code>?format=junit</code> to the report of a regression run or an OpenAPI run. Every case is a test in the XML: <code>&lt;failure&gt;</code> for a case that failed, <code>&lt;error&gt;</code> for one that could not run to the end, <code>&lt;skipped&gt;</code> for one that was not run.</li>
+    <li><b>Wait in one request.</b> Add <code>?wait=60</code> (seconds, at most 300) and the request comes back when the run has ended, or when the time is up. A job does not need to poll.</li>
+    <li><b>The result without parsing.</b> Every report answer has the headers <code>X-AIQA-Verdict</code> and <code>X-AIQA-Final</code>.</li>
+    <li><b>An OpenAPI verdict.</b> The OpenAPI report now has a <code>verdict</code> too: <code>RUNNING</code>, <code>FAILING</code>, <code>PASSING</code> or <code>NOTHING_RAN</code>.</li>
+    <li><b>Ready-made scripts:</b> <code>scripts/ci/aiqa-ci.sh</code> (bash, curl, sed, grep, awk) and <code>scripts/ci/aiqa-ci.ps1</code> (PowerShell). They start a run, wait, save the JUnit file, print the report in words, and exit with a code the build understands.</li>
+    <li><b>Docs and an example:</b> <code>docs/ci/README.md</code> (every setting, and short examples for GitLab, Jenkins and Azure DevOps) and <code>docs/ci/github-actions.example.yml</code>.</li>
+    <li><b>On screen:</b> <i>Download JUnit</i> beside <i>Copy as Markdown</i> on both reports, and a <i>Use it from CI</i> panel on every schedule with lines you can copy.</li>
+  </ul>
+  <h4>Exit codes of the script</h4>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Code</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>0</code></td><td>The result is acceptable: everything passed, or what failed is not what <code>AIQA_FAIL_ON</code> fails on.</td></tr>
+      <tr><td><code>1</code></td><td>The build should fail on the result.</td></tr>
+      <tr><td><code>2</code></td><td>There is no result: a setting is missing, the run could not be started or read, it did not end in time, or nothing ran.</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <h4>Good to know</h4>
+  <ul>
+    <li><code>AIQA_FAIL_ON</code> can be <code>failing</code> (default: fail on any failing case), <code>regressed</code> (fail only on a case that passed last time; regression only) or <code>never</code>.</li>
+    <li>The API key is read from the environment and is never a command-line argument. The script never prints it.</li>
+    <li>The CI job must be able to reach the AIQA address. A hosted runner cannot reach an AIQA on a laptop; use a self-hosted runner or an address that is open to it.</li>
+    <li>JUnit times are <code>0</code>: the reports do not keep how long each case took.</li>
+    <li>Nothing new is stored for 8D. The XML is made from the report each time it is asked for.</li>
+  </ul>
+
+  <h3>Not built: 8E Mobile (Maestro)</h3>
+  <div class="box warn"><b>Left out on purpose.</b> Mobile tests need a real Android device or an emulator connected, both to write the code and to check it. Without one, any code would be untested. It is the next thing to do when a device is available.</div>
+</section>
+
+<!-- ============================================================ FLOWS -->
+<section id="flows">
+  <h2>How each part works</h2>
+
+  <h3>8A. From an AI call to a number on the page</h3>
+  <div class="flow">
+    <div class="step"><b>1. Something asks the AI</b><span>Test generation, Autopilot, the gap check, and so on</span></div>
+    <div class="step"><b>2. The router calls a provider</b><span>Groq, Gemini, Ollama, custom&hellip;</span></div>
+    <div class="step"><b>3. The call ends</b><span>Answer or failure: the count is taken here</span></div>
+    <div class="step"><b>4. A row is added</b><span>Per quarter hour, project, provider, model, task</span></div>
+    <div class="step end"><b>5. The page adds it up</b><span>Tiles, days, tables</span></div>
+  </div>
+
+  <h3>8B. From a document to a report</h3>
+  <div class="flow">
+    <div class="step"><b>1. Give the document</b><span>Paste it or give an address, and say where the API is</span></div>
+    <div class="step"><b>2. Cases by rule</b><span>Valid, no credential, missing, wrong type, not found</span></div>
+    <div class="step stop"><b>3. Show the cases</b><span>Nothing is sent yet. You choose what to run</span></div>
+    <div class="step"><b>4. Run</b><span>One execution, one task for each case</span></div>
+    <div class="step"><b>5. Check each answer</b><span>Status and body against the document</span></div>
+    <div class="step end"><b>6. Report</b><span>Per operation, coverage, pass rate, notes</span></div>
+  </div>
+
+  <h3>8C. From an approved case to "what changed"</h3>
+  <div class="flow">
+    <div class="step"><b>1. A case is approved</b><span>In the Test Case Generator or by Autopilot</span></div>
+    <div class="step"><b>2. Run once for real</b><span>The case becomes <code>EXECUTED</code> and remembers its run</span></div>
+    <div class="step"><b>3. A schedule is due</b><span>Or you press <i>Run now</i></span></div>
+    <div class="step"><b>4. The same tasks run again</b><span>No AI, nothing compiled again</span></div>
+    <div class="step"><b>5. Compare</b><span>With the previous run of this schedule (or the run the case was copied from)</span></div>
+    <div class="step end"><b>6. Verdict</b><span>Regressions first, then the rest</span></div>
+  </div>
+
+  <h3>8D. From a CI job to a red or green build</h3>
+  <div class="flow">
+    <div class="step"><b>1. CI job starts</b><span>Runs <code>aiqa-ci.sh</code> or <code>.ps1</code></span></div>
+    <div class="step"><b>2. Start a run</b><span><code>POST</code> a regression run or an OpenAPI run</span></div>
+    <div class="step"><b>3. Wait</b><span><code>GET ...?wait=60&amp;format=junit</code>, again if not ended</span></div>
+    <div class="step"><b>4. Save the XML</b><span>The CI shows each case as a test</span></div>
+    <div class="step end"><b>5. Exit code</b><span>0 go on, 1 fail the build, 2 no result</span></div>
+  </div>
+
+  <details>
+    <summary>What the verdicts mean</summary>
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>Verdict</th><th>Where</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td><code>RUNNING</code></td><td>both</td><td>The run has not ended. The report shows what it has so far.</td></tr>
+        <tr><td><code>PASSING</code></td><td>both</td><td>Everything that ran passed.</td></tr>
+        <tr><td><code>FAILING</code></td><td>both</td><td>A case failed, or could not be run to the end.</td></tr>
+        <tr><td><code>REGRESSED</code></td><td>regression</td><td>A case that passed last time fails now.</td></tr>
+        <tr><td><code>NOTHING_RAN</code></td><td>both</td><td>The run ended and no case ran (for example every task was cancelled).</td></tr>
+      </tbody>
+    </table>
+    </div>
+  </details>
+</section>
+
+<!-- ============================================================ TRY IT -->
+<section id="try">
+  <h2>Try it yourself</h2>
+  <p>Each part below has steps and what you should see. They are written for a first manual test on your own machine.</p>
+
+  <h3>Before you start</h3>
+  <ol class="steps">
+    <li>Start AIQA: run <code>start.bat</code> in the project folder (or start the orchestrator and the frontend as in the README, section 15).</li>
+    <li>Open the frontend in the browser (usually <code>http://localhost:3000</code>). Paste an API key, press <i>Verify Connection</i>. The first key is the bootstrap admin key printed when the orchestrator starts for the first time.</li>
+    <li>Choose or make a project in the project selector at the top.
+      <span class="expect">the left menu now has <b>OpenAPI Tests</b>, <b>Scheduled Regression</b> and <b>AI Usage &amp; Cost</b></span></li>
+  </ol>
+
+  <h3>8A. See what the AI calls came to</h3>
+  <ol class="steps">
+    <li>Open <b>AI Usage &amp; Cost</b>.
+      <span class="expect">the tiles show zero, or the calls made since this version started</span></li>
+    <li>Use something that calls an AI provider you have set up in Settings, for example generate test cases from a requirements document in the Test Case Generator, or start an Autopilot run.</li>
+    <li>Go back to <b>AI Usage &amp; Cost</b> and press <i>Refresh</i>.
+      <span class="expect">the calls, tokens and time went up; today's bar has grown; the provider and model you used has a row; the task (for example test generation) has a row</span></li>
+    <li>Look at the <b>cost</b> column.
+      <span class="expect">a dollar amount for Groq, Gemini or a custom provider with prices; <code>&mdash;</code> for Ollama or any model with no price; a note under the tiles that says how many calls had no price</span></li>
+    <li>Try <i>7 days</i> / <i>30 days</i> / <i>90 days</i>. With an admin key that is not tied to a project, try <i>All projects</i>.
+      <span class="expect">the page reads again; <i>All projects</i> adds a table by project</span></li>
+  </ol>
+
+  <h3>8B. Test an API from its OpenAPI document</h3>
+  <p>Use an API you are allowed to test (your own development or staging API is best). Like other AIQA tests, addresses on private networks may be refused by AIQA's safety check.</p>
+  <ol class="steps">
+    <li>Open <b>OpenAPI Tests</b>. Choose <i>Paste it</i> and paste a document, or <i>Give its address</i> and give the address of the document. Fill <i>Where the API is</i> if the document does not name the server.</li>
+    <li>Leave all five kinds ticked. Leave <i>Also run the requests that change data</i> <b>unticked</b> for the first try.</li>
+    <li>Press <b>Show the cases</b>.
+      <span class="expect">a list of operations and cases, each with the request and the answer it expects; the requests that change data are marked as not run; nothing was sent to your API</span></li>
+    <li>Untick an operation you do not want, then press <b>Run N cases</b>.
+      <span class="expect">the page opens the report and looks at it every two seconds; a "running" badge shows until the run ends</span></li>
+    <li>Read the report.
+      <span class="expect">tiles for cases run, passed, failed and not run; a verdict for each operation; for a case that failed, the reason in words (for example "Status is one of 404: got 400"); a line "N of M operations of the document tested"; notes</span></li>
+    <li>Press <b>Copy as Markdown</b> and paste it somewhere. Press <b>Download JUnit</b>.
+      <span class="expect">a Markdown text on the clipboard; an XML file saved with one test for each case</span></li>
+    <li>If the API needs a token: on the machine that runs the orchestrator set an environment variable such as <code>AIQA_SECRET_MY_TOKEN</code> to <code>Bearer &lt;the token&gt;</code>, restart the orchestrator, and in the form add the header <code>Authorization</code> with the variable name <code>AIQA_SECRET_MY_TOKEN</code>.
+      <span class="expect">the form refuses to run while the variable is not set, and says which one; once it is set, the "no credential" cases expect 401 or 403 and the others send the token</span></li>
+  </ol>
+
+  <h3>8C. Run approved cases again on a schedule</h3>
+  <ol class="steps">
+    <li>You need cases that were approved and run once for real. In the Test Case Generator, approve a few cases and hand them off to a real executor (compile and execute), or let Autopilot do it.
+      <span class="expect">each case shows the status <code>EXECUTED</code></span></li>
+    <li>Open <b>Scheduled Regression</b> and press <b>New schedule</b>. Give it a name, keep <i>every case</i>, choose <i>Every hour</i>, and <b>untick</b> <i>Start it by itself</i> for the first try.
+      <span class="expect">a line under the form says how many cases would be repeated, and why some cannot (for example "approved, but not run yet")</span></li>
+    <li>Press <b>Make the schedule</b>.
+      <span class="expect">the schedule opens and says "runs only when asked"</span></li>
+    <li>Press <b>Run now</b>.
+      <span class="expect">the report opens; when the run ends the verdict shows "All passing"; each case says what it came to now and what it came to before (the first time it compares with the run the case was copied from)</span></li>
+    <li>Make something break that a case checks (for example point the case at an address that now fails, or stop the app under test). Press <b>Run now</b> again.
+      <span class="expect">that case is at the top as <b>Regressed</b> with the reason, the verdict says "Regressions found", and the case says "passed last time, fails now"</span></li>
+    <li>Fix it and press <b>Run now</b> once more.
+      <span class="expect">the case shows <b>Fixed</b> and the verdict goes back to "All passing"</span></li>
+    <li>Try <b>Pause</b> and <b>Resume</b>, and <b>Remove</b> (it asks first). To see a run start by itself, make a schedule that is on, every 15 minutes, and wait: within about 30 seconds after it is due a run appears in its history marked "schedule".</li>
+  </ol>
+
+  <h3>8D. Use it from a CI job</h3>
+  <ol class="steps">
+    <li>Make a key for the job. With the admin key, send <code>POST /admin/api-keys</code> with <code>{"name": "ci", "role": "operator", "project_id": "&lt;project id&gt;"}</code>. The key is shown once; keep it.</li>
+    <li>Open a schedule in <b>Scheduled Regression</b> and open <b>Use it from CI</b>.
+      <span class="expect">five lines with your project id and this schedule's id already filled in, and a <i>Copy these lines</i> button</span></li>
+    <li>In a terminal at the project folder (Git Bash, WSL or Linux) run the lines, with your real address and key:
+<pre><code>export AIQA_URL="http://localhost:8080"
+export AIQA_KEY="&lt;the operator key&gt;"
+export AIQA_PROJECT="&lt;project id&gt;"
+bash scripts/ci/aiqa-ci.sh regression &lt;schedule id&gt;
+echo "exit code: $?"</code></pre>
+      <span class="expect">"started the regression run", then the report in words, then "the run ended: PASSING" (or REGRESSED), a file <code>aiqa-junit.xml</code>, and the exit code: 0 when it passed, 1 when the build should fail</span></li>
+    <li>Open <code>aiqa-junit.xml</code> in an editor or a JUnit viewer.
+      <span class="expect">one test for each case; a failing case has a <code>&lt;failure&gt;</code> with the reason and, in its output, what changed since last time</span></li>
+    <li>Try the other settings: <code>AIQA_FAIL_ON=regressed</code> (only new breakage fails the build) and <code>AIQA_FAIL_ON=never</code>. On Windows use <code>powershell -File scripts\ci\aiqa-ci.ps1 regression &lt;schedule id&gt;</code> with the same settings as <code>$env:AIQA_URL</code> and so on.</li>
+    <li>Test an API from a CI job the same way:
+<pre><code>bash scripts/ci/aiqa-ci.sh openapi https://your-api.example.com/openapi.json https://your-api.example.com</code></pre>
+      <span class="expect">the same flow, with the OpenAPI report and verdict (<code>PASSING</code> or <code>FAILING</code>)</span></li>
+    <li>See the raw answer, with the two headers:
+<pre><code>curl -i -H "Authorization: Bearer $AIQA_KEY" \
+  "$AIQA_URL/api/v1/projects/$AIQA_PROJECT/regression/runs/&lt;run id&gt;?format=junit&amp;wait=30"</code></pre>
+      <span class="expect">the XML in the body, and <code>X-AIQA-Verdict</code> and <code>X-AIQA-Final</code> in the headers</span></li>
+    <li>On either report page press <b>Download JUnit</b>.
+      <span class="expect">the same XML saved as a file</span></li>
+  </ol>
+  <div class="box"><b>More:</b> every setting and short examples for GitHub Actions, GitLab, Jenkins and Azure DevOps are in <code>docs/ci/README.md</code>. A ready GitHub Actions example is <code>docs/ci/github-actions.example.yml</code>.</div>
+</section>
+
+<!-- ============================================================ DEVELOPERS -->
+<section id="dev">
+  <h2>For developers</h2>
+
+  <h3>New files</h3>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Part</th><th>Backend (<code>services/orchestrator/src</code>)</th><th>Frontend (<code>forentend/src</code>)</th></tr></thead>
+    <tbody>
+      <tr><td>8A</td><td><code>ai_usage.rs</code>; migration <code>0023</code></td><td><code>pages/AiUsagePage.tsx</code>, <code>components/ai-usage/</code></td></tr>
+      <tr><td>8B</td><td><code>openapi_spec.rs</code>, <code>openapi_cases.rs</code>, <code>openapi_runs.rs</code>, <code>openapi_api.rs</code>, <code>json_schema.rs</code>; migration <code>0024</code></td><td><code>pages/OpenApiTestsPage.tsx</code>, <code>components/openapi/</code>, <code>hooks/useOpenApiRun.ts</code></td></tr>
+      <tr><td>8C</td><td><code>regression.rs</code>, <code>regression_runner.rs</code>, <code>regression_api.rs</code>; migration <code>0025</code></td><td><code>pages/RegressionPage.tsx</code>, <code>components/regression/</code>, <code>hooks/useRegression.ts</code>, <code>hooks/usePolled.ts</code></td></tr>
+      <tr><td>8D</td><td><code>ci.rs</code>, <code>junit.rs</code></td><td><code>components/common/saveTextFile.ts</code>; buttons and the CI panel in the two pages above</td></tr>
+      <tr><td>8D outside the app</td><td colspan="2"><code>scripts/ci/aiqa-ci.sh</code>, <code>scripts/ci/aiqa-ci.ps1</code>, <code>docs/ci/README.md</code>, <code>docs/ci/github-actions.example.yml</code>; <code>.gitattributes</code> keeps <code>*.sh</code> files on LF line endings</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>New routes</h3>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Method</th><th>Route (after <code>/api/v1</code>)</th><th>Role</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td>GET</td><td><code>/projects/:project_id/ai-usage</code></td><td>Viewer</td><td>The project's AI usage and cost</td></tr>
+      <tr><td>GET</td><td><code>/ai/usage</code></td><td>Admin</td><td>Usage of every project (or one with <code>?project_id=</code>)</td></tr>
+      <tr><td>POST</td><td><code>/projects/:project_id/openapi/plan</code></td><td>Operator</td><td>Show the cases; runs nothing</td></tr>
+      <tr><td>POST / GET</td><td><code>/projects/:project_id/openapi/runs</code></td><td>Operator / Viewer</td><td>Run the cases; list the runs</td></tr>
+      <tr><td>GET</td><td><code>/projects/:project_id/openapi/runs/:id</code></td><td>Viewer</td><td>The report. <code>?format=markdown|junit</code>, <code>?wait=</code></td></tr>
+      <tr><td>GET</td><td><code>/projects/:project_id/regression/scope</code></td><td>Viewer</td><td>What a schedule would repeat now, and what it could not</td></tr>
+      <tr><td>POST / GET</td><td><code>/projects/:project_id/regression/schedules</code></td><td>Operator / Viewer</td><td>Make a schedule; list them with their latest run</td></tr>
+      <tr><td>PATCH / DELETE</td><td><code>/projects/:project_id/regression/schedules/:id</code></td><td>Operator</td><td>Change; remove with its history</td></tr>
+      <tr><td>POST</td><td><code>/projects/:project_id/regression/schedules/:id/run</code></td><td>Operator</td><td>Run now (409 while the last run has not ended)</td></tr>
+      <tr><td>GET</td><td><code>/projects/:project_id/regression/schedules/:id/runs</code></td><td>Viewer</td><td>The latest 50 runs, newest first</td></tr>
+      <tr><td>GET</td><td><code>/projects/:project_id/regression/runs/:id</code></td><td>Viewer</td><td>The report. <code>?format=markdown|junit</code>, <code>?wait=</code></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Database, dependency, settings</h3>
+  <ul>
+    <li><b>Migrations</b> <code>0023_ai_usage</code>, <code>0024</code> (OpenAPI runs) and <code>0025_regression</code> run automatically when the orchestrator starts. They only add tables.</li>
+    <li><b>New Rust dependency:</b> <code>serde_yaml 0.9</code> (and <code>unsafe-libyaml</code> in <code>Cargo.lock</code>). <b>No new frontend package.</b></li>
+    <li><b>No new AIQA environment variable.</b> Credentials for OpenAPI tests use the existing <code>AIQA_SECRET_*</code> / <code>AIQA_LOGIN_*</code> convention. The CI scripts read <code>AIQA_URL</code>, <code>AIQA_KEY</code>, <code>AIQA_PROJECT</code>, <code>AIQA_FAIL_ON</code>, <code>AIQA_JUNIT_FILE</code>, <code>AIQA_TIMEOUT_SECONDS</code>, <code>AIQA_OPENAPI_AUTH</code> and <code>AIQA_OPENAPI_UNSAFE</code> on the CI side only.</li>
+  </ul>
+
+  <h3>How it was checked</h3>
+  <ul>
+    <li><b>Backend:</b> 1,591 tests passed, 0 failed, 2 ignored on purpose (<code>cargo test --lib</code>). Clippy has no error. When every test runs at once on a very busy machine, two older timing-based tests (<code>be12</code>, <code>be13</code>) can fail; they pass alone and with fewer threads.</li>
+    <li><b>Frontend:</b> 1,476 tests in 70 files passed, the type-check (<code>npm run lint</code>) is clean, and the production build (<code>npm run build</code>) works.</li>
+    <li><b>CI scripts:</b> both scripts were run against a small stand-in server in 30+ situations each (pass, regression, failing, nothing ran, unknown verdict, timeout, a read that fails once, refusals, wrong key, server down, bad settings, the request body for an address and for a file). The PowerShell script was tried on Windows PowerShell 5.1 only.</li>
+    <li>Commands: <code>cargo test --lib</code> in <code>services/orchestrator</code>, and <code>npm run lint</code>, <code>npm test</code>, <code>npm run build</code> in <code>forentend</code>.</li>
+  </ul>
+</section>
+
+<!-- ============================================================ LIMITS -->
+<section id="limits">
+  <h2>Limits and open points</h2>
+  <ul>
+    <li><b>8E (mobile) is not built.</b> See the release notes above.</li>
+    <li><b>OpenAPI tests only check what the document says.</b> There are no login flows or OAuth handshakes; a credential is one header. Cases that need real data (a real id that exists) use an example from the document when it has one.</li>
+    <li><b>Regression repeats; it does not heal.</b> If the application changed so much that a compiled case no longer fits, the case fails and shows as regressed. Use the self-healing features to change a case.</li>
+    <li><b>Only cases that ran once for real are repeated.</b> Approved but never-run cases and cases that were only simulated are listed as "not repeated", with the reason.</li>
+    <li><b>The CI job must reach AIQA</b> (address and network). AIQA's own safety check still decides which addresses it will test.</li>
+    <li><b>JUnit times are 0</b> because the reports do not keep per-case timing.</li>
+    <li><b>The PowerShell script</b> was tried on Windows PowerShell 5.1. It is written for PowerShell 7 too, but that was not tried.</li>
+    <li><b>Some older timing-based backend tests</b> (<code>be12</code>, <code>be13</code>, <code>be18</code>, <code>test_29</code>) can fail when the machine is very busy. They pass when run alone. This was true before Phase 8 too.</li>
+  </ul>
+</section>
+
+<footer>
+  AIQA Phase 8 release notes and workflow guide. Phases 8A to 8D are included; 8E is not. Nothing in this document is a secret: keys and tokens are always placeholders.
+</footer>
+
+</main>
+</div>
+</div>
+</body>
+</html>
