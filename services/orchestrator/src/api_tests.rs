@@ -7805,6 +7805,19 @@ fn openapi_fixture_router() -> axum::Router {
             (StatusCode::UNAUTHORIZED, Json(json!({"error": "no credential"}))).into_response()
         }
     }
+    // Scheduled regression's fixtures: an address that answers 200 until a test switches it off (500), and one that takes a while.
+    async fn flip(Path(name): Path<String>) -> Response {
+        let up = fixture_flips().lock().unwrap().get(&name).copied().unwrap_or(true);
+        if up {
+            Json(json!({"ok": true})).into_response()
+        } else {
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "switched off"}))).into_response()
+        }
+    }
+    async fn slow() -> Response {
+        tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+        Json(json!({"ok": true})).into_response()
+    }
     // The document itself, its server written the way many documents write it: relative to where the document is served from.
     async fn document() -> Json<Value> {
         let mut document = openapi_fixture_document();
@@ -7813,6 +7826,8 @@ fn openapi_fixture_router() -> axum::Router {
     }
     axum::Router::new()
         .route("/fixture/openapi.json", get(document))
+        .route("/fixture/flip/:name", get(flip))
+        .route("/fixture/slow", get(slow))
         .route("/fixture/pets", get(pets).post(new_pet))
         .route("/fixture/pets/:id", get(pet))
         .route("/fixture/secure", get(secure))
@@ -15262,4 +15277,524 @@ async fn phase8b_who_may_plan_run_and_read_is_the_projects_operator_and_its_view
     let (status, body) = send(&state, req("GET", &format!("{base}/runs"), None, None)).await;
     assert_envelope(status, &body, StatusCode::UNAUTHORIZED, "UNAUTHENTICATED");
     openapi_report_when_done(&state, project, id, &owner).await;
+}
+
+// ------------------------------------------------- Phase 8C: scheduled regression
+
+/// What the fixture API's `/fixture/flip/:name` answers: 200 while the name is up (the default), 500 once a test switches it off.
+fn fixture_flips() -> &'static std::sync::Mutex<std::collections::HashMap<String, bool>> {
+    static FLIPS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, bool>>> = std::sync::OnceLock::new();
+    FLIPS.get_or_init(Default::default)
+}
+
+fn set_fixture_flip(name: &str, up: bool) {
+    fixture_flips().lock().unwrap().insert(name.to_string(), up);
+}
+
+async fn regression_call(state: &AppState, method: &str, project: Uuid, tail: &str, key: &str, body: Option<Value>) -> (StatusCode, Value) {
+    send(state, req(method, &format!("/api/v1/projects/{project}/regression/{tail}"), Some(key), body)).await
+}
+
+/// A response that is text, not JSON: its status, its body and its content type.
+async fn regression_text(state: &AppState, project: Uuid, tail: &str, key: &str) -> (StatusCode, String, Option<String>) {
+    let response = router(state.clone())
+        .oneshot(req("GET", &format!("/api/v1/projects/{project}/regression/{tail}"), Some(key), None))
+        .await
+        .expect("router call");
+    let status = response.status();
+    let content_type = response.headers().get("content-type").and_then(|v| v.to_str().ok()).map(str::to_string);
+    let bytes = response.into_body().collect().await.expect("collect body").to_bytes();
+    (status, String::from_utf8_lossy(&bytes).to_string(), content_type)
+}
+
+async fn wait_run_ended(state: &AppState, project: Uuid, run_id: &str, key: &str) {
+    for _ in 0..400 {
+        let (status, detail) = send(state, req("GET", &format!("/api/v1/projects/{project}/executions/{run_id}"), Some(key), None)).await;
+        assert_eq!(status, StatusCode::OK, "body={detail}");
+        if matches!(detail["state"].as_str(), Some("COMPLETED" | "FAILED" | "PARTIAL" | "CANCELLED" | "REJECTED")) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("run {run_id} did not end in 20 s");
+}
+
+/// An approved case that has been run once for real: a GET of `path` on the fixture API that must answer 200. Gives the case's id and
+/// the run it was executed in.
+async fn executed_case(state: &AppState, project: Uuid, key: &str, title: &str, path: &str) -> (String, String) {
+    let id = approved_case(state, project, key, sample_test_case_body(title)).await;
+    let url = format!("http://127.0.0.1:8080{path}");
+    let plan = crate::execution_plan::ExecutionPlan {
+        test_case_id: id.clone(),
+        execution_type: crate::execution_plan::ExecutionType::Api,
+        target: Some(url.clone()),
+        actions: vec![
+            crate::execution_plan::Action::Request { method: "GET".to_string(), url, headers: Default::default(), body: None },
+            crate::execution_plan::Action::AssertStatusIn { statuses: vec![200] },
+        ],
+        compiler: crate::execution_plan::CompilerMethod::Deterministic,
+        diagnostics: Vec::new(),
+        provider: None,
+        model: None,
+    };
+    let handoff_body = serde_json::json!({"executor": "compiled-api", "params": serde_json::to_value(&plan).unwrap()});
+    let (status, handoff) = send(state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/handoff"), Some(key), Some(handoff_body))).await;
+    assert_eq!(status, StatusCode::CREATED, "body={handoff}");
+    let run_id = handoff["run_id"].as_str().unwrap().to_string();
+    wait_run_ended(state, project, &run_id, key).await;
+    (id, run_id)
+}
+
+/// The report of a regression run once its execution has ended.
+async fn regression_report_when_done(state: &AppState, project: Uuid, id: &str, key: &str) -> Value {
+    for _ in 0..400 {
+        let (status, report) = regression_call(state, "GET", project, &format!("runs/{id}"), key, None).await;
+        assert_eq!(status, StatusCode::OK, "body={report}");
+        if report["final"] == true {
+            return report;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("the regression run did not end in 20 s");
+}
+
+fn regression_case_of<'a>(report: &'a Value, case_id: &str) -> &'a Value {
+    report["cases"].as_array().unwrap().iter().find(|c| c["case_id"] == case_id).unwrap_or_else(|| panic!("no case {case_id} in {report}"))
+}
+
+fn a_schedule_row(project: Uuid, name: &str, at: chrono::DateTime<chrono::Utc>) -> crate::regression::ScheduleRow {
+    crate::regression::ScheduleRow {
+        id: Uuid::new_v4(),
+        project_id: project.to_string(),
+        name: name.to_string(),
+        suite_id: None,
+        every_minutes: 60,
+        anchor_at: at,
+        next_run_at: at,
+        concurrency: 2,
+        enabled: false,
+        last_started_at: None,
+        last_note: None,
+        created_by_key: Uuid::new_v4(),
+        created_by: "test".to_string(),
+        created_at: at,
+    }
+}
+
+async fn a_schedule(state: &AppState, project: Uuid, key: &str, body: Value) -> String {
+    let (status, made) = regression_call(state, "POST", project, "schedules", key, Some(body)).await;
+    assert_eq!(status, StatusCode::CREATED, "body={made}");
+    made["id"].as_str().unwrap().to_string()
+}
+
+async fn run_schedule_call(state: &AppState, project: Uuid, sid: &str, key: &str) -> (StatusCode, Value) {
+    regression_call(state, "POST", project, &format!("schedules/{sid}/run"), key, None).await
+}
+
+async fn stored_schedule(state: &AppState, id: &str) -> crate::regression::ScheduleRow {
+    state.store.get_regression_schedule(Uuid::parse_str(id).unwrap()).await.unwrap().unwrap()
+}
+
+async fn a_suite(state: &AppState, project: Uuid, key: &str, name: &str) -> String {
+    let (status, made) = send(state, req("POST", &format!("/api/v1/projects/{project}/test-suites"), Some(key), Some(serde_json::json!({"name": name})))).await;
+    assert_eq!(status, StatusCode::CREATED, "body={made}");
+    made["id"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn phase8c_schedules_are_made_changed_and_removed_by_an_operator_and_read_by_a_viewer() {
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Phase8C Schedules").await;
+    let other = make_project(&state, "Phase8C Other").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let viewer = mint_key(&state, "viewer", Some(&project.to_string())).await;
+    let stranger = mint_key(&state, "operator", Some(&other.to_string())).await;
+    let other_owner = mint_key(&state, "operator", Some(&other.to_string())).await;
+    let now = chrono::Utc::now();
+
+    // Made: the name is trimmed, it runs every two cases at a time, one interval from now.
+    let (status, made) = regression_call(&state, "POST", project, "schedules", &owner, Some(serde_json::json!({"name": "  Nightly  ", "every_minutes": 60}))).await;
+    assert_eq!(status, StatusCode::CREATED, "body={made}");
+    assert_eq!(made["name"], "Nightly");
+    assert_eq!((&made["enabled"], &made["suite_id"], &made["concurrency"]), (&serde_json::json!(true), &Value::Null, &serde_json::json!(2)));
+    let next: chrono::DateTime<chrono::Utc> = made["next_run_at"].as_str().unwrap().parse().unwrap();
+    assert!(next > now + chrono::Duration::minutes(59) && next < now + chrono::Duration::minutes(61), "{next}");
+    let id = made["id"].as_str().unwrap().to_string();
+    let first_next = stored_schedule(&state, &id).await.next_run_at;
+
+    // A start in the past puts the next run on the grid that start makes, after now.
+    let start = now - chrono::Duration::days(2) - chrono::Duration::minutes(7);
+    let (status, grid) = regression_call(&state, "POST", project, "schedules", &owner, Some(serde_json::json!({"name": "Grid", "every_minutes": 60, "start_at": start.to_rfc3339()}))).await;
+    assert_eq!(status, StatusCode::CREATED, "body={grid}");
+    let next: chrono::DateTime<chrono::Utc> = grid["next_run_at"].as_str().unwrap().parse().unwrap();
+    assert!(next > now && next <= now + chrono::Duration::minutes(60), "{next}");
+    assert_eq!((next - start).num_seconds() % 3600, 0, "on the grid of the start");
+
+    // Refused, in words.
+    let bad = [
+        (serde_json::json!({"every_minutes": 60}), "name is required"),
+        (serde_json::json!({"name": "x"}), "every_minutes is required"),
+        (serde_json::json!({"name": " ", "every_minutes": 60}), "name must not be empty"),
+        (serde_json::json!({"name": "x", "every_minutes": 4}), "every_minutes must be from 5 to 44640"),
+        (serde_json::json!({"name": "x", "every_minutes": 44641}), "every_minutes must be from 5 to 44640"),
+        (serde_json::json!({"name": "x", "every_minutes": 60, "concurrency": 0}), "concurrency must be from 1 to 8"),
+        (serde_json::json!({"name": "x", "every_minutes": 60, "concurrency": 9}), "concurrency must be from 1 to 8"),
+    ];
+    for (body, needle) in bad {
+        let (status, out) = regression_call(&state, "POST", project, "schedules", &owner, Some(body.clone())).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {out}");
+        assert!(out["error"]["message"].as_str().unwrap().contains(needle), "{body}: {out}");
+    }
+    // A suite that is not there, or is another project's, is not found.
+    let elsewhere = a_suite(&state, other, &other_owner, "Elsewhere").await;
+    for suite in [Uuid::new_v4().to_string(), elsewhere] {
+        let (status, out) = regression_call(&state, "POST", project, "schedules", &owner, Some(serde_json::json!({"name": "x", "every_minutes": 60, "suite_id": suite}))).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{out}");
+    }
+    let suite = a_suite(&state, project, &owner, "Smoke").await;
+    let (status, with_suite) = regression_call(&state, "POST", project, "schedules", &owner, Some(serde_json::json!({"name": "Suite", "every_minutes": 30, "suite_id": suite, "concurrency": 3}))).await;
+    assert_eq!(status, StatusCode::CREATED, "body={with_suite}");
+    assert_eq!((with_suite["suite_id"].as_str(), with_suite["concurrency"].as_i64()), (Some(suite.as_str()), Some(3)));
+
+    // Who may: a viewer reads and does nothing else; another project's key does not reach it.
+    let (status, listed) = regression_call(&state, "GET", project, "schedules", &viewer, None).await;
+    assert_eq!(status, StatusCode::OK, "body={listed}");
+    assert_eq!(listed["schedules"].as_array().unwrap().len(), 3);
+    assert!(listed["schedules"].as_array().unwrap().iter().all(|s| s["last_run"].is_null()));
+    let attempts = [
+        ("POST", "schedules".to_string(), Some(serde_json::json!({"name": "x", "every_minutes": 60}))),
+        ("PATCH", format!("schedules/{id}"), Some(serde_json::json!({"name": "x"}))),
+        ("DELETE", format!("schedules/{id}"), None),
+        ("POST", format!("schedules/{id}/run"), None),
+    ];
+    for (method, tail, body) in attempts {
+        let (status, out) = regression_call(&state, method, project, &tail, &viewer, body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "a viewer: {method} {tail}: {out}");
+    }
+    for (method, tail) in [("GET", "schedules".to_string()), ("GET", format!("schedules/{id}/runs")), ("PATCH", format!("schedules/{id}")), ("DELETE", format!("schedules/{id}"))] {
+        let (status, out) = regression_call(&state, method, project, &tail, &stranger, Some(serde_json::json!({"name": "x"})).filter(|_| method == "PATCH")).await;
+        assert!(status == StatusCode::FORBIDDEN || status == StatusCode::NOT_FOUND, "another project's key: {method} {tail}: {status} {out}");
+    }
+    let (status, _) = regression_call(&state, "PATCH", other, &format!("schedules/{id}"), &other_owner, Some(serde_json::json!({"name": "x"}))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "a schedule is not found through another project");
+
+    // Changed: only what is given.
+    let (status, renamed) = regression_call(&state, "PATCH", project, &format!("schedules/{id}"), &owner, Some(serde_json::json!({"name": "Weekly"}))).await;
+    assert_eq!(status, StatusCode::OK, "body={renamed}");
+    assert_eq!((renamed["name"].as_str(), renamed["every_minutes"].as_i64()), (Some("Weekly"), Some(60)));
+    let at = |v: &Value| v.as_str().unwrap().parse::<chrono::DateTime<chrono::Utc>>().unwrap();
+    assert_eq!(at(&renamed["next_run_at"]), first_next, "changing the name does not move the next run");
+    let (_, paused) = regression_call(&state, "PATCH", project, &format!("schedules/{id}"), &owner, Some(serde_json::json!({"enabled": false}))).await;
+    assert_eq!(paused["enabled"], false);
+    assert_eq!(at(&paused["next_run_at"]), first_next);
+    // Turned on again it forgets why it stopped and takes the next slot.
+    let stored_id = Uuid::parse_str(&id).unwrap();
+    let mut row = state.store.get_regression_schedule(stored_id).await.unwrap().unwrap();
+    row.last_note = Some("paused: the key this schedule runs as was revoked".to_string());
+    assert!(state.store.update_regression_schedule(&row).await.unwrap());
+    let (_, resumed) = regression_call(&state, "PATCH", project, &format!("schedules/{id}"), &owner, Some(serde_json::json!({"enabled": true}))).await;
+    assert_eq!((&resumed["enabled"], &resumed["last_note"]), (&serde_json::json!(true), &Value::Null));
+    // A new interval puts the next run on its grid.
+    let (_, every_day) = regression_call(&state, "PATCH", project, &format!("schedules/{id}"), &owner, Some(serde_json::json!({"every_minutes": 1440, "concurrency": 4}))).await;
+    assert_eq!((every_day["every_minutes"].as_i64(), every_day["concurrency"].as_i64()), (Some(1440), Some(4)));
+    let anchor: chrono::DateTime<chrono::Utc> = every_day["anchor_at"].as_str().unwrap().parse().unwrap();
+    let next: chrono::DateTime<chrono::Utc> = every_day["next_run_at"].as_str().unwrap().parse().unwrap();
+    assert_eq!((next - anchor).num_seconds() % 86_400, 0);
+    assert!(next >= now);
+    // A suite can be given and taken away; `null` is "every case", not "unchanged".
+    let (_, suited) = regression_call(&state, "PATCH", project, &format!("schedules/{id}"), &owner, Some(serde_json::json!({"suite_id": suite}))).await;
+    assert_eq!(suited["suite_id"].as_str(), Some(suite.as_str()));
+    let (_, untouched) = regression_call(&state, "PATCH", project, &format!("schedules/{id}"), &owner, Some(serde_json::json!({"name": "Still suited"}))).await;
+    assert_eq!(untouched["suite_id"].as_str(), Some(suite.as_str()), "a field that is not given is not changed");
+    let (_, all_cases) = regression_call(&state, "PATCH", project, &format!("schedules/{id}"), &owner, Some(serde_json::json!({"suite_id": null}))).await;
+    assert_eq!(all_cases["suite_id"], Value::Null);
+    let (status, out) = regression_call(&state, "PATCH", project, &format!("schedules/{id}"), &owner, Some(serde_json::json!({"every_minutes": 3}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{out}");
+
+    // Removed.
+    let (status, _) = regression_call(&state, "DELETE", project, &format!("schedules/{id}"), &owner, None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = regression_call(&state, "PATCH", project, &format!("schedules/{id}"), &owner, Some(serde_json::json!({"name": "x"}))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (_, listed) = regression_call(&state, "GET", project, "schedules", &viewer, None).await;
+    assert_eq!(listed["schedules"].as_array().unwrap().len(), 2);
+
+    // A project has at most twenty.
+    for n in 0..18 {
+        state.store.insert_regression_schedule(&a_schedule_row(project, &format!("Filler {n}"), now)).await.unwrap();
+    }
+    let (status, out) = regression_call(&state, "POST", project, "schedules", &owner, Some(serde_json::json!({"name": "One too many", "every_minutes": 60}))).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{out}");
+    assert!(out["error"]["message"].as_str().unwrap().contains("at most 20"));
+}
+
+#[tokio::test]
+async fn phase8c_the_scope_shows_what_can_be_repeated_and_why_a_case_cannot() {
+    ensure_local_health_target().await;
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Phase8C Scope").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let viewer = mint_key(&state, "viewer", Some(&project.to_string())).await;
+
+    let (ran, _) = executed_case(&state, project, &owner, "Runs for real", "/fixture/flip/t8c-scope").await;
+    let approved = approved_case(&state, project, &owner, sample_test_case_body("Approved only")).await;
+    let simulated = approved_case(&state, project, &owner, sample_test_case_body("Only simulated")).await;
+    let (status, handoff) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{simulated}/handoff"), Some(&owner), Some(serde_json::json!({"simulate": {"outcome": "pass", "delay_ms": 0}})))).await;
+    assert_eq!(status, StatusCode::CREATED, "body={handoff}");
+    wait_run_ended(&state, project, handoff["run_id"].as_str().unwrap(), &owner).await;
+    // A case nobody approved is not in scope at all.
+    let (status, generated) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&owner), Some(sample_test_case_body("Not approved")))).await;
+    assert_eq!(status, StatusCode::CREATED, "body={generated}");
+
+    let (status, scope) = regression_call(&state, "GET", project, "scope", &viewer, None).await;
+    assert_eq!(status, StatusCode::OK, "a viewer may see it: {scope}");
+    let repeatable: Vec<&str> = scope["repeatable"].as_array().unwrap().iter().map(|c| c["case_id"].as_str().unwrap()).collect();
+    assert_eq!(repeatable, [ran.as_str()]);
+    assert_eq!(scope["repeatable"][0]["title"], "Runs for real");
+    let skipped = scope["skipped"].as_array().unwrap();
+    assert_eq!(skipped.len(), 2, "{scope}");
+    let why = |id: &str| skipped.iter().find(|c| c["case_id"] == id).unwrap_or_else(|| panic!("{id} not in {scope}"))["reason"].as_str().unwrap().to_string();
+    assert!(why(&approved).starts_with("approved, but not run yet"), "{}", why(&approved));
+    assert!(why(&simulated).contains("simulated, not executed"), "{}", why(&simulated));
+    assert!(skipped.iter().all(|c| c["case_id"] != generated["id"]));
+
+    // A suite with no case in it repeats nothing; one that is not there is not found.
+    let suite = a_suite(&state, project, &owner, "Empty").await;
+    let (_, in_suite) = regression_call(&state, "GET", project, &format!("scope?suite_id={suite}"), &owner, None).await;
+    assert_eq!((&in_suite["repeatable"], &in_suite["skipped"]), (&serde_json::json!([]), &serde_json::json!([])));
+    let (status, _) = regression_call(&state, "GET", project, &format!("scope?suite_id={}", Uuid::new_v4()), &owner, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn phase8c_a_run_repeats_the_tasks_and_says_what_changed_since_the_last_time() {
+    ensure_local_health_target().await;
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Phase8C Compare").await;
+    let other = make_project(&state, "Phase8C Compare Other").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let viewer = mint_key(&state, "viewer", Some(&project.to_string())).await;
+    let stranger = mint_key(&state, "operator", Some(&other.to_string())).await;
+    set_fixture_flip("t8c-a", true);
+    set_fixture_flip("t8c-b", true);
+    let (case_a, source_a) = executed_case(&state, project, &owner, "Case A", "/fixture/flip/t8c-a").await;
+    let (case_b, _) = executed_case(&state, project, &owner, "Case B", "/fixture/flip/t8c-b").await;
+    let never = approved_case(&state, project, &owner, sample_test_case_body("Never run")).await;
+
+    // A schedule that is off never runs by itself and is run when asked.
+    let sid = a_schedule(&state, project, &owner, serde_json::json!({"name": "On demand", "every_minutes": 60, "enabled": false})).await;
+
+    // First run: there is no run of this schedule before it, so each case is compared with the run it was copied from.
+    let (status, first) = run_schedule_call(&state, project, &sid, &owner).await;
+    assert_eq!(status, StatusCode::CREATED, "body={first}");
+    assert_eq!((first["cases"].as_i64(), first["skipped"].as_i64()), (Some(2), Some(1)));
+    let report1 = regression_report_when_done(&state, project, first["id"].as_str().unwrap(), &owner).await;
+    assert_eq!(report1["verdict"], "PASSING", "{report1}");
+    assert_eq!(report1["summary"]["still_passing"], 2);
+    assert_eq!(report1["trigger"], "MANUAL");
+    assert_eq!(report1["schedule_name"], "On demand");
+    for case in [&case_a, &case_b] {
+        let c = regression_case_of(&report1, case);
+        assert_eq!((c["outcome"].as_str(), c["before"].as_str(), c["before_from"].as_str()), (Some("PASSED"), Some("PASSED"), Some("SOURCE_RUN")));
+    }
+    assert_eq!(regression_case_of(&report1, &case_a)["source_run_id"], source_a.as_str());
+    assert_eq!(report1["skipped"][0]["case_id"], never.as_str());
+    assert!(report1["skipped"][0]["reason"].as_str().unwrap().starts_with("approved, but not run yet"));
+    // The run is an ordinary execution: two tasks, named as the cases are, in the project's list of runs.
+    let run_id = first["run_id"].as_str().unwrap();
+    let (status, detail) = send(&state, req("GET", &format!("/api/v1/projects/{project}/executions/{run_id}"), Some(&owner), None)).await;
+    assert_eq!(status, StatusCode::OK, "body={detail}");
+    let mut names: Vec<&str> = detail["tasks"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["Case A", "Case B"]);
+    assert!(detail["name"].as_str().unwrap().starts_with("Regression: On demand ("), "{}", detail["name"]);
+
+    // Case B breaks: the next run says so, first, and beside what it came to last time.
+    set_fixture_flip("t8c-b", false);
+    let (_, second) = run_schedule_call(&state, project, &sid, &owner).await;
+    let report2 = regression_report_when_done(&state, project, second["id"].as_str().unwrap(), &owner).await;
+    assert_eq!(report2["verdict"], "REGRESSED", "{report2}");
+    assert_eq!(report2["summary"]["regressed"], 1);
+    assert_eq!(report2["summary"]["still_passing"], 1);
+    let broken = &report2["cases"][0];
+    assert_eq!(broken["case_id"], case_b.as_str(), "regressions come first");
+    assert_eq!((broken["change"].as_str(), broken["before"].as_str(), broken["before_from"].as_str(), broken["outcome"].as_str()), (Some("REGRESSED"), Some("PASSED"), Some("PREVIOUS_RUN"), Some("FAILED")));
+    assert!(broken["reason"].as_str().unwrap().contains("500"), "the reason is what the run said: {}", broken["reason"]);
+    assert_eq!(regression_case_of(&report2, &case_a)["change"], "STILL_PASSING");
+    let (status, markdown, content_type) = regression_text(&state, project, &format!("runs/{}?format=markdown", second["id"].as_str().unwrap()), &viewer).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(content_type.unwrap_or_default().starts_with("text/markdown"));
+    assert!(markdown.contains("Regressions found") && markdown.contains("**Case B** (FAILED, regressed)"), "{markdown}");
+
+    // It is fixed: that is said too, and the run passes.
+    set_fixture_flip("t8c-b", true);
+    let (_, third) = run_schedule_call(&state, project, &sid, &owner).await;
+    let report3 = regression_report_when_done(&state, project, third["id"].as_str().unwrap(), &owner).await;
+    assert_eq!(report3["verdict"], "PASSING", "{report3}");
+    assert_eq!(regression_case_of(&report3, &case_b)["change"], "FIXED");
+    assert_eq!(report3["summary"]["fixed"], 1);
+
+    // The history, newest first, and the schedule's account of its latest run.
+    let (status, history) = regression_call(&state, "GET", project, &format!("schedules/{sid}/runs"), &viewer, None).await;
+    assert_eq!(status, StatusCode::OK, "body={history}");
+    let verdicts: Vec<&str> = history["runs"].as_array().unwrap().iter().map(|r| r["verdict"].as_str().unwrap()).collect();
+    assert_eq!(verdicts, ["PASSING", "REGRESSED", "PASSING"]);
+    assert_eq!(history["runs"][0]["id"], third["id"]);
+    let (_, listed) = regression_call(&state, "GET", project, "schedules", &viewer, None).await;
+    let schedule = &listed["schedules"][0];
+    assert_eq!(schedule["last_run"]["verdict"], "PASSING");
+    assert_eq!(schedule["last_run"]["summary"]["cases"], 2);
+    assert!(schedule["last_started_at"].is_string() && schedule["last_note"].is_null());
+
+    // Repeating a case leaves the case as it was: it still points at the run it was first executed in.
+    let (_, case) = send(&state, req("GET", &format!("/api/v1/projects/{project}/test-cases/{case_a}"), Some(&owner), None)).await;
+    assert_eq!((case["status"].as_str(), case["executed_run_id"].as_str()), (Some("EXECUTED"), Some(source_a.as_str())));
+
+    // A run that is not there, another project's key and a bad format.
+    let (status, _) = regression_call(&state, "GET", project, &format!("runs/{}", Uuid::new_v4()), &owner, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = regression_call(&state, "GET", project, &format!("runs/{}", third["id"].as_str().unwrap()), &stranger, None).await;
+    assert!(status == StatusCode::FORBIDDEN || status == StatusCode::NOT_FOUND, "{status}");
+    let (status, _) = regression_call(&state, "GET", other, &format!("runs/{}", third["id"].as_str().unwrap()), &stranger, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "a run is not found through another project");
+    let (status, out) = regression_call(&state, "GET", project, &format!("runs/{}?format=pdf", third["id"].as_str().unwrap()), &owner, None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{out}");
+}
+
+#[tokio::test]
+async fn phase8c_a_run_is_not_piled_on_a_run_that_has_not_ended_and_a_schedule_with_nothing_to_repeat_says_so() {
+    ensure_local_health_target().await;
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Phase8C Overlap").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let sid = a_schedule(&state, project, &owner, serde_json::json!({"name": "Slow", "every_minutes": 60, "enabled": false})).await;
+
+    // Nothing has been run once: nothing to repeat.
+    let (status, out) = run_schedule_call(&state, project, &sid, &owner).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{out}");
+    assert!(out["error"]["message"].as_str().unwrap().starts_with("nothing to run"), "{out}");
+
+    // A case whose run takes a moment: asked again while it goes, the answer is no.
+    let (case, _) = executed_case(&state, project, &owner, "Slow case", "/fixture/slow").await;
+    let (status, first) = run_schedule_call(&state, project, &sid, &owner).await;
+    assert_eq!(status, StatusCode::CREATED, "body={first}");
+    let (status, again) = run_schedule_call(&state, project, &sid, &owner).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{again}");
+    assert!(again["error"]["message"].as_str().unwrap().contains("has not ended"), "{again}");
+
+    // The loop skips it too, and moves the schedule on so that it does not queue up behind it.
+    let stored = Uuid::parse_str(&sid).unwrap();
+    // Whole milliseconds, as a time is stored.
+    let due = chrono::DateTime::from_timestamp_millis((chrono::Utc::now() + chrono::Duration::days(3)).timestamp_millis()).unwrap();
+    let mut row = state.store.get_regression_schedule(stored).await.unwrap().unwrap();
+    row.enabled = true;
+    row.next_run_at = due;
+    row.anchor_at = due;
+    assert!(state.store.update_regression_schedule(&row).await.unwrap());
+    assert_eq!(crate::regression_runner::tick(&state, due).await.unwrap(), 0);
+    let row = state.store.get_regression_schedule(stored).await.unwrap().unwrap();
+    assert_eq!(row.last_note.as_deref(), Some("skipped this time: the run before it has not ended"));
+    assert!(row.enabled);
+    assert_eq!(row.next_run_at, due + chrono::Duration::minutes(60));
+
+    // Once it has ended, a run can be made.
+    let report = regression_report_when_done(&state, project, first["id"].as_str().unwrap(), &owner).await;
+    assert_eq!(report["verdict"], "PASSING", "{report}");
+    assert_eq!(regression_case_of(&report, &case)["outcome"], "PASSED");
+    let (status, next) = run_schedule_call(&state, project, &sid, &owner).await;
+    assert_eq!(status, StatusCode::CREATED, "body={next}");
+    regression_report_when_done(&state, project, next["id"].as_str().unwrap(), &owner).await;
+}
+
+#[tokio::test]
+async fn phase8c_the_loop_runs_what_is_due_moves_on_and_pauses_what_nobody_can_run() {
+    ensure_local_health_target().await;
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let project = make_project(&state, "Phase8C Loop").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    set_fixture_flip("t8c-loop", true);
+    let start = chrono::Utc::now() + chrono::Duration::days(1);
+    let sid = a_schedule(&state, project, &owner, serde_json::json!({"name": "Loop", "every_minutes": 60, "start_at": start.to_rfc3339()})).await;
+    let first_slot = stored_schedule(&state, &sid).await.next_run_at;
+    assert!((first_slot - start).num_milliseconds().abs() <= 1, "the first run is at its start: {first_slot} and {start}");
+
+    // Not due: nothing is done and nothing changes.
+    assert_eq!(crate::regression_runner::tick(&state, chrono::Utc::now()).await.unwrap(), 0);
+    assert_eq!(stored_schedule(&state, &sid).await.next_run_at, first_slot);
+
+    // Due, with nothing that has been run once: a note, and the next slot.
+    let at = first_slot + chrono::Duration::minutes(1);
+    assert_eq!(crate::regression_runner::tick(&state, at).await.unwrap(), 0);
+    let row = stored_schedule(&state, &sid).await;
+    assert!(row.last_note.as_deref().unwrap().starts_with("nothing to run"), "{:?}", row.last_note);
+    assert_eq!(row.next_run_at, first_slot + chrono::Duration::minutes(60));
+    assert!(row.enabled && row.last_started_at.is_none());
+
+    // Due, with a case that has been run: one run is made, as the key that made the schedule, and the schedule moves on.
+    let (case, _) = executed_case(&state, project, &owner, "Loop case", "/fixture/flip/t8c-loop").await;
+    let at = first_slot + chrono::Duration::minutes(61);
+    assert_eq!(crate::regression_runner::tick(&state, at).await.unwrap(), 1);
+    let row = stored_schedule(&state, &sid).await;
+    assert_eq!(row.next_run_at, first_slot + chrono::Duration::minutes(120));
+    assert!(row.last_note.is_none());
+    assert_eq!(row.last_started_at.map(|t| t.timestamp_millis()), Some(at.timestamp_millis()));
+    assert_eq!(crate::regression_runner::tick(&state, at).await.unwrap(), 0, "and it is not due again at once");
+    let (_, history) = regression_call(&state, "GET", project, &format!("schedules/{sid}/runs"), &owner, None).await;
+    assert_eq!(history["runs"].as_array().unwrap().len(), 1);
+    assert_eq!(history["runs"][0]["trigger"], "SCHEDULE");
+    let report = regression_report_when_done(&state, project, history["runs"][0]["id"].as_str().unwrap(), &owner).await;
+    assert_eq!(regression_case_of(&report, &case)["outcome"], "PASSED");
+    // The run says it was made by the key that made the schedule.
+    assert_eq!(report["created_by"], "test-key");
+
+    // Ten days later it makes one run, not ten, and keeps its hour.
+    let later = first_slot + chrono::Duration::days(10) + chrono::Duration::minutes(30);
+    assert_eq!(crate::regression_runner::tick(&state, later).await.unwrap(), 1);
+    let row = stored_schedule(&state, &sid).await;
+    assert_eq!(row.next_run_at, first_slot + chrono::Duration::days(10) + chrono::Duration::minutes(60));
+    assert_eq!((row.next_run_at - row.anchor_at).num_minutes() % 60, 0);
+    let (_, history) = regression_call(&state, "GET", project, &format!("schedules/{sid}/runs"), &owner, None).await;
+    regression_report_when_done(&state, project, history["runs"][0]["id"].as_str().unwrap(), &owner).await;
+
+    // Nobody can run it: the key was revoked. It is paused, with the reason, and left alone after that.
+    state.store.revoke_api_key(row.created_by_key).await.unwrap();
+    let much_later = later + chrono::Duration::days(2);
+    assert_eq!(crate::regression_runner::tick(&state, much_later).await.unwrap(), 0);
+    let row = stored_schedule(&state, &sid).await;
+    assert!(!row.enabled);
+    assert_eq!(row.last_note.as_deref(), Some("paused: the key this schedule runs as was revoked"));
+    assert_eq!(crate::regression_runner::tick(&state, much_later + chrono::Duration::days(1)).await.unwrap(), 0);
+    assert!(state.store.due_regression_schedules(much_later + chrono::Duration::days(9)).await.unwrap().is_empty(), "a paused schedule is never due");
+}
+
+#[tokio::test]
+async fn phase8c_deleting_a_project_removes_its_schedules_and_runs_and_only_its_own() {
+    ensure_local_health_target().await;
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let count = |table: &'static str, project: Uuid| {
+        let pool = state.store.pool.clone();
+        let sql: &'static str = match table {
+            "regression_schedules" => "SELECT COUNT(*) FROM regression_schedules WHERE project_id = ?",
+            _ => "SELECT COUNT(*) FROM regression_runs WHERE project_id = ?",
+        };
+        async move { sqlx::query_scalar::<_, i64>(sql).bind(project.to_string()).fetch_one(&pool).await.unwrap() }
+    };
+    set_fixture_flip("t8c-delete", true);
+    let mut projects = Vec::new();
+    for name in ["Phase8C Delete A", "Phase8C Delete B"] {
+        let project = make_project(&state, name).await;
+        let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+        executed_case(&state, project, &owner, "Deleted with its project", "/fixture/flip/t8c-delete").await;
+        let sid = a_schedule(&state, project, &owner, serde_json::json!({"name": "Doomed", "every_minutes": 60, "enabled": false})).await;
+        let (status, run) = regression_call(&state, "POST", project, &format!("schedules/{sid}/run"), &owner, None).await;
+        assert_eq!(status, StatusCode::CREATED, "body={run}");
+        regression_report_when_done(&state, project, run["id"].as_str().unwrap(), &owner).await;
+        projects.push(project);
+    }
+    for project in &projects {
+        assert_eq!((count("regression_schedules", *project).await, count("regression_runs", *project).await), (1, 1));
+    }
+    assert!(state.store.delete_project(projects[0]).await.unwrap());
+    assert_eq!((count("regression_schedules", projects[0]).await, count("regression_runs", projects[0]).await), (0, 0));
+    assert_eq!((count("regression_schedules", projects[1]).await, count("regression_runs", projects[1]).await), (1, 1), "another project's are not touched");
 }

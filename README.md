@@ -224,6 +224,14 @@ Contract tests for an API made from its own OpenAPI 3.x or Swagger 2.0 document,
 - **The report**: `GET .../openapi/runs/:id` (Viewer role; `?format=markdown` gives text to paste) has, operation by operation in the document's order, the cases with what each expected and what came back (status, time and the reason it failed, in the assertions' own words: a body that does not fit the success schema is left out of the reason when the status was already wrong, and a body that is not JSON says what content type it claimed; the evidence of the first 200 failures is read, a case that passed says only that), how many operations of the document were tested and which were not and why, the pass rate, notes on what to know before trusting it, and `final: false` while the run is going. `GET .../openapi/runs` lists the project's 50 latest runs, newest first, with each run's state.
 - **On screen**: OpenAPI Tests (`OpenApiTestsPage.tsx`, in the navigation). A form takes the document (pasted or by address), where the API is, the kinds of case, the credentials as variable names, and the box that lets requests that change data run (with a warning that they are really sent). *Show the cases* lists them before anything is sent, operation by operation, with the request and the answer each expects, and the operations to leave out; *Run N cases* starts the run and the page goes to its report (`?run=<id>`), which it looks at every two seconds until the run has ended. The runs of the project are listed beside the form; the report can be copied as Markdown.
 
+### Scheduled Regression (`regression.rs`, `regression_runner.rs`, `regression_api.rs`)
+A schedule runs again, every so often, the cases a project has approved and run once, and says what changed since the last time. Nothing is compiled again and no AI is asked: a case that was handed off remembers the run it was last executed in (`executed_run_id`), that run's plan holds the task the case ran as with its compiled steps, and a regression run is a new execution made of those same tasks (through `create_run_core`, so the plan checks, the policy, the evidence, the audit and the Execution Hub are those of any run). Repeating a case leaves the case as it was.
+- **Scope**: a suite of the project, or every case. `EXECUTED` cases are repeated; an `APPROVED` case that was never run, one whose last run was simulated, and one whose run or task is gone are listed as *not repeated*, each with the reason (`GET /api/v1/projects/:project_id/regression/scope?suite_id=` shows it before anything is made). Cases in other states are not in scope.
+- **Schedules** (`POST` and `GET .../regression/schedules`, `PATCH` and `DELETE .../regression/schedules/:id`; Operator to change, Viewer to read): `name`, `every_minutes` (5 to 44640), an optional `start_at` (the first time it is due and the grid the later ones fall on: a nightly schedule keeps its hour however long a run takes or the service was down, and after downtime it makes one run, not a queue), `concurrency` (1 to 8, 2 unless said), `suite_id` (`null` for every case) and `enabled`; at most 20 to a project. A schedule made with `enabled: false` never runs by itself and is run when asked, which is how a CI job uses it.
+- **The loop**: every 30 seconds the enabled schedules whose time has come each get a run, as the key that made the schedule (looked up again every time, so revoking the key pauses the schedule and `last_note` says why). A schedule whose previous run has not ended is skipped this time and moved on, so runs do not pile up; one with nothing to repeat says so in `last_note`.
+- **Run now**: `POST .../regression/schedules/:id/run` (Operator) makes a run as the person asking (`409` while the previous one has not ended) and leaves the schedule's slots as they are.
+- **Reports**: `GET .../regression/schedules/:id/runs` (the latest 50, newest first, each with its verdict) and `GET .../regression/runs/:id` (Viewer; `?format=markdown` gives text to paste). For each case, what it came to now beside what it came to the last time: in the previous run of the same schedule when that repeated the case and got an answer, else in the run its task was copied from. A case is `REGRESSED` (passed, now fails or errors), `FIXED`, `STILL_FAILING`, `STILL_PASSING` or `NEW`, regressions come first, and the run's verdict is `REGRESSED`, `FAILING`, `PASSING`, `RUNNING` or `NOTHING_RAN`. The results are the execution's own tasks (tables `regression_schedules` and `regression_runs`, migration 0025, only remember which cases a run repeated and which it could not).
+
 ---
 
 ## 7. Specialized Diagnostic Tools & Agents
@@ -429,6 +437,9 @@ AIQA/
             ├── performance_testing.rs # Load, Stress, Spike & Volume test runner
             ├── plan_validator.rs   # AST validation, SSRF checks & Kahn's DAG cycle verification
             ├── policy.rs           # Concurrency limits & gated executor policies
+            ├── regression.rs       # Scheduled regression: when a schedule is due, what can be repeated, the comparison & report
+            ├── regression_api.rs   # Routes: schedules, run now, history, the report of a run
+            ├── regression_runner.rs # The loop that makes the runs that are due
             ├── scheduler.rs        # Asynchronous DAG scheduler
             ├── store.rs            # SQLite persistence layer with connection pooling
             └── tools/              # Safe diagnostic tools (schema, dom, requirement, security)
@@ -710,6 +721,14 @@ All protected endpoints require an `Authorization: Bearer <api_key>` header unle
 | `POST` | `/api/v1/projects/:project_id/openapi/runs` | Run those cases as one execution | Yes |
 | `GET` | `/api/v1/projects/:project_id/openapi/runs` | List the project's OpenAPI test runs | Yes |
 | `GET` | `/api/v1/projects/:project_id/openapi/runs/:id` | A run's report, operation by operation (`?format=markdown` for text) | Yes |
+| `GET` | `/api/v1/projects/:project_id/regression/scope` | What a regression schedule would repeat now, and what it could not and why | Yes |
+| `POST` | `/api/v1/projects/:project_id/regression/schedules` | Make a regression schedule | Yes |
+| `GET` | `/api/v1/projects/:project_id/regression/schedules` | List the project's schedules, each with its latest run | Yes |
+| `PATCH` | `/api/v1/projects/:project_id/regression/schedules/:id` | Change a schedule (name, interval, start, suite, concurrency, on or off) | Yes |
+| `DELETE` | `/api/v1/projects/:project_id/regression/schedules/:id` | Remove a schedule and its history | Yes |
+| `POST` | `/api/v1/projects/:project_id/regression/schedules/:id/run` | Run a schedule now | Yes |
+| `GET` | `/api/v1/projects/:project_id/regression/schedules/:id/runs` | A schedule's latest runs, newest first | Yes |
+| `GET` | `/api/v1/projects/:project_id/regression/runs/:id` | A regression run's report, compared with the last time (`?format=markdown` for text) | Yes |
 | `POST` | `/api/v1/projects/:project_id/test-plans` | Create a test plan | Yes |
 | `GET` | `/api/v1/projects/:project_id/test-plans` | List test plans | Yes |
 | `POST` | `/api/v1/projects/:project_id/test-suites` | Create a test suite | Yes |

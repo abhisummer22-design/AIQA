@@ -71,6 +71,11 @@ impl ApiError {
         }
     }
 
+    /// What went wrong, in words (the `message` of the envelope).
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
     /// 401 — missing, malformed, or unrecognized credentials.
     pub fn unauthenticated(message: impl Into<String>) -> Self {
         Self::new(StatusCode::UNAUTHORIZED, "UNAUTHENTICATED", message)

@@ -217,6 +217,8 @@ async fn main() {
         Ok(n) => tracing::info!("picked up {n} autopilot run(s) that were going when the service stopped"),
         Err(e) => tracing::error!("startup autopilot-resume pass failed: {e}"),
     }
+    // Phase 8C — the schedules of regression runs are looked at every half minute.
+    aiqa_orchestrator::regression_runner::spawn(state.clone());
     // B12 — explicit origin allow-list, not a wildcard. See
     // `api::cors_layer_from_env`'s doc comment for the default and the
     // `AIQA_CORS_ALLOWED_ORIGINS` override.

@@ -1252,6 +1252,16 @@ impl Store {
             .execute(&mut *tx)
             .await?;
 
+        // 8g. Delete scheduled regression (Phase 8C): the runs of each schedule, then the schedules. No foreign keys, as above.
+        sqlx::query("DELETE FROM regression_runs WHERE project_id = ?")
+            .bind(&pid_str)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM regression_schedules WHERE project_id = ?")
+            .bind(&pid_str)
+            .execute(&mut *tx)
+            .await?;
+
         // 9. Delete the project itself
         let result = sqlx::query("DELETE FROM projects WHERE id = ?")
             .bind(&pid_str)
