@@ -240,6 +240,7 @@ A CI job can start a run, wait for it, put every case on the build's test page a
 - **`verdict`** was added to the OpenAPI report, as a regression has it: `RUNNING`, `FAILING` (a case failed or could not be run to the end), `PASSING` or `NOTHING_RAN`.
 - **The scripts**: `scripts/ci/aiqa-ci.sh` (bash, curl, sed, grep, awk) and `scripts/ci/aiqa-ci.ps1` (PowerShell) start a regression (`regression <schedule-id>`) or an OpenAPI run (`openapi <spec-url-or-file> [base-url]`), wait, save the JUnit XML, print the report in words (and add it to GitHub's job summary), and exit `0` (acceptable), `1` (the build should fail on the result: `AIQA_FAIL_ON` is `failing`, the default, `regressed` or `never`) or `2` (no result). The key is in `AIQA_KEY`, never an argument. Setup, every variable and examples for GitHub Actions, GitLab, Jenkins and Azure DevOps are in [docs/ci/README.md](docs/ci/README.md).
 - **On screen**: the Scheduled Regression page has *Download JUnit* beside *Copy as Markdown* on a report, and *Use it from CI* on a schedule: its id, and the lines to copy into a job.
+- **Local checks**: `scripts/ci/local-checks.ps1` runs on the machine what `.github/workflows/ci.yml` runs (the secret scan with Gitleaks, the frontend's lint, tests and build, the backend's clippy and tests), without GitHub, and exits `0` (passed), `1` (a step failed) or `2` (a step asked for alone could not run). See [docs/ci/README.md](docs/ci/README.md).
 
 ---
 
