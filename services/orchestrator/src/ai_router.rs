@@ -34,6 +34,7 @@
 //! simulate them being available. No OpenAI/Anthropic integration exists
 //! at all.
 
+use crate::ai_usage::{AiCallEvent, UsageSink};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -153,6 +154,25 @@ pub enum AiTask {
     UiAnalysis,
     Embedding,
     GeneralAi,
+}
+
+impl AiTask {
+    /// The name the task goes by in the API, and in what is stored about it (`ai_usage`): the same as its serialized form.
+    pub fn name(self) -> &'static str {
+        match self {
+            AiTask::TestCaseGeneration => "TEST_CASE_GENERATION",
+            AiTask::TestCaseCompilation => "TEST_CASE_COMPILATION",
+            AiTask::RequirementAnalysis => "REQUIREMENT_ANALYSIS",
+            AiTask::DocumentAnalysis => "DOCUMENT_ANALYSIS",
+            AiTask::BugAnalysis => "BUG_ANALYSIS",
+            AiTask::Traceability => "TRACEABILITY",
+            AiTask::SecurityAnalysis => "SECURITY_ANALYSIS",
+            AiTask::PerformanceAnalysis => "PERFORMANCE_ANALYSIS",
+            AiTask::UiAnalysis => "UI_ANALYSIS",
+            AiTask::Embedding => "EMBEDDING",
+            AiTask::GeneralAi => "GENERAL_AI",
+        }
+    }
 }
 
 /// Brief §8/§9 — every task's minimum real requirement. `LongContext` is
@@ -2517,7 +2537,7 @@ pub struct GenerationResult {
 /// "unknown" (this deployment's own architecture genuinely has no bill for
 /// it). A `Metered` provider without real token counts to multiply against
 /// honestly reports `None` rather than a silently-wrong `$0.00`.
-fn estimate_cost(usage: &TokenUsage, pricing: ProviderPricing) -> Option<f64> {
+pub(crate) fn estimate_cost(usage: &TokenUsage, pricing: ProviderPricing) -> Option<f64> {
     match pricing {
         ProviderPricing::Unmetered => Some(0.0),
         ProviderPricing::Metered {
@@ -2554,6 +2574,9 @@ pub struct AiInfrastructure {
     breakers: std::sync::Mutex<HashMap<String, Breaker>>,
     breaker_threshold: u32,
     breaker_cooldown: Duration,
+    /// Told of every call made to a provider, answered or not (`ai_usage.rs`); nobody until one is attached with
+    /// `set_usage_sink`.
+    usage_sink: std::sync::RwLock<Option<Arc<dyn UsageSink>>>,
 }
 
 /// Consecutive "could not reach it at all" failures (timeout, cannot connect) of one provider. After
@@ -2594,7 +2617,49 @@ impl AiInfrastructure {
             breakers: std::sync::Mutex::new(HashMap::new()),
             breaker_threshold,
             breaker_cooldown: Duration::from_secs(breaker_cooldown_secs),
+            usage_sink: std::sync::RwLock::new(None),
         }
+    }
+
+    /// From now on every call made to a provider is reported to `sink`, which counts what the AI calls came to
+    /// (`ai_usage.rs`). A second sink replaces the first.
+    pub fn set_usage_sink(&self, sink: Arc<dyn UsageSink>) {
+        *self.usage_sink.write().unwrap_or_else(|e| e.into_inner()) = Some(sink);
+    }
+
+    /// Tells the usage sink, if there is one, about a call just made. What the provider charges is what the last discovery
+    /// found; a provider that is not in it any more counts as one with no price.
+    async fn count_call(
+        &self,
+        provider_id: &str,
+        model_id: &str,
+        task: AiTask,
+        took: Duration,
+        result: &Result<ExecutionOutput, ExecutionError>,
+    ) {
+        let sink = self
+            .usage_sink
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let Some(sink) = sink else { return };
+        let pricing = self
+            .providers
+            .read()
+            .await
+            .iter()
+            .find(|p| p.id == provider_id)
+            .map(|p| p.pricing)
+            .unwrap_or_default();
+        sink.record(AiCallEvent::of_call(
+            provider_id,
+            model_id,
+            task,
+            took,
+            result,
+            pricing,
+        ))
+        .await;
     }
 
     #[cfg(test)]
@@ -2747,8 +2812,11 @@ impl AiInfrastructure {
         prompt: &str,
         task: AiTask,
     ) -> Result<ExecutionOutput, ExecutionError> {
+        let started = Instant::now();
         let result = self.run_executor(provider_id, model_id, prompt, task).await;
         self.record_outcome(provider_id, &result);
+        self.count_call(provider_id, model_id, task, started.elapsed(), &result)
+            .await;
         result
     }
 
@@ -7169,6 +7237,316 @@ mod tests {
             GenerationOutcome2::Failed { reason } => {
                 panic!("expected a real fallback to succeed, got Failed: {reason}")
             }
+        }
+    }
+
+    // ------------------------------------------------------------- usage counting
+
+    /// Keeps every call it is told of.
+    #[derive(Default)]
+    struct CollectingSink {
+        events: std::sync::Mutex<Vec<AiCallEvent>>,
+    }
+
+    impl CollectingSink {
+        fn events(&self) -> Vec<AiCallEvent> {
+            self.events.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl UsageSink for CollectingSink {
+        async fn record(&self, event: AiCallEvent) {
+            self.events.lock().unwrap().push(event);
+        }
+    }
+
+    /// Takes `delay` to answer.
+    struct SlowExecutor {
+        delay: Duration,
+    }
+
+    #[async_trait::async_trait]
+    impl AiExecutor for SlowExecutor {
+        async fn execute(
+            &self,
+            _provider_id: &str,
+            _model_id: &str,
+            _prompt: &str,
+        ) -> Result<ExecutionOutput, ExecutionError> {
+            tokio::time::sleep(self.delay).await;
+            ok_output("slowly")
+        }
+    }
+
+    fn with_tokens(prompt: u32, completion: u32) -> Result<ExecutionOutput, ExecutionError> {
+        Ok(ExecutionOutput {
+            text: "answer".to_string(),
+            usage: TokenUsage {
+                prompt_tokens: Some(prompt),
+                completion_tokens: Some(completion),
+            },
+        })
+    }
+
+    const UP_PRICE: ProviderPricing = ProviderPricing::Metered {
+        input_usd_per_1k: 0.5,
+        output_usd_per_1k: 1.5,
+    };
+
+    /// "down" (no price, and scores higher, so it is the primary) and "up" (which has a price).
+    fn down_and_priced_up(
+        down: Arc<RecordingExecutor>,
+        up: Arc<RecordingExecutor>,
+    ) -> AiInfrastructure {
+        let mut executors: HashMap<&'static str, Arc<dyn AiExecutor>> = HashMap::new();
+        executors.insert("down", down as Arc<dyn AiExecutor>);
+        executors.insert("up", up as Arc<dyn AiExecutor>);
+        let mut up_info = healthy_provider(
+            "up",
+            vec![healthy_model("m-up", "up", CapabilityLevel::Basic)],
+        );
+        up_info.pricing = UP_PRICE;
+        AiInfrastructure::new(
+            vec![
+                Arc::new(FakeDiscovery(healthy_provider(
+                    "down",
+                    vec![healthy_model("m-down", "down", CapabilityLevel::Strong)],
+                ))),
+                Arc::new(FakeDiscovery(up_info)),
+            ],
+            executors,
+        )
+    }
+
+    #[tokio::test]
+    async fn every_call_to_a_provider_is_reported_to_the_usage_sink_whether_it_answered_or_not() {
+        let sink = Arc::new(CollectingSink::default());
+        let down = Arc::new(RecordingExecutor::sequence(vec![Err(
+            ExecutionError::Timeout,
+        )]));
+        let up = Arc::new(RecordingExecutor::sequence(vec![with_tokens(2000, 500)]));
+        let infra = down_and_priced_up(down, up);
+        infra.set_usage_sink(sink.clone());
+
+        // "down" is asked first and does not answer; "up" answers in its place.
+        assert_eq!(
+            served_by(infra.generate(general_request()).await),
+            ("up".to_string(), true)
+        );
+        let events = sink.events();
+        assert_eq!(events.len(), 2, "one event for each call: {events:?}");
+        let (failed, answered) = (&events[0], &events[1]);
+
+        assert_eq!(
+            (
+                failed.provider.as_str(),
+                failed.model.as_str(),
+                failed.task,
+                failed.answered
+            ),
+            ("down", "m-down", AiTask::GeneralAi, false)
+        );
+        assert_eq!(
+            (
+                failed.prompt_tokens,
+                failed.completion_tokens,
+                failed.pricing
+            ),
+            (None, None, ProviderPricing::Unmetered),
+            "a call that did not answer has no tokens, and this provider has no price"
+        );
+
+        assert_eq!(
+            (
+                answered.provider.as_str(),
+                answered.model.as_str(),
+                answered.task,
+                answered.answered
+            ),
+            ("up", "m-up", AiTask::GeneralAi, true)
+        );
+        assert_eq!(
+            (answered.prompt_tokens, answered.completion_tokens),
+            (Some(2000), Some(500)),
+            "the counts the provider itself reported"
+        );
+        assert_eq!(
+            answered.pricing, UP_PRICE,
+            "the price the last discovery found"
+        );
+        // 2 thousand tokens in at $0.50 and half a thousand out at $1.50 come to $1.75.
+        assert_eq!(answered.cost_micros(), Some(1_750_000));
+    }
+
+    #[tokio::test]
+    async fn the_time_a_call_took_is_measured_around_the_call_itself() {
+        let sink = Arc::new(CollectingSink::default());
+        let mut executors: HashMap<&'static str, Arc<dyn AiExecutor>> = HashMap::new();
+        executors.insert(
+            "slow",
+            Arc::new(SlowExecutor {
+                delay: Duration::from_millis(80),
+            }),
+        );
+        let infra = AiInfrastructure::new(
+            vec![Arc::new(FakeDiscovery(healthy_provider(
+                "slow",
+                vec![healthy_model("m-slow", "slow", CapabilityLevel::Strong)],
+            )))],
+            executors,
+        );
+        infra.set_usage_sink(sink.clone());
+        served_by(infra.generate(general_request()).await);
+        let events = sink.events();
+        assert_eq!(events.len(), 1);
+        assert!(
+            (80..5_000).contains(&events[0].took_ms),
+            "it slept 80 ms: {}",
+            events[0].took_ms
+        );
+    }
+
+    #[tokio::test]
+    async fn a_provider_the_breaker_leaves_out_is_not_called_and_so_not_counted() {
+        let sink = Arc::new(CollectingSink::default());
+        let down = Arc::new(RecordingExecutor::sequence(vec![Err(
+            ExecutionError::Timeout,
+        )]));
+        let up = Arc::new(RecordingExecutor::sequence(vec![
+            with_tokens(1, 1),
+            with_tokens(1, 1),
+        ]));
+        let infra = down_and_priced_up(down, up).with_breaker(1, Duration::from_secs(60));
+        infra.set_usage_sink(sink.clone());
+
+        // The first call tries "down" (which cannot be reached, and is then left out), the second goes straight to "up".
+        served_by(infra.generate(general_request()).await);
+        served_by(infra.generate(general_request()).await);
+        let providers: Vec<(String, bool)> = sink
+            .events()
+            .iter()
+            .map(|e| (e.provider.clone(), e.answered))
+            .collect();
+        assert_eq!(
+            providers,
+            [
+                ("down".to_string(), false),
+                ("up".to_string(), true),
+                ("up".to_string(), true)
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_calls_of_a_task_chain_are_reported_too_each_under_the_task_they_were_for() {
+        let sink = Arc::new(CollectingSink::default());
+        let mut executors = HashMap::new();
+        let (a, _) = chain_provider(
+            &mut executors,
+            "a",
+            CapabilityLevel::Basic,
+            vec![Err(ExecutionError::Timeout)],
+        );
+        let (b, _) = chain_provider(
+            &mut executors,
+            "b",
+            CapabilityLevel::Basic,
+            vec![with_tokens(30, 40)],
+        );
+        let infra = AiInfrastructure::new(vec![a, b], executors);
+        infra
+            .set_settings(chain_settings(&[("a", "a-model"), ("b", "b-model")]))
+            .await;
+        infra.set_usage_sink(sink.clone());
+
+        served_by(infra.generate(generation_request()).await);
+        let events = sink.events();
+        let seen: Vec<(&str, AiTask, bool, Option<u32>)> = events
+            .iter()
+            .map(|e| (e.provider.as_str(), e.task, e.answered, e.prompt_tokens))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                ("a", AiTask::TestCaseGeneration, false, None),
+                ("b", AiTask::TestCaseGeneration, true, Some(30)),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_price_of_a_call_is_the_one_its_own_provider_has_and_none_for_a_provider_nobody_knows(
+    ) {
+        let sink = Arc::new(CollectingSink::default());
+        let infra = down_and_priced_up(
+            Arc::new(RecordingExecutor::sequence(vec![])),
+            Arc::new(RecordingExecutor::sequence(vec![ok_output("x")])),
+        );
+        infra.discover_all().await;
+        infra.set_usage_sink(sink.clone());
+
+        infra
+            .execute_for("up", "m-up", "hi", AiTask::GeneralAi)
+            .await
+            .unwrap();
+        let unknown = infra
+            .execute_for("ghost", "m", "hi", AiTask::GeneralAi)
+            .await;
+        assert!(unknown.is_err(), "no executor is wired for it");
+
+        let seen: Vec<(String, bool, ProviderPricing)> = sink
+            .events()
+            .iter()
+            .map(|e| (e.provider.clone(), e.answered, e.pricing))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                ("up".to_string(), true, UP_PRICE),
+                ("ghost".to_string(), false, ProviderPricing::Unmetered),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_usage_sink_takes_over_from_the_first() {
+        let (first, second) = (
+            Arc::new(CollectingSink::default()),
+            Arc::new(CollectingSink::default()),
+        );
+        let infra = down_and_priced_up(
+            Arc::new(RecordingExecutor::sequence(vec![])),
+            Arc::new(RecordingExecutor::sequence(vec![ok_output("x")])),
+        );
+        infra.set_usage_sink(first.clone());
+        infra.set_usage_sink(second.clone());
+        infra
+            .execute_for("up", "m-up", "hi", AiTask::GeneralAi)
+            .await
+            .unwrap();
+        assert_eq!((first.events().len(), second.events().len()), (0, 1));
+    }
+
+    #[test]
+    fn a_tasks_name_is_the_one_it_has_in_the_api() {
+        for task in [
+            AiTask::TestCaseGeneration,
+            AiTask::TestCaseCompilation,
+            AiTask::RequirementAnalysis,
+            AiTask::DocumentAnalysis,
+            AiTask::BugAnalysis,
+            AiTask::Traceability,
+            AiTask::SecurityAnalysis,
+            AiTask::PerformanceAnalysis,
+            AiTask::UiAnalysis,
+            AiTask::Embedding,
+            AiTask::GeneralAi,
+        ] {
+            assert_eq!(
+                serde_json::to_value(task).unwrap(),
+                serde_json::Value::String(task.name().to_string())
+            );
         }
     }
 }

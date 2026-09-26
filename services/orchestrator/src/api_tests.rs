@@ -14562,3 +14562,196 @@ async fn phase7e_the_role_the_cases_run_as_has_to_be_one_of_the_runs_roles() {
     assert_eq!(status, StatusCode::CREATED, "body={body}");
     assert_eq!(body["run"]["config"]["execution_role"], "anonymous");
 }
+
+// ------------------------------------------------- Phase 8A: what the AI calls came to
+
+/// One AI provider with a price ($0.50 in and $1.50 out per 1,000 tokens) that answers every call with 2,000 tokens in and
+/// 500 out, which is $1.75 a call.
+fn usage_ai_infra() -> Arc<AiInfrastructure> {
+    let mut executors: std::collections::HashMap<&'static str, Arc<dyn AiExecutor>> = std::collections::HashMap::new();
+    executors.insert("priced", Arc::new(FakeExecutor::ok_with_usage("an answer", 2000, 500)));
+    let mut info = healthy_provider("priced", vec![healthy_model("priced-model", "priced", CapabilityLevel::Strong)]);
+    info.pricing = crate::ai_router::ProviderPricing::Metered { input_usd_per_1k: 0.5, output_usd_per_1k: 1.5 };
+    Arc::new(AiInfrastructure::new(vec![Arc::new(FakeDiscovery(info))], executors))
+}
+
+fn general_ai_request() -> crate::ai_router::AiRequest {
+    crate::ai_router::AiRequest {
+        task: crate::ai_router::AiTask::GeneralAi,
+        prompt: "hi".to_string(),
+        preferred_provider: None,
+        preferred_model: None,
+    }
+}
+
+/// One AI call, made the way a request to `path` makes it.
+async fn ai_call_as_request_to(state: &AppState, path: &str) {
+    crate::auth::with_request_path(path, state.ai_infra.generate(general_ai_request())).await;
+}
+
+async fn usage(state: &AppState, path: &str, key: &str) -> (StatusCode, Value) {
+    send(state, req("GET", path, Some(key), None)).await
+}
+
+#[tokio::test]
+async fn phase8a_every_ai_call_is_counted_under_the_project_it_was_made_for() {
+    let (state, _dir) = test_state_with_ai_router(usage_ai_infra()).await;
+    let a = make_project(&state, "Usage A").await;
+    let b = make_project(&state, "Usage B").await;
+    let admin = mint_key(&state, "admin", None).await;
+
+    ai_call_as_request_to(&state, &format!("/api/v1/projects/{a}/test-cases/generate")).await;
+    for _ in 0..2 {
+        ai_call_as_request_to(&state, &format!("/api/v1/projects/{b}/autopilot/runs")).await;
+    }
+    // Two calls that were not made for a project: one in a request that is about none, one outside any request.
+    ai_call_as_request_to(&state, "/api/v1/ai/refresh").await;
+    state.ai_infra.generate(general_ai_request()).await;
+
+    let (status, all) = usage(&state, "/api/v1/ai/usage", &admin).await;
+    assert_eq!(status, StatusCode::OK, "body={all}");
+    let totals = &all["totals"];
+    assert_eq!((totals["calls"].clone(), totals["answered"].clone(), totals["failed"].clone()), (serde_json::json!(5), serde_json::json!(5), serde_json::json!(0)));
+    assert_eq!((totals["prompt_tokens"].clone(), totals["completion_tokens"].clone()), (serde_json::json!(10_000), serde_json::json!(2_500)));
+    assert_eq!((totals["priced_calls"].clone(), totals["no_price_calls"].clone(), totals["no_tokens_calls"].clone()), (serde_json::json!(5), serde_json::json!(0), serde_json::json!(0)));
+    assert_eq!(totals["cost_usd"], 8.75, "five calls at $1.75");
+    assert_eq!(all["by_provider"].as_array().unwrap().len(), 1);
+    assert_eq!(all["by_provider"][0]["provider"], "priced");
+    assert_eq!(all["by_provider"][0]["model"], "priced-model");
+    assert_eq!(all["by_task"][0]["task"], "GENERAL_AI");
+    let by_project: std::collections::HashMap<String, i64> = all["by_project"]
+        .as_array()
+        .expect("every project at once is split by project")
+        .iter()
+        .map(|p| (p["project_id"].as_str().unwrap_or("none").to_string(), p["calls"].as_i64().unwrap()))
+        .collect();
+    assert_eq!(by_project, std::collections::HashMap::from([(a.to_string(), 1), (b.to_string(), 2), ("none".to_string(), 2)]));
+    assert_eq!(all["range"]["days"], 30, "a month unless said");
+    let days = all["by_day"].as_array().unwrap();
+    assert_eq!(days.len(), 30);
+    assert_eq!(days[29]["calls"], 5, "all of it happened today: {days:?}");
+
+    // One project, asked for by an admin.
+    let (status, only_a) = usage(&state, &format!("/api/v1/ai/usage?project_id={a}"), &admin).await;
+    assert_eq!(status, StatusCode::OK, "body={only_a}");
+    assert_eq!((only_a["totals"]["calls"].clone(), only_a["totals"]["cost_usd"].clone()), (serde_json::json!(1), serde_json::json!(1.75)));
+    assert!(only_a.get("by_project").is_none(), "one project is not split by project: {only_a}");
+
+    // The project's own route gives the same, without the split.
+    let (status, scoped) = usage(&state, &format!("/api/v1/projects/{b}/ai-usage"), &admin).await;
+    assert_eq!(status, StatusCode::OK, "body={scoped}");
+    assert_eq!((scoped["totals"]["calls"].clone(), scoped["totals"]["cost_usd"].clone()), (serde_json::json!(2), serde_json::json!(3.5)));
+    assert!(scoped.get("by_project").is_none());
+}
+
+#[tokio::test]
+async fn phase8a_who_may_see_the_usage_is_the_project_for_its_own_and_an_admin_for_all() {
+    let (state, _dir) = test_state_with_ai_router(usage_ai_infra()).await;
+    let a = make_project(&state, "Usage Access A").await;
+    let b = make_project(&state, "Usage Access B").await;
+    let owner_a = mint_key(&state, "operator", Some(&a.to_string())).await;
+    let viewer_a = mint_key(&state, "viewer", Some(&a.to_string())).await;
+    let viewer_everywhere = mint_key(&state, "viewer", None).await;
+    let admin_of_a = mint_key(&state, "admin", Some(&a.to_string())).await;
+    ai_call_as_request_to(&state, &format!("/api/v1/projects/{a}/x")).await;
+    ai_call_as_request_to(&state, &format!("/api/v1/projects/{b}/x")).await;
+
+    // A project's own keys read its usage, a viewer included, and nobody else's.
+    for key in [&owner_a, &viewer_a, &admin_of_a] {
+        let (status, body) = usage(&state, &format!("/api/v1/projects/{a}/ai-usage"), key).await;
+        assert_eq!(status, StatusCode::OK, "body={body}");
+        assert_eq!(body["totals"]["calls"], 1, "only its own project's call: {body}");
+        let (status, body) = usage(&state, &format!("/api/v1/projects/{b}/ai-usage"), key).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+    }
+    // A key that sees every project reads any project's, whatever its role.
+    let (status, body) = usage(&state, &format!("/api/v1/projects/{b}/ai-usage"), &viewer_everywhere).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["totals"]["calls"], 1);
+
+    // What every project came to together is an admin's, on a key that is not tied to one project.
+    let (status, body) = usage(&state, "/api/v1/ai/usage", &viewer_everywhere).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "a viewer: body={body}");
+    let operator_everywhere = mint_key(&state, "operator", None).await;
+    let (status, body) = usage(&state, "/api/v1/ai/usage", &operator_everywhere).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "an operator: body={body}");
+    let (status, body) = usage(&state, "/api/v1/ai/usage", &admin_of_a).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "an admin of one project: body={body}");
+    assert!(body["error"]["message"].as_str().unwrap().contains("not tied to one project"), "body={body}");
+    let (status, body) = usage(&state, "/api/v1/ai/usage", &owner_a).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "an operator of one project: body={body}");
+
+    // A project that is not there is not there, on either route; and nobody is anonymous.
+    let admin = mint_key(&state, "admin", None).await;
+    let phantom = Uuid::new_v4();
+    let (status, _) = usage(&state, &format!("/api/v1/projects/{phantom}/ai-usage"), &admin).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = usage(&state, &format!("/api/v1/ai/usage?project_id={phantom}"), &admin).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, body) = send(&state, req("GET", "/api/v1/ai/usage", None, None)).await;
+    assert_envelope(status, &body, StatusCode::UNAUTHORIZED, "UNAUTHENTICATED");
+    let (status, body) = send(&state, req("GET", &format!("/api/v1/projects/{a}/ai-usage"), None, None)).await;
+    assert_envelope(status, &body, StatusCode::UNAUTHORIZED, "UNAUTHENTICATED");
+}
+
+#[tokio::test]
+async fn phase8a_the_window_of_days_and_the_askers_clock_are_kept_to_what_makes_sense() {
+    let (state, _dir) = test_state_with_ai_router(usage_ai_infra()).await;
+    let admin = mint_key(&state, "admin", None).await;
+    for (query, days, offset) in [
+        ("days=3&tz_offset_minutes=330", 3u64, 330i64),
+        ("days=0", 1, 0),
+        ("days=5000&tz_offset_minutes=99999", 366, 840),
+        ("tz_offset_minutes=-300", 30, -300),
+    ] {
+        let (status, body) = usage(&state, &format!("/api/v1/ai/usage?{query}"), &admin).await;
+        assert_eq!(status, StatusCode::OK, "{query}: body={body}");
+        assert_eq!(body["range"]["days"], days, "{query}");
+        assert_eq!(body["range"]["tz_offset_minutes"], offset, "{query}");
+        assert_eq!(body["by_day"].as_array().unwrap().len() as u64, days, "{query}");
+    }
+    for query in ["days=abc", "days=-1", "tz_offset_minutes=soon", "project_id=not-a-uuid"] {
+        let (status, body) = usage(&state, &format!("/api/v1/ai/usage?{query}"), &admin).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{query}: body={body}");
+    }
+}
+
+#[tokio::test]
+async fn phase8a_a_call_that_failed_is_counted_as_failed_and_costs_nothing() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Err(crate::ai_router::ExecutionError::Timeout))).await;
+    let project = make_project(&state, "Usage Failure").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let outcome = crate::auth::with_request_path(&format!("/api/v1/projects/{project}/x"), state.ai_infra.generate(general_ai_request())).await;
+    assert!(matches!(outcome, crate::ai_router::GenerationOutcome2::Failed { .. }));
+
+    let (status, body) = usage(&state, &format!("/api/v1/projects/{project}/ai-usage"), &owner).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let totals = &body["totals"];
+    assert_eq!((totals["calls"].clone(), totals["answered"].clone(), totals["failed"].clone()), (serde_json::json!(1), serde_json::json!(0), serde_json::json!(1)));
+    assert_eq!((totals["cost_usd"].clone(), totals["prompt_tokens"].clone()), (serde_json::json!(0.0), serde_json::json!(0)));
+    assert_eq!(totals["avg_answer_ms"], Value::Null, "it answered nothing");
+    assert_eq!(body["by_provider"][0]["failed"], 1, "the provider that failed is the one shown as failing");
+    let notes: Vec<&str> = body["notes"].as_array().unwrap().iter().map(|n| n.as_str().unwrap()).collect();
+    assert_eq!(notes, ["1 call did not answer; nothing is counted as its cost."], "{body}");
+}
+
+#[tokio::test]
+async fn phase8a_a_provider_with_no_price_is_used_and_counted_but_never_given_a_cost() {
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok("an answer"))).await;
+    let project = make_project(&state, "Usage No Price").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    for _ in 0..3 {
+        crate::auth::with_request_path(&format!("/api/v1/projects/{project}/x"), state.ai_infra.generate(general_ai_request())).await;
+    }
+    let (status, body) = usage(&state, &format!("/api/v1/projects/{project}/ai-usage"), &owner).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let totals = &body["totals"];
+    assert_eq!((totals["calls"].clone(), totals["priced_calls"].clone(), totals["no_price_calls"].clone()), (serde_json::json!(3), serde_json::json!(0), serde_json::json!(3)));
+    assert_eq!(totals["cost_usd"], 0.0);
+    let notes: Vec<&str> = body["notes"].as_array().unwrap().iter().map(|n| n.as_str().unwrap()).collect();
+    assert_eq!(
+        notes,
+        ["3 calls went to models with no price (a local model, or a hosted one whose price is not entered in Settings), so no cost is counted for them."],
+        "{body}"
+    );
+}

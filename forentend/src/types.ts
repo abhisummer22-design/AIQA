@@ -24,6 +24,7 @@ export type NavPage =
   | 'evidence'
   | 'telemetry'
   | 'intelligence'
+  | 'ai-usage'
   | 'settings';
 
 export type AIQAStatus =
