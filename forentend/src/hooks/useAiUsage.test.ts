@@ -110,6 +110,35 @@ describe('useAiUsage', () => {
     expect(result.current.report).not.toBeNull();
   });
 
+  it('never shows one project’s figures for another, not even for the one render before it starts reading', async () => {
+    backend({
+      'GET /ai-usage': (req) => usageReport({ notes: [req.path.includes('proj-b') ? 'B' : 'A'] }),
+      'GET /ai/usage': () => usageReport({ notes: ['ALL'] }),
+    });
+    const seen: Array<{ project: string; note: string | null }> = [];
+    const { rerender } = renderHook(
+      ({ target }: { target: UsageTarget }) => {
+        const look = useAiUsage(target, 30);
+        seen.push({ project: target.kind === 'project' ? target.projectId : 'all', note: look.report?.notes[0] ?? null });
+        return look;
+      },
+      { initialProps: { target: PROJECT } },
+    );
+    await settle();
+    rerender({ target: { kind: 'project', projectId: 'proj-b' } });
+    await settle();
+    rerender({ target: EVERYWHERE });
+    await settle();
+    // Every render for a target shows nothing of another one's, and the first for each is empty.
+    const shownFor = (project: string) => seen.filter((s) => s.project === project).map((s) => s.note);
+    expect(shownFor('proj-b').filter((note) => note !== null && note !== 'B')).toEqual([]);
+    expect(shownFor('all').filter((note) => note !== null && note !== 'ALL')).toEqual([]);
+    expect(shownFor('proj-b')[0]).toBeNull();
+    expect(shownFor('all')[0]).toBeNull();
+    expect(shownFor('proj-b').at(-1)).toBe('B');
+    expect(shownFor('all').at(-1)).toBe('ALL');
+  });
+
   it('ignores an answer that arrives after another target was chosen', async () => {
     const late: Array<(r: unknown) => void> = [];
     backend({

@@ -81,6 +81,15 @@ describe('formatCount', () => {
     [1_000_000, '1M'],
     [1_500_000, '1.5M'],
     [12_345_678, '12M'],
+    // Where the number of decimals changes: from 10 up there are none, below it one.
+    [9_960, '10k'],
+    [10_400, '10k'],
+    [10_600, '11k'],
+    [1_050, '1.1k'],
+    [999_000, '999k'],
+    [1_050_000, '1.1M'],
+    [9_500_000, '9.5M'],
+    [10_400_000, '10M'],
   ])('%s is %s', (n, text) => {
     expect(formatCount(n)).toBe(text);
   });

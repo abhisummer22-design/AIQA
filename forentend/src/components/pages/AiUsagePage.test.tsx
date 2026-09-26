@@ -269,6 +269,35 @@ describe('AiUsagePage — every project at once', () => {
     expect(names).toEqual(['Project Alpha', 'A removed project (proj-b)', 'Not made for a project']);
   });
 
+  it('shortens the id of a project that is no longer there to its first eight characters', async () => {
+    const gone = '5d5a7579-68e2-4e7f-a07a-509642bf0c9a';
+    mockBackend({
+      projects: [PROJECT_A],
+      routes: { 'GET /ai/usage': () => ({ ...everywhereReport(), by_project: [{ project_id: gone, ...tally({ calls: 3, answered: 3 }) }] }) },
+    });
+    await openPage();
+    await usageShown();
+    await act(async () => button('ai-usage-scope-all').click());
+    await waitFor(() => expect(el('usage-by-project')).toBeTruthy());
+    expect(el('usage-by-project')!.querySelector('tbody tr td')?.textContent).toBe('A removed project (5d5a7579)');
+  });
+
+  it('shows the scope, and the length of time, that is chosen by its look as well as by its attribute', async () => {
+    mockBackend();
+    await openPage();
+    await usageShown();
+    const chosen = (id: string) => button(id).className.includes('bg-violet-950/70');
+    expect([chosen('ai-usage-scope-project'), chosen('ai-usage-scope-all')]).toEqual([true, false]);
+    expect(['ai-usage-days-7', 'ai-usage-days-30', 'ai-usage-days-90'].map(chosen)).toEqual([false, true, false]);
+    expect(button('ai-usage-scope-all').className).toContain('text-slate-400');
+    expect(button('ai-usage-scope-project').className).toContain('text-violet-200');
+    await act(async () => button('ai-usage-scope-all').click());
+    await act(async () => button('ai-usage-days-90').click());
+    await waitFor(() => expect(el('usage-by-project')).toBeTruthy());
+    expect([chosen('ai-usage-scope-project'), chosen('ai-usage-scope-all')]).toEqual([false, true]);
+    expect(['ai-usage-days-7', 'ai-usage-days-30', 'ai-usage-days-90'].map(chosen)).toEqual([false, false, true]);
+  });
+
   it('explains that it needs an admin key not tied to one project when the key is not one, and goes back to the project’s own', async () => {
     mockBackend({ routes: { 'GET /ai/usage': () => failure(403, 'FORBIDDEN', 'the usage of every project is for a key that is not tied to one project') } });
     await openPage();

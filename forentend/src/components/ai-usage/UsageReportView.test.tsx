@@ -54,6 +54,15 @@ describe('the tiles', () => {
     expect(text('usage-calls')).not.toContain('failed');
   });
 
+  it('write the figure of a tile in the tile’s own colour: amber in an amber one, plain in a plain one', () => {
+    const value = (id: string) => el(id).querySelector('.font-mono') as HTMLElement;
+    show();
+    expect(value('usage-calls').className).toContain('text-amber-200');
+    expect(value('usage-calls').className).not.toContain('text-slate-100');
+    expect(value('usage-cost').className).toContain('text-slate-100');
+    expect(value('usage-cost').className).not.toContain('amber');
+  });
+
   it('give the tokens in and out in few characters, and the exact numbers on hover', () => {
     show();
     expect(text('usage-tokens')).toContain('11k in · 3.6k out');
@@ -155,6 +164,17 @@ describe('the bars of the days', () => {
     expect(el('usage-bars-cost').getAttribute('aria-pressed')).toBe('true');
     expect(bars().map((b) => b.getAttribute('data-value'))).toEqual(['0.0009', '0.0001', '0']);
     expect(heights()).toEqual(['100%', `${(0.0001 / 0.0009) * 100}%`, '0%']);
+  });
+
+  it('show which of the three is pressed by its look too, not only by the attribute', () => {
+    show();
+    const look = (id: string) => el(id).className;
+    expect(look('usage-bars-calls')).toContain('bg-violet-950/70');
+    expect(look('usage-bars-tokens')).not.toContain('bg-violet-950/70');
+    expect(look('usage-bars-tokens')).toContain('text-slate-400');
+    fireEvent.click(el('usage-bars-tokens'));
+    expect(look('usage-bars-tokens')).toContain('bg-violet-950/70');
+    expect(look('usage-bars-calls')).not.toContain('bg-violet-950/70');
   });
 
   it('draw a day with something in it at least a sliver tall, and a day with nothing not at all', () => {
