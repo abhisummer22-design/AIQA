@@ -74,7 +74,7 @@ export function useOpenApiRun(projectId: string | null, runId: string | null): O
   const failed = current.error !== null;
   const shown = current.report !== null;
   useEffect(() => {
-    if (!key || (!shown && !failed) || final) return;
+    if ((!shown && !failed) || final) return;
     const timer = setTimeout(read, failed ? RETRY_DELAY_MS : REPORT_POLL_MS);
     return () => clearTimeout(timer);
   }, [key, shown, failed, final, stamp, read]);

@@ -34,13 +34,15 @@ const STATE_DOT: Record<string, string> = {
   SCHEDULED: 'bg-violet-400 animate-pulse',
 };
 
-const RunList: React.FC<{ runs: OpenApiRunListRow[]; chosen: string | null; onChoose: (id: string) => void; onNew: () => void; loading: boolean }> = ({
-  runs,
-  chosen,
-  onChoose,
-  onNew,
-  loading,
-}) => (
+const RunList: React.FC<{
+  runs: OpenApiRunListRow[];
+  chosen: string | null;
+  onChoose: (id: string) => void;
+  onNew: () => void;
+  loading: boolean;
+  /** Why the runs could not be read, when they could not and there are none to show. */
+  error: string | null;
+}> = ({ runs, chosen, onChoose, onNew, loading, error }) => (
   <nav id="openapi-runs" aria-label="OpenAPI test runs" className="min-w-0 p-3 rounded-lg bg-[#0B1120] border border-slate-800 space-y-2">
     <button
       type="button"
@@ -52,7 +54,15 @@ const RunList: React.FC<{ runs: OpenApiRunListRow[]; chosen: string | null; onCh
       <Plus className="w-3.5 h-3.5" /> New test
     </button>
     {runs.length === 0 ? (
-      <p className="text-[11px] text-slate-500">{loading ? 'Loading…' : 'No run yet.'}</p>
+      loading ? (
+        <p className="text-[11px] text-slate-500">Loading…</p>
+      ) : error ? (
+        <p id="openapi-runs-error" role="alert" className="text-[11px] text-rose-300">
+          The runs could not be read: {error}
+        </p>
+      ) : (
+        <p className="text-[11px] text-slate-500">No run yet.</p>
+      )
     ) : (
       <ul className="space-y-1">
         {runs.map((r) => (
@@ -272,7 +282,14 @@ export const OpenApiTestsPage: React.FC = () => {
     }
     return (
       <div className="grid gap-4 grid-cols-1 lg:grid-cols-[16rem_minmax(0,1fr)] items-start">
-        <RunList runs={list.runs ?? []} chosen={chosenId} onChoose={choose} onNew={() => choose(null)} loading={list.loading && !list.runs} />
+        <RunList
+          runs={list.runs ?? []}
+          chosen={chosenId}
+          onChoose={choose}
+          onNew={() => choose(null)}
+          loading={list.loading && !list.runs}
+          error={list.runs ? null : (list.error?.message ?? null)}
+        />
         <div className="min-w-0">{chosenId ? renderReport() : renderNew()}</div>
       </div>
     );

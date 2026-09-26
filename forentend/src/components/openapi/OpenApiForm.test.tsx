@@ -69,6 +69,28 @@ describe('the document', () => {
   });
 });
 
+describe('the looks of the form', () => {
+  it('marks the way the document is given that is chosen, and only that one', () => {
+    harness();
+    expect(el('openapi-source-paste').className).toContain('bg-violet-950/70 text-violet-200');
+    expect(el('openapi-source-paste').className).not.toContain('text-slate-400');
+    expect(el('openapi-source-address').className).toContain('text-slate-400 hover:bg-slate-800');
+    expect(el('openapi-source-address').className).not.toContain('bg-violet-950/70');
+    fireEvent.click(el('openapi-source-address'));
+    expect(el('openapi-source-address').className).toContain('bg-violet-950/70 text-violet-200');
+    expect(el('openapi-source-address').className).not.toContain('text-slate-400');
+    expect(el('openapi-source-paste').className).toContain('text-slate-400 hover:bg-slate-800');
+    expect(el('openapi-source-paste').className).not.toContain('bg-violet-950/70');
+  });
+
+  it('gives the box for the document room for a page of it, and no red lines under what is not prose', () => {
+    harness();
+    const box = el('openapi-spec') as HTMLTextAreaElement;
+    expect(box.getAttribute('rows')).toBe('10');
+    expect(box.getAttribute('spellcheck')).toBe('false');
+  });
+});
+
 describe('the kinds of case', () => {
   it('are all chosen at first, each with its own name and hint', () => {
     harness();

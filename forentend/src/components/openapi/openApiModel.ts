@@ -66,10 +66,10 @@ export function formProblems(form: OpenApiFormState): string[] {
   const problems: string[] = [];
   if (form.source === 'paste') {
     if (form.spec.trim() === '') problems.push('Paste the OpenAPI document (JSON or YAML).');
-  } else if (!isHttpAddress(form.specUrl.trim())) {
+  } else if (!isHttpAddress(form.specUrl)) {
     problems.push('The address of the document must start with http:// or https://.');
   }
-  if (form.baseUrl.trim() !== '' && !isHttpAddress(form.baseUrl.trim())) {
+  if (form.baseUrl.trim() !== '' && !isHttpAddress(form.baseUrl)) {
     problems.push('Where the API is must start with http:// or https://, or be left empty to use the document’s own server.');
   }
   if (form.kinds.length === 0) problems.push('Choose at least one kind of case.');

@@ -79,7 +79,52 @@ describe('the tiles', () => {
   });
 });
 
+describe('the looks of the tiles', () => {
+  it('are plain unless they are amber, and a note sits under the value only when there is one', () => {
+    show();
+    expect(el('openapi-tile-cases').className).toContain('bg-[#020617] border-slate-800');
+    expect(el('openapi-tile-cases').className).not.toContain('amber');
+    expect(el('openapi-tile-cases').querySelector('.mt-0\\.5')).toBeNull();
+    expect(el('openapi-tile-operations').querySelector('.mt-0\\.5')?.textContent).toBe('Fixture Pets 1.0');
+    expect(el('openapi-tile-not-run').className).toContain('bg-amber-950/30 border-amber-800/60');
+    expect(el('openapi-tile-not-run').querySelector('.mt-0\\.5')?.textContent).toBe('they change data: allow that above to run them');
+  });
+});
+
 describe('the operations', () => {
+  it('show what an operation does only when the document says, and not an empty place for it', () => {
+    show();
+    const head = (op: string) => el(`openapi-op-${op}`).querySelector('summary') as HTMLElement;
+    expect(head('GET /pets').querySelector('span.text-slate-400')?.textContent).toBe('List the pets');
+    expect(head('POST /pets').querySelector('span.text-slate-400')).toBeNull();
+    expect(head('GET /secure').querySelector('span.text-slate-400')).toBeNull();
+  });
+
+  it('are open from one case to six, and shut with none or with more than six', () => {
+    const withCases = (n: number) => {
+      const plan = planFor();
+      const own = plan.cases.filter((c) => c.operation === 'GET /pets').length;
+      const extra = Array.from({ length: n - own }, (_, i) => ({ ...plan.cases[0], id: `GET /pets#EXTRA${i}` }));
+      plan.cases = [...plan.cases, ...extra];
+      return plan;
+    };
+    show(withCases(6));
+    expect((el('openapi-op-GET /pets') as HTMLDetailsElement).open, 'six').toBe(true);
+    cleanup();
+    show(withCases(7));
+    expect((el('openapi-op-GET /pets') as HTMLDetailsElement).open, 'seven').toBe(false);
+    cleanup();
+    show(withCases(1));
+    expect((el('openapi-op-GET /pets') as HTMLDetailsElement).open, 'one').toBe(true);
+    cleanup();
+    const none = planFor({
+      operations: [...OPERATIONS, { id: 'GET /old', method: 'GET', path: '/old', summary: null, tags: [], deprecated: true, requires_auth: false }],
+      skipped: [{ operation: 'GET /old', reason: 'the operation is marked deprecated' }],
+    });
+    show(none);
+    expect((el('openapi-op-GET /old') as HTMLDetailsElement).open, 'none').toBe(false);
+  });
+
   it('are each a block with its name, what it does and how many cases it has', () => {
     show();
     expect(text('openapi-op-GET /pets')).toContain('GET /pets');

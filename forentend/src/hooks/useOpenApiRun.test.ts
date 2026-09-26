@@ -42,6 +42,19 @@ describe('useOpenApiRun', () => {
     expect(result.current).toMatchObject({ report: null, error: null, loading: false });
   });
 
+  it('reads nothing when it is asked to read again with no project or no run chosen', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const noProject = renderHook(() => useOpenApiRun(null, RUN_ID));
+    const noRun = renderHook(() => useOpenApiRun(PROJECT_ID, null));
+    await settle();
+    act(() => noProject.result.current.refresh());
+    act(() => noRun.result.current.refresh());
+    await settle();
+    await tick(60_000);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('reads nothing with no project either', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
@@ -206,6 +219,8 @@ describe('useOpenApiRuns', () => {
     vi.stubGlobal('fetch', fetchMock);
     const { result } = renderHook(() => useOpenApiRuns(null));
     await settle();
+    act(() => result.current.refresh());
+    await settle();
     expect(fetchMock).not.toHaveBeenCalled();
     expect(result.current).toMatchObject({ runs: null, loading: false, error: null });
   });
@@ -213,11 +228,11 @@ describe('useOpenApiRuns', () => {
   it('reads again when asked, and when another project is chosen it forgets the first project’s runs', async () => {
     let reads = 0;
     backend({ 'GET /openapi/runs$': (req) => ({ runs: [runRow({ title: `${req.path.includes('proj-b') ? 'B' : 'A'}${++reads}` })] }) });
-    const seen: Array<{ project: string; title: string | null }> = [];
+    const seen: Array<{ project: string; title: string | null; loading: boolean }> = [];
     const { rerender, result } = renderHook(
       ({ project }) => {
         const list = useOpenApiRuns(project);
-        seen.push({ project, title: list.runs?.[0]?.title ?? null });
+        seen.push({ project, title: list.runs?.[0]?.title ?? null, loading: list.loading });
         return list;
       },
       { initialProps: { project: PROJECT_ID } },
@@ -229,7 +244,7 @@ describe('useOpenApiRuns', () => {
     rerender({ project: 'proj-b' });
     await settle();
     expect(seen.filter((s) => s.project === 'proj-b' && s.title?.startsWith('A'))).toEqual([]);
-    expect(seen.find((s) => s.project === 'proj-b')?.title).toBeNull();
+    expect(seen.find((s) => s.project === 'proj-b')).toMatchObject({ title: null, loading: true });
     expect(result.current.runs?.[0].title).toBe('B3');
   });
 

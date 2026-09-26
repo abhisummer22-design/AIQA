@@ -333,6 +333,10 @@ describe('OpenApiTestsPage — running the cases', () => {
     await pasteSpec();
     await showCases();
     expect(text('openapi-preview')).toContain('4 of 5 operations chosen');
+    await act(async () => button('openapi-select-none').click());
+    expect(text('openapi-preview')).toContain('0 of 5 operations chosen');
+    await act(async () => button('openapi-select-all').click());
+    expect(text('openapi-preview'), 'all is all that have a case to run').toContain('4 of 5 operations chosen');
     await act(async () => button('openapi-run').click());
     await waitFor(() => expect(requests(fetchMock, 'POST /openapi/runs$')).toHaveLength(1));
     expect(requests(fetchMock, 'POST /openapi/runs$')[0].body.operations, 'all that can be run are chosen: none is named').toBeUndefined();
@@ -527,12 +531,37 @@ describe('OpenApiTestsPage — the runs of the project', () => {
     expect(probe().getAttribute('data-action')).toBe('PUSH');
     expect(button(`openapi-run-${OTHER_RUN_ID}`).getAttribute('aria-current')).toBe('true');
     expect(button(`openapi-run-${RUN_ID}`).getAttribute('aria-current')).toBeNull();
-    expect(button(`openapi-run-${OTHER_RUN_ID}`).className).toContain('border-violet-700');
+    expect(button(`openapi-run-${OTHER_RUN_ID}`).className).toContain('bg-[#020617] border-violet-700');
+    expect(button(`openapi-run-${RUN_ID}`).className).toContain('border-slate-800 hover:bg-slate-900');
+    expect(button('openapi-new').className).toContain('border-slate-700 text-slate-200 hover:bg-slate-800');
     await act(async () => button('openapi-new').click());
     await waitFor(() => expect(el('openapi-form')).toBeTruthy());
     expect(currentSearch()).toBe('');
     expect(el('openapi-report')).toBeNull();
-    expect(button('openapi-new').className).toContain('bg-violet-950/60');
+    expect(button('openapi-new').className).toContain('bg-violet-950/60 border-violet-600 text-violet-200');
+  });
+
+  it('are said to be loading until they arrive, and to be none when there is none', async () => {
+    let release: (r: unknown) => void = () => {};
+    mockBackend({ routes: { 'GET /openapi/runs$': () => new Promise((resolve) => (release = resolve)) } });
+    await openPage();
+    expect(text('openapi-runs')).toContain('Loading…');
+    expect(text('openapi-runs')).not.toContain('No run yet.');
+    await act(async () => release({ runs: [] }));
+    await waitFor(() => expect(text('openapi-runs')).toContain('No run yet.'));
+    expect(text('openapi-runs')).not.toContain('Loading…');
+  });
+
+  it('are said not to have been read when they could not be, and not to be none', async () => {
+    mockBackend({ routes: { 'GET /openapi/runs$': () => failure(500, 'INTERNAL_ERROR', 'busy') } });
+    await openPage();
+    await waitFor(() => expect(el('openapi-runs-error')).toBeTruthy());
+    expect(text('openapi-runs-error')).toContain('The runs could not be read: ');
+    expect(text('openapi-runs-error')).toContain('busy');
+    expect(text('openapi-runs')).not.toContain('No run yet.');
+    expect(text('openapi-runs')).not.toContain('Loading…');
+    // The form is still there: not being able to list the past does not stop a new test.
+    expect(el('openapi-form')).toBeTruthy();
   });
 
   it('are marked by how each ended', async () => {

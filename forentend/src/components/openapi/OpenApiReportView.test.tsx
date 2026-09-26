@@ -56,6 +56,7 @@ describe('the head of the report', () => {
   it('shows the text to copy by hand when the browser would not copy it', () => {
     show(reportFor(), { copyState: 'shown', markdown: '# API tests from Fixture Pets 1.0' });
     expect((el('openapi-markdown') as HTMLTextAreaElement).value).toBe('# API tests from Fixture Pets 1.0');
+    expect(el('openapi-markdown').getAttribute('rows')).toBe('8');
     expect(text('openapi-copy')).toBe('Copy as Markdown');
   });
 });
@@ -101,6 +102,26 @@ describe('the tiles', () => {
   });
 });
 
+describe('the looks of the tiles', () => {
+  it('are rose for what failed, emerald when all that ran passed, amber for what could not run, and plain otherwise', () => {
+    show();
+    expect(el('openapi-tile-failed').className).toContain('bg-rose-950/30 border-rose-800/60');
+    expect(el('openapi-tile-ran').className).toContain('bg-[#020617] border-slate-800');
+    cleanup();
+    show(reportFor({ summary: { cases: 4, ran: 3, passed: 3, failed: 0, error: 1, pending: 0, not_run: 1, pass_rate: 0.75 } }));
+    expect(el('openapi-tile-error').className).toContain('bg-amber-950/30 border-amber-800/60');
+    cleanup();
+    show(reportFor({ summary: { cases: 4, ran: 4, passed: 4, failed: 0, error: 0, pending: 0, not_run: 0, pass_rate: 1 } }));
+    expect(el('openapi-tile-passed').className).toContain('bg-emerald-950/20 border-emerald-800/50');
+  });
+
+  it('put a note under the value only when there is one', () => {
+    show(reportFor({ final: false, summary: { cases: 12, ran: 3, passed: 3, failed: 0, error: 0, pending: 5, not_run: 4, pass_rate: 1 } }));
+    expect(el('openapi-tile-not-run').querySelector('.mt-0\\.5')?.textContent).toBe('5 still waiting');
+    expect(el('openapi-tile-ran').querySelector('.mt-0\\.5')).toBeNull();
+  });
+});
+
 describe('the coverage of the document', () => {
   it('says how many operations were tested, and which were not and why', () => {
     show();
@@ -141,6 +162,13 @@ describe('the notes', () => {
 
 describe('the operations', () => {
   const block = (id: string) => el(`openapi-report-op-${id}`) as HTMLDetailsElement;
+
+  it('show what an operation does only when the document says, and not an empty place for it', () => {
+    show();
+    expect(block('GET /pets').querySelector('summary span.text-slate-400:not([data-verdict])')?.textContent).toBe('List the pets');
+    expect(block('POST /pets').querySelector('summary span.text-slate-400:not([data-verdict])')).toBeNull();
+    expect(block('GET /secure').querySelector('summary span.text-slate-400:not([data-verdict])')).toBeNull();
+  });
 
   it('are one block each, in the order of the document, with what each came to', () => {
     show();
@@ -208,6 +236,19 @@ describe('a case', () => {
     expect(reason.textContent).toContain('got 400 Bad Request');
     expect(reason.className).toContain('text-rose-300');
     expect(row.textContent).toContain('GET /fixture/pets/not-a-number');
+  });
+
+  it('shows the status that came back in rose when the case did not pass, and in grey when it did', () => {
+    show();
+    const status = (row: HTMLElement, text: string) => Array.from(row.querySelectorAll('span')).find((s) => s.textContent === text) as HTMLElement;
+    expect(status(caseRow('GET /pets/{petId}#WRONG_TYPE:petId'), '400').className).toContain('text-rose-300');
+    cleanup();
+    const report = reportFor();
+    report.operations[0].cases[0] = { ...report.operations[0].cases[0], actual: { status: 200, duration_ms: 5, assertions: [] } };
+    show(report);
+    const passed = status(caseRow('GET /pets#HAPPY'), '200');
+    expect(passed.className).toContain('text-slate-300');
+    expect(passed.className).not.toContain('rose');
   });
 
   it('that was not run says why, in plain grey, and does not claim to have expected or got anything', () => {
