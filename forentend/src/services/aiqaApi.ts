@@ -772,6 +772,9 @@ export const aiqaApi = {
       /** The same report as Markdown, to paste. */
       markdown: (projectId: string, id: string, signal?: AbortSignal) =>
         requestText(`/projects/${projectId}/openapi/runs/${id}`, { query: { format: 'markdown' }, signal }),
+      /** The same report as JUnit XML, for a CI system's test page (Phase 8D). */
+      junit: (projectId: string, id: string, signal?: AbortSignal) =>
+        requestText(`/projects/${projectId}/openapi/runs/${id}`, { query: { format: 'junit' }, signal }),
     },
   },
 
@@ -801,6 +804,9 @@ export const aiqaApi = {
       /** The same report as Markdown, to paste. */
       markdown: (projectId: string, id: string, signal?: AbortSignal) =>
         requestText(`/projects/${projectId}/regression/runs/${id}`, { query: { format: 'markdown' }, signal }),
+      /** The same report as JUnit XML, for a CI system's test page (Phase 8D). */
+      junit: (projectId: string, id: string, signal?: AbortSignal) =>
+        requestText(`/projects/${projectId}/regression/runs/${id}`, { query: { format: 'junit' }, signal }),
     },
   },
 

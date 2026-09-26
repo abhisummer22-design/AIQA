@@ -1800,6 +1800,8 @@ export interface OpenApiReport {
   run_state: string;
   /** False while the run is going: the report is then what it has found so far. */
   final: boolean;
+  /** How it came out, in a word, for a CI job (Phase 8D): `RUNNING` until the run has ended, then `FAILING`, `PASSING` or `NOTHING_RAN`. */
+  verdict?: 'RUNNING' | 'FAILING' | 'PASSING' | 'NOTHING_RAN';
   summary: { cases: number; ran: number; passed: number; failed: number; error: number; pending: number; not_run: number; pass_rate: number | null };
   by_kind: Record<string, OpenApiCounts>;
   operations: OpenApiReportOperation[];

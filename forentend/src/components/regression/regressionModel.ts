@@ -146,6 +146,21 @@ export function scopeText(scope: RegressionScope): string {
   return cannot === 0 ? `${first}.` : `${first}; ${plural(cannot, 'case', 'cases')} cannot.`;
 }
 
+/**
+ * Phase 8D — the lines that make a CI job run a schedule and fail the build on what it finds, for the project and schedule given
+ * (`scripts/ci/aiqa-ci.sh`, set in the environment). What the job needs that only its owner knows is left as a placeholder in angle
+ * brackets: where AIQA can be reached from the job, and the key, which must come from a secret of the CI system and never be typed here.
+ */
+export function ciSnippet(projectId: string, scheduleId: string): string {
+  return [
+    'export AIQA_URL="<where AIQA can be reached from the job, e.g. https://aiqa.example.com>"',
+    'export AIQA_KEY="<an API key with the operator role for this project: a secret of the CI system>"',
+    `export AIQA_PROJECT="${projectId}"`,
+    'export AIQA_FAIL_ON=regressed   # failing (the default): fail on any failing case; regressed: only on one that passed last time',
+    `bash scripts/ci/aiqa-ci.sh regression ${scheduleId}`,
+  ].join('\n');
+}
+
 export const SCHEDULE_POLL_MS = 15_000;
 export const RUNS_POLL_MS = 3_000;
 export const RUNS_IDLE_POLL_MS = 15_000;

@@ -61,6 +61,21 @@ describe('the head of the report', () => {
   });
 });
 
+describe('the JUnit download', () => {
+  it('is there when it is given something to do, and does it when it is pressed', () => {
+    const onDownload = vi.fn();
+    show(reportFor(), { onDownloadJunit: onDownload });
+    expect(text('openapi-junit')).toBe('Download JUnit');
+    fireEvent.click(el('openapi-junit'));
+    expect(onDownload).toHaveBeenCalledTimes(1);
+  });
+
+  it('is not there when there is nothing to do', () => {
+    show();
+    expect(el('openapi-junit')).toBeNull();
+  });
+});
+
 describe('the tiles', () => {
   it('give the cases run of all, how many passed, failed, could not run, were not run, and the pass rate', () => {
     show();

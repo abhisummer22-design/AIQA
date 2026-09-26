@@ -18,8 +18,9 @@ import { StateCard, renderResourceErrorState } from '../state/StateViews';
 import { EmptyState } from '../common/EmptyState';
 import { ScheduleForm, type ScopeState } from '../regression/ScheduleForm';
 import { Badge, RegressionReportView, type CopyState } from '../regression/RegressionReportView';
-import { VERDICT_LABEL, buildBody, emptyForm, everyText, formProblems, verdictTone, type ScheduleFormState } from '../regression/regressionModel';
+import { VERDICT_LABEL, buildBody, ciSnippet, emptyForm, everyText, formProblems, verdictTone, type ScheduleFormState } from '../regression/regressionModel';
 import { errorText, formatTimestamp } from '../autopilot/autopilotModel';
+import { fileNameOf, saveTextFile } from '../common/saveTextFile';
 import type { RegressionRunAccount, RegressionSchedule, TestSuiteRow } from '../../types/contract';
 
 const dot = (s: RegressionSchedule): string => {
@@ -133,6 +134,7 @@ export const RegressionPage: React.FC = () => {
   const [actionError, setActionError] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [copy, setCopy] = useState<Copy>({ state: 'idle', text: '', error: null });
+  const [ciCopied, setCiCopied] = useState(false);
 
   const problems = useMemo(() => formProblems(form), [form]);
   const schedule = scheduleId ? (schedules.value?.find((s) => s.id === scheduleId) ?? null) : null;
@@ -175,6 +177,7 @@ export const RegressionPage: React.FC = () => {
   useEffect(() => {
     setActionError(null);
     setConfirmingDelete(false);
+    setCiCopied(false);
   }, [scheduleId]);
   useEffect(() => setCopy({ state: 'idle', text: '', error: null }), [runId]);
 
@@ -281,6 +284,27 @@ export const RegressionPage: React.FC = () => {
     }
   }, [selectedProjectId, runId]);
 
+  // The report as JUnit XML, saved as a file: what a CI system reads. Made from the report as it is now, so it is what the run has found so far while the run goes.
+  const downloadJunit = useCallback(async () => {
+    if (!selectedProjectId || !runId) return;
+    try {
+      const xml = await aiqaApi.regression.runs.junit(selectedProjectId, runId);
+      saveTextFile(fileNameOf(`regression-${look.value?.schedule_name ?? 'run'}`, 'xml'), xml);
+      setCopy((c) => ({ ...c, error: null }));
+    } catch (e) {
+      setCopy((c) => ({ ...c, error: errorText(e, 'The report could not be read as JUnit XML.') }));
+    }
+  }, [selectedProjectId, runId, look.value?.schedule_name]);
+
+  const copyCiSnippet = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCiCopied(true);
+    } catch {
+      // No clipboard: the lines are on screen to copy by hand.
+    }
+  };
+
   const runsGoing = history.value?.some((r) => !r.final) ?? false;
 
   const renderReport = () => {
@@ -317,7 +341,7 @@ export const RegressionPage: React.FC = () => {
             {copy.error}
           </p>
         )}
-        <RegressionReportView report={look.value} onCopyMarkdown={() => void copyMarkdown()} copyState={copy.state} markdown={copy.text} />
+        <RegressionReportView report={look.value} onCopyMarkdown={() => void copyMarkdown()} copyState={copy.state} markdown={copy.text} onDownloadJunit={() => void downloadJunit()} />
       </div>
     );
   };
@@ -393,6 +417,31 @@ export const RegressionPage: React.FC = () => {
           {actionError}
         </p>
       )}
+      <details id="regression-ci" className="rounded-lg bg-[#020617] border border-slate-800">
+        <summary className="p-2 cursor-pointer text-[11px] text-slate-300">Use it from CI</summary>
+        <div className="px-3 pb-3 space-y-2 text-[11px] text-slate-400">
+          <p>
+            A CI job can run this schedule and fail the build on what it finds: it starts a run, waits for it, saves the JUnit XML for the build&rsquo;s test page and exits with a code the build
+            reads.
+          </p>
+          <pre id="regression-ci-snippet" className="p-2 rounded border border-slate-800 bg-[#0B1120] font-mono text-[11px] text-slate-300 overflow-x-auto whitespace-pre">
+            {ciSnippet(selectedProjectId ?? '', s.id)}
+          </pre>
+          <button
+            type="button"
+            id="regression-ci-copy"
+            onClick={() => void copyCiSnippet(ciSnippet(selectedProjectId ?? '', s.id))}
+            className="px-2 py-1 rounded border border-slate-700 text-[11px] text-slate-200 hover:bg-slate-800 cursor-pointer"
+          >
+            {ciCopied ? 'Copied' : 'Copy these lines'}
+          </button>
+          <p>
+            Exit code 0: the build may go on. 1: it should fail on the result. 2: there is no result (the run could not be started or read, did not end in time, or nothing ran). The key is an API key
+            with the operator role for this project, kept as a secret of the CI system. The script is <span className="font-mono">scripts/ci/aiqa-ci.sh</span> (<span className="font-mono">aiqa-ci.ps1</span>{' '}
+            on Windows); every setting, and examples for GitHub Actions, GitLab, Jenkins and Azure DevOps, are in <span className="font-mono">docs/ci/README.md</span> of the AIQA repository.
+          </p>
+        </div>
+      </details>
       <div className="space-y-1.5">
         <h3 className="text-xs font-semibold text-slate-100">Runs</h3>
         {history.loading && !history.value ? (
