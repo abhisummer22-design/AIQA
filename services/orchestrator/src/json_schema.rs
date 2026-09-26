@@ -27,11 +27,8 @@ fn type_name(value: &Value) -> &'static str {
     match value {
         Value::Null => "null",
         Value::Bool(_) => "boolean",
-        Value::Number(n)
-            if n.is_i64() || n.is_u64() || n.as_f64().is_some_and(|f| f.fract() == 0.0) =>
-        {
-            "integer"
-        }
+        // Every integer is a float with nothing after the point (and so is `5.0`, which JSON schemas count as an integer).
+        Value::Number(n) if n.as_f64().is_some_and(|f| f.fract() == 0.0) => "integer",
         Value::Number(_) => "number",
         Value::String(_) => "string",
         Value::Array(_) => "array",
@@ -335,6 +332,31 @@ mod tests {
     }
 
     #[test]
+    fn a_whole_number_is_named_an_integer_and_any_other_a_number_in_a_message() {
+        let string = json!({"type": "string"});
+        for whole in [
+            json!(5),
+            json!(-3),
+            json!(0),
+            json!(5.0),
+            json!(18446744073709551615u64),
+        ] {
+            assert_eq!(
+                wrong(string.clone(), whole.clone()),
+                ["$: expected string, got integer"],
+                "{whole}"
+            );
+        }
+        for other in [json!(5.5), json!(-0.25)] {
+            assert_eq!(
+                wrong(string.clone(), other.clone()),
+                ["$: expected string, got number"],
+                "{other}"
+            );
+        }
+    }
+
+    #[test]
     fn null_is_allowed_by_nullable_and_by_a_list_of_types() {
         assert_eq!(
             wrong(json!({"type": "string"}), json!(null)),
@@ -453,7 +475,14 @@ mod tests {
             wrong(schema.clone(), json!([])),
             ["$: has 0 item(s), at least 1 expected"]
         );
-        assert!(wrong(schema.clone(), json!([1, 2])).is_empty());
+        assert!(
+            wrong(schema.clone(), json!([1])).is_empty(),
+            "exactly the smallest size is allowed"
+        );
+        assert!(
+            wrong(schema.clone(), json!([1, 2])).is_empty(),
+            "and exactly the largest"
+        );
         assert_eq!(
             wrong(schema, json!([1, 2, 3])),
             ["$: has 3 item(s), at most 2 expected"]
