@@ -1245,6 +1245,13 @@ impl Store {
             .execute(&mut *tx)
             .await?;
 
+        // 8f. Delete the API tests made from OpenAPI documents (Phase 8B). No foreign key holds them: `run_id` is only the run's id kept
+        // as text, and the runs themselves are deleted above.
+        sqlx::query("DELETE FROM openapi_runs WHERE project_id = ?")
+            .bind(&pid_str)
+            .execute(&mut *tx)
+            .await?;
+
         // 9. Delete the project itself
         let result = sqlx::query("DELETE FROM projects WHERE id = ?")
             .bind(&pid_str)

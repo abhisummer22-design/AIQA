@@ -15192,6 +15192,38 @@ async fn phase8b_a_run_is_refused_in_words_before_anything_starts() {
 }
 
 #[tokio::test]
+async fn phase8b_deleting_a_project_removes_its_openapi_runs_and_only_its_own() {
+    ensure_local_health_target().await;
+    std::env::set_var("AIQA_SECRET_T8B_DELETE", "Bearer t8b-test-token");
+    let (state, _dir) = test_state_with_compiled_api().await;
+    let rows = |project: Uuid| {
+        let pool = state.store.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM openapi_runs WHERE project_id = ?")
+                .bind(project.to_string())
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+    let mut projects = Vec::new();
+    for name in ["Phase8B Delete A", "Phase8B Delete B"] {
+        let project = make_project(&state, name).await;
+        let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+        let body = openapi_body("AIQA_SECRET_T8B_DELETE", serde_json::json!({"kinds": ["HAPPY"], "operations": ["GET /pets"]}));
+        let (status, made) = openapi_call(&state, "POST", &format!("/api/v1/projects/{project}/openapi/runs"), &owner, Some(body)).await;
+        assert_eq!(status, StatusCode::CREATED, "body={made}");
+        // Its execution has ended before the project goes.
+        openapi_report_when_done(&state, project, made["id"].as_str().unwrap(), &owner).await;
+        projects.push(project);
+    }
+    assert_eq!((rows(projects[0]).await, rows(projects[1]).await), (1, 1));
+    assert!(state.store.delete_project(projects[0]).await.unwrap());
+    assert_eq!(rows(projects[0]).await, 0, "the deleted project's OpenAPI runs are gone with it");
+    assert_eq!(rows(projects[1]).await, 1, "another project's are not touched");
+}
+
+#[tokio::test]
 async fn phase8b_who_may_plan_run_and_read_is_the_projects_operator_and_its_viewer() {
     ensure_local_health_target().await;
     std::env::set_var("AIQA_SECRET_T8B_ACCESS", "Bearer t8b-test-token");
