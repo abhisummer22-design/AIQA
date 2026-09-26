@@ -391,7 +391,8 @@ impl Store {
     /// marked skipped; a run being worked on is asked to, and stops at the next point it can.
     pub async fn cancel_autopilot_run(&self, id: Uuid) -> Result<CancelOutcome> {
         let now = now_rfc3339();
-        let mut tx = self.pool.begin().await?;
+        // Reads the run before it writes, so the write lock is taken at BEGIN (see `Store::begin_write`).
+        let mut tx = self.begin_write().await?;
         let Some(row) = sqlx::query("SELECT state FROM autopilot_runs WHERE id = ?")
             .bind(id.to_string())
             .fetch_optional(&mut *tx)
@@ -1233,6 +1234,35 @@ mod tests {
             store.cancel_autopilot_run(Uuid::new_v4()).await.unwrap(),
             CancelOutcome::NotFound
         );
+    }
+
+    /// A person cancels a run while its own writers are busy: another connection holds SQLite's write lock. A cancel that reads
+    /// the run first and asks for the lock after is refused at once (`database is locked`, and the busy timeout does not apply);
+    /// one that takes the lock before it reads waits its turn.
+    #[tokio::test]
+    async fn cancelling_a_run_waits_for_another_writer_instead_of_failing_with_database_is_locked()
+    {
+        let (store, _dir) = temp_store().await;
+        let id = make_run(&store, "p1").await;
+        store.start_autopilot_run(id, false).await.unwrap();
+
+        let writer = store.pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+        let cancelling = tokio::spawn({
+            let store = store.clone();
+            async move { store.cancel_autopilot_run(id).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        if cancelling.is_finished() {
+            panic!(
+                "the cancel did not wait for the write lock: {:?}",
+                cancelling.await
+            );
+        }
+        writer.commit().await.unwrap();
+
+        assert_eq!(cancelling.await.unwrap().unwrap(), CancelOutcome::Requested);
+        let run = store.get_autopilot_run(id).await.unwrap().unwrap();
+        assert!(run.cancel_requested);
     }
 
     #[tokio::test]

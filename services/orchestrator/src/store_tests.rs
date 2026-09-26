@@ -1323,3 +1323,53 @@ async fn an_api_key_is_found_by_its_id_only_while_it_has_not_been_revoked() {
     assert!(store.find_active_api_key(id).await.unwrap().is_none(), "revoked");
     assert!(store.find_api_key_by_hash("hash-1").await.unwrap().is_none(), "revoked by hash too");
 }
+
+// ------------------------------------------------------- a transaction that reads first, next to another writer
+
+/// Runs `call` while another connection holds SQLite's write lock, lets the lock go after a pause, and returns what `call` gave.
+///
+/// `call` is a store method that reads before it writes inside one transaction. Begun with a plain `BEGIN` it reads, and its first
+/// write is then refused at once with `database is locked` (SQLITE_BUSY, or SQLITE_BUSY_SNAPSHOT when the other writer had
+/// committed since the read): SQLite does not run the busy handler for a read that is upgraded to a write, so `busy_timeout` never
+/// applies. Begun with `BEGIN IMMEDIATE` it waits for the lock before it reads anything, so after the pause it is still running,
+/// and it finishes once the lock is free.
+async fn call_while_the_write_lock_is_held<T, Fut>(store: &Store, call: impl FnOnce(Store) -> Fut) -> T
+where
+    T: std::fmt::Debug + Send + 'static,
+    Fut: std::future::Future<Output = anyhow::Result<T>> + Send + 'static,
+{
+    let writer = store.pool.begin_with("BEGIN IMMEDIATE").await.expect("take the write lock");
+    let running = tokio::spawn(call(store.clone()));
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    if running.is_finished() {
+        panic!("the call did not wait for the write lock: {:?}", running.await.expect("join"));
+    }
+    writer.commit().await.expect("let the write lock go");
+    running.await.expect("join").expect("the call, once the write lock was free")
+}
+
+#[tokio::test]
+async fn delete_project_waits_for_another_writer_instead_of_failing_with_database_is_locked() {
+    let (store, _dir) = temp_store().await;
+    let id = Uuid::new_v4();
+    store.insert_project(id, "Doomed", None).await.expect("insert project");
+
+    let deleted = call_while_the_write_lock_is_held(&store, |s| async move { s.delete_project(id).await }).await;
+
+    assert!(deleted, "the project existed");
+    assert!(store.get_project(id).await.expect("get").is_none());
+}
+
+#[tokio::test]
+async fn a_requirement_document_upload_waits_for_another_writer_instead_of_failing_with_database_is_locked() {
+    let (store, _dir) = temp_store().await;
+    let parsed = parsed_doc(&[("FR-1", "First."), ("FR-2", "Second.")]);
+
+    let id = call_while_the_write_lock_is_held(&store, |s| async move {
+        s.upsert_requirement_document("p1", "FRD.md", Some("FRD"), "h1", "full text", &parsed).await
+    })
+    .await;
+
+    let docs = store.list_requirement_documents("p1").await.unwrap();
+    assert_eq!((docs.len(), docs[0].id, docs[0].requirements_count), (1, id, 2));
+}
