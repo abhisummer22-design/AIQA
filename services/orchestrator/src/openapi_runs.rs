@@ -188,7 +188,7 @@ pub fn outcome_of(status: TaskStatus) -> &'static str {
     }
 }
 
-fn shorten(text: &str) -> String {
+pub(crate) fn shorten(text: &str) -> String {
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.chars().count() > MAX_REASON_CHARS {
         format!(

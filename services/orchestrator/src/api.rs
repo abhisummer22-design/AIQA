@@ -16,7 +16,7 @@ use axum::{
     extract::{Extension, Path, Query, State},
     http::{HeaderValue, StatusCode},
     response::{IntoResponse, Json, Response},
-    routing::{delete, get, post, put},
+    routing::{delete, get, patch, post, put},
     Router,
 };
 use serde::{Deserialize, Serialize};
@@ -241,6 +241,33 @@ fn protected_routes() -> Router<AppState> {
         .route(
             "/api/v1/projects/:project_id/openapi/runs/:id",
             get(crate::openapi_api::get_run),
+        )
+        // Scheduled regression (`regression_api.rs`): the cases run once are run again on a schedule and compared with the last time.
+        .route(
+            "/api/v1/projects/:project_id/regression/scope",
+            get(crate::regression_api::get_scope),
+        )
+        .route(
+            "/api/v1/projects/:project_id/regression/schedules",
+            post(crate::regression_api::create_schedule)
+                .get(crate::regression_api::list_schedules),
+        )
+        .route(
+            "/api/v1/projects/:project_id/regression/schedules/:id",
+            patch(crate::regression_api::update_schedule)
+                .delete(crate::regression_api::delete_schedule),
+        )
+        .route(
+            "/api/v1/projects/:project_id/regression/schedules/:id/run",
+            post(crate::regression_api::run_schedule_now),
+        )
+        .route(
+            "/api/v1/projects/:project_id/regression/schedules/:id/runs",
+            get(crate::regression_api::list_runs),
+        )
+        .route(
+            "/api/v1/projects/:project_id/regression/runs/:id",
+            get(crate::regression_api::get_run),
         )
         // Phase 4 BE-10 — see `list_test_intelligence_scoped`'s doc comment.
         .route(
@@ -6245,7 +6272,7 @@ async fn scoped_test_plan(
     Ok(row)
 }
 
-async fn scoped_test_suite(
+pub(crate) async fn scoped_test_suite(
     state: &AppState,
     ctx: &AuthContext,
     project_id: Uuid,
