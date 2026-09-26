@@ -84,9 +84,9 @@ pub async fn scope(state: &AppState, project_id: &str, suite_id: Option<&str>) -
     // The plan of each run a case was last executed in, read once.
     let mut plans: BTreeMap<String, RunPlan> = BTreeMap::new();
     for run in cases.iter().filter_map(|c| c.executed_run_id) {
-        if !plans.contains_key(&run.to_string()) {
+        if let std::collections::btree_map::Entry::Vacant(slot) = plans.entry(run.to_string()) {
             if let Some(plan) = state.store.get_run_plan(run).await? {
-                plans.insert(run.to_string(), plan);
+                slot.insert(plan);
             }
         }
     }

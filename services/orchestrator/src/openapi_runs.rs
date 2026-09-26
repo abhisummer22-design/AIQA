@@ -371,7 +371,7 @@ pub fn build_report(
         .filter(|op| {
             operation_counts
                 .get(op.id.as_str())
-                .map_or(true, |c| c.ran() == 0)
+                .is_none_or(|c| c.ran() == 0)
         })
         .map(|op| {
             let why = match operation_counts.get(op.id.as_str()) {
@@ -402,6 +402,16 @@ pub fn build_report(
     } else {
         json!(total.passed as f64 / total.ran() as f64)
     };
+    // How it came out, in a word, for a CI job: `RUNNING` until the run has ended, then `FAILING` when a case failed or could not be run.
+    let verdict = if !final_run {
+        "RUNNING"
+    } else if total.failed + total.error > 0 {
+        "FAILING"
+    } else if total.ran() > 0 {
+        "PASSING"
+    } else {
+        "NOTHING_RAN"
+    };
     let kinds: serde_json::Map<String, Value> = by_kind
         .iter()
         .map(|(k, c)| (k.to_string(), c.json()))
@@ -415,6 +425,7 @@ pub fn build_report(
         "created_by": row.created_by,
         "run_state": run_state,
         "final": final_run,
+        "verdict": verdict,
         "summary": {
             "cases": row.cases.len(),
             "ran": total.ran(),
@@ -1204,6 +1215,70 @@ mod tests {
         let none_ran = build_report(&one, "CANCELLED", true, &BTreeMap::new());
         assert_eq!(none_ran["summary"]["pass_rate"], Value::Null);
         assert_eq!(none_ran["summary"]["ran"], 0);
+    }
+
+    #[test]
+    fn the_verdict_is_running_until_the_run_ends_then_failing_passing_or_nothing_ran() {
+        let one = row(
+            vec![operation("GET /pets", true, None)],
+            vec![
+                stored("GET /pets", CaseKind::Happy, Some("api-0001")),
+                stored("GET /pets", CaseKind::NoAuth, Some("api-0002")),
+            ],
+            &[],
+        );
+        let verdict = |state: &str, is_final: bool, statuses: Vec<(&str, TaskStatus)>| {
+            let tasks = tasks(
+                statuses
+                    .into_iter()
+                    .map(|(id, s)| (id, outcome(s, None, None)))
+                    .collect(),
+            );
+            build_report(&one, state, is_final, &tasks)["verdict"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        let both = |a, b| vec![("api-0001", a), ("api-0002", b)];
+        assert_eq!(
+            verdict(
+                "RUNNING",
+                false,
+                both(TaskStatus::Passed, TaskStatus::Failed)
+            ),
+            "RUNNING",
+            "not until it has ended, whatever has failed so far"
+        );
+        assert_eq!(
+            verdict(
+                "COMPLETED",
+                true,
+                both(TaskStatus::Passed, TaskStatus::Passed)
+            ),
+            "PASSING"
+        );
+        assert_eq!(
+            verdict("FAILED", true, both(TaskStatus::Passed, TaskStatus::Failed)),
+            "FAILING"
+        );
+        assert_eq!(
+            verdict(
+                "FAILED",
+                true,
+                both(TaskStatus::Passed, TaskStatus::Timeout)
+            ),
+            "FAILING",
+            "a case that could not be run to the end fails it too"
+        );
+        assert_eq!(
+            verdict(
+                "FAILED",
+                true,
+                both(TaskStatus::InfraError, TaskStatus::InfraError)
+            ),
+            "FAILING"
+        );
+        assert_eq!(verdict("CANCELLED", true, Vec::new()), "NOTHING_RAN");
     }
 
     // ------------------------------------------------------------------------------------------------- Markdown

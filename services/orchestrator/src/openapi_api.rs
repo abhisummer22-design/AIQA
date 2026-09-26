@@ -404,27 +404,20 @@ pub(crate) async fn list_runs(
 #[derive(Debug, Deserialize)]
 pub(crate) struct ReportQuery {
     format: Option<String>,
+    /// Seconds to wait for the run to end (at most 300): the report comes when it has, or when the wait is over.
+    wait: Option<u64>,
 }
 
-/// GET /api/v1/projects/:project_id/openapi/runs/:id — the report (Viewer role; `?format=markdown` gives text to paste): for each
-/// operation of the document, the cases made for it with what each expected and what came back, and how much of the document was tested.
-/// While the run is going it says what it has so far, and that it has not ended.
-pub(crate) async fn get_run(
-    State(state): State<AppState>,
-    Extension(ctx): Extension<AuthContext>,
-    ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
-    ApiQuery(query): ApiQuery<ReportQuery>,
-) -> Result<Response, ApiError> {
-    require_scoped_project(&state, &ctx, project_id).await?;
-    let format = query.format.as_deref().unwrap_or("json");
-    if !matches!(format, "json" | "markdown") {
-        return Err(ApiError::validation("format must be json or markdown"));
-    }
-    let row = load_run(&state, project_id, id).await?;
-    let summary = scoped_run_summary(&state, row.run_id, project_id).await?;
+/// The report of a run as it is now: what each task came to, and for the first few that did not pass, what came back (from its evidence).
+async fn report_now(
+    state: &AppState,
+    project_id: Uuid,
+    row: &OpenApiRunRow,
+) -> Result<Value, ApiError> {
+    let summary = scoped_run_summary(state, row.run_id, project_id).await?;
     let mut outcomes: BTreeMap<String, TaskOutcome> = BTreeMap::new();
     let mut detailed = 0usize;
-    for task in scoped_run_tasks(&state, row.run_id).await? {
+    for task in scoped_run_tasks(state, row.run_id).await? {
         let mut outcome = TaskOutcome {
             status: task.status,
             reason: task.reason.clone(),
@@ -438,7 +431,7 @@ pub(crate) async fn get_run(
         {
             detailed += 1;
             if let Some((_, log)) =
-                crate::api_testing::read_task_evidence(&state, row.run_id, &task.id).await
+                crate::api_testing::read_task_evidence(state, row.run_id, &task.id).await
             {
                 outcome.result = crate::api_testing::parse_result_summary(&log);
             }
@@ -449,14 +442,46 @@ pub(crate) async fn get_run(
         .ok()
         .and_then(|v| v.as_str().map(str::to_string))
         .unwrap_or_default();
-    let report =
-        openapi_runs::build_report(&row, &state_name, summary.state.is_terminal(), &outcomes);
-    if format == "markdown" {
-        return Ok((
+    Ok(openapi_runs::build_report(
+        row,
+        &state_name,
+        summary.state.is_terminal(),
+        &outcomes,
+    ))
+}
+
+/// GET /api/v1/projects/:project_id/openapi/runs/:id — the report (Viewer role; `?format=markdown` gives text to paste, `?format=junit`
+/// gives JUnit XML for a CI system, `?wait=` waits for the run to end): for each operation of the document, the cases made for it with
+/// what each expected and what came back, and how much of the document was tested. While the run is going it says what it has so far,
+/// and that it has not ended. `X-AIQA-Verdict` and `X-AIQA-Final` say how it came out without reading the body.
+pub(crate) async fn get_run(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
+    ApiQuery(query): ApiQuery<ReportQuery>,
+) -> Result<Response, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let format = query.format.as_deref().unwrap_or("json");
+    if !matches!(format, "json" | "markdown" | "junit") {
+        return Err(ApiError::validation(
+            "format must be json, markdown or junit",
+        ));
+    }
+    let wait = crate::ci::check_wait(query.wait)?;
+    let row = load_run(&state, project_id, id).await?;
+    let report = crate::ci::until_final(wait, || report_now(&state, project_id, &row)).await?;
+    let response = match format {
+        "markdown" => (
             [(header::CONTENT_TYPE, "text/markdown; charset=utf-8")],
             openapi_runs::to_markdown(&report),
         )
-            .into_response());
-    }
-    Ok(Json(report).into_response())
+            .into_response(),
+        "junit" => (
+            [(header::CONTENT_TYPE, "application/xml; charset=utf-8")],
+            crate::junit::openapi_junit(&report),
+        )
+            .into_response(),
+        _ => Json(&report).into_response(),
+    };
+    Ok(crate::ci::with_verdict(response, &report))
 }
