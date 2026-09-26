@@ -911,8 +911,8 @@ mod tests {
             ("2026-09-26T13:30", "p2"),
             ("2026-09-26T13:00", "p1"),
             ("2026-09-26T12:45", "p1"),
-            ("2026-09-26T13:15", ""),
             ("2026-09-26T13:15", "p1"),
+            ("2026-09-26T13:15", ""),
         ] {
             store.add_ai_usage(slot, project, &e).await.unwrap();
         }
@@ -1273,6 +1273,27 @@ mod tests {
             ..row("yesterday", "", "p", "m", "T")
         }];
         assert_eq!(build_report(&rows, &window, false)["totals"]["calls"], 0);
+    }
+
+    #[test]
+    fn rows_that_do_not_add_up_never_give_a_negative_count() {
+        // More failures than calls, more calls to a provider with a price than calls that answered, more calls priced than
+        // calls to a provider with a price: no row of the table says so, but a count below nothing is never shown.
+        let window = Window::new(at(2026, 9, 26, 12, 0, 0), 2, 0);
+        let rows = vec![AiUsageRow {
+            calls: 1,
+            failed_calls: 3,
+            metered_calls: 5,
+            priced_calls: 7,
+            ..row("2026-09-26T09:00", "", "p", "m", "T")
+        }];
+        let totals = build_report(&rows, &window, false)["totals"].clone();
+        assert_eq!(totals["calls"], 1);
+        assert_eq!(totals["failed"], 3);
+        assert_eq!(totals["answered"], 0);
+        assert_eq!(totals["no_price_calls"], 0);
+        assert_eq!(totals["no_tokens_calls"], 0);
+        assert_eq!(totals["priced_calls"], 7);
     }
 
     #[test]

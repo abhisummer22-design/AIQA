@@ -58,10 +58,11 @@ interface TableRow {
 
 const TallyTable: React.FC<{ id: string; title: string; nameHeading: string; rows: TableRow[] }> = ({ id, title, nameHeading, rows }) => (
   <section id={id} className="p-3 rounded-lg bg-[#0B1120] border border-slate-800 space-y-2">
-    <h3 className="text-[11px] font-semibold text-slate-300">{title}</h3>
+    <h3 id={`${id}-title`} className="text-[11px] font-semibold text-slate-300">
+      {title}
+    </h3>
     <div className="overflow-x-auto">
-      <table className="w-full text-[11px] text-left">
-        <caption className="sr-only">{title}</caption>
+      <table aria-labelledby={`${id}-title`} className="w-full text-[11px] text-left">
         <thead className="text-slate-500">
           <tr>
             <th className="py-1 pr-3 font-normal">{nameHeading}</th>

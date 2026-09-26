@@ -277,3 +277,13 @@ describe('the legend', () => {
     expect(text('usage-legend')).toContain('* some calls of the row are left out of its cost');
   });
 });
+
+describe('the tables', () => {
+  it('are each named by their own heading, so a screen reader says it once', () => {
+    show(everywhereReport());
+    for (const name of ['By provider and model', 'By task', 'By project']) {
+      expect(within(document.body).getByRole('table', { name })).toBeTruthy();
+    }
+    expect(document.querySelectorAll('caption')).toHaveLength(0);
+  });
+});

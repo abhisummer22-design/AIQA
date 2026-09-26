@@ -14672,6 +14672,9 @@ async fn phase8a_who_may_see_the_usage_is_the_project_for_its_own_and_an_admin_f
     // What every project came to together is an admin's, on a key that is not tied to one project.
     let (status, body) = usage(&state, "/api/v1/ai/usage", &viewer_everywhere).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "a viewer: body={body}");
+    let operator_everywhere = mint_key(&state, "operator", None).await;
+    let (status, body) = usage(&state, "/api/v1/ai/usage", &operator_everywhere).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "an operator: body={body}");
     let (status, body) = usage(&state, "/api/v1/ai/usage", &admin_of_a).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "an admin of one project: body={body}");
     assert!(body["error"]["message"].as_str().unwrap().contains("not tied to one project"), "body={body}");
