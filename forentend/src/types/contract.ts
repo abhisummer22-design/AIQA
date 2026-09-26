@@ -2512,3 +2512,128 @@ export interface AutopilotReportCase {
   run_id: string | null;
   attempts: Array<{ run_id: string; outcome: string; reason: string | null }>;
 }
+
+// ------------------------------------------------------------------------------------------------ Phase 8C — scheduled regression
+// `services/orchestrator/src/regression*.rs`, routes under `/api/v1/projects/:project_id/regression`.
+
+export type RegressionOutcome = 'PASSED' | 'FAILED' | 'ERROR' | 'PENDING' | 'NOT_RUN';
+/** What became of a case between the last time and now. */
+export type RegressionChange = 'REGRESSED' | 'FIXED' | 'STILL_FAILING' | 'STILL_PASSING' | 'NEW' | 'UNCOMPARED';
+export type RegressionVerdict = 'REGRESSED' | 'FAILING' | 'PASSING' | 'RUNNING' | 'NOTHING_RAN';
+export type RegressionTrigger = 'SCHEDULE' | 'MANUAL';
+
+export interface RegressionSummary {
+  cases: number;
+  ran: number;
+  passed: number;
+  failed: number;
+  error: number;
+  pending: number;
+  not_run: number;
+  regressed: number;
+  fixed: number;
+  still_failing: number;
+  still_passing: number;
+  new: number;
+  uncompared: number;
+}
+
+/** A run as a list shows it: when, how it was started and how it came out, not its cases. */
+export interface RegressionRunAccount {
+  id: string;
+  run_id: string;
+  created_at: string;
+  trigger: RegressionTrigger;
+  run_state: string;
+  final: boolean;
+  verdict: RegressionVerdict;
+  summary: RegressionSummary;
+  skipped: number;
+}
+
+export interface RegressionSchedule {
+  id: string;
+  project_id: string;
+  name: string;
+  /** A suite of the project; null for every case of it. */
+  suite_id: string | null;
+  every_minutes: number;
+  anchor_at: string;
+  next_run_at: string;
+  concurrency: number;
+  enabled: boolean;
+  last_started_at: string | null;
+  /** Why the last time it was due did not make a run, or what to know about the one it made. */
+  last_note: string | null;
+  created_by: string;
+  created_at: string;
+  last_run: RegressionRunAccount | null;
+}
+
+export interface RegressionCase {
+  case_id: string;
+  task_id: string;
+  title: string;
+  outcome: RegressionOutcome;
+  before: 'PASSED' | 'FAILED' | 'ERROR' | null;
+  before_from: 'PREVIOUS_RUN' | 'SOURCE_RUN' | null;
+  change: RegressionChange;
+  reason: string | null;
+  source_run_id: string;
+}
+
+export interface RegressionSkipped {
+  case_id: string;
+  title: string;
+  reason: string;
+}
+
+export interface RegressionReport {
+  id: string;
+  schedule_id: string;
+  schedule_name: string;
+  project_id: string;
+  run_id: string;
+  trigger: RegressionTrigger;
+  created_at: string;
+  created_by: string;
+  run_state: string;
+  final: boolean;
+  verdict: RegressionVerdict;
+  summary: RegressionSummary;
+  /** Regressions first. */
+  cases: RegressionCase[];
+  skipped: RegressionSkipped[];
+  notes: string[];
+}
+
+/** What a schedule over a suite (or the whole project) would repeat now. */
+export interface RegressionScope {
+  repeatable: Array<{ case_id: string; title: string; source_run_id: string }>;
+  skipped: RegressionSkipped[];
+}
+
+/** Making a schedule needs `name` and `every_minutes`; changing one sends only what changes. */
+export interface RegressionScheduleBody {
+  name?: string;
+  /** null = every case of the project. */
+  suite_id?: string | null;
+  every_minutes?: number;
+  start_at?: string;
+  concurrency?: number;
+  enabled?: boolean;
+}
+
+export interface RegressionRunStarted {
+  id: string;
+  run_id: string;
+  cases: number;
+  skipped: number;
+}
+
+/** A test suite of a project (`GET .../test-suites`), as far as a schedule needs it. */
+export interface TestSuiteRow {
+  id: string;
+  name: string;
+  description?: string | null;
+}

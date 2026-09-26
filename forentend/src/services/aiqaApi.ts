@@ -46,6 +46,13 @@ import type {
   OpenApiRequestBody,
   OpenApiRunCreated,
   OpenApiRunListRow,
+  RegressionReport,
+  RegressionRunAccount,
+  RegressionRunStarted,
+  RegressionSchedule,
+  RegressionScheduleBody,
+  RegressionScope,
+  TestSuiteRow,
   ApiErrorEnvelope,
   AuditLogResponse,
   CancelRunResponse,
@@ -766,6 +773,40 @@ export const aiqaApi = {
       markdown: (projectId: string, id: string, signal?: AbortSignal) =>
         requestText(`/projects/${projectId}/openapi/runs/${id}`, { query: { format: 'markdown' }, signal }),
     },
+  },
+
+  /** Phase 8C — scheduled regression (`regression_api.rs`): the cases a project has run once are run again on a schedule and compared
+   *  with the last time. `scope` shows what a schedule would repeat and what it could not; `schedules.runNow` makes a run as the person
+   *  asking; `runs.get` is a run's report (fills in while the run goes; `final` says when it has ended). */
+  regression: {
+    scope: (projectId: string, suiteId?: string | null, signal?: AbortSignal) =>
+      requestJson<RegressionScope>(`/projects/${projectId}/regression/scope`, { query: { suite_id: suiteId ?? undefined }, signal }),
+    schedules: {
+      list: (projectId: string, signal?: AbortSignal) =>
+        requestJson<{ schedules: RegressionSchedule[] }>(`/projects/${projectId}/regression/schedules`, { signal }),
+      create: (projectId: string, body: RegressionScheduleBody, signal?: AbortSignal) =>
+        requestJson<RegressionSchedule>(`/projects/${projectId}/regression/schedules`, { method: 'POST', body, signal }),
+      update: (projectId: string, id: string, body: RegressionScheduleBody, signal?: AbortSignal) =>
+        requestJson<RegressionSchedule>(`/projects/${projectId}/regression/schedules/${id}`, { method: 'PATCH', body, signal }),
+      remove: (projectId: string, id: string, signal?: AbortSignal) =>
+        requestVoid(`/projects/${projectId}/regression/schedules/${id}`, { method: 'DELETE', signal }),
+      runNow: (projectId: string, id: string, signal?: AbortSignal) =>
+        requestJson<RegressionRunStarted>(`/projects/${projectId}/regression/schedules/${id}/run`, { method: 'POST', signal }),
+      runs: (projectId: string, id: string, signal?: AbortSignal) =>
+        requestJson<{ runs: RegressionRunAccount[] }>(`/projects/${projectId}/regression/schedules/${id}/runs`, { signal }),
+    },
+    runs: {
+      get: (projectId: string, id: string, signal?: AbortSignal) =>
+        requestJson<RegressionReport>(`/projects/${projectId}/regression/runs/${id}`, { signal }),
+      /** The same report as Markdown, to paste. */
+      markdown: (projectId: string, id: string, signal?: AbortSignal) =>
+        requestText(`/projects/${projectId}/regression/runs/${id}`, { query: { format: 'markdown' }, signal }),
+    },
+  },
+
+  /** A project's test suites, for choosing what a schedule repeats. */
+  testSuites: {
+    list: (projectId: string, signal?: AbortSignal) => requestJson<TestSuiteRow[]>(`/projects/${projectId}/test-suites`, { signal }),
   },
 
   /** Phase 7 — autopilot: from the uploaded requirements to a report of executed tests, in one run a person starts

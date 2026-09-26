@@ -56,6 +56,7 @@ import {
   Brain,
   Coins,
   FileJson,
+  CalendarClock,
   Settings,
 } from 'lucide-react';
 import { DashboardPage } from '../components/pages/DashboardPage';
@@ -78,6 +79,7 @@ import { TelemetryPage } from '../components/pages/TelemetryPage';
 import { QaIntelligenceDashboardPage } from '../components/pages/QaIntelligenceDashboardPage';
 import { AiUsagePage } from '../components/pages/AiUsagePage';
 import { OpenApiTestsPage } from '../components/pages/OpenApiTestsPage';
+import { RegressionPage } from '../components/pages/RegressionPage';
 import { SettingsPage } from '../components/pages/SettingsPage';
 import type { NavPage } from '../types';
 
@@ -265,6 +267,19 @@ export const routeDefs: RouteDef[] = [
     Component: OpenApiTestsPage,
     // Phase 8B: real (`openapi_*.rs`, `.../openapi/*`), built following the Dashboard/Test Generator visual language, same bucket as
     // API Testing and Autopilot.
+    designStatus: 'new-follows-approved-language',
+    protectedRoute: true,
+  },
+  {
+    id: 'regression',
+    path: '/regression',
+    label: 'Scheduled Regression',
+    icon: CalendarClock,
+    badge: 'NEW',
+    badgeType: 'info',
+    Component: RegressionPage,
+    // Phase 8C: real (`regression*.rs`, `.../regression/*`), built following the Dashboard/Test Generator visual language, same bucket as
+    // API Testing, Autopilot and OpenAPI Tests.
     designStatus: 'new-follows-approved-language',
     protectedRoute: true,
   },

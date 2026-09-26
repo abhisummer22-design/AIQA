@@ -16,6 +16,7 @@ export type NavPage =
   | 'rbac'
   | 'api-testing'
   | 'openapi-tests'
+  | 'regression'
   | 'performance-testing'
   | 'mobile-testing'
   | 'custom'
