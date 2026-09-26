@@ -372,6 +372,8 @@ fn action_name(action: &Action) -> &'static str {
         Action::AssertStatus { .. } => "AssertStatus",
         Action::AssertHeader { .. } => "AssertHeader",
         Action::AssertBodyField { .. } => "AssertBodyField",
+        Action::AssertStatusIn { .. } => "AssertStatusIn",
+        Action::AssertBodySchema { .. } => "AssertBodySchema",
     }
 }
 

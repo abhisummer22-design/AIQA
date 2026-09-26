@@ -35,6 +35,26 @@ import { AppSourceType, AppSourceConnection } from '../../types';
 import { ApiError, aiqaApi } from '../../services/aiqaApi';
 import type { CrawlOutput, CrawlRole, PlanAction } from '../../types/contract';
 
+/** A role of a finished crawl, as the compile controls list it. */
+export interface CrawlRoleOption {
+  name: string;
+  /** `false` when the crawl could not log in as this role; `undefined` when the result does not say. */
+  loggedIn?: boolean;
+}
+
+/** The finished crawl the page can compile test cases against (Phase 5): its run id and the roles it found. */
+export interface GroundingCrawl {
+  runId: string;
+  roles: CrawlRoleOption[];
+}
+
+/** `crawler.rs` sends the crawl result in camelCase (`loginSucceeded`); the contract type names it in snake_case.
+ *  Either is read, so a role is never wrongly shown as one that could not log in. */
+function toRoleOption(role: CrawlOutput['roles'][number]): CrawlRoleOption {
+  const loggedIn = (role as { loginSucceeded?: boolean }).loginSucceeded ?? role.login_succeeded;
+  return { name: role.role, loggedIn };
+}
+
 type CrawlStatus = 'IDLE' | 'STARTING' | 'RUNNING' | 'COMPLETED' | 'FAILED';
 
 type LoginStepType = 'NAVIGATE' | 'FILL' | 'CLICK';
@@ -61,6 +81,10 @@ interface AuthRoleDraft {
   name: string;
   steps: LoginStepDraft[];
 }
+
+/** A login value written `env:NAME` is read from the orchestrator's environment when the crawl (or a test compiled from
+ *  it) runs — nothing is embedded or stored. Only these names can be referenced (`execution_plan.rs::secret_name`). */
+const SECRET_REFERENCE = /^env:\s*(AIQA_LOGIN_|AIQA_SECRET_)[A-Za-z0-9_]*\s*$/;
 
 function toPlanAction(step: LoginStepDraft): PlanAction {
   switch (step.type) {
@@ -98,6 +122,9 @@ function authRolesValidationError(roles: AuthRoleDraft[]): string | null {
       if (step.type === 'FILL' && !step.value) {
         return `Role "${role.name}": a FILL step needs a value.`;
       }
+      if (step.type === 'FILL' && step.value.startsWith('env:') && !SECRET_REFERENCE.test(step.value)) {
+        return `Role "${role.name}": a value starting env: must name a variable that starts AIQA_LOGIN_ or AIQA_SECRET_ (for example env:AIQA_LOGIN_ADMIN_PASSWORD).`;
+      }
     }
   }
   return null;
@@ -111,6 +138,9 @@ interface CrawlGroundingSectionProps {
    *  the parent so `handleTriggerGenerate` can read it directly. */
   crawlRunId: string | null;
   onCrawlRunIdChange: (runId: string | null) => void;
+  /** Phase 5 — the finished crawl on show (or `null`), with its roles, so a test case can be compiled against it. Told
+   *  regardless of whether the crawl is also chosen for generation. */
+  onCrawlReady?: (crawl: GroundingCrawl | null) => void;
   disabled?: boolean;
 }
 
@@ -123,6 +153,7 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
   projectId,
   crawlRunId,
   onCrawlRunIdChange,
+  onCrawlReady,
   disabled = false,
 }) => {
   const connectedUrls = (Object.values(appSources) as AppSourceConnection[]).filter(
@@ -135,6 +166,8 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
   const [lastRunId, setLastRunId] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [authRoles, setAuthRoles] = useState<AuthRoleDraft[]>([]);
+  // Phase 6: off unless ticked, so a crawl is exactly what it always was.
+  const [focusRequirements, setFocusRequirements] = useState(false);
   const nextLocalId = useRef(0);
 
   const addAuthRole = () => {
@@ -200,6 +233,12 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
     };
   }, []);
 
+  // Which crawl a test case can be compiled against: the finished one on show, with the roles it found.
+  useEffect(() => {
+    onCrawlReady?.(output && lastRunId ? { runId: lastRunId, roles: output.roles.map(toRoleOption) } : null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [output, lastRunId]);
+
   // `crawlRunId` is the parent's persisted selection; `output`/`status` are
   // this component's own local state, lost on unmount (e.g. switching away
   // from this branch and back). Without this, a real, still-selected crawl
@@ -209,16 +248,19 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
   useEffect(() => {
     if (!crawlRunId || !projectId || output) return;
     let cancelled = false;
+    let settled = false;
     setStatus('RUNNING');
     aiqaApi.crawl
       .result(projectId, crawlRunId)
       .then((result) => {
+        settled = true;
         if (cancelled) return;
         setOutput(result);
         setLastRunId(crawlRunId);
         setStatus('COMPLETED');
       })
       .catch(() => {
+        settled = true;
         if (cancelled) return;
         // The selection still exists in the parent, but its real summary
         // could not be re-read — an honest idle state, not a fabricated one.
@@ -226,6 +268,12 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
       });
     return () => {
       cancelled = true;
+      // Torn down before its request answered (the parent cleared
+      // `crawlRunId`, or `projectId` changed — a project switch), so neither
+      // handler above will ever run: hand back the 'RUNNING' set above, or
+      // the button stays disabled as "Crawling…". Once it has answered, the
+      // status is no longer this effect's to reset — `handleCrawl` may own it.
+      if (!settled) setStatus('IDLE');
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [crawlRunId, projectId]);
@@ -265,6 +313,7 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
         // — `CrawlOutput.visibility_matrix` needs more than one role's real
         // result to say what's role-gated.
         roles: [{ name: 'anonymous', login_actions: [] }, ...authRoles.map(toCrawlRole)],
+        ...(focusRequirements ? { focus_requirements: true } : {}),
       });
       setLastRunId(started.run_id);
       setStatus('RUNNING');
@@ -363,6 +412,21 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
           )}
         </button>
       </div>
+
+      <label className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-slate-300 cursor-pointer w-fit">
+        <input
+          id="crawl-focus-requirements"
+          type="checkbox"
+          checked={focusRequirements}
+          onChange={(e) => setFocusRequirements(e.target.checked)}
+          disabled={disabled || isBusy}
+          className="accent-teal-500"
+        />
+        <span>Visit the pages the requirements mention first</span>
+        <span className="text-[10px] text-slate-500">
+          Needs an uploaded requirements document. On a large application the crawl&apos;s page limit is spent on those pages first.
+        </span>
+      </label>
 
       <div className="space-y-2">
         {authRoles.length === 0 ? (
@@ -507,6 +571,14 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
                 Login values (including any password) are sent as plain JSON and embedded in plaintext in the
                 generated crawl spec — same real, existing exposure any compiled FILL action already has in this app
                 (that directory is gitignored, but not further encrypted).
+              </span>
+            </p>
+            <p id="crawl-env-hint" className="text-[10px] text-slate-500 font-sans flex items-start gap-1">
+              <KeyRound className="w-3 h-3 shrink-0 mt-0.5" />
+              <span>
+                To log in without a password being stored, write a value as <code>env:AIQA_LOGIN_ADMIN_PASSWORD</code>: it
+                is read from the orchestrator's environment when the crawl — and any test compiled from it — runs, and
+                nothing is embedded. A role crawled with a literal password cannot be used to compile tests.
               </span>
             </p>
           </div>

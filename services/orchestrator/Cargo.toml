@@ -11,6 +11,9 @@ serde_json = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 tower-http = { version = "0.5", features = ["cors"] }
+# The autopilot (`autopilot_runner.rs`) calls this service's own routes in process: `ServiceExt::oneshot` on the router,
+# the way the API tests below do. Already in the tree through axum.
+tower = { version = "0.4", features = ["util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 async-trait = "0.1"
@@ -27,6 +30,12 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # shelling out to an external converter. See `doc_extract.rs`.
 zip = { version = "2", default-features = false, features = ["deflate"] }
 base64 = "0.22"
+# Text-based PDFs are read directly too (a scanned, image-only PDF has no text
+# to read and is reported as such). See `doc_extract.rs`.
+pdf-extract = "0.7"
+# OpenAPI documents are mostly YAML: `openapi_spec.rs` reads them with a real YAML reader (the simple one the tools use does not
+# take a sequence written at the indentation of its key, block text or flow style). Only that module uses it.
+serde_yaml = "0.9"
 
 # Critical-finding remediation (Architecture Audit "PRIORITY 1" — executor
 # isolation). No container runtime is available in this dev environment

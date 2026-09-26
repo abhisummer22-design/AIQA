@@ -160,6 +160,142 @@ describe('DocumentUploadSection — real content extraction', () => {
   });
 });
 
+/** What the backend answers when it also read the WHOLE document into
+ *  numbered requirements (`requirements_document`). */
+function extractionWithRequirements(overrides: Record<string, unknown> = {}, requirementsDocument: Record<string, unknown> = {}) {
+  return {
+    text: 'x'.repeat(20000),
+    char_count: 20000,
+    truncated: true,
+    requirements_document: {
+      document_id: '11111111-1111-4111-8111-111111111111',
+      full_char_count: 90000,
+      full_truncated: false,
+      sections_count: 12,
+      requirements_count: 140,
+      skipped_sections: ['Table of Contents', 'Revision History'],
+      by_kind: { functional: 100, security: 40 },
+      ...requirementsDocument,
+    },
+    ...overrides,
+  };
+}
+
+describe('DocumentUploadSection — Phase 3, the whole document read into requirements', () => {
+  it('sends the slot the file was dropped on, so its requirements are numbered from it', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => jsonResponse(200, extractionWithRequirements()));
+    vi.stubGlobal('fetch', fetchMock);
+    setApiKey(RAW_KEY);
+    render(<Harness />);
+
+    await dropFile(new File(['content'], 'FRD.docx'));
+
+    await waitFor(() => expect(screen.getByTestId('doc-requirements-prd')).toBeTruthy());
+    const sent = JSON.parse(String((fetchMock.mock.calls[0] as [string, RequestInit])[1].body));
+    expect(sent.document_type).toBe('PRD');
+  });
+
+  it('says how much was read in full and how many requirements it holds, not just the 20,000 characters analyzed', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => jsonResponse(200, extractionWithRequirements())));
+    setApiKey(RAW_KEY);
+    render(<Harness />);
+
+    await dropFile(new File(['content'], 'FRD.docx'));
+
+    const line = await screen.findByTestId('doc-requirements-prd');
+    expect(line.textContent).toContain('Read in full: 90,000 chars · 140 requirements in 12 sections');
+    expect(line.textContent).toContain('100 functional · 40 security');
+    expect(line.textContent).toContain('Left out on purpose: Table of Contents, Revision History');
+    // The old line still tells the truth about the pasted text.
+    expect(screen.getByText(/20,000 chars of real content analyzed \(truncated\)/)).toBeTruthy();
+    expect(line.textContent).toContain('Pasted-text generation still uses only the first 20,000 chars');
+  });
+
+  it('does not talk about the pasted-text limit for a document that fits in it', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async () =>
+        jsonResponse(200, extractionWithRequirements({ text: 'short', char_count: 5, truncated: false }, { full_char_count: 5 })),
+      ),
+    );
+    setApiKey(RAW_KEY);
+    render(<Harness />);
+
+    await dropFile(new File(['short'], 'FRD.md'));
+
+    const line = await screen.findByTestId('doc-requirements-prd');
+    expect(line.textContent).not.toContain('Pasted-text generation');
+  });
+
+  it('discloses the safety ceiling when even the whole-document read was cut', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async () =>
+        jsonResponse(200, extractionWithRequirements({}, { full_char_count: 3_000_000, full_truncated: true })),
+      ),
+    );
+    setApiKey(RAW_KEY);
+    render(<Harness />);
+
+    await dropFile(new File(['content'], 'HUGE.txt'));
+
+    const line = await screen.findByTestId('doc-requirements-prd');
+    expect(line.textContent).toContain('Only the first 3,000,000 characters were read');
+  });
+
+  it('shows no requirements line when the backend did not report one — the file is used as before', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async () => jsonResponse(200, { text: 'Real requirement content.', char_count: 26, truncated: false })),
+    );
+    setApiKey(RAW_KEY);
+    render(<Harness />);
+
+    await dropFile(new File(['Real requirement content.'], 'BRD.md'));
+
+    await waitFor(() => expect(screen.getByText(/26 chars of real content analyzed/)).toBeTruthy());
+    expect(screen.queryByTestId('doc-requirements-prd')).toBeNull();
+    expect(screen.queryByText(/Read in full/)).toBeNull();
+  });
+
+  it('hands the document id and counts to the page, and a replacement file replaces them', async () => {
+    const answers = [
+      extractionWithRequirements(),
+      extractionWithRequirements(
+        { text: 'new', char_count: 3, truncated: false },
+        { document_id: '22222222-2222-4222-8222-222222222222', requirements_count: 7, full_char_count: 3 },
+      ),
+    ];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => jsonResponse(200, answers.shift())));
+    setApiKey(RAW_KEY);
+    const seen: UploadedRequirementDoc[][] = [];
+    function Spy() {
+      const [docs, setDocs] = React.useState<UploadedRequirementDoc[]>([]);
+      seen.push(docs);
+      return <DocumentUploadSection documents={docs} onDocumentsChange={setDocs} projectId={PROJECT_ID} />;
+    }
+    render(<Spy />);
+
+    await dropFile(new File(['one'], 'FRD.docx'));
+    await screen.findByTestId('doc-requirements-prd');
+    await dropFile(new File(['two'], 'FRD-v2.docx'));
+    await waitFor(() => expect(screen.getByTestId('doc-requirements-prd').textContent).toContain('7 requirements'));
+
+    const last = seen[seen.length - 1];
+    expect(last).toHaveLength(1);
+    expect(last[0]).toMatchObject({
+      requirementsDocumentId: '22222222-2222-4222-8222-222222222222',
+      requirementsCount: 7,
+      fullCharCount: 3,
+    });
+  });
+
+  it('now says PDF content is analyzed, and only the legacy .doc is not', () => {
+    render(<DocumentUploadSection documents={[]} onDocumentsChange={() => {}} projectId={null} />);
+    expect(screen.getByText(/Content analyzed: PDF, DOCX, MD, TXT, JSON, YAML\. Legacy \.doc is attached but not content-analyzed\./)).toBeTruthy();
+  });
+});
+
 function noop() {}
 
 describe('DocumentUploadSection — BRD slot', () => {

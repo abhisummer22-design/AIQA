@@ -34,6 +34,7 @@
 //! simulate them being available. No OpenAI/Anthropic integration exists
 //! at all.
 
+use crate::ai_usage::{AiCallEvent, UsageSink};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -155,6 +156,25 @@ pub enum AiTask {
     GeneralAi,
 }
 
+impl AiTask {
+    /// The name the task goes by in the API, and in what is stored about it (`ai_usage`): the same as its serialized form.
+    pub fn name(self) -> &'static str {
+        match self {
+            AiTask::TestCaseGeneration => "TEST_CASE_GENERATION",
+            AiTask::TestCaseCompilation => "TEST_CASE_COMPILATION",
+            AiTask::RequirementAnalysis => "REQUIREMENT_ANALYSIS",
+            AiTask::DocumentAnalysis => "DOCUMENT_ANALYSIS",
+            AiTask::BugAnalysis => "BUG_ANALYSIS",
+            AiTask::Traceability => "TRACEABILITY",
+            AiTask::SecurityAnalysis => "SECURITY_ANALYSIS",
+            AiTask::PerformanceAnalysis => "PERFORMANCE_ANALYSIS",
+            AiTask::UiAnalysis => "UI_ANALYSIS",
+            AiTask::Embedding => "EMBEDDING",
+            AiTask::GeneralAi => "GENERAL_AI",
+        }
+    }
+}
+
 /// Brief §8/§9 — every task's minimum real requirement. `LongContext` is
 /// required for document-shaped tasks; `Vision` only for `UiAnalysis`
 /// (brief's own example); `Embedding` only for `Embedding`. Nothing here
@@ -219,14 +239,29 @@ pub struct AiProviderInfo {
 /// See `AiProviderInfo::pricing`. `input_usd_per_1k`/`output_usd_per_1k`
 /// must be the provider's real, disclosed published rate when set — this
 /// module never invents a plausible-looking number.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ProviderPricing {
+    #[default]
     Unmetered,
     Metered {
         input_usd_per_1k: f64,
         output_usd_per_1k: f64,
     },
+}
+
+impl ProviderPricing {
+    /// `Metered` only when both prices are known. A provider whose prices were not entered stays `Unmetered`, so
+    /// nothing is ever billed at a price nobody supplied.
+    pub fn from_prices(input_usd_per_1k: Option<f64>, output_usd_per_1k: Option<f64>) -> Self {
+        match (input_usd_per_1k, output_usd_per_1k) {
+            (Some(input_usd_per_1k), Some(output_usd_per_1k)) => Self::Metered {
+                input_usd_per_1k,
+                output_usd_per_1k,
+            },
+            _ => Self::Unmetered,
+        }
+    }
 }
 
 // -------------------------------------------------------------- discovery
@@ -262,6 +297,44 @@ fn is_known_reasoning_model(name: &str, family: Option<&str>) -> bool {
     KNOWN_REASONING_MODEL_FAMILIES
         .iter()
         .any(|f| haystack.contains(f))
+}
+
+/// Whole-word id parts of speech, embedding, image, ranking and safety-classifier models, which cannot do chat generation.
+const NON_CHAT_MODEL_TOKENS: &[&str] = &[
+    "whisper",
+    "tts",
+    "transcribe",
+    "realtime",
+    "orpheus",
+    "embed",
+    "embedding",
+    "embeddings",
+    "rerank",
+    "reranker",
+    "moderation",
+    "guard",
+    "safeguard",
+    "imagen",
+    "image",
+    "dall",
+    "veo",
+    "sora",
+    "ocr",
+];
+
+fn is_non_chat_model_id(id: &str) -> bool {
+    id.to_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|part| NON_CHAT_MODEL_TOKENS.contains(&part))
+}
+
+/// `None` disqualifies a model in `score_model`, so AUTO routing and fallback never pick a non-chat model.
+fn text_generation_level(id: &str) -> CapabilityLevel {
+    if is_non_chat_model_id(id) {
+        CapabilityLevel::None
+    } else {
+        CapabilityLevel::Strong
+    }
 }
 
 /// Parses Ollama's own `capabilities` array (from `/api/tags`, confirmed
@@ -784,6 +857,40 @@ pub trait AiExecutor: Send + Sync {
 pub struct OllamaExecutor {
     pub base_url: String,
     pub timeout: Duration,
+    /// Context window sent as `options.num_ctx`; `None` leaves Ollama's own default, which can silently cut a long prompt.
+    pub num_ctx: Option<u32>,
+}
+
+/// How many input tokens one call can really carry on `model`. It is not always
+/// the model's own context window: Ollama serves only `num_ctx` tokens (its own
+/// default is 4096 unless `OLLAMA_NUM_CTX` was set, and a longer prompt is cut
+/// from the start without a word), and Groq's free tier refuses a request over
+/// its per-minute token limit (8000 unless `GROQ_REQUEST_TOKEN_LIMIT` says the
+/// account has more). Anywhere else it is the context window the provider
+/// reported, or a modest 16,384 when it reported none.
+pub fn effective_prompt_window(
+    provider: &AiProviderInfo,
+    model: &ModelDefinition,
+    ollama_num_ctx: Option<u32>,
+    groq_request_limit: Option<u32>,
+) -> u32 {
+    match provider.id.as_str() {
+        "ollama" => ollama_num_ctx.unwrap_or(4096),
+        "groq" => groq_request_limit.unwrap_or(8000),
+        _ => model.context_window.unwrap_or(16_384),
+    }
+}
+
+/// A positive whole number, else `None` (unset, blank, zero or not a number).
+fn parse_num_ctx(raw: Option<&str>) -> Option<u32> {
+    raw.and_then(|s| s.trim().parse::<u32>().ok())
+        .filter(|n| *n > 0)
+}
+
+fn apply_num_ctx(body: &mut serde_json::Value, num_ctx: Option<u32>) {
+    if let Some(n) = num_ctx {
+        body["options"] = serde_json::json!({ "num_ctx": n });
+    }
 }
 
 impl OllamaExecutor {
@@ -794,9 +901,11 @@ impl OllamaExecutor {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(180);
+        let num_ctx = parse_num_ctx(std::env::var("OLLAMA_NUM_CTX").ok().as_deref());
         Self {
             base_url,
             timeout: Duration::from_secs(timeout_secs),
+            num_ctx,
         }
     }
 
@@ -842,25 +951,14 @@ impl AiExecutor for OllamaExecutor {
         if provider_id != "ollama" {
             return Err(ExecutionError::ProviderUnavailable(provider_id.to_string()));
         }
-        let client = reqwest::Client::new();
+        let client = http_client();
         let url = format!("{}/api/generate", self.base_url.trim_end_matches('/'));
-        let body = Self::build_generate_body(model_id, prompt, Some(task));
-        let resp = client
-            .post(&url)
-            .json(&body)
-            .timeout(self.timeout)
-            .send()
-            .await
-            .map_err(|e| {
-                if e.is_timeout() {
-                    ExecutionError::Timeout
-                } else {
-                    ExecutionError::ProviderUnavailable(e.to_string())
-                }
-            })?;
-        if !resp.status().is_success() {
-            return Err(ExecutionError::NonSuccessStatus(resp.status().as_u16()));
-        }
+        let mut body = Self::build_generate_body(model_id, prompt, Some(task));
+        apply_num_ctx(&mut body, self.num_ctx);
+        let resp = send_waiting_out_transient("Ollama", || {
+            client.post(&url).json(&body).timeout(self.timeout)
+        })
+        .await?;
         let parsed: serde_json::Value = resp
             .json()
             .await
@@ -1162,6 +1260,7 @@ impl ProviderDiscovery for GroqDiscovery {
             } else {
                 CapabilityLevel::Basic // real text models reason to some degree; not benchmarked here
             };
+            let text_generation = text_generation_level(&id);
             info.models.push(ModelDefinition {
                 provider_id: Self::PROVIDER_ID.to_string(),
                 id: id.clone(),
@@ -1170,7 +1269,7 @@ impl ProviderDiscovery for GroqDiscovery {
                 parameter_size: None, // never guessed; the routing score simply forgoes that proxy
                 context_window,
                 capabilities: ModelCapabilities {
-                    text_generation: Some(CapabilityLevel::Strong),
+                    text_generation: Some(text_generation),
                     // Groq's real, documented `response_format` support
                     // (`json_object`/`json_schema`) is real, evidenced
                     // structured-output discipline — not merely
@@ -1308,6 +1407,81 @@ fn groq_retry_delay(retry_after: Option<&str>, message: &str) -> Option<Duration
         Duration::try_from_secs_f64(total).ok()
     } else {
         None
+    }
+}
+
+/// How long to wait before retrying a refusal that clears by itself: a rate limit (429) or a briefly overloaded
+/// server (502/503/504). `None` for anything else, a per-day limit, or a wait longer than `GROQ_MAX_RETRY_WAIT`.
+fn transient_retry_delay(
+    status: u16,
+    retry_after: Option<&str>,
+    message: &str,
+) -> Option<Duration> {
+    if is_daily_limit(message) {
+        return None;
+    }
+    let delay = match status {
+        429 => groq_retry_delay(retry_after, message),
+        502 | 503 | 504 => {
+            Some(groq_retry_delay(retry_after, message).unwrap_or(Duration::from_secs(2)))
+        }
+        _ => None,
+    };
+    delay.filter(|d| *d <= GROQ_MAX_RETRY_WAIT)
+}
+
+/// A client that gives up connecting after `AI_CONNECT_TIMEOUT_SECS` (default 10), so a host that has gone away (a
+/// home PC that is off) fails in seconds instead of waiting out the whole request timeout.
+fn http_client() -> reqwest::Client {
+    let secs: u64 = std::env::var("AI_CONNECT_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|s| *s > 0)
+        .unwrap_or(10);
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(secs))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// Sends the request `build` makes. A refusal that clears by itself is waited out once; any other refusal is returned
+/// with the provider's own words, so the reason shown to the user is the real one and not just a status number.
+async fn send_waiting_out_transient(
+    label: &str,
+    build: impl Fn() -> reqwest::RequestBuilder,
+) -> Result<reqwest::Response, ExecutionError> {
+    let mut waited = false;
+    loop {
+        let resp = build().send().await.map_err(|e| {
+            if e.is_connect() {
+                ExecutionError::ProviderUnavailable(format!("could not connect: {e}"))
+            } else if e.is_timeout() {
+                ExecutionError::Timeout
+            } else {
+                ExecutionError::ProviderUnavailable(e.to_string())
+            }
+        })?;
+        if resp.status().is_success() {
+            return Ok(resp);
+        }
+        let status = resp.status().as_u16();
+        let retry_after = resp
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let message = provider_error_message(&resp.text().await.unwrap_or_default());
+        if !waited {
+            if let Some(delay) = transient_retry_delay(status, retry_after.as_deref(), &message) {
+                tracing::warn!(
+                    "{label} refused a request (HTTP {status}: {message}); waiting {delay:?} and retrying once"
+                );
+                tokio::time::sleep(delay + Duration::from_millis(250)).await;
+                waited = true;
+                continue;
+            }
+        }
+        return Err(ExecutionError::ProviderRejected { status, message });
     }
 }
 
@@ -1617,6 +1791,7 @@ impl ProviderDiscovery for GeminiDiscovery {
             } else {
                 CapabilityLevel::Basic // real text models reason to some degree; not benchmarked here
             };
+            let text_generation = text_generation_level(&id);
             info.models.push(ModelDefinition {
                 provider_id: Self::PROVIDER_ID.to_string(),
                 id: id.clone(),
@@ -1625,7 +1800,7 @@ impl ProviderDiscovery for GeminiDiscovery {
                 parameter_size: None,
                 context_window: None,
                 capabilities: ModelCapabilities {
-                    text_generation: Some(CapabilityLevel::Strong),
+                    text_generation: Some(text_generation),
                     // Gemini's real, documented response_format support
                     // for structured JSON output (verified against
                     // Google's own API reference).
@@ -1713,7 +1888,7 @@ impl AiExecutor for GeminiExecutor {
             ));
         };
 
-        let client = reqwest::Client::new();
+        let client = http_client();
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let mut body = serde_json::json!({
             "model": model_id,
@@ -1727,23 +1902,14 @@ impl AiExecutor for GeminiExecutor {
         ) {
             body["response_format"] = serde_json::json!({ "type": "json_object" });
         }
-        let resp = client
-            .post(&url)
-            .bearer_auth(key)
-            .json(&body)
-            .timeout(self.timeout)
-            .send()
-            .await
-            .map_err(|e| {
-                if e.is_timeout() {
-                    ExecutionError::Timeout
-                } else {
-                    ExecutionError::ProviderUnavailable(e.to_string())
-                }
-            })?;
-        if !resp.status().is_success() {
-            return Err(ExecutionError::NonSuccessStatus(resp.status().as_u16()));
-        }
+        let resp = send_waiting_out_transient("Gemini", || {
+            client
+                .post(&url)
+                .bearer_auth(key)
+                .json(&body)
+                .timeout(self.timeout)
+        })
+        .await?;
         let parsed: serde_json::Value = resp
             .json()
             .await
@@ -1947,12 +2113,51 @@ impl Embedder for GeminiEmbedder {
 /// comment for why Gemini needed its own dedicated integration instead of
 /// fitting this generic path) — a provider that doesn't follow that
 /// convention needs its own dedicated code, same as Groq/Gemini got.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CustomProviderConfig {
     pub id: String,
     pub name: String,
     pub base_url: String,
+    /// The key itself, or `env:NAME` to read it from the environment variable `NAME` each time it is needed, so a
+    /// paid key never has to be stored (see `CustomProviderConfig::resolved_api_key`).
     pub api_key: String,
+    /// What the user said this endpoint costs; `Unmetered` (shown as free) when no price was entered.
+    #[serde(default)]
+    pub pricing: ProviderPricing,
+}
+
+/// An `api_key` written as `env:NAME` names an environment variable instead of holding the key.
+const ENV_KEY_PREFIX: &str = "env:";
+
+/// The environment variable an `api_key` refers to, when it is written `env:NAME`.
+pub fn env_key_name(api_key: &str) -> Option<&str> {
+    api_key.strip_prefix(ENV_KEY_PREFIX).map(str::trim)
+}
+
+/// What the environment variable `name` currently holds, if it holds something other than blanks.
+pub(crate) fn env_value(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// Whether the environment variable an `env:NAME` key names is set right now (the value itself is never exposed).
+pub fn env_key_is_set(name: &str) -> bool {
+    env_value(name).is_some()
+}
+
+impl CustomProviderConfig {
+    /// The secret to send: the stored key itself, or the current value of the environment variable an `env:NAME`
+    /// reference names. The `Err` names the variable that is missing or empty, never any secret.
+    fn resolved_api_key(&self) -> Result<String, String> {
+        match env_key_name(&self.api_key) {
+            None => Ok(self.api_key.clone()),
+            Some(name) => {
+                env_value(name).ok_or_else(|| format!("environment variable {name} is not set"))
+            }
+        }
+    }
 }
 
 /// Real, bounded, timeout-protected discovery for one custom provider —
@@ -1969,20 +2174,25 @@ async fn discover_custom_provider(cfg: &CustomProviderConfig, timeout: Duration)
         reachable: false,
         status: ProviderStatus::Unavailable,
         models: Vec::new(),
-        // Real fact this deployment cannot actually know for an arbitrary
-        // user-added endpoint (no published-pricing lookup exists for a
-        // custom base_url) — `Unmetered` would falsely claim it's free, so
-        // this reports the one thing that's true: real cost is genuinely
-        // unknown, at the cheapest possible honest value rather than a
-        // guessed rate. Disclosed to the user when they add one.
-        pricing: ProviderPricing::Unmetered,
+        // No published-pricing lookup exists for an arbitrary base_url, so this is only what the user entered
+        // when adding it; with no price entered it stays `Unmetered` (shown as free) rather than a guessed rate.
+        pricing: cfg.pricing,
     };
 
+    let api_key = match cfg.resolved_api_key() {
+        Ok(key) => key,
+        Err(why) => {
+            info.configured = false;
+            info.status = ProviderStatus::NotConfigured;
+            tracing::warn!("Custom provider '{}' discovery: {why}", cfg.id);
+            return info;
+        }
+    };
     let client = reqwest::Client::new();
     let url = format!("{}/v1/models", cfg.base_url.trim_end_matches('/'));
     let resp = match client
         .get(&url)
-        .bearer_auth(&cfg.api_key)
+        .bearer_auth(&api_key)
         .timeout(timeout)
         .send()
         .await
@@ -2034,6 +2244,7 @@ async fn discover_custom_provider(cfg: &CustomProviderConfig, timeout: Duration)
         } else {
             CapabilityLevel::Basic
         };
+        let text_generation = text_generation_level(&id);
         info.models.push(ModelDefinition {
             provider_id: cfg.id.clone(),
             id: id.clone(),
@@ -2042,7 +2253,7 @@ async fn discover_custom_provider(cfg: &CustomProviderConfig, timeout: Duration)
             parameter_size: None,
             context_window: None,
             capabilities: ModelCapabilities {
-                text_generation: Some(CapabilityLevel::Strong),
+                text_generation: Some(text_generation),
                 structured_output: Some(CapabilityLevel::Basic), // unverified for an arbitrary custom endpoint
                 reasoning: Some(reasoning),
                 vision: Some(CapabilityLevel::Unknown),
@@ -2071,30 +2282,24 @@ async fn execute_custom_provider(
     prompt: &str,
     timeout: Duration,
 ) -> Result<ExecutionOutput, ExecutionError> {
-    let client = reqwest::Client::new();
+    let api_key = cfg
+        .resolved_api_key()
+        .map_err(ExecutionError::ProviderUnavailable)?;
+    let client = http_client();
     let url = format!("{}/v1/chat/completions", cfg.base_url.trim_end_matches('/'));
     let body = serde_json::json!({
         "model": model_id,
         "messages": [{ "role": "user", "content": prompt }],
         "stream": false,
     });
-    let resp = client
-        .post(&url)
-        .bearer_auth(&cfg.api_key)
-        .json(&body)
-        .timeout(timeout)
-        .send()
-        .await
-        .map_err(|e| {
-            if e.is_timeout() {
-                ExecutionError::Timeout
-            } else {
-                ExecutionError::ProviderUnavailable(e.to_string())
-            }
-        })?;
-    if !resp.status().is_success() {
-        return Err(ExecutionError::NonSuccessStatus(resp.status().as_u16()));
-    }
+    let resp = send_waiting_out_transient(&cfg.name, || {
+        client
+            .post(&url)
+            .bearer_auth(&api_key)
+            .json(&body)
+            .timeout(timeout)
+    })
+    .await?;
     let parsed: serde_json::Value = resp
         .json()
         .await
@@ -2149,10 +2354,24 @@ pub enum RoutingMode {
 /// of its models) or just the model (whichever provider serves it) for
 /// this one task, matching `AiSettings`' own `preferred_provider`/
 /// `preferred_model` split.
+///
+/// `chain` is the stronger form: an ordered list of exact provider/model pairs. When it is not empty, this task is
+/// answered by the first entry that is available and answers, in that order, and by nothing else — automatic
+/// scoring and the automatic fallback are not used for it. That is what keeps a paid provider out of a task
+/// unless it is listed. Empty (the default) leaves routing exactly as before.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TaskProviderPreference {
     pub provider: Option<String>,
     pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chain: Vec<TaskTarget>,
+}
+
+/// One exact provider/model pair in a task's `chain`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TaskTarget {
+    pub provider: String,
+    pub model: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2318,7 +2537,7 @@ pub struct GenerationResult {
 /// "unknown" (this deployment's own architecture genuinely has no bill for
 /// it). A `Metered` provider without real token counts to multiply against
 /// honestly reports `None` rather than a silently-wrong `$0.00`.
-fn estimate_cost(usage: &TokenUsage, pricing: ProviderPricing) -> Option<f64> {
+pub(crate) fn estimate_cost(usage: &TokenUsage, pricing: ProviderPricing) -> Option<f64> {
     match pricing {
         ProviderPricing::Unmetered => Some(0.0),
         ProviderPricing::Metered {
@@ -2352,6 +2571,21 @@ pub struct AiInfrastructure {
     last_discovered: RwLock<Option<Instant>>,
     settings: RwLock<AiSettings>,
     health_ttl: Duration,
+    breakers: std::sync::Mutex<HashMap<String, Breaker>>,
+    breaker_threshold: u32,
+    breaker_cooldown: Duration,
+    /// Told of every call made to a provider, answered or not (`ai_usage.rs`); nobody until one is attached with
+    /// `set_usage_sink`.
+    usage_sink: std::sync::RwLock<Option<Arc<dyn UsageSink>>>,
+}
+
+/// Consecutive "could not reach it at all" failures (timeout, cannot connect) of one provider. After
+/// `AI_BREAKER_THRESHOLD` (default 2) in a row the provider is skipped for `AI_BREAKER_COOLDOWN_SECS` (default 60),
+/// so a host that went away is not asked, and waited on, again for every remaining skill call of a run.
+#[derive(Default)]
+struct Breaker {
+    unreachable_in_a_row: u32,
+    open_until: Option<Instant>,
 }
 
 impl AiInfrastructure {
@@ -2363,6 +2597,15 @@ impl AiInfrastructure {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(60);
+        let breaker_threshold: u32 = std::env::var("AI_BREAKER_THRESHOLD")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .filter(|n| *n > 0)
+            .unwrap_or(2);
+        let breaker_cooldown_secs: u64 = std::env::var("AI_BREAKER_COOLDOWN_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(60);
         Self {
             discoveries,
             executors,
@@ -2371,7 +2614,113 @@ impl AiInfrastructure {
             last_discovered: RwLock::new(None),
             settings: RwLock::new(AiSettings::default()),
             health_ttl: Duration::from_secs(ttl_secs),
+            breakers: std::sync::Mutex::new(HashMap::new()),
+            breaker_threshold,
+            breaker_cooldown: Duration::from_secs(breaker_cooldown_secs),
+            usage_sink: std::sync::RwLock::new(None),
         }
+    }
+
+    /// From now on every call made to a provider is reported to `sink`, which counts what the AI calls came to
+    /// (`ai_usage.rs`). A second sink replaces the first.
+    pub fn set_usage_sink(&self, sink: Arc<dyn UsageSink>) {
+        *self.usage_sink.write().unwrap_or_else(|e| e.into_inner()) = Some(sink);
+    }
+
+    /// Tells the usage sink, if there is one, about a call just made. What the provider charges is what the last discovery
+    /// found; a provider that is not in it any more counts as one with no price.
+    async fn count_call(
+        &self,
+        provider_id: &str,
+        model_id: &str,
+        task: AiTask,
+        took: Duration,
+        result: &Result<ExecutionOutput, ExecutionError>,
+    ) {
+        let sink = self
+            .usage_sink
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let Some(sink) = sink else { return };
+        let pricing = self
+            .providers
+            .read()
+            .await
+            .iter()
+            .find(|p| p.id == provider_id)
+            .map(|p| p.pricing)
+            .unwrap_or_default();
+        sink.record(AiCallEvent::of_call(
+            provider_id,
+            model_id,
+            task,
+            took,
+            result,
+            pricing,
+        ))
+        .await;
+    }
+
+    #[cfg(test)]
+    fn with_breaker(mut self, threshold: u32, cooldown: Duration) -> Self {
+        self.breaker_threshold = threshold;
+        self.breaker_cooldown = cooldown;
+        self
+    }
+
+    /// Counts a failure to reach `provider_id` at all; any other outcome (an answer, even a refusal) proves it is
+    /// reachable and resets the count.
+    fn record_outcome(&self, provider_id: &str, result: &Result<ExecutionOutput, ExecutionError>) {
+        let unreachable = matches!(
+            result,
+            Err(ExecutionError::Timeout | ExecutionError::ProviderUnavailable(_))
+        );
+        let mut breakers = self.breakers.lock().unwrap_or_else(|e| e.into_inner());
+        let breaker = breakers.entry(provider_id.to_string()).or_default();
+        if unreachable {
+            breaker.unreachable_in_a_row += 1;
+            if breaker.unreachable_in_a_row >= self.breaker_threshold {
+                breaker.open_until = Some(Instant::now() + self.breaker_cooldown);
+            }
+        } else {
+            *breaker = Breaker::default();
+        }
+    }
+
+    /// `providers` without those whose breaker is open right now, and a note saying which were left out and for how
+    /// long. Once a cooldown ends the provider is tried again; one more failure to reach it re-opens the breaker.
+    fn without_open_breakers(
+        &self,
+        providers: Vec<AiProviderInfo>,
+    ) -> (Vec<AiProviderInfo>, Option<String>) {
+        let now = Instant::now();
+        let breakers = self.breakers.lock().unwrap_or_else(|e| e.into_inner());
+        let mut skipped = Vec::new();
+        let kept = providers
+            .into_iter()
+            .filter(|p| {
+                let left = breakers
+                    .get(&p.id)
+                    .and_then(|b| b.open_until)
+                    .and_then(|t| t.checked_duration_since(now));
+                if let Some(left) = left {
+                    skipped.push(format!(
+                        "{} (retrying in ~{}s)",
+                        p.name,
+                        left.as_secs().max(1)
+                    ));
+                }
+                left.is_none()
+            })
+            .collect();
+        let note = (!skipped.is_empty()).then(|| {
+            format!(
+                "skipped after repeated connection failures: {}",
+                skipped.join(", ")
+            )
+        });
+        (kept, note)
     }
 
     /// Real construction wired for this deployment: Ollama (local), the MJ
@@ -2457,6 +2806,21 @@ impl AiInfrastructure {
     /// attempt and its fallback loop call through, so a custom provider
     /// participates in both exactly like every built-in one already does.
     async fn execute_for(
+        &self,
+        provider_id: &str,
+        model_id: &str,
+        prompt: &str,
+        task: AiTask,
+    ) -> Result<ExecutionOutput, ExecutionError> {
+        let started = Instant::now();
+        let result = self.run_executor(provider_id, model_id, prompt, task).await;
+        self.record_outcome(provider_id, &result);
+        self.count_call(provider_id, model_id, task, started.elapsed(), &result)
+            .await;
+        result
+    }
+
+    async fn run_executor(
         &self,
         provider_id: &str,
         model_id: &str,
@@ -2597,13 +2961,155 @@ impl AiInfrastructure {
         best.ok_or(RoutingError::NoCompatibleModel { task })
     }
 
+    /// The provider, model and score of a chain entry, if it is discovered, usable for `task` and not skipped by an
+    /// open breaker (`providers` already leaves those out).
+    fn find_chain_target<'a>(
+        providers: &'a [AiProviderInfo],
+        task: AiTask,
+        target: &TaskTarget,
+    ) -> Option<(&'a AiProviderInfo, &'a ModelDefinition, f64)> {
+        let provider = providers.iter().find(|p| p.id == target.provider)?;
+        let model = provider.models.iter().find(|m| m.id == target.model)?;
+        let score = score_model(model, provider, &required_capabilities(task), None)?;
+        Some((provider, model, score))
+    }
+
+    /// What `generate` would pick right now for `task`: the first usable entry of its chain when it has one, else the
+    /// usual routing. Never runs anything.
+    pub fn preview_route(
+        providers: &[AiProviderInfo],
+        task: AiTask,
+        settings: &AiSettings,
+    ) -> Option<RoutingDecision> {
+        match settings
+            .task_overrides
+            .get(&task)
+            .map(|o| o.chain.as_slice())
+            .filter(|c| !c.is_empty())
+        {
+            Some(chain) => chain
+                .iter()
+                .find_map(|t| Self::find_chain_target(providers, task, t))
+                .map(|(provider, model, score)| RoutingDecision {
+                    provider_id: provider.id.clone(),
+                    model_id: model.id.clone(),
+                    routing_score: score,
+                    reason: format!("Task chain: first available model for {task:?}"),
+                }),
+            None => Self::route_among(providers, task, settings, None, None).ok(),
+        }
+    }
+
+    /// How many input tokens one call for `task` can carry on the provider and
+    /// model that would serve it right now (`preview_route`), or `None` when
+    /// nothing can serve it. See `effective_prompt_window` for what "carry"
+    /// means per provider.
+    pub async fn prompt_window_tokens_for(&self, task: AiTask) -> Option<u32> {
+        self.route_and_window_for(task).await.map(|(_, _, w)| w)
+    }
+
+    /// What `preview_route` picks for `task`, the name of that provider, and
+    /// how many input tokens one call to it can carry.
+    pub async fn route_and_window_for(
+        &self,
+        task: AiTask,
+    ) -> Option<(RoutingDecision, String, u32)> {
+        let providers = self.ensure_fresh().await;
+        let settings = self.settings().await;
+        let decision = Self::preview_route(&providers, task, &settings)?;
+        let provider = providers.iter().find(|p| p.id == decision.provider_id)?;
+        let model = provider.models.iter().find(|m| m.id == decision.model_id)?;
+        let window = effective_prompt_window(
+            provider,
+            model,
+            parse_num_ctx(std::env::var("OLLAMA_NUM_CTX").ok().as_deref()),
+            parse_num_ctx(std::env::var("GROQ_REQUEST_TOKEN_LIMIT").ok().as_deref()),
+        );
+        let provider_name = provider.name.clone();
+        Some((decision, provider_name, window))
+    }
+
+    /// Answers `request` from its task's `chain`: each entry in order, the first that answers wins, and nothing
+    /// outside the chain is ever tried. `fallback_used` is true for any entry after the first.
+    async fn generate_from_chain(
+        &self,
+        providers: &[AiProviderInfo],
+        chain: &[TaskTarget],
+        request: &AiRequest,
+        settings: &AiSettings,
+        skipped_note: Option<&str>,
+    ) -> GenerationOutcome2 {
+        let mut attempts: Vec<String> = Vec::new();
+        for (index, target) in chain.iter().enumerate() {
+            let Some((provider, model, score)) =
+                Self::find_chain_target(providers, request.task, target)
+            else {
+                attempts.push(format!(
+                    "{} / {}: not available",
+                    target.provider, target.model
+                ));
+                continue;
+            };
+            let started = Instant::now();
+            match self
+                .execute_for(&provider.id, &model.id, &request.prompt, request.task)
+                .await
+            {
+                Ok(output) => {
+                    return GenerationOutcome2::Ok(GenerationResult {
+                        provider: provider.id.clone(),
+                        model: model.id.clone(),
+                        routing_mode: settings.mode,
+                        routing_score: score,
+                        fallback_used: index > 0,
+                        prompt_tokens: output.usage.prompt_tokens,
+                        completion_tokens: output.usage.completion_tokens,
+                        latency_ms: started.elapsed().as_millis() as u64,
+                        estimated_cost_usd: estimate_cost(&output.usage, provider.pricing),
+                        text: output.text,
+                    });
+                }
+                Err(e) => attempts.push(format!("{} / {}: {e}", provider.name, model.id)),
+            }
+        }
+        let mut reason = format!(
+            "no model in this task's chain answered — {}",
+            attempts.join("; ")
+        );
+        if let Some(note) = skipped_note {
+            reason.push_str(&format!(" ({note})"));
+        }
+        GenerationOutcome2::Failed { reason }
+    }
+
     /// The full pipeline: route, execute, and — only in AUTO mode with
     /// fallback enabled — retry against the next-best candidate on
     /// failure. Every result honestly states which model actually produced
     /// it; a fallback is never silently relabeled as the original choice.
     pub async fn generate(&self, request: AiRequest) -> GenerationOutcome2 {
-        let providers = self.ensure_fresh().await;
+        let (providers, skipped_note) = self.without_open_breakers(self.ensure_fresh().await);
         let settings = self.settings().await;
+
+        // A task's explicit chain answers it on its own (a per-request
+        // preference, being a hard demand by the caller, still wins).
+        if request.preferred_provider.is_none() && request.preferred_model.is_none() {
+            if let Some(chain) = settings
+                .task_overrides
+                .get(&request.task)
+                .map(|o| o.chain.as_slice())
+                .filter(|c| !c.is_empty())
+            {
+                return self
+                    .generate_from_chain(
+                        &providers,
+                        chain,
+                        &request,
+                        &settings,
+                        skipped_note.as_deref(),
+                    )
+                    .await;
+            }
+        }
 
         // Preference precedence:
         // - A per-request preference is a HARD filter (the caller asked
@@ -2639,7 +3145,10 @@ impl AiInfrastructure {
             Ok(d) => d,
             Err(e) => {
                 return GenerationOutcome2::Failed {
-                    reason: format!("{e:?}"),
+                    reason: match &skipped_note {
+                        Some(note) => format!("{e:?} — {note}"),
+                        None => format!("{e:?}"),
+                    },
                 }
             }
         };
@@ -3481,6 +3990,7 @@ mod tests {
             TaskProviderPreference {
                 provider: Some("gemini".to_string()),
                 model: Some("gemini-heavy-model".to_string()),
+                ..Default::default()
             },
         );
         let settings = AiSettings {
@@ -3523,6 +4033,7 @@ mod tests {
             TaskProviderPreference {
                 provider: Some("gemini".to_string()),
                 model: Some("gemini-heavy-model".to_string()),
+                ..Default::default()
             },
         );
         let settings = AiSettings {
@@ -3558,6 +4069,7 @@ mod tests {
             TaskProviderPreference {
                 provider: Some("gemini".to_string()),
                 model: None, // deliberately unset — must fall through to the global model
+                ..Default::default()
             },
         );
         let settings = AiSettings {
@@ -3618,6 +4130,7 @@ mod tests {
             TaskProviderPreference {
                 provider: None,
                 model: Some("gemini-model".to_string()),
+                ..Default::default()
             },
         );
         infra
@@ -5128,6 +5641,7 @@ mod tests {
             name: "My Custom Provider".to_string(),
             base_url,
             api_key: "custom_test_ok".to_string(),
+            ..Default::default()
         };
         let info = discover_custom_provider(&cfg, Duration::from_secs(2)).await;
 
@@ -5152,6 +5666,7 @@ mod tests {
             name: "My Custom Provider".to_string(),
             base_url: "http://127.0.0.1:1".to_string(),
             api_key: "whatever".to_string(),
+            ..Default::default()
         };
         let info = discover_custom_provider(&cfg, Duration::from_millis(500)).await;
         assert!(!info.reachable);
@@ -5169,6 +5684,7 @@ mod tests {
             name: "My Custom Provider".to_string(),
             base_url,
             api_key: "custom_test_ok".to_string(),
+            ..Default::default()
         };
         let output =
             execute_custom_provider(&cfg, "custom-model-1", "hello", Duration::from_secs(2))
@@ -5177,6 +5693,156 @@ mod tests {
         assert_eq!(output.text, "real custom provider reply");
         assert_eq!(output.usage.prompt_tokens, Some(9));
         assert_eq!(output.usage.completion_tokens, Some(3));
+    }
+
+    #[test]
+    fn provider_pricing_is_metered_only_when_both_prices_are_known() {
+        assert_eq!(
+            ProviderPricing::from_prices(Some(0.5), Some(1.5)),
+            ProviderPricing::Metered {
+                input_usd_per_1k: 0.5,
+                output_usd_per_1k: 1.5
+            }
+        );
+        assert_eq!(
+            ProviderPricing::from_prices(Some(0.5), None),
+            ProviderPricing::Unmetered
+        );
+        assert_eq!(
+            ProviderPricing::from_prices(None, Some(1.5)),
+            ProviderPricing::Unmetered
+        );
+        assert_eq!(
+            ProviderPricing::from_prices(None, None),
+            ProviderPricing::Unmetered
+        );
+    }
+
+    #[tokio::test]
+    async fn a_custom_provider_with_a_price_is_billed_at_that_price_and_one_without_costs_nothing()
+    {
+        let base_url = spawn_mock_custom_provider().await;
+        let priced = CustomProviderConfig {
+            id: "custom-ai-priced".to_string(),
+            name: "Priced".to_string(),
+            base_url: base_url.clone(),
+            api_key: "custom_test_ok".to_string(),
+            pricing: ProviderPricing::from_prices(Some(0.5), Some(1.5)),
+        };
+        let free = CustomProviderConfig {
+            id: "custom-ai-free".to_string(),
+            name: "Free".to_string(),
+            pricing: ProviderPricing::Unmetered,
+            ..priced.clone()
+        };
+
+        let info = discover_custom_provider(&priced, Duration::from_secs(2)).await;
+        assert_eq!(
+            info.pricing,
+            ProviderPricing::Metered {
+                input_usd_per_1k: 0.5,
+                output_usd_per_1k: 1.5
+            }
+        );
+
+        let infra = AiInfrastructure::new(vec![], HashMap::new());
+        infra.set_custom_providers(vec![priced, free]).await;
+        let cost_via = |id: &str| {
+            let infra = &infra;
+            let id = id.to_string();
+            async move {
+                match infra
+                    .generate(AiRequest {
+                        task: AiTask::GeneralAi,
+                        prompt: "hi".to_string(),
+                        preferred_provider: Some(id),
+                        preferred_model: Some("custom-model-1".to_string()),
+                    })
+                    .await
+                {
+                    GenerationOutcome2::Ok(r) => r.estimated_cost_usd,
+                    GenerationOutcome2::Failed { reason } => panic!("expected an answer: {reason}"),
+                }
+            }
+        };
+
+        // The mock reports 9 tokens in and 3 out: 9/1000 * 0.5 + 3/1000 * 1.5.
+        let billed = cost_via("custom-ai-priced").await.expect("a cost");
+        assert!((billed - 0.009).abs() < 1e-9, "billed={billed}");
+        assert_eq!(cost_via("custom-ai-free").await, Some(0.0));
+    }
+
+    #[test]
+    fn only_an_env_prefixed_key_names_an_environment_variable() {
+        assert_eq!(env_key_name("env:OPENAI_API_KEY"), Some("OPENAI_API_KEY"));
+        assert_eq!(env_key_name("env: SPACED "), Some("SPACED"));
+        assert_eq!(env_key_name("sk-live-123"), None);
+        assert_eq!(env_key_name("environment"), None);
+        assert_eq!(env_key_name("ENV:UPPER"), None);
+    }
+
+    #[tokio::test]
+    async fn a_key_given_as_env_name_is_read_from_the_environment_and_used_for_discovery_and_answers(
+    ) {
+        const VAR: &str = "AIQA_TEST_CUSTOM_KEY_READ_FROM_ENV";
+        let base_url = spawn_mock_custom_provider().await;
+        let cfg = CustomProviderConfig {
+            id: "custom-ai-env".to_string(),
+            name: "Env Key".to_string(),
+            base_url,
+            api_key: format!("env:{VAR}"),
+            ..Default::default()
+        };
+
+        std::env::set_var(VAR, "custom_test_ok");
+        let info = discover_custom_provider(&cfg, Duration::from_secs(2)).await;
+        let output =
+            execute_custom_provider(&cfg, "custom-model-1", "hello", Duration::from_secs(2)).await;
+        // The variable is read every time, so changing it takes effect without a restart.
+        std::env::set_var(VAR, "a-key-the-server-rejects");
+        let after_change =
+            execute_custom_provider(&cfg, "custom-model-1", "hello", Duration::from_secs(2)).await;
+        std::env::remove_var(VAR);
+
+        assert!(info.configured && info.reachable, "info={info:?}");
+        assert_eq!(info.status, ProviderStatus::Healthy);
+        assert_eq!(output.expect("answer").text, "real custom provider reply");
+        assert!(
+            after_change.is_err(),
+            "the endpoint rejects the changed key, proving the variable is re-read"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_key_naming_an_unset_or_blank_variable_is_not_configured_and_nothing_is_sent() {
+        const UNSET: &str = "AIQA_TEST_CUSTOM_KEY_NEVER_SET";
+        const BLANK: &str = "AIQA_TEST_CUSTOM_KEY_BLANK";
+        std::env::remove_var(UNSET);
+        std::env::set_var(BLANK, "   ");
+        for var in [UNSET, BLANK] {
+            let cfg = CustomProviderConfig {
+                id: "custom-ai-env".to_string(),
+                name: "Env Key".to_string(),
+                // Nothing listens here, so a request would show up as Unavailable, not NotConfigured.
+                base_url: "http://127.0.0.1:1".to_string(),
+                api_key: format!("env:{var}"),
+                ..Default::default()
+            };
+
+            let info = discover_custom_provider(&cfg, Duration::from_millis(500)).await;
+            assert!(!info.configured, "{var}: info={info:?}");
+            assert_eq!(info.status, ProviderStatus::NotConfigured, "{var}");
+            assert!(info.models.is_empty());
+
+            let err = execute_custom_provider(&cfg, "m", "hello", Duration::from_millis(500))
+                .await
+                .expect_err("no key, no request");
+            assert!(
+                matches!(&err, ExecutionError::ProviderUnavailable(m) if m.contains(var) && m.contains("is not set")),
+                "{var}: err={err:?}"
+            );
+        }
+        std::env::remove_var(BLANK);
     }
 
     #[tokio::test]
@@ -5194,6 +5860,7 @@ mod tests {
                 name: "My Custom Provider".to_string(),
                 base_url,
                 api_key: "custom_test_ok".to_string(),
+                ..Default::default()
             }])
             .await;
 
@@ -5225,6 +5892,7 @@ mod tests {
             name: "My Custom Provider".to_string(),
             base_url: "http://127.0.0.1:1".to_string(),
             api_key: "whatever".to_string(),
+            ..Default::default()
         };
         let infra = AiInfrastructure::new(vec![], HashMap::new());
         infra.set_custom_providers(vec![cfg]).await;
@@ -5366,6 +6034,7 @@ mod tests {
         let executor = OllamaExecutor {
             base_url,
             timeout: Duration::from_secs(2),
+            num_ctx: None,
         };
         let output = executor
             .execute_task("ollama", "gemma3:12b", "hi", AiTask::GeneralAi)
@@ -5400,6 +6069,7 @@ mod tests {
         let executor = OllamaExecutor {
             base_url: format!("http://{addr}"),
             timeout: Duration::from_secs(2),
+            num_ctx: None,
         };
         let output = executor
             .execute_task("ollama", "gemma3:12b", "hi", AiTask::GeneralAi)
@@ -5407,6 +6077,1015 @@ mod tests {
             .expect("execute_task");
         assert_eq!(output.usage.prompt_tokens, None);
         assert_eq!(output.usage.completion_tokens, None);
+    }
+
+    fn window_provider(id: &str) -> AiProviderInfo {
+        AiProviderInfo {
+            id: id.to_string(),
+            name: id.to_string(),
+            provider_type: ProviderType::Custom,
+            endpoint: None,
+            configured: true,
+            reachable: true,
+            status: ProviderStatus::Healthy,
+            models: Vec::new(),
+            pricing: ProviderPricing::Unmetered,
+        }
+    }
+
+    fn window_model(context_window: Option<u32>) -> ModelDefinition {
+        ModelDefinition {
+            id: "m".to_string(),
+            provider_id: "p".to_string(),
+            display_name: "m".to_string(),
+            family: None,
+            parameter_size: None,
+            context_window,
+            capabilities: ModelCapabilities::default(),
+            status: ModelStatus::Available,
+        }
+    }
+
+    #[test]
+    fn ollama_carries_only_its_num_ctx_whatever_the_model_could_take() {
+        let p = window_provider("ollama");
+        let m = window_model(Some(131_072));
+        assert_eq!(
+            effective_prompt_window(&p, &m, None, None),
+            4096,
+            "Ollama's own default"
+        );
+        assert_eq!(effective_prompt_window(&p, &m, Some(16_384), None), 16_384);
+    }
+
+    #[test]
+    fn groq_carries_its_per_request_limit_not_the_models_huge_window() {
+        let p = window_provider("groq");
+        let m = window_model(Some(131_072));
+        assert_eq!(effective_prompt_window(&p, &m, None, None), 8000);
+        assert_eq!(
+            effective_prompt_window(&p, &m, Some(99), Some(30_000)),
+            30_000
+        );
+    }
+
+    #[test]
+    fn other_providers_carry_the_window_they_reported_or_a_modest_guess() {
+        let p = window_provider("gemini");
+        assert_eq!(
+            effective_prompt_window(&p, &window_model(Some(1_048_576)), None, None),
+            1_048_576
+        );
+        assert_eq!(
+            effective_prompt_window(&p, &window_model(None), None, None),
+            16_384
+        );
+        // Neither Ollama's nor Groq's setting applies to another provider.
+        assert_eq!(
+            effective_prompt_window(&p, &window_model(Some(32_000)), Some(4096), Some(8000)),
+            32_000
+        );
+    }
+
+    #[tokio::test]
+    async fn the_window_is_that_of_the_model_that_would_serve_the_task() {
+        let mut model = healthy_model("big", "gemini", CapabilityLevel::Strong);
+        model.context_window = Some(1_000_000);
+        let infra = AiInfrastructure::new(
+            vec![Arc::new(FakeDiscovery(healthy_provider(
+                "gemini",
+                vec![model],
+            )))],
+            HashMap::new(),
+        );
+        infra.discover_all().await;
+        assert_eq!(
+            infra
+                .prompt_window_tokens_for(AiTask::TestCaseGeneration)
+                .await,
+            Some(1_000_000)
+        );
+
+        // Nothing discovered, nothing to serve the task: no answer, not a guess.
+        let nothing = AiInfrastructure::new(vec![], HashMap::new());
+        assert_eq!(
+            nothing
+                .prompt_window_tokens_for(AiTask::TestCaseGeneration)
+                .await,
+            None
+        );
+    }
+
+    #[test]
+    fn parse_num_ctx_accepts_only_a_positive_whole_number() {
+        assert_eq!(parse_num_ctx(None), None);
+        assert_eq!(parse_num_ctx(Some("16384")), Some(16384));
+        assert_eq!(parse_num_ctx(Some(" 8192 ")), Some(8192));
+        for bad in ["", "0", "-5", "abc", "12.5"] {
+            assert_eq!(parse_num_ctx(Some(bad)), None, "{bad:?} must be ignored");
+        }
+    }
+
+    #[tokio::test]
+    async fn ollama_executor_sends_num_ctx_only_when_configured() {
+        use std::sync::{Arc, Mutex};
+        type Captured = Arc<Mutex<Option<serde_json::Value>>>;
+
+        async fn generate(
+            axum::extract::State(captured): axum::extract::State<Captured>,
+            axum::Json(body): axum::Json<serde_json::Value>,
+        ) -> axum::Json<serde_json::Value> {
+            *captured.lock().unwrap() = Some(body);
+            axum::Json(serde_json::json!({ "response": "{\"test_cases\":[]}", "done": true }))
+        }
+
+        let captured: Captured = Arc::new(Mutex::new(None));
+        let app = axum::Router::new()
+            .route("/api/generate", axum::routing::post(generate))
+            .with_state(captured.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
+        let base_url = format!("http://{addr}");
+
+        for (num_ctx, expected) in [(Some(16384_u32), Some(16384_u64)), (None, None)] {
+            let executor = OllamaExecutor {
+                base_url: base_url.clone(),
+                timeout: Duration::from_secs(2),
+                num_ctx,
+            };
+            executor
+                .execute_task("ollama", "gemma3:12b", "hi", AiTask::GeneralAi)
+                .await
+                .expect("execute_task");
+            let sent = captured
+                .lock()
+                .unwrap()
+                .take()
+                .expect("a request reached the mock server");
+            assert_eq!(sent["options"]["num_ctx"].as_u64(), expected, "sent={sent}");
+        }
+    }
+
+    // ------------------------------------------------------------ non-chat models
+
+    #[test]
+    fn non_chat_model_ids_are_recognised_and_chat_models_are_not() {
+        for id in [
+            "whisper-large-v3",
+            "playai-tts",
+            "canopylabs/orpheus-v1-english",
+            "meta-llama/llama-guard-4-12b",
+            "meta-llama/llama-prompt-guard-2-86m",
+            "openai/gpt-oss-safeguard-20b",
+            "text-embedding-3-large",
+            "models/gemini-embedding-001",
+            "models/imagen-4.0-generate-001",
+            "models/gemini-2.5-flash-image",
+            "models/gemini-2.5-flash-preview-tts",
+            "gpt-image-1",
+            "dall-e-3",
+            "omni-moderation-latest",
+            "gpt-4o-transcribe",
+            "gpt-4o-realtime-preview",
+            "models/veo-3.0-generate-preview",
+            "mistral-ocr-latest",
+        ] {
+            assert!(is_non_chat_model_id(id), "{id} is not a chat model");
+        }
+        for id in [
+            "openai/gpt-oss-120b",
+            "openai/gpt-oss-20b",
+            "llama-3.3-70b-versatile",
+            "qwen/qwen3-32b",
+            "models/gemini-2.5-flash",
+            "models/gemini-2.5-pro",
+            "gpt-4o",
+            "gpt-4.1-mini",
+            "mistral-large-latest",
+            "deepseek-chat",
+            "custom-model-1",
+        ] {
+            assert!(!is_non_chat_model_id(id), "{id} is a chat model");
+        }
+    }
+
+    /// Serves one fixed model list at `/v1/models` (Groq, custom providers) and `/models` (Gemini).
+    async fn spawn_mock_model_list(ids: &'static [&'static str]) -> String {
+        async fn list(
+            axum::extract::State(ids): axum::extract::State<&'static [&'static str]>,
+        ) -> axum::Json<serde_json::Value> {
+            let data: Vec<_> = ids
+                .iter()
+                .map(|id| serde_json::json!({ "id": id, "object": "model" }))
+                .collect();
+            axum::Json(serde_json::json!({ "object": "list", "data": data }))
+        }
+
+        let app = axum::Router::new()
+            .route("/v1/models", axum::routing::get(list))
+            .route("/models", axum::routing::get(list))
+            .with_state(ids);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn discovery_marks_non_chat_models_and_routing_never_picks_them() {
+        // The non-chat models are listed first, so a router that ignored the marker would take one of them.
+        const IDS: &[&str] = &[
+            "whisper-large-v3",
+            "openai/gpt-oss-safeguard-20b",
+            "text-embedding-3-large",
+            "llama-3.3-70b-versatile",
+        ];
+        let base_url = spawn_mock_model_list(IDS).await;
+
+        let groq = GroqDiscovery {
+            base_url: base_url.clone(),
+            api_key: Some("k".to_string()),
+            timeout: Duration::from_secs(2),
+        }
+        .discover()
+        .await;
+        let gemini = GeminiDiscovery {
+            base_url: base_url.clone(),
+            api_key: Some("k".to_string()),
+            timeout: Duration::from_secs(2),
+        }
+        .discover()
+        .await;
+        let custom = discover_custom_provider(
+            &CustomProviderConfig {
+                id: "custom-ai-test".to_string(),
+                name: "My Custom Provider".to_string(),
+                base_url: base_url.clone(),
+                api_key: "k".to_string(),
+                ..Default::default()
+            },
+            Duration::from_secs(2),
+        )
+        .await;
+
+        for info in [&groq, &gemini, &custom] {
+            assert_eq!(info.models.len(), IDS.len(), "provider {}", info.id);
+            for m in &info.models {
+                let expected = if m.id == "llama-3.3-70b-versatile" {
+                    CapabilityLevel::Strong
+                } else {
+                    CapabilityLevel::None
+                };
+                assert_eq!(
+                    m.capabilities.text_generation,
+                    Some(expected),
+                    "{}/{}",
+                    info.id,
+                    m.id
+                );
+            }
+            let decision = AiInfrastructure::route_among(
+                std::slice::from_ref(info),
+                AiTask::TestCaseGeneration,
+                &AiSettings::default(),
+                None,
+                None,
+            )
+            .expect("the one chat model is routable");
+            assert_eq!(
+                decision.model_id, "llama-3.3-70b-versatile",
+                "provider {}",
+                info.id
+            );
+        }
+    }
+
+    // -------------------------------------- refusals, retries and connection failures
+
+    #[test]
+    fn transient_retry_delay_waits_only_for_a_refusal_that_clears_by_itself() {
+        let secs = Duration::from_secs;
+        assert_eq!(
+            transient_retry_delay(429, Some("0"), "Rate limit reached"),
+            Some(secs(0))
+        );
+        assert_eq!(
+            transient_retry_delay(429, None, "Rate limit reached. Please try again in 3.5s."),
+            Some(Duration::from_millis(3500))
+        );
+        assert_eq!(
+            transient_retry_delay(503, None, "overloaded"),
+            Some(secs(2))
+        );
+        assert_eq!(transient_retry_delay(503, Some("1"), ""), Some(secs(1)));
+        // Too long to hold a request for, a per-day limit, and refusals a retry cannot change.
+        assert_eq!(
+            transient_retry_delay(429, Some("120"), "Rate limit reached"),
+            None
+        );
+        assert_eq!(
+            transient_retry_delay(429, Some("0"), "Rate limit reached on tokens per day (TPD)"),
+            None
+        );
+        for status in [400_u16, 401, 403, 404, 500] {
+            assert_eq!(
+                transient_retry_delay(status, Some("1"), "refused"),
+                None,
+                "HTTP {status}"
+            );
+        }
+    }
+
+    /// A mock chat endpoint that answers each POST from `script` (status, optional retry-after, body), repeating the
+    /// last entry, and counts the requests it received.
+    async fn spawn_scripted_chat(
+        path: &'static str,
+        script: Vec<(u16, Option<&'static str>, serde_json::Value)>,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use axum::response::IntoResponse;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        type Script = Arc<Vec<(u16, Option<&'static str>, serde_json::Value)>>;
+        async fn handler(
+            axum::extract::State((hits, script)): axum::extract::State<(Arc<AtomicUsize>, Script)>,
+        ) -> axum::response::Response {
+            let i = hits.fetch_add(1, Ordering::SeqCst).min(script.len() - 1);
+            let (status, retry_after, body) = &script[i];
+            let mut resp = (
+                axum::http::StatusCode::from_u16(*status).expect("valid status"),
+                axum::Json(body.clone()),
+            )
+                .into_response();
+            if let Some(ra) = retry_after {
+                resp.headers_mut()
+                    .insert("retry-after", axum::http::HeaderValue::from_static(ra));
+            }
+            resp
+        }
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let app = axum::Router::new()
+            .route(path, axum::routing::post(handler))
+            .with_state((hits.clone(), Arc::new(script)));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
+        (format!("http://{addr}"), hits)
+    }
+
+    fn chat_ok(text: &str) -> serde_json::Value {
+        serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 2}
+        })
+    }
+
+    #[tokio::test]
+    async fn gemini_waits_out_a_short_rate_limit_once_and_is_then_served() {
+        use std::sync::atomic::Ordering;
+        let (base_url, hits) = spawn_scripted_chat(
+            "/chat/completions",
+            vec![
+                (
+                    429,
+                    Some("0"),
+                    serde_json::json!({"error": {"message": "Rate limit reached"}}),
+                ),
+                (200, None, chat_ok("served after the wait")),
+            ],
+        )
+        .await;
+        let executor = GeminiExecutor {
+            base_url,
+            api_key: Some("k".to_string()),
+            timeout: Duration::from_secs(5),
+            max_tokens: 100,
+        };
+        let out = executor
+            .execute_task("gemini", "gemini-2.5-flash", "hi", AiTask::GeneralAi)
+            .await
+            .expect("a short rate limit is waited out once");
+        assert_eq!(out.text, "served after the wait");
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn gemini_reports_a_refusal_with_the_providers_own_words_and_does_not_retry_it() {
+        use std::sync::atomic::Ordering;
+        // Gemini's OpenAI-compatible endpoint can answer with a JSON *array* of error objects.
+        let (base_url, hits) = spawn_scripted_chat(
+            "/chat/completions",
+            vec![(
+                400,
+                None,
+                serde_json::json!([{"error": {"code": 400, "message": "API key not valid", "status": "INVALID_ARGUMENT"}}]),
+            )],
+        )
+        .await;
+        let executor = GeminiExecutor {
+            base_url,
+            api_key: Some("k".to_string()),
+            timeout: Duration::from_secs(5),
+            max_tokens: 100,
+        };
+        let err = executor
+            .execute_task("gemini", "gemini-2.5-flash", "hi", AiTask::GeneralAi)
+            .await
+            .expect_err("a bad request is refused");
+        let text = err.to_string();
+        assert!(text.starts_with("PROVIDER_ERROR: HTTP 400: "), "{text}");
+        assert!(text.contains("API key not valid"), "{text}");
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "a 400 is never retried");
+    }
+
+    #[tokio::test]
+    async fn a_custom_provider_waits_out_a_rate_limit_once_then_reports_it_in_the_providers_words()
+    {
+        use std::sync::atomic::Ordering;
+        let (base_url, hits) = spawn_scripted_chat(
+            "/v1/chat/completions",
+            vec![(
+                429,
+                Some("0"),
+                serde_json::json!({"error": {"message": "Rate limit reached for gpt-x"}}),
+            )],
+        )
+        .await;
+        let cfg = CustomProviderConfig {
+            id: "custom-ai-test".to_string(),
+            name: "My Custom Provider".to_string(),
+            base_url,
+            api_key: "k".to_string(),
+            ..Default::default()
+        };
+        let err = execute_custom_provider(&cfg, "gpt-x", "hi", Duration::from_secs(5))
+            .await
+            .expect_err("still limited after the one wait");
+        assert_eq!(
+            err.to_string(),
+            "PROVIDER_ERROR: HTTP 429: Rate limit reached for gpt-x"
+        );
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            2,
+            "one request, one wait, one retry — then it gives up"
+        );
+    }
+
+    #[tokio::test]
+    async fn ollama_says_why_a_request_was_refused() {
+        use std::sync::atomic::Ordering;
+        let (base_url, hits) = spawn_scripted_chat(
+            "/api/generate",
+            vec![(
+                404,
+                None,
+                serde_json::json!({"error": "model 'gemma9:99b' not found"}),
+            )],
+        )
+        .await;
+        let executor = OllamaExecutor {
+            base_url,
+            timeout: Duration::from_secs(5),
+            num_ctx: None,
+        };
+        let err = executor
+            .execute_task("ollama", "gemma9:99b", "hi", AiTask::GeneralAi)
+            .await
+            .expect_err("an unknown model is refused");
+        assert_eq!(
+            err.to_string(),
+            "PROVIDER_ERROR: HTTP 404: model 'gemma9:99b' not found"
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_host_that_refuses_connections_is_reported_as_unavailable_not_as_a_timeout() {
+        let cfg = CustomProviderConfig {
+            id: "custom-ai-test".to_string(),
+            name: "My Custom Provider".to_string(),
+            base_url: "http://127.0.0.1:1".to_string(),
+            api_key: "k".to_string(),
+            ..Default::default()
+        };
+        let err = execute_custom_provider(&cfg, "m", "hi", Duration::from_secs(5))
+            .await
+            .expect_err("nothing is listening");
+        assert!(
+            matches!(&err, ExecutionError::ProviderUnavailable(m) if m.contains("could not connect")),
+            "{err}"
+        );
+    }
+
+    // ------------------------------------------------------------- circuit breaker
+
+    fn ok_output(text: &str) -> Result<ExecutionOutput, ExecutionError> {
+        Ok(ExecutionOutput {
+            text: text.to_string(),
+            usage: TokenUsage::default(),
+        })
+    }
+
+    /// "down" scores higher (strong structured output), so it is always the primary; "up" is the fallback.
+    fn down_and_up(down: Arc<RecordingExecutor>, up: Arc<RecordingExecutor>) -> AiInfrastructure {
+        let mut executors: HashMap<&'static str, Arc<dyn AiExecutor>> = HashMap::new();
+        executors.insert("down", down as Arc<dyn AiExecutor>);
+        executors.insert("up", up as Arc<dyn AiExecutor>);
+        AiInfrastructure::new(
+            vec![
+                Arc::new(FakeDiscovery(healthy_provider(
+                    "down",
+                    vec![healthy_model("m-down", "down", CapabilityLevel::Strong)],
+                ))),
+                Arc::new(FakeDiscovery(healthy_provider(
+                    "up",
+                    vec![healthy_model("m-up", "up", CapabilityLevel::Basic)],
+                ))),
+            ],
+            executors,
+        )
+    }
+
+    fn general_request() -> AiRequest {
+        AiRequest {
+            task: AiTask::GeneralAi,
+            prompt: "hi".to_string(),
+            preferred_provider: None,
+            preferred_model: None,
+        }
+    }
+
+    fn generation_request() -> AiRequest {
+        AiRequest {
+            task: AiTask::TestCaseGeneration,
+            ..general_request()
+        }
+    }
+
+    fn served_by(outcome: GenerationOutcome2) -> (String, bool) {
+        match outcome {
+            GenerationOutcome2::Ok(r) => (r.provider, r.fallback_used),
+            GenerationOutcome2::Failed { reason } => {
+                panic!("expected a served request, got Failed: {reason}")
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_provider_that_cannot_be_reached_twice_in_a_row_is_skipped_until_its_cooldown_ends() {
+        let down = Arc::new(RecordingExecutor::sequence(vec![
+            Err(ExecutionError::Timeout),
+            Err(ExecutionError::ProviderUnavailable(
+                "connection refused".to_string(),
+            )),
+            ok_output("back again"),
+        ]));
+        let up = Arc::new(RecordingExecutor::sequence(vec![
+            ok_output("up 1"),
+            ok_output("up 2"),
+            ok_output("up 3"),
+        ]));
+        let infra =
+            down_and_up(down.clone(), up.clone()).with_breaker(2, Duration::from_millis(300));
+
+        // Two calls in a row cannot reach "down"; each is still answered by "up" as a fallback.
+        assert_eq!(
+            served_by(infra.generate(general_request()).await),
+            ("up".to_string(), true)
+        );
+        assert_eq!(
+            served_by(infra.generate(general_request()).await),
+            ("up".to_string(), true)
+        );
+        assert_eq!(down.prompts.lock().unwrap().len(), 2);
+
+        // The breaker is open now: "down" is not asked at all, and "up" is simply the primary.
+        assert_eq!(
+            served_by(infra.generate(general_request()).await),
+            ("up".to_string(), false)
+        );
+        assert_eq!(
+            down.prompts.lock().unwrap().len(),
+            2,
+            "an open breaker must not call the provider"
+        );
+
+        // After the cooldown "down" is tried again, and its answer closes the breaker for good.
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        assert_eq!(
+            served_by(infra.generate(general_request()).await),
+            ("down".to_string(), false)
+        );
+        assert_eq!(down.prompts.lock().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_refusal_proves_the_provider_is_reachable_so_it_never_opens_the_breaker() {
+        let refused = || {
+            Err(ExecutionError::ProviderRejected {
+                status: 429,
+                message: "Rate limit reached".to_string(),
+            })
+        };
+        let down = Arc::new(RecordingExecutor::sequence(vec![
+            refused(),
+            refused(),
+            refused(),
+            refused(),
+        ]));
+        let up = Arc::new(RecordingExecutor::sequence(vec![
+            ok_output("1"),
+            ok_output("2"),
+            ok_output("3"),
+            ok_output("4"),
+        ]));
+        let infra = down_and_up(down.clone(), up).with_breaker(2, Duration::from_secs(60));
+
+        for _ in 0..4 {
+            assert_eq!(
+                served_by(infra.generate(general_request()).await),
+                ("up".to_string(), true)
+            );
+        }
+        assert_eq!(
+            down.prompts.lock().unwrap().len(),
+            4,
+            "a rate-limited provider is still asked every time"
+        );
+    }
+
+    #[tokio::test]
+    async fn when_the_only_provider_is_skipped_the_failure_says_so() {
+        let mut executors: HashMap<&'static str, Arc<dyn AiExecutor>> = HashMap::new();
+        let solo = Arc::new(RecordingExecutor::sequence(vec![
+            Err(ExecutionError::Timeout),
+            Err(ExecutionError::Timeout),
+        ]));
+        executors.insert("solo", solo.clone() as Arc<dyn AiExecutor>);
+        let infra = AiInfrastructure::new(
+            vec![Arc::new(FakeDiscovery(healthy_provider(
+                "solo",
+                vec![healthy_model("m", "solo", CapabilityLevel::Strong)],
+            )))],
+            executors,
+        )
+        .with_breaker(2, Duration::from_secs(60));
+
+        for _ in 0..2 {
+            assert!(matches!(
+                infra.generate(general_request()).await,
+                GenerationOutcome2::Failed { .. }
+            ));
+        }
+        match infra.generate(general_request()).await {
+            GenerationOutcome2::Failed { reason } => {
+                assert!(reason.contains("NoCompatibleModel"), "{reason}");
+                assert!(
+                    reason.contains("skipped after repeated connection failures: solo"),
+                    "{reason}"
+                );
+            }
+            GenerationOutcome2::Ok(_) => panic!("the only provider is being skipped"),
+        }
+        assert_eq!(
+            solo.prompts.lock().unwrap().len(),
+            2,
+            "the third call never reached the provider"
+        );
+    }
+
+    // ------------------------------------------------------------------ task chains
+
+    /// Adds provider `id` (one model, `<id>-model`) answering from `responses`, and returns its discovery and its
+    /// executor so a test can see how often it was asked.
+    fn chain_provider(
+        executors: &mut HashMap<&'static str, Arc<dyn AiExecutor>>,
+        id: &'static str,
+        structured: CapabilityLevel,
+        responses: Vec<Result<ExecutionOutput, ExecutionError>>,
+    ) -> (Arc<dyn ProviderDiscovery>, Arc<RecordingExecutor>) {
+        let executor = Arc::new(RecordingExecutor::sequence(responses));
+        executors.insert(id, executor.clone() as Arc<dyn AiExecutor>);
+        let model = healthy_model(&format!("{id}-model"), id, structured);
+        let discovery = Arc::new(FakeDiscovery(healthy_provider(id, vec![model])));
+        (discovery, executor)
+    }
+
+    fn chain_settings(chain: &[(&str, &str)]) -> AiSettings {
+        let mut task_overrides = HashMap::new();
+        task_overrides.insert(
+            AiTask::TestCaseGeneration,
+            TaskProviderPreference {
+                chain: chain
+                    .iter()
+                    .map(|(provider, model)| TaskTarget {
+                        provider: provider.to_string(),
+                        model: model.to_string(),
+                    })
+                    .collect(),
+                ..Default::default()
+            },
+        );
+        AiSettings {
+            mode: RoutingMode::Auto,
+            preferred_provider: None,
+            preferred_model: None,
+            fallback_enabled: true,
+            task_overrides,
+        }
+    }
+
+    fn calls(executor: &RecordingExecutor) -> usize {
+        executor.prompts.lock().unwrap().len()
+    }
+
+    #[tokio::test]
+    async fn a_task_chain_is_tried_in_order_and_nothing_outside_it_is_ever_used() {
+        let mut executors = HashMap::new();
+        let (a, a_exec) = chain_provider(
+            &mut executors,
+            "a",
+            CapabilityLevel::Basic,
+            vec![Err(ExecutionError::Timeout)],
+        );
+        let (b, b_exec) = chain_provider(
+            &mut executors,
+            "b",
+            CapabilityLevel::Basic,
+            vec![ok_output("from b")],
+        );
+        // "paid" scores highest, so it would win automatic routing and the automatic fallback — but it is not listed.
+        let (paid, paid_exec) = chain_provider(
+            &mut executors,
+            "paid",
+            CapabilityLevel::Strong,
+            vec![ok_output("paid")],
+        );
+        let infra = AiInfrastructure::new(vec![a, b, paid], executors);
+        infra
+            .set_settings(chain_settings(&[("a", "a-model"), ("b", "b-model")]))
+            .await;
+
+        assert_eq!(
+            served_by(infra.generate(generation_request()).await),
+            ("b".to_string(), true)
+        );
+        assert_eq!(
+            (calls(&a_exec), calls(&b_exec), calls(&paid_exec)),
+            (1, 1, 0)
+        );
+    }
+
+    #[tokio::test]
+    async fn the_first_entry_of_a_task_chain_is_the_primary_even_when_something_else_scores_higher()
+    {
+        let mut executors = HashMap::new();
+        let (a, a_exec) = chain_provider(
+            &mut executors,
+            "a",
+            CapabilityLevel::Basic,
+            vec![ok_output("from a")],
+        );
+        let (paid, paid_exec) = chain_provider(
+            &mut executors,
+            "paid",
+            CapabilityLevel::Strong,
+            vec![ok_output("paid")],
+        );
+        let infra = AiInfrastructure::new(vec![a, paid], executors);
+        infra
+            .set_settings(chain_settings(&[("a", "a-model")]))
+            .await;
+
+        assert_eq!(
+            served_by(infra.generate(generation_request()).await),
+            ("a".to_string(), false)
+        );
+        assert_eq!((calls(&a_exec), calls(&paid_exec)), (1, 0));
+    }
+
+    #[tokio::test]
+    async fn when_every_entry_of_a_task_chain_fails_the_failure_lists_each_reason_and_stays_inside_the_chain(
+    ) {
+        let mut executors = HashMap::new();
+        let (a, _) = chain_provider(
+            &mut executors,
+            "a",
+            CapabilityLevel::Basic,
+            vec![Err(ExecutionError::Timeout)],
+        );
+        let (b, _) = chain_provider(
+            &mut executors,
+            "b",
+            CapabilityLevel::Basic,
+            vec![Err(ExecutionError::ProviderRejected {
+                status: 429,
+                message: "Rate limit reached".to_string(),
+            })],
+        );
+        let (paid, paid_exec) = chain_provider(
+            &mut executors,
+            "paid",
+            CapabilityLevel::Strong,
+            vec![ok_output("paid")],
+        );
+        let infra = AiInfrastructure::new(vec![a, b, paid], executors);
+        infra
+            .set_settings(chain_settings(&[("a", "a-model"), ("b", "b-model")]))
+            .await;
+
+        match infra.generate(generation_request()).await {
+            GenerationOutcome2::Failed { reason } => {
+                assert!(
+                    reason.contains("no model in this task's chain answered"),
+                    "{reason}"
+                );
+                assert!(reason.contains("a / a-model: TIMEOUT"), "{reason}");
+                assert!(
+                    reason.contains("b / b-model: PROVIDER_ERROR: HTTP 429: Rate limit reached"),
+                    "{reason}"
+                );
+            }
+            GenerationOutcome2::Ok(_) => panic!("every listed model failed"),
+        }
+        assert_eq!(
+            calls(&paid_exec),
+            0,
+            "the automatic fallback must not reach outside the chain"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_chain_entry_that_is_not_available_is_skipped_and_named() {
+        let mut executors = HashMap::new();
+        let (b, _) = chain_provider(
+            &mut executors,
+            "b",
+            CapabilityLevel::Basic,
+            vec![ok_output("from b")],
+        );
+        let infra = AiInfrastructure::new(vec![b], executors);
+
+        infra
+            .set_settings(chain_settings(&[
+                ("ghost", "ghost-model"),
+                ("b", "b-model"),
+            ]))
+            .await;
+        assert_eq!(
+            served_by(infra.generate(generation_request()).await),
+            ("b".to_string(), true)
+        );
+
+        infra
+            .set_settings(chain_settings(&[("ghost", "ghost-model")]))
+            .await;
+        match infra.generate(generation_request()).await {
+            GenerationOutcome2::Failed { reason } => assert!(
+                reason.contains("ghost / ghost-model: not available"),
+                "{reason}"
+            ),
+            GenerationOutcome2::Ok(_) => panic!("nothing in the chain exists"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_request_level_preference_still_wins_over_the_task_chain() {
+        let mut executors = HashMap::new();
+        let (a, a_exec) = chain_provider(
+            &mut executors,
+            "a",
+            CapabilityLevel::Basic,
+            vec![ok_output("from a")],
+        );
+        let (paid, _) = chain_provider(
+            &mut executors,
+            "paid",
+            CapabilityLevel::Strong,
+            vec![ok_output("paid")],
+        );
+        let infra = AiInfrastructure::new(vec![a, paid], executors);
+        infra
+            .set_settings(chain_settings(&[("a", "a-model")]))
+            .await;
+
+        let request = AiRequest {
+            preferred_provider: Some("paid".to_string()),
+            ..generation_request()
+        };
+        assert_eq!(
+            served_by(infra.generate(request).await),
+            ("paid".to_string(), false)
+        );
+        assert_eq!(calls(&a_exec), 0);
+    }
+
+    #[tokio::test]
+    async fn a_task_chain_applies_in_manual_mode_and_with_the_automatic_fallback_off_and_only_to_its_own_task(
+    ) {
+        let mut executors = HashMap::new();
+        let (a, _) = chain_provider(
+            &mut executors,
+            "a",
+            CapabilityLevel::Basic,
+            vec![Err(ExecutionError::Timeout)],
+        );
+        let (b, _) = chain_provider(
+            &mut executors,
+            "b",
+            CapabilityLevel::Basic,
+            vec![ok_output("from b")],
+        );
+        let (paid, _) = chain_provider(
+            &mut executors,
+            "paid",
+            CapabilityLevel::Strong,
+            vec![ok_output("paid")],
+        );
+        let infra = AiInfrastructure::new(vec![a, b, paid], executors);
+        let mut settings = chain_settings(&[("a", "a-model"), ("b", "b-model")]);
+        settings.mode = RoutingMode::Manual;
+        settings.fallback_enabled = false;
+        infra.set_settings(settings).await;
+
+        assert_eq!(
+            served_by(infra.generate(generation_request()).await),
+            ("b".to_string(), true)
+        );
+
+        // The chain belongs to TestCaseGeneration only. MANUAL mode with no global pin has nothing to route another task to,
+        // so this failing (instead of being answered by the chain) shows the chain is not used for it.
+        let other = general_request();
+        assert!(matches!(
+            infra.generate(other).await,
+            GenerationOutcome2::Failed { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn preview_route_shows_the_first_usable_chain_entry_and_the_usual_routing_without_one() {
+        let mut executors = HashMap::new();
+        let (b, _) = chain_provider(&mut executors, "b", CapabilityLevel::Basic, vec![]);
+        let (paid, _) = chain_provider(&mut executors, "paid", CapabilityLevel::Strong, vec![]);
+        let infra = AiInfrastructure::new(vec![b, paid], executors);
+        let providers = infra.discover_all().await;
+
+        let chained = chain_settings(&[("ghost", "ghost-model"), ("b", "b-model")]);
+        let preview =
+            AiInfrastructure::preview_route(&providers, AiTask::TestCaseGeneration, &chained)
+                .expect("b is usable");
+        assert_eq!(preview.model_id, "b-model");
+        assert!(preview.reason.contains("Task chain"), "{}", preview.reason);
+
+        let automatic = AiInfrastructure::preview_route(
+            &providers,
+            AiTask::TestCaseGeneration,
+            &AiSettings::default(),
+        )
+        .expect("something is usable");
+        assert_eq!(
+            automatic.model_id, "paid-model",
+            "no chain: the best-scoring model, as before"
+        );
+    }
+
+    #[test]
+    fn a_task_chain_round_trips_and_an_absent_one_leaves_the_stored_json_unchanged() {
+        let without = TaskProviderPreference {
+            provider: Some("gemini".to_string()),
+            model: Some("m".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            serde_json::to_string(&without).unwrap(),
+            r#"{"provider":"gemini","model":"m"}"#
+        );
+        let parsed: TaskProviderPreference =
+            serde_json::from_str(r#"{"provider":"gemini","model":"m"}"#).unwrap();
+        assert!(
+            parsed.chain.is_empty(),
+            "a row saved before chains existed must still load"
+        );
+
+        let with: TaskProviderPreference = serde_json::from_str(
+            r#"{"provider":null,"model":null,"chain":[{"provider":"ollama","model":"qwen3:14b"},{"provider":"gemini","model":"gemini-2.5-flash"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(with.chain.len(), 2);
+        let text = serde_json::to_string(&with).unwrap();
+        assert_eq!(
+            serde_json::from_str::<TaskProviderPreference>(&text).unwrap(),
+            with
+        );
     }
 
     #[test]
@@ -5558,6 +7237,316 @@ mod tests {
             GenerationOutcome2::Failed { reason } => {
                 panic!("expected a real fallback to succeed, got Failed: {reason}")
             }
+        }
+    }
+
+    // ------------------------------------------------------------- usage counting
+
+    /// Keeps every call it is told of.
+    #[derive(Default)]
+    struct CollectingSink {
+        events: std::sync::Mutex<Vec<AiCallEvent>>,
+    }
+
+    impl CollectingSink {
+        fn events(&self) -> Vec<AiCallEvent> {
+            self.events.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl UsageSink for CollectingSink {
+        async fn record(&self, event: AiCallEvent) {
+            self.events.lock().unwrap().push(event);
+        }
+    }
+
+    /// Takes `delay` to answer.
+    struct SlowExecutor {
+        delay: Duration,
+    }
+
+    #[async_trait::async_trait]
+    impl AiExecutor for SlowExecutor {
+        async fn execute(
+            &self,
+            _provider_id: &str,
+            _model_id: &str,
+            _prompt: &str,
+        ) -> Result<ExecutionOutput, ExecutionError> {
+            tokio::time::sleep(self.delay).await;
+            ok_output("slowly")
+        }
+    }
+
+    fn with_tokens(prompt: u32, completion: u32) -> Result<ExecutionOutput, ExecutionError> {
+        Ok(ExecutionOutput {
+            text: "answer".to_string(),
+            usage: TokenUsage {
+                prompt_tokens: Some(prompt),
+                completion_tokens: Some(completion),
+            },
+        })
+    }
+
+    const UP_PRICE: ProviderPricing = ProviderPricing::Metered {
+        input_usd_per_1k: 0.5,
+        output_usd_per_1k: 1.5,
+    };
+
+    /// "down" (no price, and scores higher, so it is the primary) and "up" (which has a price).
+    fn down_and_priced_up(
+        down: Arc<RecordingExecutor>,
+        up: Arc<RecordingExecutor>,
+    ) -> AiInfrastructure {
+        let mut executors: HashMap<&'static str, Arc<dyn AiExecutor>> = HashMap::new();
+        executors.insert("down", down as Arc<dyn AiExecutor>);
+        executors.insert("up", up as Arc<dyn AiExecutor>);
+        let mut up_info = healthy_provider(
+            "up",
+            vec![healthy_model("m-up", "up", CapabilityLevel::Basic)],
+        );
+        up_info.pricing = UP_PRICE;
+        AiInfrastructure::new(
+            vec![
+                Arc::new(FakeDiscovery(healthy_provider(
+                    "down",
+                    vec![healthy_model("m-down", "down", CapabilityLevel::Strong)],
+                ))),
+                Arc::new(FakeDiscovery(up_info)),
+            ],
+            executors,
+        )
+    }
+
+    #[tokio::test]
+    async fn every_call_to_a_provider_is_reported_to_the_usage_sink_whether_it_answered_or_not() {
+        let sink = Arc::new(CollectingSink::default());
+        let down = Arc::new(RecordingExecutor::sequence(vec![Err(
+            ExecutionError::Timeout,
+        )]));
+        let up = Arc::new(RecordingExecutor::sequence(vec![with_tokens(2000, 500)]));
+        let infra = down_and_priced_up(down, up);
+        infra.set_usage_sink(sink.clone());
+
+        // "down" is asked first and does not answer; "up" answers in its place.
+        assert_eq!(
+            served_by(infra.generate(general_request()).await),
+            ("up".to_string(), true)
+        );
+        let events = sink.events();
+        assert_eq!(events.len(), 2, "one event for each call: {events:?}");
+        let (failed, answered) = (&events[0], &events[1]);
+
+        assert_eq!(
+            (
+                failed.provider.as_str(),
+                failed.model.as_str(),
+                failed.task,
+                failed.answered
+            ),
+            ("down", "m-down", AiTask::GeneralAi, false)
+        );
+        assert_eq!(
+            (
+                failed.prompt_tokens,
+                failed.completion_tokens,
+                failed.pricing
+            ),
+            (None, None, ProviderPricing::Unmetered),
+            "a call that did not answer has no tokens, and this provider has no price"
+        );
+
+        assert_eq!(
+            (
+                answered.provider.as_str(),
+                answered.model.as_str(),
+                answered.task,
+                answered.answered
+            ),
+            ("up", "m-up", AiTask::GeneralAi, true)
+        );
+        assert_eq!(
+            (answered.prompt_tokens, answered.completion_tokens),
+            (Some(2000), Some(500)),
+            "the counts the provider itself reported"
+        );
+        assert_eq!(
+            answered.pricing, UP_PRICE,
+            "the price the last discovery found"
+        );
+        // 2 thousand tokens in at $0.50 and half a thousand out at $1.50 come to $1.75.
+        assert_eq!(answered.cost_micros(), Some(1_750_000));
+    }
+
+    #[tokio::test]
+    async fn the_time_a_call_took_is_measured_around_the_call_itself() {
+        let sink = Arc::new(CollectingSink::default());
+        let mut executors: HashMap<&'static str, Arc<dyn AiExecutor>> = HashMap::new();
+        executors.insert(
+            "slow",
+            Arc::new(SlowExecutor {
+                delay: Duration::from_millis(80),
+            }),
+        );
+        let infra = AiInfrastructure::new(
+            vec![Arc::new(FakeDiscovery(healthy_provider(
+                "slow",
+                vec![healthy_model("m-slow", "slow", CapabilityLevel::Strong)],
+            )))],
+            executors,
+        );
+        infra.set_usage_sink(sink.clone());
+        served_by(infra.generate(general_request()).await);
+        let events = sink.events();
+        assert_eq!(events.len(), 1);
+        assert!(
+            (80..5_000).contains(&events[0].took_ms),
+            "it slept 80 ms: {}",
+            events[0].took_ms
+        );
+    }
+
+    #[tokio::test]
+    async fn a_provider_the_breaker_leaves_out_is_not_called_and_so_not_counted() {
+        let sink = Arc::new(CollectingSink::default());
+        let down = Arc::new(RecordingExecutor::sequence(vec![Err(
+            ExecutionError::Timeout,
+        )]));
+        let up = Arc::new(RecordingExecutor::sequence(vec![
+            with_tokens(1, 1),
+            with_tokens(1, 1),
+        ]));
+        let infra = down_and_priced_up(down, up).with_breaker(1, Duration::from_secs(60));
+        infra.set_usage_sink(sink.clone());
+
+        // The first call tries "down" (which cannot be reached, and is then left out), the second goes straight to "up".
+        served_by(infra.generate(general_request()).await);
+        served_by(infra.generate(general_request()).await);
+        let providers: Vec<(String, bool)> = sink
+            .events()
+            .iter()
+            .map(|e| (e.provider.clone(), e.answered))
+            .collect();
+        assert_eq!(
+            providers,
+            [
+                ("down".to_string(), false),
+                ("up".to_string(), true),
+                ("up".to_string(), true)
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_calls_of_a_task_chain_are_reported_too_each_under_the_task_they_were_for() {
+        let sink = Arc::new(CollectingSink::default());
+        let mut executors = HashMap::new();
+        let (a, _) = chain_provider(
+            &mut executors,
+            "a",
+            CapabilityLevel::Basic,
+            vec![Err(ExecutionError::Timeout)],
+        );
+        let (b, _) = chain_provider(
+            &mut executors,
+            "b",
+            CapabilityLevel::Basic,
+            vec![with_tokens(30, 40)],
+        );
+        let infra = AiInfrastructure::new(vec![a, b], executors);
+        infra
+            .set_settings(chain_settings(&[("a", "a-model"), ("b", "b-model")]))
+            .await;
+        infra.set_usage_sink(sink.clone());
+
+        served_by(infra.generate(generation_request()).await);
+        let events = sink.events();
+        let seen: Vec<(&str, AiTask, bool, Option<u32>)> = events
+            .iter()
+            .map(|e| (e.provider.as_str(), e.task, e.answered, e.prompt_tokens))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                ("a", AiTask::TestCaseGeneration, false, None),
+                ("b", AiTask::TestCaseGeneration, true, Some(30)),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_price_of_a_call_is_the_one_its_own_provider_has_and_none_for_a_provider_nobody_knows(
+    ) {
+        let sink = Arc::new(CollectingSink::default());
+        let infra = down_and_priced_up(
+            Arc::new(RecordingExecutor::sequence(vec![])),
+            Arc::new(RecordingExecutor::sequence(vec![ok_output("x")])),
+        );
+        infra.discover_all().await;
+        infra.set_usage_sink(sink.clone());
+
+        infra
+            .execute_for("up", "m-up", "hi", AiTask::GeneralAi)
+            .await
+            .unwrap();
+        let unknown = infra
+            .execute_for("ghost", "m", "hi", AiTask::GeneralAi)
+            .await;
+        assert!(unknown.is_err(), "no executor is wired for it");
+
+        let seen: Vec<(String, bool, ProviderPricing)> = sink
+            .events()
+            .iter()
+            .map(|e| (e.provider.clone(), e.answered, e.pricing))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                ("up".to_string(), true, UP_PRICE),
+                ("ghost".to_string(), false, ProviderPricing::Unmetered),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_usage_sink_takes_over_from_the_first() {
+        let (first, second) = (
+            Arc::new(CollectingSink::default()),
+            Arc::new(CollectingSink::default()),
+        );
+        let infra = down_and_priced_up(
+            Arc::new(RecordingExecutor::sequence(vec![])),
+            Arc::new(RecordingExecutor::sequence(vec![ok_output("x")])),
+        );
+        infra.set_usage_sink(first.clone());
+        infra.set_usage_sink(second.clone());
+        infra
+            .execute_for("up", "m-up", "hi", AiTask::GeneralAi)
+            .await
+            .unwrap();
+        assert_eq!((first.events().len(), second.events().len()), (0, 1));
+    }
+
+    #[test]
+    fn a_tasks_name_is_the_one_it_has_in_the_api() {
+        for task in [
+            AiTask::TestCaseGeneration,
+            AiTask::TestCaseCompilation,
+            AiTask::RequirementAnalysis,
+            AiTask::DocumentAnalysis,
+            AiTask::BugAnalysis,
+            AiTask::Traceability,
+            AiTask::SecurityAnalysis,
+            AiTask::PerformanceAnalysis,
+            AiTask::UiAnalysis,
+            AiTask::Embedding,
+            AiTask::GeneralAi,
+        ] {
+            assert_eq!(
+                serde_json::to_value(task).unwrap(),
+                serde_json::Value::String(task.name().to_string())
+            );
         }
     }
 }

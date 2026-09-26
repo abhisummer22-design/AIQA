@@ -150,7 +150,7 @@ pub struct ResolvedSkillInstruction {
 /// (built-in + session-only custom, `useSkillSelection.ts`), so this
 /// backend does not duplicate a second skill registry; it only resolves
 /// the *instruction* for whatever skills the caller says are selected.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillInput {
     pub id: String,
     pub name: String,
@@ -213,6 +213,19 @@ fn builtin_instruction(name: &str) -> Option<&'static str> {
              labelling, contrast), and interaction feedback (loading, error, empty, and success states) — \
              only where the requirement text actually describes a user-facing interface or interaction, \
              not a purely backend/API behavior.",
+        ),
+        // Non-Functional: the category of that name previously had no skill
+        // at all (`forentend/src/services/skillRegistry.ts`'s own comment on
+        // `categoryMatchedSkillIds` names this kind of gap), so ticking it
+        // generated nothing of the kind. It covers what the requirement text
+        // says about how the system must be, rather than what it must do.
+        "non-functional testing" => Some(
+            "Identify the quality-attribute scenarios the requirement text actually describes: performance \
+             (response time, throughput, capacity), reliability and availability (failure, recovery, uptime), \
+             security of data and access, usability and accessibility (keyboard, screen reader, contrast, \
+             responsive layout), compatibility (browsers, devices, platforms), and auditability or logging — \
+             using only the figures and limits the text states; where it gives none, describe the scenario \
+             qualitatively instead of inventing a number.",
         ),
         // Negative and Positive are a deliberate, real QA-convention pair —
         // each is a genuine narrowing of what Functional Testing already
@@ -587,7 +600,7 @@ pub enum Wave {
 }
 
 impl Wave {
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Wave::Base => "base",
             Wave::Dependent => "dependent",
@@ -611,7 +624,9 @@ impl Wave {
 fn wave_for_skill_name(name: &str) -> Wave {
     match name.trim().to_lowercase().as_str() {
         "rbac testing" | "business case testing" => Wave::Dependent,
-        "security testing" | "performance testing" => Wave::NonFunctional,
+        "security testing" | "performance testing" | "non-functional testing" => {
+            Wave::NonFunctional
+        }
         _ => Wave::Base,
     }
 }
@@ -646,7 +661,7 @@ pub fn partition_skills_into_waves(
 /// get extra scrutiny, but a test case it inspires still answers to the
 /// EVIDENCE RULES in `build_prompt` below — this section deliberately never
 /// introduces a second, looser evidence path.
-fn build_feedback_block(feedback: &FeedbackContext) -> String {
+pub(crate) fn build_feedback_block(feedback: &FeedbackContext) -> String {
     if feedback.risky_areas.is_empty()
         && feedback.confirmed_defect_patterns.is_empty()
         && feedback.similar_cases.is_empty()
@@ -736,7 +751,7 @@ fn build_feedback_block(feedback: &FeedbackContext) -> String {
 /// `build_feedback_block` — a Dependent/NonFunctional-wave case inspired by
 /// this section is still a variant grounded in the requirement text, not a
 /// license to invent one because an earlier wave merely mentioned a flow.
-fn build_prior_wave_block(prior_wave_cases: &[GeneratedTestCaseDraft]) -> String {
+pub(crate) fn build_prior_wave_block(prior_wave_cases: &[GeneratedTestCaseDraft]) -> String {
     if prior_wave_cases.is_empty() {
         return String::new();
     }
@@ -781,7 +796,7 @@ const MAX_VISIBILITY_ENTRIES: usize = 6;
 ///   scenario. The same real data `GET .../crawl/:run_id/result` already
 ///   returns to a direct caller; this is the one place it also feeds
 ///   forward into generation.
-fn build_crawl_context_block(crawl: Option<&crate::crawler::CrawlOutput>) -> String {
+pub(crate) fn build_crawl_context_block(crawl: Option<&crate::crawler::CrawlOutput>) -> String {
     let Some(crawl) = crawl else {
         return String::new();
     };
@@ -979,6 +994,17 @@ pub struct GeneratedTestCaseDraft {
     pub evidence: EvidenceKind,
     #[serde(default)]
     pub source_reference: Option<String>,
+    /// Requirement-driven generation only (`requirement_generation.rs`): the
+    /// id of the requirement this case tests. Absent from every other case,
+    /// and left out of the JSON when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requirement_id: Option<String>,
+    /// Requirement-driven generation only: the technique the case tests with
+    /// (`coverage::Technique`: positive, negative, edge, security, performance,
+    /// accessibility). The model is asked for it; when it is missing or not
+    /// one of those, the technique of the skill that wrote the case is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub technique: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1054,7 +1080,7 @@ fn validate_and_clean(cases: Vec<GeneratedTestCaseDraft>) -> Vec<GeneratedTestCa
 /// that does not actually appear there, rather than trusting the model's
 /// own say-so. This is the concrete, code-enforced difference between
 /// "the prompt asked for honesty" and "honesty is verified".
-fn enforce_traceability(
+pub(crate) fn enforce_traceability(
     mut cases: Vec<GeneratedTestCaseDraft>,
     requirement_text: &str,
 ) -> Vec<GeneratedTestCaseDraft> {
@@ -1084,7 +1110,7 @@ fn enforce_traceability(
 /// other's core words — enough to catch a model repeating the same
 /// scenario under near-identical titles across skills without requiring
 /// an embedding model this codebase has no infrastructure for.
-fn normalize_title(title: &str) -> String {
+pub(crate) fn normalize_title(title: &str) -> String {
     title
         .to_lowercase()
         .chars()
@@ -1122,7 +1148,7 @@ use crate::ai_router::{AiInfrastructure, AiRequest, AiTask, GenerationOutcome2};
 /// code fences first; if the remainder still isn't parseable at the
 /// top level, fall back to the outermost `{...}` span. Returns `None`
 /// when no plausible JSON object exists at all.
-fn extract_json_payload(text: &str) -> Option<String> {
+pub(crate) fn extract_json_payload(text: &str) -> Option<String> {
     let mut working = text.trim().to_string();
 
     // Strip one or more <think>...</think> blocks (qwen-style reasoning
@@ -1263,6 +1289,16 @@ pub struct WaveSummary {
     pub latency_ms: Option<u64>,
     pub failure_reason: Option<String>,
     pub skipped: bool,
+    /// Requirement-driven generation only: which batch of this skill's
+    /// requirements the call carried (`"2/5"`) and how many requirements
+    /// were in it. Absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub batch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requirements: Option<usize>,
+    /// Coverage top-up calls only: the technique the call was asked for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub technique: Option<String>,
 }
 
 impl WaveSummary {
@@ -1290,10 +1326,13 @@ impl WaveSummary {
             latency_ms: None,
             failure_reason: None,
             skipped: true,
+            batch: None,
+            requirements: None,
+            technique: None,
         }
     }
 
-    fn succeeded(&self) -> bool {
+    pub(crate) fn succeeded(&self) -> bool {
         !self.skipped && self.failure_reason.is_none()
     }
 }
@@ -1429,6 +1468,9 @@ async fn run_wave(
                 latency_ms: Some(latency_ms),
                 failure_reason: None,
                 skipped: false,
+                batch: None,
+                requirements: None,
+                technique: None,
             };
             (summary, cases)
         }
@@ -1448,6 +1490,9 @@ async fn run_wave(
                 latency_ms: None,
                 failure_reason: Some(reason),
                 skipped: false,
+                batch: None,
+                requirements: None,
+                technique: None,
             };
             (summary, Vec::new())
         }
@@ -1565,12 +1610,28 @@ pub async fn generate_test_cases(
         }
     }
 
+    finish_waves(waves, all_cases, deduplicate)
+}
+
+/// Turns the calls a generation made into its outcome: `Ai` when any call
+/// produced real cases (its top-level fields describe the LAST call that
+/// did), `Failed` — each distinct reason once — when every call failed.
+/// `dedupe` is the final, whole-run de-duplication of the merged cases.
+pub(crate) fn finish_waves(
+    waves: Vec<WaveSummary>,
+    all_cases: Vec<GeneratedTestCaseDraft>,
+    dedupe: fn(Vec<GeneratedTestCaseDraft>) -> Vec<GeneratedTestCaseDraft>,
+) -> GenerationOutcome {
     let Some(last_success) = waves.iter().rev().find(|w| w.succeeded()) else {
-        let reason = waves
-            .iter()
-            .filter_map(|w| w.failure_reason.as_deref())
-            .collect::<Vec<_>>()
-            .join("; ");
+        // Every skill call usually fails for the same reason (one provider is down or refusing), so say each
+        // distinct reason once instead of once per skill.
+        let mut reasons: Vec<&str> = Vec::new();
+        for reason in waves.iter().filter_map(|w| w.failure_reason.as_deref()) {
+            if !reasons.contains(&reason) {
+                reasons.push(reason);
+            }
+        }
+        let reason = reasons.join("; ");
         return GenerationOutcome::Failed {
             reason: if reason.is_empty() {
                 "no wave produced any output".to_string()
@@ -1611,7 +1672,7 @@ pub async fn generate_test_cases(
     // it not to — this is the same real, rule-based `deduplicate` every
     // single wave's own `validate_structured_output` already applies,
     // applied once more across the full merged set.
-    let deduped = deduplicate(all_cases);
+    let deduped = dedupe(all_cases);
 
     GenerationOutcome::Ai {
         cases: deduped,
@@ -1634,6 +1695,42 @@ fn validate_structured_output(
     result: &crate::ai_router::GenerationResult,
     requirement_text: &str,
 ) -> Result<GenerationOutcome, String> {
+    let cleaned = parse_and_clean(result)?;
+    let traced = enforce_traceability(cleaned, requirement_text);
+    let deduped = deduplicate(traced);
+
+    Ok(GenerationOutcome::Ai {
+        cases: deduped,
+        provider: result.provider.clone(),
+        model: result.model.clone(),
+        routing_score: result.routing_score,
+        fallback_used: result.fallback_used,
+        routing_mode: routing_mode_label(result),
+        prompt_tokens: result.prompt_tokens,
+        completion_tokens: result.completion_tokens,
+        latency_ms: result.latency_ms,
+        estimated_cost_usd: result.estimated_cost_usd,
+        // A single wave call has no sub-waves of its own to report —
+        // `generate_test_cases` is the only place that ever populates this.
+        waves: Vec::new(),
+    })
+}
+
+/// `"AUTO"` / `"MANUAL"`: the routing mode a result was produced under.
+pub(crate) fn routing_mode_label(result: &crate::ai_router::GenerationResult) -> String {
+    match result.routing_mode {
+        crate::ai_router::RoutingMode::Manual => "MANUAL".to_string(),
+        crate::ai_router::RoutingMode::Auto => "AUTO".to_string(),
+    }
+}
+
+/// The JSON out of a raw model response, parsed into drafts and stripped of
+/// the structurally unusable ones (a real failure reason when nothing usable
+/// is left). What every generation path does before it checks the cases
+/// against the text they were generated from.
+pub(crate) fn parse_and_clean(
+    result: &crate::ai_router::GenerationResult,
+) -> Result<Vec<GeneratedTestCaseDraft>, String> {
     let payload = match extract_json_payload(&result.text) {
         Some(p) => p,
         None => {
@@ -1662,27 +1759,7 @@ fn validate_structured_output(
     if cleaned.is_empty() {
         return Err("AI response contained no structurally valid test cases".to_string());
     }
-    let traced = enforce_traceability(cleaned, requirement_text);
-    let deduped = deduplicate(traced);
-
-    Ok(GenerationOutcome::Ai {
-        cases: deduped,
-        provider: result.provider.clone(),
-        model: result.model.clone(),
-        routing_score: result.routing_score,
-        fallback_used: result.fallback_used,
-        routing_mode: match result.routing_mode {
-            crate::ai_router::RoutingMode::Manual => "MANUAL".to_string(),
-            crate::ai_router::RoutingMode::Auto => "AUTO".to_string(),
-        },
-        prompt_tokens: result.prompt_tokens,
-        completion_tokens: result.completion_tokens,
-        latency_ms: result.latency_ms,
-        estimated_cost_usd: result.estimated_cost_usd,
-        // A single wave call has no sub-waves of its own to report —
-        // `generate_test_cases` is the only place that ever populates this.
-        waves: Vec::new(),
-    })
+    Ok(cleaned)
 }
 
 #[cfg(test)]
@@ -1754,6 +1831,39 @@ mod tests {
         // Real, distinct text — Spike and Load must never collapse into
         // the same instruction despite both being load-sensitive scenarios.
         assert_ne!(resolved[3].instruction, resolved[4].instruction);
+    }
+
+    /// The "Non-Functional" category had no skill at all, so ticking it
+    /// generated nothing of the kind.
+    #[test]
+    fn the_non_functional_skill_has_its_own_instruction_and_wave() {
+        let resolved = resolve_skill_instructions(&[skill("s-nf", "Non-Functional Testing", "")]);
+        let text = resolved[0].instruction.to_lowercase();
+        for word in [
+            "performance",
+            "reliability",
+            "usability",
+            "accessibility",
+            "compatibility",
+        ] {
+            assert!(text.contains(word), "{word}: {text}");
+        }
+        assert!(
+            text.contains("only the figures and limits the text states"),
+            "it must not invent numbers: {text}"
+        );
+        assert!(
+            !text.contains("custom skill"),
+            "it is a built-in, not the fallback text"
+        );
+        assert_eq!(
+            wave_for_skill_name("Non-Functional Testing"),
+            Wave::NonFunctional
+        );
+        assert_eq!(
+            wave_for_skill_name(" non-functional testing "),
+            Wave::NonFunctional
+        );
     }
 
     #[test]
@@ -2292,6 +2402,8 @@ mod tests {
             severity: "MAJOR".to_string(),
             evidence: EvidenceKind::Evidenced,
             source_reference: None,
+            requirement_id: None,
+            technique: None,
         }
     }
 
@@ -2538,6 +2650,8 @@ mod tests {
             severity: "MAJOR".to_string(),
             evidence: EvidenceKind::Evidenced,
             source_reference: Some("must be at least 8 characters".to_string()),
+            requirement_id: None,
+            technique: None,
         }
     }
 
@@ -3139,6 +3253,96 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_failure_every_skill_shares_is_reported_once_not_once_per_skill() {
+        let infra = infra_with_executor_error(ExecutionError::ProviderRejected {
+            status: 500,
+            message: "the provider is broken".to_string(),
+        });
+        let outcome = generate_test_cases(
+            &infra,
+            "Anything.",
+            &[
+                skill("s1", "Functional Testing", ""),
+                skill("s2", "Edge Case Analysis", ""),
+                skill("s3", "Security Testing", ""),
+            ],
+            &FeedbackContext::default(),
+            None,
+            None,
+        )
+        .await;
+        match outcome {
+            GenerationOutcome::Failed { reason } => {
+                assert_eq!(
+                    reason.matches("the provider is broken").count(),
+                    1,
+                    "the same reason from three skills must be said once: {reason}"
+                );
+            }
+            GenerationOutcome::Ai { .. } => {
+                panic!("a failing provider must never produce an Ai outcome")
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn different_failures_of_different_skills_are_all_still_reported() {
+        // Two skills fail differently (the first call times out, the next is refused), so both reasons must survive
+        // the de-duplication.
+        struct TimeoutThenRefusal(std::sync::atomic::AtomicUsize);
+        #[async_trait::async_trait]
+        impl crate::ai_router::AiExecutor for TimeoutThenRefusal {
+            async fn execute(
+                &self,
+                _provider_id: &str,
+                _model_id: &str,
+                _prompt: &str,
+            ) -> Result<crate::ai_router::ExecutionOutput, ExecutionError> {
+                if self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    Err(ExecutionError::Timeout)
+                } else {
+                    Err(ExecutionError::ProviderRejected {
+                        status: 429,
+                        message: "rate limited".to_string(),
+                    })
+                }
+            }
+        }
+        let mut executors: HashMap<&'static str, Arc<dyn crate::ai_router::AiExecutor>> =
+            HashMap::new();
+        executors.insert(
+            "mock",
+            Arc::new(TimeoutThenRefusal(std::sync::atomic::AtomicUsize::new(0))),
+        );
+        let infra = AiInfrastructure::new(
+            vec![Arc::new(FakeDiscovery(healthy_provider(
+                "mock",
+                vec![healthy_model("mock-model", "mock", CapabilityLevel::Strong)],
+            )))],
+            executors,
+        );
+        let outcome = generate_test_cases(
+            &infra,
+            "Anything.",
+            &[
+                skill("s1", "Functional Testing", ""),
+                skill("s2", "Edge Case Analysis", ""),
+            ],
+            &FeedbackContext::default(),
+            None,
+            None,
+        )
+        .await;
+        match outcome {
+            GenerationOutcome::Failed { reason } => {
+                assert!(reason.contains("TIMEOUT"), "{reason}");
+                assert!(reason.contains("rate limited"), "{reason}");
+            }
+            GenerationOutcome::Ai { .. } => panic!("no skill produced output"),
+        }
+    }
+
+    #[tokio::test]
     async fn integration_returns_failed_outcome_on_provider_timeout_never_a_fabricated_success() {
         let infra = infra_with_executor_error(ExecutionError::Timeout);
         let outcome = generate_test_cases(
@@ -3433,6 +3637,9 @@ mod tests {
             latency_ms: Some(latency_ms),
             failure_reason: None,
             skipped: false,
+            batch: None,
+            requirements: None,
+            technique: None,
         }
     }
 
@@ -3452,6 +3659,9 @@ mod tests {
             latency_ms: None,
             failure_reason: Some("timeout".to_string()),
             skipped: false,
+            batch: None,
+            requirements: None,
+            technique: None,
         }
     }
 

@@ -77,4 +77,20 @@ describe('categoryMatchedSkillIds', () => {
       expect(matched.get(skillId), `category "${category}" should match ${skillId}`).toBe(category);
     }
   });
+
+  /** Phase 4 — the "Non-Functional" category previously had no skill, so
+   *  ticking it (it is ticked by default) generated nothing of the kind. */
+  it('matches the Non-Functional category to its own real skill, using the real registry', () => {
+    const matched = categoryMatchedSkillIds(['Non-Functional'], BUILT_IN_SKILLS);
+    expect(matched.get('skill-non-functional-testing')).toBe('Non-Functional');
+    expect(matched.size).toBe(1);
+    expect(BUILT_IN_SKILLS.find((s) => s.id === 'skill-non-functional-testing')?.name).toBe('Non-Functional Testing');
+    // Not there when the category is not selected.
+    expect(categoryMatchedSkillIds(['Functional'], BUILT_IN_SKILLS).has('skill-non-functional-testing')).toBe(false);
+  });
+
+  it('keeps every built-in skill id unique', () => {
+    const ids = BUILT_IN_SKILLS.map((s) => s.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
 });

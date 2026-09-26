@@ -38,6 +38,8 @@ export interface TestGenerationFlowProps {
   generationState: GenerationExecutionState;
   lastGenerationResult: GenerateAiTestCasesResponse | null;
   generatedCasesCount: number;
+  /** Turns a provider id into the name to show; the id itself when not given. */
+  providerName?: (id: string) => string;
 }
 
 export const TestGenerationFlow: React.FC<TestGenerationFlowProps> = ({
@@ -47,6 +49,7 @@ export const TestGenerationFlow: React.FC<TestGenerationFlowProps> = ({
   generationState,
   lastGenerationResult,
   generatedCasesCount,
+  providerName = (id) => id,
 }) => {
   // Matches exactly what `buildRequirementText` (TestCaseGeneratorPage.tsx)
   // actually sends: every uploaded doc's slotId, regardless of status, and
@@ -68,7 +71,7 @@ export const TestGenerationFlow: React.FC<TestGenerationFlowProps> = ({
     : isFailed
       ? lastGenerationResult?.fallback_reason ?? 'No compatible model responded.'
       : isDone && lastGenerationResult?.provider && lastGenerationResult?.model
-        ? `${lastGenerationResult.provider} / ${lastGenerationResult.model}`
+        ? `${providerName(lastGenerationResult.provider)} / ${lastGenerationResult.model}`
         : 'Waiting to generate';
 
   return (

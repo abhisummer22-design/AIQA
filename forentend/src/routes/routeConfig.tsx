@@ -46,16 +46,23 @@ import {
   Smartphone,
   Sliders,
   Layers,
+  ListChecks,
+  Rocket,
   FileText,
   ScrollText,
   FileSearch,
   Activity,
   Gauge,
   Brain,
+  Coins,
+  FileJson,
+  CalendarClock,
   Settings,
 } from 'lucide-react';
 import { DashboardPage } from '../components/pages/DashboardPage';
 import { TestCaseGeneratorPage } from '../components/pages/TestCaseGeneratorPage';
+import { RequirementCoveragePage } from '../components/pages/RequirementCoveragePage';
+import { AutopilotPage } from '../components/pages/AutopilotPage';
 import { AIQAOrchestratorPage } from '../components/pages/AIQAOrchestratorPage';
 import { TestCaseValidatorPage } from '../components/pages/TestCaseValidatorPage';
 import { ExecutionHubPage } from '../components/pages/ExecutionHubPage';
@@ -70,6 +77,9 @@ import { AuditPage } from '../components/pages/AuditPage';
 import { EvidencePage } from '../components/pages/EvidencePage';
 import { TelemetryPage } from '../components/pages/TelemetryPage';
 import { QaIntelligenceDashboardPage } from '../components/pages/QaIntelligenceDashboardPage';
+import { AiUsagePage } from '../components/pages/AiUsagePage';
+import { OpenApiTestsPage } from '../components/pages/OpenApiTestsPage';
+import { RegressionPage } from '../components/pages/RegressionPage';
 import { SettingsPage } from '../components/pages/SettingsPage';
 import type { NavPage } from '../types';
 
@@ -159,6 +169,33 @@ export const routeDefs: RouteDef[] = [
     protectedRoute: true,
   },
   {
+    id: 'requirement-coverage',
+    path: '/requirement-coverage',
+    label: 'Requirement Coverage',
+    icon: ListChecks,
+    badge: 'NEW',
+    badgeType: 'info',
+    Component: RequirementCoveragePage,
+    // Phase 6: real (`gap_check.rs`, `POST .../gap-check`), built following the
+    // Dashboard/Test Generator visual language, same bucket as Audit/Evidence/
+    // ExecutionHub/Reports.
+    designStatus: 'new-follows-approved-language',
+    protectedRoute: true,
+  },
+  {
+    id: 'autopilot',
+    path: '/autopilot',
+    label: 'Autopilot',
+    icon: Rocket,
+    badge: 'NEW',
+    badgeType: 'info',
+    Component: AutopilotPage,
+    // Phase 7: real (`autopilot*.rs`, `.../autopilot/*`), built following the Dashboard/Test
+    // Generator visual language, same bucket as Requirement Coverage.
+    designStatus: 'new-follows-approved-language',
+    protectedRoute: true,
+  },
+  {
     id: 'orchestrator',
     path: '/orchestrator',
     label: 'AIQA Orchestrator',
@@ -217,6 +254,32 @@ export const routeDefs: RouteDef[] = [
     // the Dashboard/Test Generator visual language, same bucket as
     // CustomTestingPage/AuditPage/EvidencePage/ExecutionHubPage.
     Component: APITestingPage,
+    designStatus: 'new-follows-approved-language',
+    protectedRoute: true,
+  },
+  {
+    id: 'openapi-tests',
+    path: '/openapi-tests',
+    label: 'OpenAPI Tests',
+    icon: FileJson,
+    badge: 'NEW',
+    badgeType: 'info',
+    Component: OpenApiTestsPage,
+    // Phase 8B: real (`openapi_*.rs`, `.../openapi/*`), built following the Dashboard/Test Generator visual language, same bucket as
+    // API Testing and Autopilot.
+    designStatus: 'new-follows-approved-language',
+    protectedRoute: true,
+  },
+  {
+    id: 'regression',
+    path: '/regression',
+    label: 'Scheduled Regression',
+    icon: CalendarClock,
+    badge: 'NEW',
+    badgeType: 'info',
+    Component: RegressionPage,
+    // Phase 8C: real (`regression*.rs`, `.../regression/*`), built following the Dashboard/Test Generator visual language, same bucket as
+    // API Testing, Autopilot and OpenAPI Tests.
     designStatus: 'new-follows-approved-language',
     protectedRoute: true,
   },
@@ -318,6 +381,19 @@ export const routeDefs: RouteDef[] = [
     badge: 'NEW',
     badgeType: 'info',
     Component: QaIntelligenceDashboardPage,
+    designStatus: 'new-follows-approved-language',
+    protectedRoute: true,
+  },
+  {
+    id: 'ai-usage',
+    path: '/ai-usage',
+    label: 'AI Usage & Cost',
+    icon: Coins,
+    badge: 'NEW',
+    badgeType: 'info',
+    Component: AiUsagePage,
+    // Phase 8A: real (`ai_usage.rs`, `.../ai-usage`, `/ai/usage`), built following the Dashboard/Test Generator visual language, same
+    // bucket as Autopilot and Requirement Coverage.
     designStatus: 'new-follows-approved-language',
     protectedRoute: true,
   },

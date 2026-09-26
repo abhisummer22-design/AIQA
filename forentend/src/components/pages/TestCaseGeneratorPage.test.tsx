@@ -22,13 +22,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppShell } from '../../App';
 import { setApiKey } from '../../services/aiqaApi';
 import { parseWaveStartedSkillNames } from './TestCaseGeneratorPage';
-import type { GenerateAiTestCasesResponse, Project, TestCaseRow, RunDetail, CrawlOutput } from '../../types/contract';
+import type { GenerateAiPlanResponse, GenerateAiTestCasesResponse, GenerationWaveSummary, Project, RequirementRecord, TestCaseRow, RunDetail, CrawlOutput } from '../../types/contract';
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 }
 
 const PROJECT_A: Project = { id: 'proj-aud005', name: 'AUD-005 Project', description: null, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' };
+const PROJECT_B: Project = { id: 'proj-ambiance-2', name: 'A Brand New Project', description: null, created_at: '2026-01-02T00:00:00Z', updated_at: '2026-01-02T00:00:00Z' };
 
 function testCaseRow(overrides: Partial<TestCaseRow> = {}): TestCaseRow {
   return {
@@ -551,12 +552,14 @@ describe('TestCaseGeneratorPage — Phase 1 real AI generation', () => {
     await openAndSelectProject(PROJECT_A);
     await goToSourcesBranch();
 
+    // The skills panel has a "Select All (N)" of its own, and N is now 14 there too.
+    const categories = within(document.getElementById('test-generation-configuration-section')!);
     await act(async () => {
-      screen.getByText('Select All (14)').click();
+      categories.getByText('Select All (14)').click();
     });
 
     await act(async () => {
-      screen.getByText('Deselect All').click();
+      categories.getByText('Deselect All').click();
     });
 
     await act(async () => {
@@ -2122,18 +2125,23 @@ describe('TestCaseGeneratorPage — surviving in-app navigation', () => {
     expect(screen.queryByText(/could not be analyzed/)).toBeNull();
   }, 15000);
 
-  it('navigating away while generation is in flight cancels the real request, and a return shows the interruption honestly — without losing the uploaded document', async () => {
+  it('navigating away while generation is in flight leaves the real request running, and a return shows its real result honestly — without losing the uploaded document', async () => {
+    // Corrected alongside the project-switch fix, on the same direct
+    // feedback: leaving this page for another one is just a more complete
+    // version of "not looking at this project right now" than a same-page
+    // project switch already is — it must not cancel the request either.
     let capturedSignal: AbortSignal | undefined;
+    let resolveFetch: (value: Response) => void;
+    const pending = new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    });
     const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
       if (url.includes('/documents/extract-text')) {
         return jsonResponse(200, { text: 'Password must be at least 8 characters.', char_count: 40, truncated: false });
       }
       if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') {
         capturedSignal = init.signal ?? undefined;
-        // Never settles — a real aborted fetch does not resolve with a
-        // response either; what must recover from this is the page, not a
-        // stub response.
-        return new Promise<Response>(() => {});
+        return pending;
       }
       if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
       return dashboardResponseFor(url) ?? jsonResponse(200, []);
@@ -2151,28 +2159,1319 @@ describe('TestCaseGeneratorPage — surviving in-app navigation', () => {
       document.getElementById('btn-generate-test-cases-primary')!.click();
     });
     await waitFor(() => expect(screen.getByText('Generating Test Cases...')).toBeTruthy());
-    expect(capturedSignal, 'the real fetch call must carry a cancellable AbortSignal').toBeTruthy();
+    expect(capturedSignal, 'the real fetch call must carry a signal').toBeTruthy();
     expect(capturedSignal!.aborted).toBe(false);
 
     await goToDashboard();
 
-    // Leaving the page really cancelled the real request — not just a
-    // local flag this page stopped looking at (the real backend receives
-    // this and can genuinely stop the work, unlike before, when nothing
-    // ever told it the caller had gone). `resolveFetch` is deliberately
-    // never called anywhere in this test: the fix must correct the shown
-    // state at the moment the page is left, not wait on this — a real,
-    // aborted browser fetch never resolves with a response at all.
-    expect(capturedSignal!.aborted).toBe(true);
+    // Leaving the page never cancels a request still genuinely running for
+    // it — only whether this project's own real result eventually arrives
+    // matters, not whether this particular page instance is still around
+    // to see it happen.
+    expect(capturedSignal!.aborted).toBe(false);
+
+    await act(async () => {
+      resolveFetch(jsonResponse(200, aiGenerateResponse()));
+    });
 
     await goToGenerator();
 
-    expect(screen.getByText('Generation Failed')).toBeTruthy();
-    expect(screen.getByText(/navigated away before it finished/)).toBeTruthy();
-    // No fabricated AI response is shown for a call that was cancelled,
-    // not actually answered.
-    expect(screen.queryByText('Provider:')).toBeNull();
-    // And the document that was already uploaded is still here.
+    // The real result — reached while this page was gone — is shown
+    // exactly as if the navigation away had never happened.
+    await waitFor(() => expect(screen.getByText(/Generated Test Suite/)).toBeTruthy());
+    expect(screen.getAllByText('Reject login with an expired session token').length).toBeGreaterThan(0);
+    // And the document that was already uploaded is still here — a real
+    // completion switches to the Generated Cases branch, so check the one
+    // where an uploaded document is actually listed.
+    await goToSourcesBranch();
     expect(screen.getByText('requirements.frd.md')).toBeTruthy();
   }, 15000);
+
+  // Leaving and re-entering mounts a *new* instance of the page. The call
+  // that started the generation belongs to the old one, and only reaches the
+  // project's session when it finishes — the new instance has to pick that up.
+  it('coming back to the page before a generation finishes shows its result the moment it arrives', async () => {
+    let resolveFetch: (value: Response) => void;
+    const pending = new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    });
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') return pending;
+      if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+      return dashboardResponseFor(url) ?? jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+    await act(async () => {
+      document.getElementById('btn-generate-test-cases-primary')!.click();
+    });
+    await waitFor(() => expect(screen.getByText('Generating Test Cases...')).toBeTruthy());
+
+    await goToDashboard();
+    await goToGenerator();
+    expect(screen.getByText('Generating Test Cases...')).toBeTruthy();
+
+    await act(async () => {
+      resolveFetch(jsonResponse(200, aiGenerateResponse()));
+    });
+
+    await waitFor(() => expect(screen.getByText(/Generated Test Suite/)).toBeTruthy());
+    expect(screen.getAllByText('Reject login with an expired session token').length).toBeGreaterThan(0);
+    expect(screen.queryByText('Generating Test Cases...')).toBeNull();
+  }, 15000);
+
+  it('coming back before a generation finishes, a real failure that arrives then is shown as failed, not left running', async () => {
+    let resolveFetch: (value: Response) => void;
+    const pending = new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    });
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') return pending;
+      if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+      return dashboardResponseFor(url) ?? jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+    await act(async () => {
+      document.getElementById('btn-generate-test-cases-primary')!.click();
+    });
+    await waitFor(() => expect(screen.getByText('Generating Test Cases...')).toBeTruthy());
+
+    await goToDashboard();
+    await goToGenerator();
+    expect(screen.getByText('Generating Test Cases...')).toBeTruthy();
+
+    await act(async () => {
+      resolveFetch(
+        jsonResponse(500, { error: { code: 'INTERNAL_ERROR', message: 'An internal error occurred.', details: null, request_id: 'r-nav-1' } }),
+      );
+    });
+
+    await waitFor(() => expect(screen.getByText('Generation Failed')).toBeTruthy());
+    expect(screen.getByText(/An internal error occurred/)).toBeTruthy();
+    expect(screen.queryByText('Generating Test Cases...')).toBeNull();
+  }, 15000);
+});
+
+// =============================================== surviving a project switch
+//
+// Reported: test cases generated for a project called "ambiance" kept
+// showing after creating and switching to a brand-new project. A project
+// switch never unmounts this page (`realProjectId` comes from
+// `useProject()`, read inside an already-mounted page; the `key=` this page
+// itself puts on its own root `<div>` only remounts what's *inside* that
+// div, not the state above it that gets handed down as props) — nothing
+// reset `documents`/`generatedCases`/config when the selected project
+// changed under an already-open page.
+
+describe('TestCaseGeneratorPage — surviving a project switch', () => {
+  it('switching to a different project clears the previous one\'s generated cases, uploaded documents, and configuration', async () => {
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/documents/extract-text')) {
+        return jsonResponse(200, { text: 'Password must be at least 8 characters.', char_count: 40, truncated: false });
+      }
+      if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') return jsonResponse(200, aiGenerateResponse());
+      if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A, PROJECT_B]);
+      return jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+    await uploadFrd(fetchMock);
+    await act(async () => {
+      document.getElementById('cat-card-security')!.click();
+    });
+    await generate();
+
+    // Really generated, for "AUD-005 Project" — the real case, the real
+    // uploaded document, a non-default category selection, all present
+    // before the switch.
+    await waitFor(() => expect(screen.getByText(/Generated Test Suite/)).toBeTruthy());
+    expect(screen.getAllByText('Reject login with an expired session token').length).toBeGreaterThan(0);
+
+    await openAndSelectProject(PROJECT_B);
+
+    // None of "AUD-005 Project"'s state survives the switch.
+    expect(screen.queryByText('Reject login with an expired session token')).toBeNull();
+    expect(screen.queryByText('requirements.frd.md')).toBeNull();
+    expect(document.getElementById('generation-details-panel')).toBeNull();
+    expect(screen.getByText('Ready to Generate')).toBeTruthy();
+    // Back on the branch a fresh, never-generated project actually opens
+    // on, with an untouched category selection.
+    await waitFor(() => expect(screen.getByText('9 / 14 SELECTED')).toBeTruthy());
+    expect(document.querySelector('#doc-slot-frd')?.textContent).toContain('No document uploaded');
+  }, 20000);
+
+  it('switching projects mid-generation leaves the real request running instead of cancelling it, and its result reaches the project it was for even though a different project is now on screen', async () => {
+    // Corrected behaviour, reported directly: generating for "ambiance",
+    // switching away, then switching back must show "ambiance" exactly as
+    // it was left — including a generation that was genuinely still running
+    // the whole time — never a wipe and never an abort just because the
+    // user looked at a different project for a while.
+    let capturedSignal: AbortSignal | undefined;
+    let resolveFetch: (value: Response) => void;
+    const pending = new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    });
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') {
+        capturedSignal = init.signal ?? undefined;
+        return pending;
+      }
+      if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A, PROJECT_B]);
+      return jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+
+    await act(async () => {
+      document.getElementById('btn-generate-test-cases-primary')!.click();
+    });
+    await waitFor(() => expect(screen.getByText('Generating Test Cases...')).toBeTruthy());
+
+    await openAndSelectProject(PROJECT_B);
+
+    // The switch itself never cancels a request still genuinely running for
+    // the project it was left for — only truly leaving the page does that
+    // (the unmount-cleanup effect, exercised by the navigation tests above).
+    expect(capturedSignal!.aborted).toBe(false);
+    // "A Brand New Project" has never generated anything — its own fresh,
+    // untouched view, not "AUD-005 Project"'s in-progress one.
+    expect(screen.getByText('Ready to Generate')).toBeTruthy();
+
+    await act(async () => {
+      resolveFetch(jsonResponse(200, aiGenerateResponse()));
+    });
+
+    // Still on "A Brand New Project"'s own view, undisturbed — a completion
+    // that arrives for a project no longer on screen must never touch
+    // whatever a *different* project is currently showing.
+    expect(screen.getByText('Ready to Generate')).toBeTruthy();
+    expect(screen.queryByText('Reject login with an expired session token')).toBeNull();
+
+    await openAndSelectProject(PROJECT_A);
+
+    // Back on "AUD-005 Project": its own generation really did keep running
+    // in the background the whole time it was away, and its real result is
+    // exactly what is shown now — not a wipe, not a stuck spinner, not a
+    // fabricated failure.
+    await waitFor(() => expect(screen.getByText(/Generated Test Suite/)).toBeTruthy());
+    expect(screen.getAllByText('Reject login with an expired session token').length).toBeGreaterThan(0);
+  }, 15000);
+
+  it('switching back to a project while it is still generating shows it honestly still generating — not reset, not a fabricated error — and it completes live once the real request actually resolves', async () => {
+    let resolveFetch: (value: Response) => void;
+    const pending = new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    });
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') return pending;
+      if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A, PROJECT_B]);
+      return jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+
+    await act(async () => {
+      document.getElementById('btn-generate-test-cases-primary')!.click();
+    });
+    await waitFor(() => expect(screen.getByText('Generating Test Cases...')).toBeTruthy());
+
+    await openAndSelectProject(PROJECT_B);
+    expect(screen.getByText('Ready to Generate')).toBeTruthy();
+
+    await openAndSelectProject(PROJECT_A);
+
+    // The real request never actually finished — a return to this project
+    // must say so honestly, not silently drop back to "Ready to Generate".
+    expect(screen.getByText('Generating Test Cases...')).toBeTruthy();
+    // And merely looking at it again never fires a second real request.
+    expect(fetchMock.mock.calls.filter((c) => String(c[0]).includes('/test-cases/generate-ai')).length).toBe(1);
+
+    await act(async () => {
+      resolveFetch(jsonResponse(200, aiGenerateResponse()));
+    });
+
+    // Resolves while this project is genuinely the one on screen — reflected
+    // live, exactly as if the switch away and back had never happened.
+    await waitFor(() => expect(screen.getByText(/Generated Test Suite/)).toBeTruthy());
+    expect(screen.getAllByText('Reject login with an expired session token').length).toBeGreaterThan(0);
+  }, 15000);
+
+  it('the project this page opens already showing (nothing switched away from) keeps its own real, restored generation session', async () => {
+    // Not a regression this fix could cause, but the guard that makes the
+    // above possible (skip the reset when there was no real *previous*
+    // project) is new code, worth its own direct check rather than relying
+    // only on the broader "surviving in-app navigation" tests above to
+    // incidentally exercise it.
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') return jsonResponse(200, aiGenerateResponse());
+      if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+      return dashboardResponseFor(url) ?? jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+    await generate();
+    await waitFor(() => expect(screen.getByText(/Generated Test Suite/)).toBeTruthy());
+
+    await goToDashboard();
+    await goToGenerator();
+
+    // Still project A's real result — this fresh mount's very first sight
+    // of `realProjectId` (== PROJECT_A.id, already selected) must not be
+    // mistaken for "switched away from some other project".
+    expect(screen.getAllByText('Reject login with an expired session token').length).toBeGreaterThan(0);
+  }, 15000);
+});
+
+// ============================================== per-skill generation results
+//
+// One Generate click is one real AI call per selected skill. A skill whose
+// call fails (a provider rate limit, no compatible model, ...) contributes no
+// cases, but the run still reports "Completed" as long as any other skill
+// produced some — so the Generation Details panel lists each skill call.
+
+function waveSummary(overrides: Partial<GenerationWaveSummary> = {}): GenerationWaveSummary {
+  return {
+    wave: 'base',
+    skill_names: ['Functional Testing'],
+    case_count: 1,
+    provider: 'groq',
+    model: 'openai/gpt-oss-120b',
+    routing_score: 270,
+    fallback_used: false,
+    routing_mode: 'AUTO',
+    prompt_tokens: 6100,
+    completion_tokens: 1400,
+    estimated_cost_usd: 0,
+    latency_ms: 12300,
+    failure_reason: null,
+    skipped: false,
+    ...overrides,
+  };
+}
+
+const FAILED_NEGATIVE_WAVE = waveSummary({
+  skill_names: ['Negative Testing'],
+  case_count: 0,
+  provider: null,
+  model: null,
+  routing_score: null,
+  fallback_used: null,
+  routing_mode: null,
+  prompt_tokens: null,
+  completion_tokens: null,
+  estimated_cost_usd: null,
+  latency_ms: null,
+  failure_reason: 'PROVIDER_ERROR: HTTP 429: Rate limit reached for model on tokens per minute (TPM)',
+});
+
+const PARTIAL_RESPONSE = () => aiGenerateResponse({ waves: [waveSummary(), FAILED_NEGATIVE_WAVE] });
+
+describe('TestCaseGeneratorPage — per-skill generation results', () => {
+  it('lists which skill calls succeeded and which failed, with the reason, even though the run completed', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') return jsonResponse(200, PARTIAL_RESPONSE());
+        if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+        return jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+    await generate();
+
+    // The run itself still reads as completed — the panel is what says a skill is missing.
+    expect(screen.getByText('Test Cases Generated')).toBeTruthy();
+    const results = document.getElementById('generation-wave-results')!;
+    expect(within(results).getByText('Per-skill results: 1 of 2 succeeded')).toBeTruthy();
+    expect(within(results).getByText('Functional Testing')).toBeTruthy();
+    expect(within(results).getByText('groq / openai/gpt-oss-120b')).toBeTruthy();
+    expect(within(results).getByText('6100 in / 1400 out')).toBeTruthy();
+    expect(within(results).getByText('12.3s')).toBeTruthy();
+    expect(within(results).getByText(/Rate limit reached for model/)).toBeTruthy();
+    const warning = document.getElementById('generation-wave-warning')!;
+    expect(warning.textContent).toContain('1 skill call failed');
+    expect(warning.textContent).toContain('Negative Testing');
+  }, 15000);
+
+  it('shows no warning when every skill call succeeded, and no per-skill section for a response without waves', async () => {
+    const responses = [
+      aiGenerateResponse({ waves: [waveSummary(), waveSummary({ skill_names: ['Edge Case Analysis'] })] }),
+      aiGenerateResponse(),
+    ];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') return jsonResponse(200, responses.shift());
+        if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+        return jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+    await generate();
+
+    expect(within(document.getElementById('generation-wave-results')!).getByText('Per-skill results: 2 of 2 succeeded')).toBeTruthy();
+    expect(document.getElementById('generation-wave-warning')).toBeNull();
+
+    // A response from a backend that predates `waves` must still render exactly as before.
+    await goToSourcesBranch();
+    await generate();
+    expect(document.getElementById('generation-wave-results')).toBeNull();
+  }, 20000);
+
+  it('still shows the per-skill results after navigating away and back, for a generation that finished while the page was gone', async () => {
+    let resolveFetch: (value: Response) => void;
+    const pending = new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') return pending;
+        if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+        return dashboardResponseFor(url) ?? jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+    await act(async () => {
+      document.getElementById('btn-generate-test-cases-primary')!.click();
+    });
+    await waitFor(() => expect(screen.getByText('Generating Test Cases...')).toBeTruthy());
+
+    await goToDashboard();
+    await act(async () => {
+      resolveFetch(jsonResponse(200, PARTIAL_RESPONSE()));
+    });
+    await goToGenerator();
+
+    await waitFor(() => expect(document.getElementById('generation-wave-results')).toBeTruthy());
+    const results = document.getElementById('generation-wave-results')!;
+    expect(within(results).getByText('Per-skill results: 1 of 2 succeeded')).toBeTruthy();
+    expect(document.getElementById('generation-wave-warning')!.textContent).toContain('Negative Testing');
+  }, 15000);
+
+  it('shows the per-skill results the moment a generation finishes that an earlier instance of the page started', async () => {
+    let resolveFetch: (value: Response) => void;
+    const pending = new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') return pending;
+        if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+        return dashboardResponseFor(url) ?? jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+    await act(async () => {
+      document.getElementById('btn-generate-test-cases-primary')!.click();
+    });
+    await waitFor(() => expect(screen.getByText('Generating Test Cases...')).toBeTruthy());
+
+    // Back on a new instance of the page while the call is still running.
+    await goToDashboard();
+    await goToGenerator();
+    expect(screen.getByText('Generating Test Cases...')).toBeTruthy();
+    expect(document.getElementById('generation-wave-results')).toBeNull();
+
+    await act(async () => {
+      resolveFetch(jsonResponse(200, PARTIAL_RESPONSE()));
+    });
+
+    await waitFor(() => expect(document.getElementById('generation-wave-results')).toBeTruthy());
+    expect(within(document.getElementById('generation-wave-results')!).getByText('Per-skill results: 1 of 2 succeeded')).toBeTruthy();
+    expect(document.getElementById('generation-wave-warning')!.textContent).toContain('Negative Testing');
+  }, 15000);
+
+  it('keeps each project\'s own per-skill results — a fresh project shows none, and going back restores them', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') return jsonResponse(200, PARTIAL_RESPONSE());
+        if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A, PROJECT_B]);
+        return jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+    await generate();
+    expect(document.getElementById('generation-wave-results')).toBeTruthy();
+
+    await openAndSelectProject(PROJECT_B);
+    expect(document.getElementById('generation-wave-results')).toBeNull();
+    expect(document.getElementById('generation-details-panel')).toBeNull();
+
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(document.getElementById('generation-wave-results')).toBeTruthy());
+    expect(within(document.getElementById('generation-wave-results')!).getByText('Per-skill results: 1 of 2 succeeded')).toBeTruthy();
+  }, 20000);
+
+  it('drops the previous run\'s per-skill results when a later run fails while the page is gone', async () => {
+    let resolveSecond: (value: Response) => void;
+    const secondRun = new Promise<Response>((resolve) => {
+      resolveSecond = resolve;
+    });
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') {
+          calls += 1;
+          return calls === 1 ? jsonResponse(200, PARTIAL_RESPONSE()) : secondRun;
+        }
+        if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+        return dashboardResponseFor(url) ?? jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+    await generate();
+    expect(document.getElementById('generation-wave-results')).toBeTruthy();
+
+    await goToSourcesBranch();
+    await act(async () => {
+      document.getElementById('btn-generate-test-cases-primary')!.click();
+    });
+    await waitFor(() => expect(screen.getByText('Generating Test Cases...')).toBeTruthy());
+
+    await goToDashboard();
+    await act(async () => {
+      resolveSecond(
+        jsonResponse(500, { error: { code: 'INTERNAL_ERROR', message: 'An internal error occurred.', details: null, request_id: 'r-wave-1' } }),
+      );
+    });
+    await goToGenerator();
+
+    // The second run failed: its own reason is shown, and the first run's
+    // per-skill results no longer describe the latest attempt.
+    await waitFor(() => expect(screen.getByText(/An internal error occurred/)).toBeTruthy());
+    expect(document.getElementById('generation-wave-results')).toBeNull();
+  }, 20000);
+});
+
+// ============================================== provider names in Generation Details
+
+describe('TestCaseGeneratorPage — provider names', () => {
+  const CUSTOM_ID = 'custom-ai-3f2a9c1e-77d0-4a51-9b1f-0d2b6c5e8a10';
+  const CUSTOM_RESPONSE = () =>
+    aiGenerateResponse({
+      provider: CUSTOM_ID,
+      model: 'gpt-4o',
+      waves: [waveSummary({ provider: CUSTOM_ID, model: 'gpt-4o' })],
+    });
+
+  function serve(status: () => Response) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') return jsonResponse(200, CUSTOM_RESPONSE());
+        if (url.endsWith('/ai/status')) return status();
+        if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+        return jsonResponse(200, []);
+      }),
+    );
+  }
+
+  async function generateOnce() {
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+    await generate();
+  }
+
+  it('shows a provider added in Settings by the name it was given — in Generation Details, the flow, and each skill row — not its internal id', async () => {
+    serve(() =>
+      jsonResponse(200, {
+        providers: [{ id: CUSTOM_ID, name: 'My Paid API' }],
+        settings: { mode: 'AUTO', preferred_provider: null, preferred_model: null, fallback_enabled: true },
+        routing_preview: null,
+      }),
+    );
+
+    await generateOnce();
+
+    await waitFor(() => expect(document.getElementById('generation-details-panel')!.textContent).toContain('Provider: My Paid API'));
+    expect(within(document.getElementById('generation-wave-results')!).getByText('My Paid API / gpt-4o')).toBeTruthy();
+    await goToSourcesBranch();
+    expect(document.getElementById('test-generation-flow')!.textContent).toContain('My Paid API / gpt-4o');
+    expect(page().textContent).not.toContain(CUSTOM_ID);
+  }, 20000);
+
+  it('falls back to the id when the names cannot be read, and the result is still shown in full', async () => {
+    serve(() => jsonResponse(500, { error: { code: 'INTERNAL_ERROR', message: 'boom', details: null, request_id: 'r1' } }));
+
+    await generateOnce();
+
+    expect(document.getElementById('generation-details-panel')!.textContent).toContain(`Provider: ${CUSTOM_ID}`);
+    expect(within(document.getElementById('generation-wave-results')!).getByText(`${CUSTOM_ID} / gpt-4o`)).toBeTruthy();
+    expect(screen.getByText('Test Cases Generated')).toBeTruthy();
+  }, 20000);
+});
+
+// ============================================== Phase 3 — generating from numbered requirements
+//
+// The documents have always reached the model as pasted text. A document that
+// the backend also read into numbered requirements can instead be generated
+// from by id (opt-in, off by default): each skill is shown only the
+// requirements it tests, and every case names the requirement it came from.
+// Everything below is what the page sends and shows around that.
+
+describe('TestCaseGeneratorPage — Phase 3, generating from numbered requirements', () => {
+  const FRD_DOC_ID = '11111111-1111-4111-8111-111111111111';
+  const FRD_TEXT = 'Password must be at least 8 characters.';
+  const LOCKOUT = 'Users must be locked out after five failed attempts.';
+
+  function extraction(withRequirements: boolean, text = FRD_TEXT, documentId = FRD_DOC_ID) {
+    return {
+      text,
+      char_count: text.length,
+      truncated: false,
+      ...(withRequirements
+        ? {
+            requirements_document: {
+              document_id: documentId,
+              full_char_count: text.length,
+              full_truncated: false,
+              sections_count: 2,
+              requirements_count: 2,
+              skipped_sections: [],
+              by_kind: { functional: 2 },
+            },
+          }
+        : {}),
+    };
+  }
+
+  function requirementRow(key: string, text: string, documentId = FRD_DOC_ID): RequirementRecord {
+    return { document_id: documentId, key, ordinal: 0, section: '3.2 Login', kind: 'functional', text };
+  }
+
+  function planFor(overrides: Partial<GenerateAiPlanResponse> = {}): GenerateAiPlanResponse {
+    return {
+      requirements_total: 2,
+      by_kind: { functional: 2 },
+      offered: 2,
+      not_offered_keys: [],
+      calls: 2,
+      max_calls: 150,
+      within_limit: true,
+      skills: [{ skill_name: 'Functional Testing', wave: 'Base', requirements: 2, batches: 1 }],
+      budget_chars: 12000,
+      provider_name: 'Groq',
+      model: 'llama-3.3-70b',
+      prompt_window_tokens: 8000,
+      estimated_prompt_tokens: 3000,
+      estimated_completion_tokens: 1000,
+      ...overrides,
+    };
+  }
+
+  /** A case tied to a requirement, and one the model could not tie to any. */
+  function requirementResponse(): GenerateAiTestCasesResponse {
+    const base = aiGenerateResponse().test_cases[0];
+    return aiGenerateResponse({
+      test_cases: [
+        { ...base, title: 'Lock the account after five failed sign-ins', requirement_id: 'FR-012', technique: 'negative', source_reference: 'locked out after five failed attempts' },
+        { ...base, title: 'Reject a password shorter than eight characters', source_reference: 'at least 8 characters' },
+      ],
+      // What the backend adds to a requirement-driven run: how much of the
+      // requirement set it reached.
+      requirements: {
+        total: 2,
+        offered: 2,
+        covered: 1,
+        uncovered_keys: ['FR-013'],
+        not_offered_keys: [],
+        notes: [],
+        calls: 2,
+        budget_chars: 12000,
+      },
+    });
+  }
+
+  interface Seen {
+    generate: any[];
+    plans: any[];
+    lists: string[];
+    saved: any[];
+  }
+
+  function serve(opts: {
+    extractions?: Record<string, () => Response>;
+    generation?: () => Response | Promise<Response>;
+    requirements?: () => Response;
+  } = {}): Seen {
+    const seen: Seen = { generate: [], plans: [], lists: [], saved: [] };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/documents/extract-text')) {
+          const name = JSON.parse(String(init?.body)).file_name as string;
+          return (opts.extractions?.[name] ?? (() => jsonResponse(200, extraction(true))))();
+        }
+        if (url.endsWith('/generate-ai/plan') && init?.method === 'POST') {
+          seen.plans.push(JSON.parse(String(init.body)));
+          return jsonResponse(200, planFor());
+        }
+        if (url.includes('/test-cases/generate-ai') && init?.method === 'POST') {
+          const body = JSON.parse(String(init.body));
+          seen.generate.push(body);
+          // Like the backend: only a request that names documents is answered
+          // from requirements (cases tied to them, and a coverage report).
+          return (
+            opts.generation ??
+            (() => jsonResponse(200, body.requirement_document_ids ? requirementResponse() : aiGenerateResponse()))
+          )();
+        }
+        if (url.includes('/requirements')) {
+          seen.lists.push(url);
+          return (
+            opts.requirements ??
+            (() =>
+              jsonResponse(200, {
+                documents: [],
+                requirements: [requirementRow('FR-012', LOCKOUT), requirementRow('FR-013', FRD_TEXT)],
+              }))
+          )();
+        }
+        if (url.endsWith('/test-cases') && init?.method === 'POST') {
+          const body = JSON.parse(String(init.body));
+          seen.saved.push(body);
+          return jsonResponse(201, testCaseRow({ id: `case-${seen.saved.length}`, title: body.title }));
+        }
+        if (url.includes('/test-cases')) return jsonResponse(200, []);
+        if (url.endsWith('/projects')) return jsonResponse(200, [PROJECT_A, PROJECT_B]);
+        return dashboardResponseFor(url) ?? jsonResponse(200, []);
+      }),
+    );
+    return seen;
+  }
+
+  async function openGenerator(): Promise<void> {
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+  }
+
+  async function upload(slot: 'frd' | 'prd' | 'brd', fileName: string): Promise<void> {
+    await act(async () => {
+      fireEvent.change(document.querySelector(`#doc-slot-${slot} input[type=file]`) as HTMLInputElement, {
+        target: { files: [new File(['x'], fileName, { type: 'text/markdown' })] },
+      });
+    });
+    await waitFor(() => expect(screen.getByText(fileName)).toBeTruthy());
+  }
+
+  const toggle = () => screen.getByLabelText('Generate from the requirements of my uploaded documents') as HTMLInputElement;
+
+  async function turnOn(): Promise<void> {
+    await act(async () => {
+      fireEvent.click(toggle());
+    });
+    await waitFor(() => expect(document.getElementById('requirement-plan')).toBeTruthy(), { timeout: 5000 });
+  }
+
+  it('is off by default: the request pastes the document as it always did and names no documents, and no plan is asked for', async () => {
+    const seen = serve();
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+
+    expect(toggle().checked).toBe(false);
+    await generate();
+
+    expect(seen.generate).toHaveLength(1);
+    expect(seen.generate[0]).not.toHaveProperty('requirement_document_ids');
+    // Nor the depth or a top-up: those belong to a run from requirements.
+    expect(seen.generate[0]).not.toHaveProperty('depth');
+    expect(seen.generate[0]).not.toHaveProperty('coverage_top_up');
+    expect(seen.generate[0].requirement_text).toContain(FRD_TEXT);
+    expect(seen.plans).toHaveLength(0);
+    // A run from pasted text has no requirement set to report on.
+    expect(document.getElementById('requirement-coverage')).toBeNull();
+  }, 20000);
+
+  it('turned on: shows the plan, then names the documents in the request instead of pasting them, for exactly the skills the plan was worked out for', async () => {
+    const seen = serve();
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+
+    await turnOn();
+    expect(seen.plans.length).toBeGreaterThan(0);
+    await generate();
+
+    expect(seen.generate).toHaveLength(1);
+    const sent = seen.generate[0];
+    expect(sent.requirement_document_ids).toEqual([FRD_DOC_ID]);
+    // Settings still go with it; the document's own text does not.
+    expect(sent.requirement_text).toContain('Requested generation depth: STANDARD');
+    expect(sent.requirement_text).toContain('Functional');
+    expect(sent.requirement_text).not.toContain(FRD_TEXT);
+    // The plan was for the very skills and documents this request carries.
+    const lastPlan = seen.plans[seen.plans.length - 1];
+    expect(lastPlan.skills).toEqual(sent.skills);
+    expect(lastPlan.requirement_document_ids).toEqual(sent.requirement_document_ids);
+  }, 30000);
+
+  it('turned on, a document with text but no requirements is left out of the request (and named), while the note about one that could not be analyzed stays', async () => {
+    const seen = serve({
+      extractions: {
+        'PRD.md': () => jsonResponse(200, extraction(false, 'Legacy paste-only PRD text.')),
+        'BRD.doc': () =>
+          jsonResponse(400, { error: { code: 'VALIDATION_ERROR', message: 'legacy .doc is not supported for content extraction.', details: {}, request_id: 'r' } }),
+      },
+    });
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+    await upload('prd', 'PRD.md');
+    await upload('brd', 'BRD.doc');
+
+    await turnOn();
+    expect(screen.getByText(/Left out while this is on/).textContent).toContain('PRD (PRD.md)');
+    await generate();
+
+    const sent = seen.generate[0];
+    expect(sent.requirement_document_ids).toEqual([FRD_DOC_ID]);
+    expect(sent.requirement_text).not.toContain('Legacy paste-only PRD text.');
+    expect(sent.requirement_text).not.toContain(FRD_TEXT);
+    expect(sent.requirement_text).toContain('BRD.doc) is attached, but its real content could not be analyzed');
+  }, 30000);
+
+  it('turned on, a case tied to a requirement is saved under that requirement\'s id, document and text; one the model could not tie keeps its quote', async () => {
+    const PRD_DOC_ID = '22222222-2222-4222-8222-222222222222';
+    const seen = serve({
+      extractions: { 'PRD.md': () => jsonResponse(200, extraction(true, 'The PRD says something else.', PRD_DOC_ID)) },
+    });
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+    await upload('prd', 'PRD.md');
+    await turnOn();
+    await generate();
+
+    await waitFor(() => expect(screen.getByText(/Generated Test Suite/)).toBeTruthy());
+    expect(seen.lists.length).toBeGreaterThan(0);
+    await act(async () => {
+      document.getElementById('btn-save-to-project')!.click();
+    });
+    await waitFor(() => expect(seen.saved).toHaveLength(2));
+
+    const linked = seen.saved.find((c) => c.title === 'Lock the account after five failed sign-ins');
+    expect(linked.requirement_reference).toBe('FR-012');
+    expect(linked.source_requirement).toBe(LOCKOUT);
+    // The requirement's own document — not every document that was uploaded.
+    expect(linked.source_document).toBe('FRD');
+    expect(linked.traceability.requirementRef).toBe('FR-012 — cites: "locked out after five failed attempts"');
+    expect(linked.traceability.requirementText).toBe(LOCKOUT);
+    expect(JSON.parse(linked.test_data)).toMatchObject({ requirement_id: 'FR-012' });
+
+    const unlinked = seen.saved.find((c) => c.title === 'Reject a password shorter than eight characters');
+    expect(unlinked.requirement_reference).toBe('at least 8 characters');
+    expect(unlinked.source_document).toBe('FRD + PRD');
+    expect(unlinked.source_requirement).toContain('Requested generation depth: STANDARD');
+    expect(JSON.parse(unlinked.test_data)).not.toHaveProperty('requirement_id');
+  }, 30000);
+
+  it('still ties a case to its requirement by id when the requirements cannot be read back — it just falls back to the request text as the source', async () => {
+    const seen = serve({
+      requirements: () => jsonResponse(500, { error: { code: 'INTERNAL_ERROR', message: 'boom', details: null, request_id: 'r' } }),
+    });
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+    await turnOn();
+    await generate();
+
+    expect(screen.getByText('Test Cases Generated')).toBeTruthy();
+    await waitFor(() => expect(screen.getByText(/Generated Test Suite/)).toBeTruthy());
+    expect(seen.lists.length).toBeGreaterThan(0);
+    await act(async () => {
+      document.getElementById('btn-save-to-project')!.click();
+    });
+    await waitFor(() => expect(seen.saved).toHaveLength(2));
+
+    const linked = seen.saved.find((c) => c.title === 'Lock the account after five failed sign-ins');
+    expect(linked.requirement_reference).toBe('FR-012');
+    expect(linked.source_requirement).toContain('Requested generation depth: STANDARD');
+    expect(linked.source_document).toBe('FRD');
+  }, 30000);
+
+  it('does not tell two documents\' requirements apart by an id they share — the case keeps the id but claims no text', async () => {
+    const SRD_DOC_ID = '33333333-3333-4333-8333-333333333333';
+    const seen = serve({
+      requirements: () =>
+        jsonResponse(200, {
+          documents: [],
+          requirements: [requirementRow('FR-012', LOCKOUT), requirementRow('FR-012', 'A different rule.', SRD_DOC_ID)],
+        }),
+    });
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+    await turnOn();
+    await generate();
+
+    await waitFor(() => expect(screen.getByText(/Generated Test Suite/)).toBeTruthy());
+    expect(seen.lists.length).toBeGreaterThan(0);
+    await act(async () => {
+      document.getElementById('btn-save-to-project')!.click();
+    });
+    await waitFor(() => expect(seen.saved).toHaveLength(2));
+    const linked = seen.saved.find((c) => c.title === 'Lock the account after five failed sign-ins');
+    expect(linked.requirement_reference).toBe('FR-012');
+    expect(linked.source_requirement).not.toBe(LOCKOUT);
+    expect(linked.source_requirement).not.toBe('A different rule.');
+  }, 30000);
+
+  it('shows, in Generation Details, what the run reached of the requirement set — and which requirements got no case', async () => {
+    serve();
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+    await turnOn();
+    await generate();
+
+    const coverage = document.getElementById('requirement-coverage')!;
+    expect(document.getElementById('generation-details-panel')!.contains(coverage)).toBe(true);
+    expect(coverage.textContent).toContain('Requirements: 1 of 2 has a case');
+    expect(coverage.textContent).toContain('1 requirement was shown to a skill but got no case');
+    expect(coverage.textContent).toContain('FR-013');
+  }, 30000);
+
+  it('an older backend that reports no requirements: the option cannot be turned on and the document is pasted as always', async () => {
+    const seen = serve({ extractions: { 'FRD.md': () => jsonResponse(200, extraction(false)) } });
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+
+    expect(toggle().disabled).toBe(true);
+    expect(screen.getByText(/No uploaded document has requirements to generate from/)).toBeTruthy();
+    await generate();
+
+    expect(seen.generate[0]).not.toHaveProperty('requirement_document_ids');
+    expect(seen.generate[0].requirement_text).toContain(FRD_TEXT);
+    expect(seen.plans).toHaveLength(0);
+  }, 20000);
+
+  it('the choice is still on after a generation that finished while the page was gone', async () => {
+    let resolveGeneration: (value: Response) => void;
+    const pending = new Promise<Response>((resolve) => {
+      resolveGeneration = resolve;
+    });
+    const seen = serve({ generation: () => pending });
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+    await turnOn();
+    await act(async () => {
+      document.getElementById('btn-generate-test-cases-primary')!.click();
+    });
+    await waitFor(() => expect(screen.getByText('Generating Test Cases...')).toBeTruthy());
+    expect(seen.generate[0].requirement_document_ids).toEqual([FRD_DOC_ID]);
+
+    await goToDashboard();
+    await act(async () => {
+      resolveGeneration(jsonResponse(200, requirementResponse()));
+    });
+    await goToGenerator();
+    await goToSourcesBranch();
+
+    await waitFor(() => expect(toggle().checked).toBe(true));
+  }, 30000);
+
+  it('the choice is kept across leaving the page and coming back, and belongs to its own project', async () => {
+    serve();
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+    await turnOn();
+
+    await goToDashboard();
+    await goToGenerator();
+    await goToSourcesBranch();
+    await waitFor(() => expect(toggle().checked).toBe(true));
+
+    // A different project has no documents of its own and starts off.
+    await openAndSelectProject(PROJECT_B);
+    await waitFor(() => expect(toggle().checked).toBe(false));
+    expect(toggle().disabled).toBe(true);
+
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(toggle().checked).toBe(true));
+  }, 30000);
+
+  // ------------------------------------------------------------ Phase 4 — coverage
+
+  const topUpToggle = () => screen.getByLabelText('Fill coverage gaps with extra calls') as HTMLInputElement;
+
+  const depthSelect = () =>
+    [...document.querySelectorAll('select')].find((el) => [...el.options].some((o) => o.value === 'EXHAUSTIVE')) as HTMLSelectElement;
+
+  /** What the backend adds when a request names a depth. */
+  function responseWithMatrix(): GenerateAiTestCasesResponse {
+    const response = requirementResponse();
+    return {
+      ...response,
+      requirements: {
+        ...response.requirements!,
+        matrix: {
+          depth: 'STANDARD',
+          techniques: [
+            { technique: 'positive', applicable: 2, met: 2, short: 0, provided_by: 'Functional Testing' },
+            { technique: 'negative', applicable: 2, met: 1, short: 1, provided_by: 'Negative Testing' },
+          ],
+          gaps: [{ key: 'FR-013', kind: 'functional', missing: [{ technique: 'negative', have: 0, target: 1 }] }],
+          gap_total: 1,
+          complete: 1,
+          not_applicable: 0,
+          unlinked_cases: 1,
+          top_up: { rounds: 1, calls: 2, cases_added: 3, stopped: 'the call limit was reached' },
+        },
+      },
+    };
+  }
+
+  it('names the depth in a request from requirements, and asks for no top-up unless the option is ticked', async () => {
+    const seen = serve();
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+    await turnOn();
+    expect(topUpToggle().checked).toBe(false);
+    expect(seen.plans[seen.plans.length - 1].depth).toBe('STANDARD');
+    expect(seen.plans[seen.plans.length - 1]).not.toHaveProperty('coverage_top_up');
+
+    await generate();
+
+    expect(seen.generate[0].depth).toBe('STANDARD');
+    expect(seen.generate[0]).not.toHaveProperty('coverage_top_up');
+  }, 30000);
+
+  it('sends the depth chosen under Exploration Depth, and the plan is worked out for it too', async () => {
+    const seen = serve();
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+    await turnOn();
+
+    await act(async () => {
+      fireEvent.change(depthSelect(), { target: { value: 'EXHAUSTIVE' } });
+    });
+    await waitFor(() => expect(seen.plans[seen.plans.length - 1].depth).toBe('EXHAUSTIVE'), { timeout: 5000 });
+    await generate();
+
+    expect(seen.generate[0].depth).toBe('EXHAUSTIVE');
+  }, 30000);
+
+  it('asks for the gaps to be filled once the option is ticked — in the plan and in the request', async () => {
+    const seen = serve();
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+    await turnOn();
+
+    await act(async () => {
+      fireEvent.click(topUpToggle());
+    });
+    await waitFor(() => expect(seen.plans[seen.plans.length - 1].coverage_top_up).toBe(true), { timeout: 5000 });
+    await generate();
+
+    expect(seen.generate[0]).toMatchObject({ depth: 'STANDARD', coverage_top_up: true });
+  }, 30000);
+
+  it('sends neither depth nor top-up once the mode is turned off again, whatever was ticked before', async () => {
+    const seen = serve();
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+    await turnOn();
+    await act(async () => {
+      fireEvent.click(topUpToggle());
+    });
+    await act(async () => {
+      fireEvent.click(toggle());
+    });
+    expect(toggle().checked).toBe(false);
+
+    await generate();
+
+    expect(seen.generate[0]).not.toHaveProperty('requirement_document_ids');
+    expect(seen.generate[0]).not.toHaveProperty('depth');
+    expect(seen.generate[0]).not.toHaveProperty('coverage_top_up');
+    expect(seen.generate[0].requirement_text).toContain(FRD_TEXT);
+  }, 30000);
+
+  it('a case shows and keeps the technique it counts for: in its analysis, as a tag, and in its test data', async () => {
+    const seen = serve();
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+    await turnOn();
+    await generate();
+
+    await waitFor(() => expect(screen.getByText(/Generated Test Suite/)).toBeTruthy());
+    await act(async () => {
+      document.getElementById('btn-save-to-project')!.click();
+    });
+    await waitFor(() => expect(seen.saved).toHaveLength(2));
+
+    const linked = seen.saved.find((c) => c.title === 'Lock the account after five failed sign-ins');
+    expect(linked.tags).toContain('technique:negative');
+    expect(JSON.parse(linked.test_data)).toMatchObject({ requirement_id: 'FR-012', technique: 'negative' });
+    expect(linked.traceability.aiAnalysis).toContain('requirement: FR-012, technique: negative');
+    const unlinked = seen.saved.find((c) => c.title === 'Reject a password shorter than eight characters');
+    expect(unlinked.tags.some((t: string) => t.startsWith('technique:'))).toBe(false);
+    expect(JSON.parse(unlinked.test_data)).not.toHaveProperty('technique');
+  }, 30000);
+
+  it('shows the coverage by technique in Generation Details when the run has a matrix', async () => {
+    serve({ generation: () => jsonResponse(200, responseWithMatrix()) });
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+    await turnOn();
+    await generate();
+
+    const matrix = document.getElementById('coverage-matrix')!;
+    expect(document.getElementById('generation-details-panel')!.contains(matrix)).toBe(true);
+    expect(matrix.textContent).toContain('Coverage at Standard depth: 1 of 2 testable requirements have every technique that applies');
+    expect(matrix.textContent).toContain('Top-up: 1 round, 2 extra calls, 3 cases added — stopped because the call limit was reached.');
+    expect(matrix.textContent).toContain('FR-013 (Negative 0/1)');
+  }, 30000);
+
+  it('shows no coverage matrix for a run that has none', async () => {
+    serve();
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+    await turnOn();
+    await generate();
+
+    expect(document.getElementById('requirement-coverage')).toBeTruthy();
+    expect(document.getElementById('coverage-matrix')).toBeNull();
+  }, 30000);
+
+  it('keeps the top-up choice across leaving the page, and for its own project', async () => {
+    serve();
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+    await turnOn();
+    await act(async () => {
+      fireEvent.click(topUpToggle());
+    });
+    expect(topUpToggle().checked).toBe(true);
+
+    await goToDashboard();
+    await goToGenerator();
+    await goToSourcesBranch();
+    await waitFor(() => expect(topUpToggle().checked).toBe(true));
+
+    await openAndSelectProject(PROJECT_B);
+    await waitFor(() => expect(toggle().checked).toBe(false));
+    expect(screen.queryByLabelText('Fill coverage gaps with extra calls')).toBeNull();
+
+    await openAndSelectProject(PROJECT_A);
+    await waitFor(() => expect(topUpToggle().checked).toBe(true));
+  }, 40000);
+
+  it('the top-up choice is still there after a generation that finished while the page was gone', async () => {
+    let resolveGeneration: (value: Response) => void;
+    const pending = new Promise<Response>((resolve) => {
+      resolveGeneration = resolve;
+    });
+    const seen = serve({ generation: () => pending });
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+    await turnOn();
+    await act(async () => {
+      fireEvent.click(topUpToggle());
+    });
+    await act(async () => {
+      document.getElementById('btn-generate-test-cases-primary')!.click();
+    });
+    await waitFor(() => expect(screen.getByText('Generating Test Cases...')).toBeTruthy());
+    expect(seen.generate[0].coverage_top_up).toBe(true);
+
+    await goToDashboard();
+    await act(async () => {
+      resolveGeneration(jsonResponse(200, requirementResponse()));
+    });
+    await goToGenerator();
+    await goToSourcesBranch();
+
+    await waitFor(() => expect(topUpToggle().checked).toBe(true));
+  }, 40000);
+
+  it('the Non-Functional category, ticked by default, now brings the Non-Functional skill into a request', async () => {
+    const seen = serve();
+    await openGenerator();
+    await upload('frd', 'FRD.md');
+    await generate();
+
+    const ids: string[] = seen.generate[0].skills.map((s: { id: string }) => s.id);
+    expect(ids).toContain('skill-non-functional-testing');
+    expect(seen.generate[0].skills.find((s: { id: string }) => s.id === 'skill-non-functional-testing').name).toBe('Non-Functional Testing');
+  }, 30000);
+});
+
+// ============================================ Phase 5 — compile against the crawl
+
+describe('TestCaseGeneratorPage — compile and hand off against a finished crawl (Phase 5)', () => {
+  const GROUNDED_READY = {
+    status: 'READY',
+    test_case_id: 'case-approved',
+    execution_type: 'BROWSER',
+    target: 'https://target.example.com/dashboard',
+    actions: [
+      { type: 'NAVIGATE', url: 'https://target.example.com/login' },
+      { type: 'NAVIGATE', url: 'https://target.example.com/dashboard' },
+    ],
+    compiler: 'AI',
+    diagnostics: [],
+    provider: 'local',
+    model: 'qwen',
+    grounding: {
+      role: 'admin',
+      pages_in_crawl: 1,
+      pages_offered: 1,
+      elements_offered: 1,
+      login_steps: 4,
+      secrets: ['AIQA_LOGIN_ADMIN_PASSWORD', 'AIQA_LOGIN_ADMIN_USERNAME'],
+    },
+  };
+
+  /** A crawl that finishes with two roles, an approved case, and a record of what compile and handoff were sent. */
+  function setUp() {
+    const approved = testCaseRow({ id: 'case-approved', title: 'Ready for handoff', status: 'APPROVED' });
+    const compileBodies: unknown[] = [];
+    const handoffBodies: unknown[] = [];
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes('/crawl') && u.endsWith('/result')) {
+        return jsonResponse(200, {
+          roles: [
+            { role: 'anonymous', loginSucceeded: true, loginError: null, pages: crawlOutput().roles[0].pages },
+            { role: 'admin', loginSucceeded: true, loginError: null, pages: crawlOutput().roles[0].pages },
+          ],
+          visibilityMatrix: [],
+        });
+      }
+      if (u.includes('/crawl') && init?.method === 'POST') return jsonResponse(201, { run_id: 'crawl-run-1' });
+      if (u.includes('/executions/crawl-run-1')) {
+        return jsonResponse(200, runDetail({ state: 'COMPLETED', finished_at: new Date().toISOString() }));
+      }
+      if (u.includes('/compile')) {
+        compileBodies.push(init?.body === undefined ? undefined : JSON.parse(String(init.body)));
+        return jsonResponse(200, GROUNDED_READY);
+      }
+      if (u.includes('/handoff')) {
+        handoffBodies.push(JSON.parse(String(init?.body ?? '{}')));
+        return jsonResponse(201, { run_id: 'run-compiled', status: 'SCHEDULED', policy_notes: null });
+      }
+      if (u.includes('/test-cases')) return jsonResponse(200, [approved]);
+      if (u.endsWith('/projects')) return jsonResponse(200, [PROJECT_A]);
+      return jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return { compileBodies, handoffBodies };
+  }
+
+  async function crawlThenOpenCases() {
+    renderApp();
+    await verifyKey();
+    await waitFor(() => expect(page()).toBeTruthy());
+    await openAndSelectProject(PROJECT_A);
+    await goToSourcesBranch();
+    await act(async () => {
+      fireEvent.change(document.getElementById('crawl-target-url') as HTMLInputElement, { target: { value: 'https://target.example.com' } });
+    });
+    await act(async () => {
+      document.getElementById('btn-start-crawl')!.click();
+    });
+    await waitFor(() => expect(screen.getByText(/Crawled 1 real page/)).toBeTruthy(), { timeout: 10000 });
+    await goToGeneratedCasesBranch();
+    await waitFor(() => expect(screen.getAllByText('Ready for handoff').length).toBeGreaterThan(0));
+    fireEvent.change(document.getElementById('handoff-executor-select') as HTMLSelectElement, { target: { value: '__compile__' } });
+  }
+
+  it('a preview and a handoff compile against the crawl and the role chosen, and the response says what it was grounded in', async () => {
+    const { compileBodies, handoffBodies } = setUp();
+    await crawlThenOpenCases();
+
+    fireEvent.click(document.getElementById('compile-grounded-toggle') as HTMLInputElement);
+    const roles = Array.from((document.getElementById('compile-role-select') as HTMLSelectElement).options).map((o) => o.value);
+    expect(roles).toEqual(['', 'admin']);
+    fireEvent.change(document.getElementById('compile-role-select') as HTMLSelectElement, { target: { value: 'admin' } });
+    fireEvent.click(document.getElementById('btn-preview-compilation') as HTMLButtonElement);
+
+    await waitFor(() => expect(document.getElementById('compile-grounding-note')?.textContent).toContain('signing in as admin first'));
+    expect(compileBodies).toEqual([{ crawl_run_id: 'crawl-run-1', role: 'admin' }]);
+    expect(document.getElementById('compile-secrets-note')?.textContent).toContain('AIQA_LOGIN_ADMIN_PASSWORD');
+
+    fireEvent.click(document.getElementById('btn-handoff-test-case') as HTMLButtonElement);
+    await waitFor(() =>
+      expect(handoffBodies).toEqual([{ compile_and_execute: true, crawl_run_id: 'crawl-run-1', role: 'admin' }]),
+    );
+  }, 30000);
+
+  it('left alone, the compile and the handoff are exactly what they were before: no crawl, no role, no body on the preview', async () => {
+    const { compileBodies, handoffBodies } = setUp();
+    await crawlThenOpenCases();
+
+    expect((document.getElementById('compile-grounded-toggle') as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(document.getElementById('btn-preview-compilation') as HTMLButtonElement);
+    await waitFor(() => expect(document.getElementById('compile-preview-panel')?.textContent).toContain('READY'));
+    fireEvent.click(document.getElementById('btn-handoff-test-case') as HTMLButtonElement);
+
+    await waitFor(() => expect(handoffBodies).toEqual([{ compile_and_execute: true }]));
+    expect(compileBodies).toEqual([undefined]);
+  }, 30000);
 });

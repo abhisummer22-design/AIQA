@@ -39,6 +39,20 @@ import type {
   AiProviderInfo,
   AiSettings,
   AiStatusResponse,
+  AiUsageQuery,
+  AiUsageReport,
+  OpenApiPlan,
+  OpenApiReport,
+  OpenApiRequestBody,
+  OpenApiRunCreated,
+  OpenApiRunListRow,
+  RegressionReport,
+  RegressionRunAccount,
+  RegressionRunStarted,
+  RegressionSchedule,
+  RegressionScheduleBody,
+  RegressionScope,
+  TestSuiteRow,
   ApiErrorEnvelope,
   AuditLogResponse,
   CancelRunResponse,
@@ -60,14 +74,32 @@ import type {
   CreateExecutionResponse,
   CreateProjectRequest,
   CompilationOutcome,
+  CompileRequest,
   CustomTestingGenerateRequest,
   CustomTestingGenerateResponse,
   DashboardResponse,
   EvidenceRow,
   Finding,
   FindingAnalysis,
+  GenerateAiPlanRequest,
+  GenerateAiPlanResponse,
   GenerateAiTestCasesRequest,
   GenerateAiTestCasesResponse,
+  GapCheckRequest,
+  GapCheckResponse,
+  AutopilotApproveCasesResponse,
+  AutopilotCancelResponse,
+  AutopilotConfig,
+  AutopilotEstimate,
+  AutopilotEstimateRequest,
+  AutopilotEvent,
+  AutopilotReport,
+  AutopilotRun,
+  AutopilotRunDetail,
+  AutopilotStartRequest,
+  LoginSuggestionRequest,
+  LoginSuggestionResponse,
+  ListRequirementsResponse,
   StartCrawlRequest,
   CrawlStartedResponse,
   CrawlOutput,
@@ -583,8 +615,9 @@ export const aiqaApi = {
    *  `*_test_case_scoped` handlers). Replaces the Test Case Generator's
    *  previous local-only, React-state-only output. */
   testCases: {
-    list: (projectId: string, opts: { status?: TestCaseRow['status'] } = {}, signal?: AbortSignal) =>
-      requestJson<TestCaseRow[]>(`/projects/${projectId}/test-cases`, { query: { status: opts.status }, signal }),
+    /** `suiteId` narrows to one suite's cases (`?suite_id=`), as an autopilot run's gate lists the ones it wrote. */
+    list: (projectId: string, opts: { status?: TestCaseRow['status']; suiteId?: string } = {}, signal?: AbortSignal) =>
+      requestJson<TestCaseRow[]>(`/projects/${projectId}/test-cases`, { query: { status: opts.status, suite_id: opts.suiteId }, signal }),
     create: (projectId: string, body: CreateTestCaseRequest, signal?: AbortSignal) =>
       requestJson<TestCaseRow>(`/projects/${projectId}/test-cases`, { method: 'POST', body, signal }),
     get: (projectId: string, id: string, signal?: AbortSignal) =>
@@ -612,12 +645,22 @@ export const aiqaApi = {
      *  `Role::Operator` and a real, scoped project id, same as `.create()`. */
     generateAi: (projectId: string, body: GenerateAiTestCasesRequest, signal?: AbortSignal) =>
       requestJson<GenerateAiTestCasesResponse>(`/projects/${projectId}/test-cases/generate-ai`, { method: 'POST', body, signal }),
+    /** What a requirement-driven `generateAi` of these documents with these
+     *  skills would do — how many calls, how many requirements each skill is
+     *  shown, where the calls would go — worked out by the same planning the
+     *  run uses, without calling any model (`api.rs::plan_generate_ai_scoped`).
+     *  Requires `Role::Operator`, like the generation it previews. */
+    planGenerateAi: (projectId: string, body: GenerateAiPlanRequest, signal?: AbortSignal) =>
+      requestJson<GenerateAiPlanResponse>(`/projects/${projectId}/test-cases/generate-ai/plan`, { method: 'POST', body, signal }),
     /** Phase 2.1 — real, read-only compilation preview
      *  (`api.rs::compile_test_case_scoped`). Never mutates anything; safe
      *  to call to preview READY/NOT_EXECUTABLE/COMPILATION_FAILED/
-     *  COMPILATION_UNAVAILABLE before committing to a handoff. */
-    compile: (projectId: string, id: string, signal?: AbortSignal) =>
-      requestJson<CompilationOutcome>(`/projects/${projectId}/test-cases/${id}/compile`, { method: 'POST', signal }),
+     *  COMPILATION_UNAVAILABLE before committing to a handoff. Phase 5:
+     *  `body` may name a finished crawl (and the role the case runs as) to
+     *  compile against — omitted, nothing is sent and the compile is what it
+     *  always was. */
+    compile: (projectId: string, id: string, signal?: AbortSignal, body?: CompileRequest) =>
+      requestJson<CompilationOutcome>(`/projects/${projectId}/test-cases/${id}/compile`, { method: 'POST', body, signal }),
   },
 
   /** Phase 3 (Custom Testing) — real requirement -> AI strategy -> test
@@ -684,6 +727,141 @@ export const aiqaApi = {
       requestJson<ExtractDocumentTextResponse>(`/projects/${projectId}/documents/extract-text`, { method: 'POST', body, signal }),
   },
 
+  /** The numbered requirements read out of a project's uploaded documents
+   *  (`api.rs::list_requirements_scoped`) — the whole project's, or only
+   *  those of the documents named. Read-only (any role that can view the
+   *  project). */
+  requirements: {
+    list: (projectId: string, opts: { documentIds?: string[] } = {}, signal?: AbortSignal) =>
+      requestJson<ListRequirementsResponse>(`/projects/${projectId}/requirements`, {
+        query: { document_ids: opts.documentIds && opts.documentIds.length > 0 ? opts.documentIds.join(',') : undefined },
+        signal,
+      }),
+  },
+
+  /** Phase 6 — the requirements lined up against a crawl of the application and
+   *  against the cases that test them (`api.rs::gap_check_scoped`): which
+   *  requirements the pages show, which they do not, which pages no document
+   *  mentions. With no body it is free and needs no AI provider; `use_embeddings`
+   *  and `verify` (Operator role) also call the embedder and the router's AI. */
+  gapCheck: {
+    run: (projectId: string, body: GapCheckRequest = {}, signal?: AbortSignal) =>
+      requestJson<GapCheckResponse>(`/projects/${projectId}/gap-check`, { method: 'POST', body, signal }),
+  },
+
+  /** Phase 7 — a role's login steps, proposed from what a crawl saw on the login page (`login_suggest.rs`). The person
+   *  reads and confirms them; the values are `env:NAME` references, never credentials. `use_ai` (Operator role) also
+   *  asks the router's AI when the rules are not sure. */
+  loginSuggestion: {
+    suggest: (projectId: string, body: LoginSuggestionRequest, signal?: AbortSignal) =>
+      requestJson<LoginSuggestionResponse>(`/projects/${projectId}/login-suggestion`, { method: 'POST', body, signal }),
+  },
+
+  /** Phase 8B — API tests made from an OpenAPI/Swagger document, by rule and with no AI (`openapi_api.rs`). `plan` shows the cases
+   *  that would be made and does nothing; `runs.create` runs them as one execution; `runs.get` is the report (fills in while the run
+   *  goes; `final` says when it has ended). A request that changes data is run only with `include_unsafe`, and a credential is only
+   *  ever an `env:NAME` header value. */
+  openapi: {
+    plan: (projectId: string, body: OpenApiRequestBody, signal?: AbortSignal) =>
+      requestJson<OpenApiPlan>(`/projects/${projectId}/openapi/plan`, { method: 'POST', body, signal }),
+    runs: {
+      create: (projectId: string, body: OpenApiRequestBody, signal?: AbortSignal) =>
+        requestJson<OpenApiRunCreated>(`/projects/${projectId}/openapi/runs`, { method: 'POST', body, signal }),
+      list: (projectId: string, signal?: AbortSignal) => requestJson<{ runs: OpenApiRunListRow[] }>(`/projects/${projectId}/openapi/runs`, { signal }),
+      get: (projectId: string, id: string, signal?: AbortSignal) => requestJson<OpenApiReport>(`/projects/${projectId}/openapi/runs/${id}`, { signal }),
+      /** The same report as Markdown, to paste. */
+      markdown: (projectId: string, id: string, signal?: AbortSignal) =>
+        requestText(`/projects/${projectId}/openapi/runs/${id}`, { query: { format: 'markdown' }, signal }),
+      /** The same report as JUnit XML, for a CI system's test page (Phase 8D). */
+      junit: (projectId: string, id: string, signal?: AbortSignal) =>
+        requestText(`/projects/${projectId}/openapi/runs/${id}`, { query: { format: 'junit' }, signal }),
+    },
+  },
+
+  /** Phase 8C — scheduled regression (`regression_api.rs`): the cases a project has run once are run again on a schedule and compared
+   *  with the last time. `scope` shows what a schedule would repeat and what it could not; `schedules.runNow` makes a run as the person
+   *  asking; `runs.get` is a run's report (fills in while the run goes; `final` says when it has ended). */
+  regression: {
+    scope: (projectId: string, suiteId?: string | null, signal?: AbortSignal) =>
+      requestJson<RegressionScope>(`/projects/${projectId}/regression/scope`, { query: { suite_id: suiteId ?? undefined }, signal }),
+    schedules: {
+      list: (projectId: string, signal?: AbortSignal) =>
+        requestJson<{ schedules: RegressionSchedule[] }>(`/projects/${projectId}/regression/schedules`, { signal }),
+      create: (projectId: string, body: RegressionScheduleBody, signal?: AbortSignal) =>
+        requestJson<RegressionSchedule>(`/projects/${projectId}/regression/schedules`, { method: 'POST', body, signal }),
+      update: (projectId: string, id: string, body: RegressionScheduleBody, signal?: AbortSignal) =>
+        requestJson<RegressionSchedule>(`/projects/${projectId}/regression/schedules/${id}`, { method: 'PATCH', body, signal }),
+      remove: (projectId: string, id: string, signal?: AbortSignal) =>
+        requestVoid(`/projects/${projectId}/regression/schedules/${id}`, { method: 'DELETE', signal }),
+      runNow: (projectId: string, id: string, signal?: AbortSignal) =>
+        requestJson<RegressionRunStarted>(`/projects/${projectId}/regression/schedules/${id}/run`, { method: 'POST', signal }),
+      runs: (projectId: string, id: string, signal?: AbortSignal) =>
+        requestJson<{ runs: RegressionRunAccount[] }>(`/projects/${projectId}/regression/schedules/${id}/runs`, { signal }),
+    },
+    runs: {
+      get: (projectId: string, id: string, signal?: AbortSignal) =>
+        requestJson<RegressionReport>(`/projects/${projectId}/regression/runs/${id}`, { signal }),
+      /** The same report as Markdown, to paste. */
+      markdown: (projectId: string, id: string, signal?: AbortSignal) =>
+        requestText(`/projects/${projectId}/regression/runs/${id}`, { query: { format: 'markdown' }, signal }),
+      /** The same report as JUnit XML, for a CI system's test page (Phase 8D). */
+      junit: (projectId: string, id: string, signal?: AbortSignal) =>
+        requestText(`/projects/${projectId}/regression/runs/${id}`, { query: { format: 'junit' }, signal }),
+    },
+  },
+
+  /** A project's test suites, for choosing what a schedule repeats. */
+  testSuites: {
+    list: (projectId: string, signal?: AbortSignal) => requestJson<TestSuiteRow[]>(`/projects/${projectId}/test-suites`, { signal }),
+  },
+
+  /** Phase 7 — autopilot: from the uploaded requirements to a report of executed tests, in one run a person starts
+   *  knowing what it costs (`autopilot.rs`, `autopilot_api.rs`). Making a run starts nothing; it starts when its estimate
+   *  is accepted. */
+  autopilot: {
+    /** What a run would cost, as ranges, before anything is made. Reads only and calls no AI (Operator role). */
+    estimate: (projectId: string, body: AutopilotEstimateRequest = {}, signal?: AbortSignal) =>
+      requestJson<AutopilotEstimate>(`/projects/${projectId}/autopilot/estimate`, { method: 'POST', body, signal }),
+    runs: {
+      /** Makes a run with its estimate (starts nothing). */
+      create: (projectId: string, body: AutopilotConfig, signal?: AbortSignal) =>
+        requestJson<AutopilotRunDetail>(`/projects/${projectId}/autopilot/runs`, { method: 'POST', body, signal }),
+      list: (projectId: string, signal?: AbortSignal) =>
+        requestJson<{ runs: AutopilotRun[] }>(`/projects/${projectId}/autopilot/runs`, { signal }),
+      get: (projectId: string, runId: string, signal?: AbortSignal) =>
+        requestJson<AutopilotRunDetail>(`/projects/${projectId}/autopilot/runs/${runId}`, { signal }),
+      /** Accepts the estimate (and, for a run that would cost money, that cost) and starts the run. */
+      start: (projectId: string, runId: string, body: AutopilotStartRequest, signal?: AbortSignal) =>
+        requestJson<AutopilotRunDetail>(`/projects/${projectId}/autopilot/runs/${runId}/start`, { method: 'POST', body, signal }),
+      cancel: (projectId: string, runId: string, signal?: AbortSignal) =>
+        requestJson<AutopilotCancelResponse>(`/projects/${projectId}/autopilot/runs/${runId}/cancel`, { method: 'POST', signal }),
+      /** Lets a run that waits at the approval gate go on. */
+      continue: (projectId: string, runId: string, signal?: AbortSignal) =>
+        requestJson<AutopilotRunDetail>(`/projects/${projectId}/autopilot/runs/${runId}/continue`, { method: 'POST', signal }),
+      /** Takes a failed run over and starts it again at the step that failed. */
+      resume: (projectId: string, runId: string, signal?: AbortSignal) =>
+        requestJson<AutopilotRunDetail>(`/projects/${projectId}/autopilot/runs/${runId}/resume`, { method: 'POST', signal }),
+      /** Approves the run's validated cases (or the ones named), as the person asking. */
+      approveCases: (projectId: string, runId: string, caseIds?: string[], signal?: AbortSignal) =>
+        requestJson<AutopilotApproveCasesResponse>(`/projects/${projectId}/autopilot/runs/${runId}/approve-cases`, {
+          method: 'POST',
+          body: caseIds && caseIds.length > 0 ? { case_ids: caseIds } : {},
+          signal,
+        }),
+      /** The timeline, oldest first: the latest events, or those after event id `after`. */
+      events: (projectId: string, runId: string, opts: { after?: number; limit?: number } = {}, signal?: AbortSignal) =>
+        requestJson<{ events: AutopilotEvent[] }>(`/projects/${projectId}/autopilot/runs/${runId}/events`, {
+          query: { after: opts.after, limit: opts.limit },
+          signal,
+        }),
+      report: (projectId: string, runId: string, signal?: AbortSignal) =>
+        requestJson<AutopilotReport>(`/projects/${projectId}/autopilot/runs/${runId}/report`, { signal }),
+      /** The same report as Markdown, to paste. */
+      reportMarkdown: (projectId: string, runId: string, signal?: AbortSignal) =>
+        requestText(`/projects/${projectId}/autopilot/runs/${runId}/report`, { query: { format: 'markdown' }, signal }),
+    },
+  },
+
   /** Central AI Provider & Model Intelligence Layer
    *  (`services/orchestrator/src/ai_router.rs`) — real, platform-wide (not
    *  project-scoped) discovery/settings, matching that backend module's
@@ -693,6 +871,21 @@ export const aiqaApi = {
     getSettings: (signal?: AbortSignal) => requestJson<AiSettings>('/ai/settings', { signal }),
     updateSettings: (body: AiSettings, signal?: AbortSignal) => requestJson<AiSettings>('/ai/settings', { method: 'PUT', body, signal }),
     refresh: (signal?: AbortSignal) => requestJson<AiProviderInfo[]>('/ai/refresh', { method: 'POST', signal }),
+    /** Phase 8A — what the AI calls came to (`ai_usage.rs`): calls, failures, time, tokens and the cost of the priced ones, by
+     *  provider and model, by task and by day. `project` is one project's own (any key that may see the project); `everywhere`
+     *  is every project at once, split by project too, and takes a key that is not tied to one project (Admin role). */
+    usage: {
+      project: (projectId: string, query: AiUsageQuery = {}, signal?: AbortSignal) =>
+        requestJson<AiUsageReport>(`/projects/${projectId}/ai-usage`, {
+          query: { days: query.days, tz_offset_minutes: query.tz_offset_minutes },
+          signal,
+        }),
+      everywhere: (query: AiUsageQuery = {}, signal?: AbortSignal) =>
+        requestJson<AiUsageReport>('/ai/usage', {
+          query: { days: query.days, tz_offset_minutes: query.tz_offset_minutes },
+          signal,
+        }),
+    },
     /** Real, user-added AI providers (Settings UI ->
      *  `api.rs::create_custom_ai_provider` / `list_custom_ai_providers_handler`
      *  / `delete_custom_ai_provider_handler`) — persisted, and live for real

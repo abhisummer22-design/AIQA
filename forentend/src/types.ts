@@ -3,14 +3,20 @@
  * Core Domain Types & Data Models
  */
 
+import type { GenerateAiTestCasesResponse } from './types/contract';
+
 export type NavPage =
   | 'dashboard'
   | 'generator'
+  | 'requirement-coverage'
+  | 'autopilot'
   | 'orchestrator'
   | 'validator'
   | 'execution'
   | 'rbac'
   | 'api-testing'
+  | 'openapi-tests'
+  | 'regression'
   | 'performance-testing'
   | 'mobile-testing'
   | 'custom'
@@ -20,6 +26,7 @@ export type NavPage =
   | 'evidence'
   | 'telemetry'
   | 'intelligence'
+  | 'ai-usage'
   | 'settings';
 
 export type AIQAStatus =
@@ -113,6 +120,23 @@ export interface UploadedRequirementDoc {
    *  either way; this only means its content specifically isn't part of
    *  it. */
   extractionError?: string;
+  /** Phase 3 — set when the backend also read this file's WHOLE text (the
+   *  `extractedText` above stops at 20,000 characters) and split it into
+   *  numbered requirements. `requirementsDocumentId` is what a
+   *  requirement-driven generation names. All absent when the whole document
+   *  could not be stored (an older backend, or a database problem): the file
+   *  is then used exactly as before, as pasted text. */
+  requirementsDocumentId?: string;
+  /** Characters of the whole document that were read. */
+  fullCharCount?: number;
+  /** True only past the server's 3,000,000-character safety ceiling. */
+  fullTruncated?: boolean;
+  requirementsCount?: number;
+  sectionsCount?: number;
+  /** Sections left out on purpose (a table of contents, a revision history). */
+  skippedSections?: string[];
+  /** Requirements found, per kind (`functional`, `security`, ...). */
+  requirementsByKind?: Record<string, number>;
 }
 
 export type AppSourceType = 'STAGING' | 'DEMO' | 'LIVE' | 'FIGMA';
@@ -241,6 +265,11 @@ export interface GenerationSession {
    *  badge. `undefined`/`null` for `COMPLETED`/`IDLE`, or when the reason
    *  is not yet known. */
   generationError?: string | null;
+  /** The last real `generate-ai` response for this project, kept so a return
+   *  to it still shows which provider/model served each skill and which
+   *  skill calls failed. `null`/absent when the last attempt failed or none
+   *  has completed yet. */
+  lastGenerationResult?: GenerateAiTestCasesResponse | null;
   selectedCategories?: TestGenerationCategory[];
   documents?: UploadedRequirementDoc[];
   appSources?: Record<AppSourceType, AppSourceConnection>;
@@ -255,6 +284,15 @@ export interface GenerationSession {
    *  use these to vary generated content (see `TestCaseGeneratorPage.tsx`'s
    *  own doc comment on `handleTriggerGenerate`). */
   selectedSkillIds?: string[];
+  /** Phase 3 — whether the next generation is to use the numbered
+   *  requirements read out of the uploaded documents instead of pasting the
+   *  documents. Off unless the user turned it on, and absent on any session
+   *  from before it existed (which reads as off). */
+  requirementMode?: boolean;
+  /** Phase 4 — whether a requirement-driven generation is to fill the gaps
+   *  its coverage report shows, with extra calls. Off unless the user turned
+   *  it on; absent on any session from before it existed (reads as off). */
+  coverageTopUp?: boolean;
   generatedCases: GeneratedTestCase[];
   createdAt: string;
 }

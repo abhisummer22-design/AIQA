@@ -143,6 +143,16 @@ export interface CustomAiProviderView {
   id: string;
   name: string;
   base_url: string;
+  /** USD per 1,000 tokens in / out, as entered when the provider was added.
+   *  `null` (or absent, from an older backend) when no price was entered —
+   *  its cost then shows as free. */
+  input_usd_per_1k?: number | null;
+  output_usd_per_1k?: number | null;
+  /** When the key was given as `env:NAME`: the variable's name (not a
+   *  secret) and whether the server has it set right now. `null` when the
+   *  key itself is stored. */
+  api_key_env?: string | null;
+  api_key_env_set?: boolean | null;
   created_by: string;
   created_at: string;
 }
@@ -150,7 +160,12 @@ export interface CustomAiProviderView {
 export interface CreateCustomAiProviderRequest {
   name: string;
   base_url: string;
+  /** The key itself, or `env:NAME` to read it from an environment variable
+   *  on the server instead of storing it. */
   api_key: string;
+  /** What the provider charges, USD per 1,000 tokens. Both or neither. */
+  input_usd_per_1k?: number;
+  output_usd_per_1k?: number;
 }
 
 // ------------------------------------------------------------------- projects
@@ -532,6 +547,11 @@ export interface TestCaseHandoffRequest {
    *  ignored and the real backend compiler determines the real executor
    *  from the test case's own actual content instead. */
   compile_and_execute?: boolean;
+  /** Phase 5 — with `compile_and_execute`: compile against this finished
+   *  crawl run (see `CompileRequest`). Ignored without it. */
+  crawl_run_id?: string;
+  /** Phase 5 — with `crawl_run_id`: the crawl's role the case runs as. */
+  role?: string;
 }
 
 // ---------------------------------------------------- Phase 2.1: execution plan compiler
@@ -578,11 +598,37 @@ export interface ExecutionPlan {
  *  `COMPILATION_UNAVAILABLE` into one generic "can't run" message — they
  *  mean different real things (the case genuinely lacks information, vs.
  *  no AI provider was reachable to even try). */
-export type CompilationOutcome =
+export type CompilationOutcome = (
   | { status: 'READY'; test_case_id: string; execution_type: PlanExecutionType; target: string | null; actions: PlanAction[]; compiler: PlanCompilerMethod; diagnostics: string[]; provider: string | null; model: string | null }
   | { status: 'NOT_EXECUTABLE'; reasons: string[] }
   | { status: 'COMPILATION_FAILED'; reasons: string[] }
-  | { status: 'COMPILATION_UNAVAILABLE'; reason: string };
+  | { status: 'COMPILATION_UNAVAILABLE'; reason: string }
+) & {
+  /** Phase 5 — present only for a compile that named a crawl. */
+  grounding?: CompileGrounding;
+};
+
+/** `grounding.rs::GroundingReport` — what a compile against a crawl was
+ *  given. `secrets` are the *names* of the environment variables the login
+ *  reads when the test runs (never a value). */
+export interface CompileGrounding {
+  /** The crawl's role the case signs in as; `null` when it runs without signing in. */
+  role: string | null;
+  pages_in_crawl: number;
+  pages_offered: number;
+  elements_offered: number;
+  login_steps: number;
+  secrets: string[];
+}
+
+/** `POST .../test-cases/:id/compile` body (Phase 5) — optional. Naming a
+ *  finished crawl grounds the compile in it: the plan may use only selectors
+ *  that crawl found, and `role`'s login runs first. */
+export interface CompileRequest {
+  crawl_run_id?: string;
+  /** The crawl's role the case runs as; omitted, the crawl's role that never logged in. */
+  role?: string;
+}
 
 // ---------------------------------------------------------- Phase 4: API Testing
 
@@ -824,16 +870,90 @@ export interface VerifyApplicationSourceResponse {
 export interface ExtractDocumentTextRequest {
   file_name: string;
   content_base64: string;
+  /** Which upload slot the file came from (BRD / PRD / FRD / SRD /
+   *  ADDITIONAL). It only prefixes the ids given to the document's
+   *  requirements; omitted, the file name is used instead. */
+  document_type?: string;
 }
 
 /** `doc_extract.rs::ExtractedDocument` — the real, extracted text of one
  *  uploaded Product Documentation file. `truncated` is only ever true when
  *  the real document exceeded the server's cap (20,000 characters) and was
- *  genuinely cut off — never set for any other reason. */
+ *  genuinely cut off — never set for any other reason.
+ *
+ *  `text`/`char_count`/`truncated` describe that bounded text only. The whole
+ *  document is read as well: `requirements_document` says what was found in
+ *  all of it (absent when it could not be stored — the bounded `text` above
+ *  is then all there is, exactly as before). */
 export interface ExtractDocumentTextResponse {
   text: string;
   char_count: number;
   truncated: boolean;
+  requirements_document?: RequirementDocumentSummary;
+}
+
+/** `api.rs::RequirementKind` (`requirements.rs`, snake_case on the wire). */
+export type RequirementKind =
+  | 'functional'
+  | 'security'
+  | 'performance'
+  | 'usability'
+  | 'interface'
+  | 'data'
+  | 'context'
+  | 'reference';
+
+/** `coverage.rs::Technique` (snake_case on the wire) — one way of testing a
+ *  requirement. */
+export type CoverageTechnique = 'positive' | 'negative' | 'edge' | 'security' | 'performance' | 'accessibility';
+
+/** How much coverage a request asks for — the page's Exploration Depth. */
+export type CoverageDepth = 'SMOKE' | 'STANDARD' | 'EXHAUSTIVE' | 'CHAOS_EXPLORATORY';
+
+/** `api.rs::RequirementDocumentSummary` — what reading one whole document
+ *  produced. `full_char_count` is the whole document (the `text` beside it
+ *  stops at 20,000); `full_truncated` is true only past a 3,000,000-character
+ *  safety ceiling. `skipped_sections` are sections left out on purpose (a
+ *  table of contents, a revision history). */
+export interface RequirementDocumentSummary {
+  document_id: string;
+  full_char_count: number;
+  full_truncated: boolean;
+  sections_count: number;
+  requirements_count: number;
+  skipped_sections: string[];
+  by_kind: Partial<Record<RequirementKind, number>>;
+}
+
+/** `store.rs::RequirementDocumentRow` — a document read for its requirements. */
+export interface RequirementDocumentRecord {
+  id: string;
+  file_name: string;
+  doc_type: string | null;
+  char_count: number;
+  requirements_count: number;
+  sections_count: number;
+  skipped_sections: string[];
+  furniture_lines: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** `store.rs::RequirementRow` — one numbered requirement read out of a
+ *  document. `key` is the id people see and a generated test case carries. */
+export interface RequirementRecord {
+  document_id: string;
+  key: string;
+  ordinal: number;
+  section: string | null;
+  kind: RequirementKind | string;
+  text: string;
+}
+
+/** `GET .../requirements[?document_ids=a,b]`. */
+export interface ListRequirementsResponse {
+  documents: RequirementDocumentRecord[];
+  requirements: RequirementRecord[];
 }
 
 // ---------------------------------------------------- AI-powered test generation
@@ -864,6 +984,91 @@ export interface GenerateAiTestCasesRequest {
   requirement_text: string;
   skills: GenerateAiSkillInput[];
   crawl_run_id?: string | null;
+  /** Generate from the numbered requirements read out of these documents
+   *  (`ExtractDocumentTextResponse.requirements_document.document_id`)
+   *  instead of from pasted document text: each skill is shown only the
+   *  requirements it tests, in batches that fit the provider, and every case
+   *  names the requirement it came from. Omitted or empty, the request is
+   *  generated exactly as it always was. */
+  requirement_document_ids?: string[];
+  /** Phase 4 — with `requirement_document_ids`: the depth asked for. It turns
+   *  on the coverage report (which techniques each requirement was tested
+   *  with, against that depth's targets). Ignored without documents. */
+  depth?: CoverageDepth;
+  /** Phase 4 — after the first pass, make extra calls for the requirements
+   *  that are short of the depth's targets. Needs `depth`. */
+  coverage_top_up?: boolean;
+}
+
+/** `POST .../test-cases/generate-ai/plan` request — the same documents and
+ *  skills a generation would use; nothing is generated. */
+export interface GenerateAiPlanRequest {
+  skills: GenerateAiSkillInput[];
+  requirement_document_ids: string[];
+  /** Phase 4 — with a depth, the plan also says which techniques would be
+   *  covered and what a top-up may add. */
+  depth?: CoverageDepth;
+  coverage_top_up?: boolean;
+}
+
+/** `coverage.rs::TechniquePlan` — one technique's line in the plan. */
+export interface CoverageTechniquePlan {
+  technique: CoverageTechnique;
+  /** Requirements it has a target for at this depth. */
+  requirements: number;
+  /** Cases each of those should get. */
+  per_requirement: number;
+  /** The selected skill that provides it; `null` when none does (it is then
+   *  never attempted). */
+  provided_by: string | null;
+}
+
+/** `coverage.rs::CoveragePlan` — what a depth would cover, worked out before
+ *  any model is called. `top_up_call_limit` is what is left of the request's
+ *  call limit after the first pass. */
+export interface CoveragePlan {
+  depth: CoverageDepth;
+  techniques: CoverageTechniquePlan[];
+  top_up: boolean;
+  top_up_rounds: number;
+  top_up_call_limit: number;
+}
+
+/** `requirement_generation.rs::SkillPlan` — what one skill would be shown.
+ *  `note` is set when it would be skipped (nothing to test). */
+export interface GenerateAiPlanSkill {
+  skill_name: string;
+  wave: string;
+  requirements: number;
+  batches: number;
+  note?: string;
+}
+
+/** `api.rs::GeneratePlanResponse` — what a requirement-driven generation
+ *  would do, worked out by the same planning the run uses without calling any
+ *  model. `calls > max_calls` (`within_limit: false`) is refused by the
+ *  generation endpoint before any call is made. The token figures are rough
+ *  sizes, not a quote. `provider_name`/`model`/`prompt_window_tokens` are
+ *  absent when no provider can serve generation right now. */
+export interface GenerateAiPlanResponse {
+  requirements_total: number;
+  by_kind: Partial<Record<RequirementKind, number>>;
+  /** Requirements at least one selected skill will be shown. */
+  offered: number;
+  /** Of a kind no selected skill tests (at most 100 ids). */
+  not_offered_keys: string[];
+  calls: number;
+  max_calls: number;
+  within_limit: boolean;
+  skills: GenerateAiPlanSkill[];
+  budget_chars: number;
+  provider_name: string | null;
+  model: string | null;
+  prompt_window_tokens: number | null;
+  estimated_prompt_tokens: number;
+  estimated_completion_tokens: number;
+  /** Present only when the request named a depth. */
+  coverage?: CoveragePlan;
 }
 
 /** `ai_generation.rs::DraftStep`. */
@@ -891,6 +1096,115 @@ export interface GeneratedTestCaseDraft {
   severity: string;
   evidence: GenerationEvidenceKind;
   source_reference: string | null;
+  /** Requirement-driven generation only: the id
+   *  (`RequirementRecord.key`) of the requirement this case tests. Absent
+   *  when the case could not be tied to one requirement, and always absent
+   *  for a request generated from pasted text. */
+  requirement_id?: string | null;
+  /** Requirement-driven generation only: the technique the case counts for
+   *  (`CoverageTechnique`) — the model's own label, else what its skill is
+   *  about. Absent for a request generated from pasted text. */
+  technique?: CoverageTechnique | string | null;
+}
+
+/** `ai_generation::WaveSummary` — one selected skill's real generation call.
+ *  `failure_reason` is set (and `case_count` is 0) when that call failed; the
+ *  other skills' cases are still returned. */
+export interface GenerationWaveSummary {
+  wave: string;
+  skill_names: string[];
+  case_count: number;
+  provider: string | null;
+  model: string | null;
+  routing_score: number | null;
+  fallback_used: boolean | null;
+  routing_mode: string | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  estimated_cost_usd: number | null;
+  latency_ms: number | null;
+  failure_reason: string | null;
+  skipped: boolean;
+  /** Requirement-driven generation only: which batch of the skill's
+   *  requirements this call carried (`"2/5"`) and how many requirements were
+   *  in it. */
+  batch?: string;
+  requirements?: number;
+  /** Coverage top-up calls only (`wave` is then `"top_up"`, and `batch` is the
+   *  call's place among its round's calls): the technique the call was for. */
+  technique?: string;
+}
+
+/** `coverage.rs::TechniqueSummary` — one technique across the whole
+ *  requirement set. `provided_by` is `null` when no selected skill provides
+ *  it: it is then never attempted, and `short` is what selecting one would
+ *  address. */
+export interface CoverageTechniqueSummary {
+  technique: CoverageTechnique;
+  /** Requirements the technique has a target for at this depth. */
+  applicable: number;
+  met: number;
+  short: number;
+  provided_by: string | null;
+}
+
+export interface CoverageMissingTechnique {
+  technique: CoverageTechnique;
+  have: number;
+  target: number;
+}
+
+/** `coverage.rs::RequirementGap` — a requirement below target for a technique
+ *  a selected skill provides. */
+export interface CoverageRequirementGap {
+  key: string;
+  kind: string;
+  missing: CoverageMissingTechnique[];
+}
+
+/** `coverage.rs::TopUpSummary` — what a coverage top-up did. */
+export interface CoverageTopUpSummary {
+  rounds: number;
+  calls: number;
+  cases_added: number;
+  /** Why it stopped, in words ("every target is met", "the call limit was
+   *  reached", ...). */
+  stopped: string;
+}
+
+/** `coverage.rs::CoverageMatrix` — which techniques each requirement was
+ *  tested with, against the depth asked for. `gaps` lists at most 200
+ *  requirements; `gap_total` is the real count. */
+export interface CoverageMatrix {
+  depth: CoverageDepth;
+  techniques: CoverageTechniqueSummary[];
+  gaps: CoverageRequirementGap[];
+  gap_total: number;
+  /** Requirements that reached the target for every technique that applies. */
+  complete: number;
+  /** Requirements no technique applies to (background text, reference). */
+  not_applicable: number;
+  /** Cases tied to no requirement, which count for none. */
+  unlinked_cases: number;
+  top_up?: CoverageTopUpSummary;
+}
+
+/** `requirement_generation.rs::RequirementCoverage` — how much of the
+ *  requirement set a requirement-driven run reached. `uncovered_keys` were
+ *  shown to a skill but produced no case (a failed call, or nothing to test);
+ *  `not_offered_keys` are of a kind no selected skill tests. Both list at
+ *  most 100 ids. */
+export interface RequirementCoverage {
+  total: number;
+  offered: number;
+  covered: number;
+  uncovered_keys: string[];
+  not_offered_keys: string[];
+  notes: string[];
+  calls: number;
+  budget_chars: number;
+  /** Present only when the request named a depth. */
+  matrix?: CoverageMatrix;
 }
 
 /** `api.rs::GenerateAiTestCasesResponse`. `generation_method` is always
@@ -905,6 +1219,8 @@ export interface GenerateAiTestCasesResponse {
   provider: string | null;
   model: string | null;
   fallback_reason: string | null;
+  /** The real per-skill breakdown, one entry per skill call that was made. */
+  waves?: GenerationWaveSummary[];
   /** How many real, distinct pages from `crawl_run_id`'s crawl actually
    *  reached the prompt (0 when no `crawl_run_id` was supplied) — an honest
    *  confirmation of real grounding, not a claim to take on faith. */
@@ -929,6 +1245,8 @@ export interface GenerateAiTestCasesResponse {
   total_completion_tokens: number | null;
   total_estimated_cost_usd: number | null;
   total_latency_ms: number;
+  /** Present only when the request named `requirement_document_ids`. */
+  requirements?: RequirementCoverage;
 }
 
 // ---------------------------------------------------------------- crawler
@@ -947,6 +1265,9 @@ export interface CrawlRole {
 export interface StartCrawlRequest {
   base_url: string;
   roles: CrawlRole[];
+  /** Visit first the pages the project's requirements are about
+   *  (`gap_check::focus_terms`); off unless set. */
+  focus_requirements?: boolean;
 }
 
 /** `api.rs::CrawlStartedResponse`. The crawl runs through the exact same
@@ -999,6 +1320,153 @@ export interface VisibilityDiffEntry {
 export interface CrawlOutput {
   roles: RoleCrawlResult[];
   visibility_matrix: VisibilityDiffEntry[];
+}
+
+// ------------------------------------------------------------- gap check
+
+/** `gap_check.rs::Status` — how well the application shows a requirement. */
+export type GapStatus = 'FOUND' | 'WEAK' | 'MISSING' | 'NOT_CHECKABLE';
+
+/** `gap_check.rs::Basis` — what a page match rests on: words the requirement and
+ *  the page share (`text`), a page close in meaning to it (`embedding`), or a page
+ *  the AI read and agreed with (`ai`). */
+export type GapBasis = 'text' | 'embedding' | 'ai';
+
+/** `gap_check.rs::PageMatch` — one page a requirement points at. */
+export interface GapPageMatch {
+  url: string;
+  title: string;
+  /** How much of what the requirement is about the page carries, 0 to 1. */
+  score: number;
+  basis: GapBasis;
+  /** The requirement's words found on the page. */
+  terms: string[];
+  /** Up to three things on the page that carry them. */
+  elements: string[];
+  roles: string[];
+  /** For an `embedding` match: how close, 0 to 1. */
+  similarity?: number;
+}
+
+/** `gap_check.rs::CaseCoverage` — a requirement's saved cases (rejected ones count for nothing). */
+export interface GapCaseCoverage {
+  total: number;
+  approved: number;
+  executed: number;
+  techniques: Record<string, number>;
+  /** Techniques that apply to this kind of requirement and have no case. */
+  missing_techniques: string[];
+}
+
+/** `gap_verify.rs::Verification` — what the AI said about a requirement it was asked to check. */
+export interface GapVerification {
+  verdict: 'CONFIRMED' | 'NOT_FOUND' | 'UNCLEAR' | 'FAILED';
+  /** The addresses of the pages it named (only ones it was shown). */
+  pages: string[];
+  reason: string;
+  /** `provider/model`. */
+  by: string;
+}
+
+/** `gap_check.rs::RequirementFinding`. */
+export interface GapRequirement {
+  key: string;
+  section: string | null;
+  kind: string;
+  text: string;
+  status: GapStatus;
+  basis?: GapBasis;
+  matches: GapPageMatch[];
+  verification?: GapVerification;
+  cases: GapCaseCoverage;
+}
+
+/** `gap_check.rs::UndocumentedPage` — a page no requirement points at. */
+export interface GapUndocumentedPage {
+  url: string;
+  title: string;
+  roles: string[];
+  elements: string[];
+  element_count: number;
+}
+
+/** `gap_check.rs::GapSummary`. */
+export interface GapSummary {
+  requirements: number;
+  /** Requirements a crawl can show: functional, usability and data ones. */
+  checkable: number;
+  found: number;
+  weak: number;
+  missing: number;
+  not_checkable: number;
+  pages: number;
+  undocumented_pages: number;
+  cases: number;
+  with_cases: number;
+  /** Requirements the application shows that no case tests. */
+  shown_without_cases: number;
+  /** Requirements with cases that the crawl found no sign of. */
+  tested_without_evidence: number;
+}
+
+/** `api.rs::GapCrawlInfo`. */
+export interface GapCrawlInfo {
+  run_id: string;
+  /** `grounding` (links, buttons and form fields) or `result` (links and buttons only: an older crawl). */
+  source: 'grounding' | 'result';
+  role: string | null;
+  roles: { role: string; login_succeeded: boolean; pages: number }[];
+}
+
+/** `gap_verify.rs::EmbeddingReport` — what the optional embedder step did. */
+export interface GapEmbeddingReport {
+  requested: boolean;
+  used: boolean;
+  model: string | null;
+  /** Texts sent to the embedder, and how many of those failed. */
+  texts: number;
+  failed: number;
+  note: string | null;
+}
+
+/** `gap_verify.rs::VerificationReport` — what the optional AI step did. */
+export interface GapVerificationReport {
+  requested: boolean;
+  calls: number;
+  checked: number;
+  confirmed: number;
+  not_found: number;
+  unclear: number;
+  failed: number;
+  /** The `provider/model` that answered. */
+  by: string[];
+  note: string | null;
+}
+
+/** `POST .../gap-check` request — every field optional. */
+export interface GapCheckRequest {
+  /** A crawl run of this project; omitted, its newest one. */
+  crawl_run_id?: string;
+  /** Only the pages this role's crawl reached. */
+  role?: string;
+  /** Only these documents' requirements. */
+  document_ids?: string[];
+  /** Also compare meaning with the embedder (needs `GEMINI_API_KEY`). */
+  use_embeddings?: boolean;
+  /** Also ask the AI to check the requirements the words left unclear. */
+  verify?: boolean;
+  max_verifications?: number;
+}
+
+/** `api.rs::GapCheckResponse` — `POST .../gap-check`. */
+export interface GapCheckResponse {
+  crawl: GapCrawlInfo;
+  summary: GapSummary;
+  requirements: GapRequirement[];
+  undocumented_pages: GapUndocumentedPage[];
+  /** What to know when reading the report (a role that could not log in, an older crawl). */
+  notes: string[];
+  method?: { embeddings: GapEmbeddingReport; verification: GapVerificationReport };
 }
 
 // ---------------------------------------------------------- Phase 3: Custom Testing
@@ -1138,10 +1606,20 @@ export interface AiSettings {
 
 /** `ai_router.rs::TaskProviderPreference` — each field independently
  *  optional: pin just the provider (any of its models) or just the model
- *  (whichever provider serves it) for one specific task. */
+ *  (whichever provider serves it) for one specific task. `chain` is an
+ *  ordered list of exact provider/model pairs: the first is the primary,
+ *  the rest are tried in order if it fails, and nothing outside the list is
+ *  ever used for that task. Absent/empty = the usual routing. */
 export interface TaskProviderPreference {
   provider: string | null;
   model: string | null;
+  chain?: TaskTarget[];
+}
+
+/** `ai_router.rs::TaskTarget` — one exact provider + model. */
+export interface TaskTarget {
+  provider: string;
+  model: string;
 }
 
 /** `ai_router.rs::RoutingDecision` — a documented heuristic score, not a
@@ -1160,6 +1638,189 @@ export interface AiStatusResponse {
   providers: AiProviderInfo[];
   settings: AiSettings;
   routing_preview: AiRoutingDecision | null;
+}
+
+// ----------------------------------------------------- AI usage & cost (Phase 8A)
+
+/** What some AI calls came to, added up (`ai_usage.rs::Tally`). Only counts: nothing here is a prompt or an answer. A cost is
+ *  only ever counted for a call that answered, went to a provider that has a price and reported both its token counts;
+ *  `no_price_calls` and `no_tokens_calls` say how many answered calls were left out of `cost_usd`, and why. */
+export interface AiUsageTally {
+  calls: number;
+  answered: number;
+  failed: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  /** Answered calls that reported both token counts. */
+  token_calls: number;
+  answered_ms: number;
+  failed_ms: number;
+  /** `null` when nothing answered. */
+  avg_answer_ms: number | null;
+  /** Answered calls that were given a cost. */
+  priced_calls: number;
+  /** Answered calls to a model with no price (a local one, or a hosted one whose price is not entered). */
+  no_price_calls: number;
+  /** Answered calls to a provider with a price that reported no token counts to price them by. */
+  no_tokens_calls: number;
+  cost_usd: number;
+}
+
+/** `GET /api/v1/projects/:id/ai-usage` and `GET /api/v1/ai/usage`. `by_project` only comes with the calls of every project. */
+export interface AiUsageReport {
+  /** The days covered, on the clock of whoever asked (`from` and `to` are dates, `to` is today). */
+  range: { days: number; from: string; to: string; tz_offset_minutes: number };
+  totals: AiUsageTally;
+  by_provider: Array<AiUsageTally & { provider: string; model: string }>;
+  by_task: Array<AiUsageTally & { task: string }>;
+  /** Every day of the range, oldest first, the quiet ones too. */
+  by_day: Array<AiUsageTally & { day: string }>;
+  /** `project_id` is `null` for the calls that were made for no project. */
+  by_project?: Array<AiUsageTally & { project_id: string | null }>;
+  notes: string[];
+}
+
+/** What the usage routes take: `days` back from today (1–366, 30 unless said), and how far ahead of UTC the asker's clock is. */
+export interface AiUsageQuery {
+  days?: number;
+  tz_offset_minutes?: number;
+}
+
+// ------------------------------------------------- API tests from an OpenAPI document (Phase 8B)
+
+/** The kinds of case `openapi_cases.rs` makes. */
+export type OpenApiCaseKind = 'HAPPY' | 'NO_AUTH' | 'MISSING_REQUIRED' | 'WRONG_TYPE' | 'NOT_FOUND';
+
+/** The body of `POST .../openapi/plan` and `POST .../openapi/runs`: the document (`spec`, its text, or `spec_url`), where the API is, which
+ *  cases to make, and the headers that carry a credential (each value an `env:NAME` reference, never the credential). */
+export interface OpenApiRequestBody {
+  spec?: string;
+  spec_url?: string;
+  base_url?: string;
+  kinds?: OpenApiCaseKind[];
+  operations?: string[];
+  include_unsafe?: boolean;
+  auth_headers?: Record<string, string>;
+  max_cases_per_operation?: number;
+  concurrency?: number;
+  name?: string;
+}
+
+export interface OpenApiCase {
+  /** `GET /pets#MISSING_REQUIRED:limit` */
+  id: string;
+  operation: string;
+  kind: OpenApiCaseKind;
+  title: string;
+  request: { method: string; url: string; headers: Record<string, string>; body: unknown };
+  /** What the answer must be: one of these statuses, and (when the document gives a schema) a body that fits it. */
+  expect: { statuses: number[]; schema: unknown; why: string };
+  /** Why the case is not run, when it is not (its request changes data). */
+  skipped: string | null;
+}
+
+export interface OpenApiOperation {
+  id: string;
+  method: string;
+  path: string;
+  summary: string | null;
+  tags: string[];
+  deprecated: boolean;
+  requires_auth: boolean;
+}
+
+/** `POST .../openapi/plan`: what would be tested. Nothing is run. */
+export interface OpenApiPlan {
+  spec: { title: string; version: string; servers: string[] };
+  base_url: string;
+  operations: OpenApiOperation[];
+  cases: OpenApiCase[];
+  skipped: Array<{ operation: string; reason: string }>;
+  notes: string[];
+  counts: { cases: number; runnable: number; not_run: number };
+  /** Variables the credential headers name that the orchestrator's environment does not have. */
+  missing_secrets: string[];
+}
+
+/** `POST .../openapi/runs` */
+export interface OpenApiRunCreated {
+  id: string;
+  run_id: string;
+  cases: number;
+  cases_run: number;
+  not_run: number;
+  state: string;
+  notes: string[];
+}
+
+export type OpenApiOutcome = 'PASSED' | 'FAILED' | 'ERROR' | 'PENDING' | 'NOT_RUN';
+/** What an operation as a whole came to; `SKIPPED`: no case could be made for it, `NOT_SELECTED`: it was not asked for. */
+export type OpenApiVerdict = OpenApiOutcome | 'SKIPPED' | 'NOT_SELECTED';
+
+export interface OpenApiCounts {
+  passed: number;
+  failed: number;
+  error: number;
+  pending: number;
+  not_run: number;
+}
+
+export interface OpenApiReportCase {
+  id: string;
+  kind: OpenApiCaseKind;
+  title: string;
+  outcome: OpenApiOutcome;
+  reason: string | null;
+  request: { method: string; url: string };
+  expect: { statuses: number[]; schema: boolean; why: string };
+  /** What came back; only read for the cases that did not pass. */
+  actual: { status: number; duration_ms: number; assertions: Array<{ description: string; actual: string; passed: boolean }> } | null;
+  skipped: string | null;
+  task_id: string | null;
+}
+
+export interface OpenApiReportOperation {
+  id: string;
+  summary: string | null;
+  tags: string[];
+  verdict: OpenApiVerdict;
+  counts: OpenApiCounts | null;
+  why_no_cases: string | null;
+  cases: OpenApiReportCase[];
+}
+
+/** `GET .../openapi/runs/:id` */
+export interface OpenApiReport {
+  id: string;
+  run_id: string;
+  project_id: string;
+  spec: { title: string; version: string; base_url: string };
+  created_at: string;
+  created_by: string;
+  run_state: string;
+  /** False while the run is going: the report is then what it has found so far. */
+  final: boolean;
+  /** How it came out, in a word, for a CI job (Phase 8D): `RUNNING` until the run has ended, then `FAILING`, `PASSING` or `NOTHING_RAN`. */
+  verdict?: 'RUNNING' | 'FAILING' | 'PASSING' | 'NOTHING_RAN';
+  summary: { cases: number; ran: number; passed: number; failed: number; error: number; pending: number; not_run: number; pass_rate: number | null };
+  by_kind: Record<string, OpenApiCounts>;
+  operations: OpenApiReportOperation[];
+  coverage: { operations: number; tested: number; not_tested: Array<{ operation: string; reason: string }> };
+  notes: string[];
+}
+
+/** A run in `GET .../openapi/runs`. */
+export interface OpenApiRunListRow {
+  id: string;
+  run_id: string;
+  title: string;
+  version: string;
+  base_url: string;
+  cases: number;
+  cases_run: number;
+  created_by: string;
+  created_at: string;
+  run_state: string | null;
 }
 
 // ------------------------------------------------------------------ rbac
@@ -1558,3 +2219,423 @@ export interface RetentionReport {
   retention_days: number;
 }
 
+// ---------------------------------------------------------- Phase 7: Autopilot
+
+/** `login_suggest.rs::Confidence`. */
+export type LoginSuggestionConfidence = 'low' | 'medium' | 'high';
+
+/** `login_suggest.rs::LoginSuggestion` — a role's login steps as proposed from what a crawl saw on the login page.
+ *  Every locator is one the crawl recorded; the values are `env:NAME` references, never credentials. */
+export interface LoginSuggestion {
+  role: string;
+  page_url: string;
+  page_title: string;
+  actions: PlanAction[];
+  /** The environment variables the steps read (names only). */
+  secrets: string[];
+  confidence: LoginSuggestionConfidence;
+  /** Why each part was chosen. */
+  reasons: string[];
+  /** `rules`, or the `provider/model` of the AI that proposed it. */
+  by: string;
+}
+
+/** `POST .../login-suggestion` request. */
+export interface LoginSuggestionRequest {
+  role: string;
+  /** A crawl of this project; omitted, its newest one that has a page with a password field. */
+  crawl_run_id?: string;
+  /** Also ask the router's AI when the rules are not sure (Operator role). */
+  use_ai?: boolean;
+}
+
+/** `api.rs::LoginSuggestionResponse`. */
+export interface LoginSuggestionResponse {
+  crawl_run_id: string;
+  suggestion: LoginSuggestion;
+  /** The other answer, when the rules and the AI differ. */
+  alternatives: LoginSuggestion[];
+  ai: { requested: boolean; used: boolean; note: string | null };
+  /** Variables the steps read that are not set in the orchestrator's environment. */
+  missing_secrets: string[];
+}
+
+export type AutopilotRunState = 'AWAITING_APPROVAL' | 'RUNNING' | 'WAITING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
+export type AutopilotStepState = 'PENDING' | 'RUNNING' | 'WAITING' | 'DONE' | 'SKIPPED' | 'FAILED';
+export type AutopilotStepName =
+  | 'REQUIREMENTS'
+  | 'CRAWL'
+  | 'GAP_CHECK'
+  | 'GENERATE'
+  | 'VALIDATE'
+  | 'APPROVE'
+  | 'EXECUTE'
+  | 'REPORT';
+export type AutopilotApprovalMode = 'manual' | 'auto_validated';
+
+/** `autopilot.rs::AutopilotConfig` — what a person asks a run to do. */
+export interface AutopilotConfig {
+  name?: string | null;
+  base_url: string;
+  /** The roles to crawl and test as, each with the login steps a person confirmed. `anonymous`, with none, is a role too. */
+  roles: CrawlRole[];
+  /** A finished crawl of this project to use instead of crawling again. */
+  crawl_run_id?: string | null;
+  requirement_document_ids?: string[];
+  skills?: GenerateAiSkillInput[];
+  depth?: string | null;
+  coverage_top_up?: boolean;
+  focus_requirements?: boolean;
+  /** Ask the AI about at most this many requirements the words left unclear. */
+  verify_gaps?: number | null;
+  /** Whether approved cases are compiled and run (default true). */
+  execute?: boolean;
+  run_concurrency?: number | null;
+  approval?: AutopilotApprovalMode;
+  execution_role?: string | null;
+}
+
+export interface AutopilotRange<T = number> {
+  min: T;
+  max: T;
+}
+
+export type AutopilotPricing =
+  | { kind: 'UNMETERED' }
+  | { kind: 'METERED'; input_usd_per_1k: number; output_usd_per_1k: number };
+
+export interface AutopilotProviderProfile {
+  id: string;
+  name: string;
+  model: string;
+  kind: 'LOCAL' | 'API' | 'OTHER';
+  pricing: AutopilotPricing;
+  observed: {
+    calls: number;
+    avg_ms: number;
+    avg_prompt_tokens: number | null;
+    avg_completion_tokens: number | null;
+  } | null;
+}
+
+export type AutopilotLatency =
+  | { basis: 'MEASURED'; calls: number; avg_seconds: number }
+  | { basis: 'ASSUMED'; tokens_per_second: number }
+  | { basis: 'UNKNOWN' };
+
+/** `autopilot_estimate.rs::Estimate` — what a run would cost, as ranges, every assumption written down. */
+export interface AutopilotEstimate {
+  requirements: number;
+  cases: AutopilotRange;
+  steps: Array<{ step: AutopilotStepName; ai_calls: AutopilotRange; seconds: AutopilotRange; note: string | null }>;
+  tasks: Array<{
+    task: string;
+    used_for: string;
+    provider: AutopilotProviderProfile | null;
+    calls: AutopilotRange;
+    prompt_tokens: AutopilotRange;
+    completion_tokens: AutopilotRange;
+    seconds: AutopilotRange;
+    /** `null` when no provider serves the task (a cost nobody can state), never a made-up 0. */
+    cost_usd: AutopilotRange | null;
+    latency: AutopilotLatency;
+  }>;
+  totals: { ai_calls: AutopilotRange; seconds: AutopilotRange; cost_usd: AutopilotRange | null; paid: boolean };
+  assumptions: string[];
+  warnings: string[];
+}
+
+/** `POST .../autopilot/estimate` body — every field optional. */
+export interface AutopilotEstimateRequest {
+  requirement_document_ids?: string[];
+  skills?: GenerateAiSkillInput[];
+  depth?: string;
+  coverage_top_up?: boolean;
+  roles?: number;
+  focus_requirements?: boolean;
+  verify_gaps?: number;
+  execute?: boolean;
+  run_concurrency?: number;
+}
+
+/** `autopilot_store.rs::AutopilotRunRow`. */
+export interface AutopilotRun {
+  id: string;
+  project_id: string;
+  name: string;
+  state: AutopilotRunState;
+  config: AutopilotConfig;
+  estimate: AutopilotEstimate;
+  approved_at: string | null;
+  approved_paid: boolean;
+  created_by_name: string;
+  current_step: AutopilotStepName | null;
+  error: string | null;
+  cancel_requested: boolean;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  updated_at: string;
+}
+
+/** `autopilot_store.rs::AutopilotStepRow`. `detail` is what the step found (see `autopilotModel.ts` for how it is read). */
+export interface AutopilotStep {
+  run_id: string;
+  name: AutopilotStepName;
+  position: number;
+  state: AutopilotStepState;
+  attempts: number;
+  detail: Record<string, unknown>;
+  error: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+/** `autopilot_store.rs::AutopilotEventRow`. */
+export interface AutopilotEvent {
+  id: number;
+  at: string;
+  kind: string;
+  step: AutopilotStepName | null;
+  message: string;
+  data: unknown;
+}
+
+/** `autopilot_api.rs::RunDetail`. */
+export interface AutopilotRunDetail {
+  run: AutopilotRun;
+  steps: AutopilotStep[];
+  events: AutopilotEvent[];
+  /** Whether the service is working on the run at this moment. */
+  working: boolean;
+}
+
+/** `POST .../autopilot/runs/:id/start` body. */
+export interface AutopilotStartRequest {
+  accept_estimate: boolean;
+  accept_paid?: boolean;
+}
+
+/** `POST .../autopilot/runs/:id/cancel` response. */
+export interface AutopilotCancelResponse extends AutopilotRunDetail {
+  outcome: 'cancelled' | 'requested';
+}
+
+/** `POST .../autopilot/runs/:id/approve-cases` response. */
+export interface AutopilotApproveCasesResponse {
+  suite_id: string;
+  approved: string[];
+  refused: Array<{ id: string; title: string; reason: string }>;
+}
+
+export type AutopilotVerdict = 'PASSED' | 'FAILED' | 'INCONCLUSIVE' | 'NOT_EXECUTED' | 'NO_CASES';
+
+/** `autopilot_report.rs::build` — the report of a run. */
+export interface AutopilotReport {
+  final: boolean;
+  run: {
+    id: string;
+    name: string;
+    state: AutopilotRunState;
+    error: string | null;
+    created_by: string;
+    created_at: string;
+    started_at: string | null;
+    finished_at: string | null;
+    seconds: number | null;
+  };
+  application: { base_url: string; roles: string[] | null; execution_role: string | null };
+  requirements: { total: number; by_kind: Record<string, number> | null };
+  crawl: { crawl_run_id: string | null; reused: boolean | null; pages: number | null; roles: unknown };
+  gaps: Record<string, number> | null;
+  generation: {
+    cases: number | null;
+    groups: number;
+    providers: Record<string, number> | null;
+    fallback_used: boolean | null;
+    prompt_tokens: number | null;
+    completion_tokens: number | null;
+    latency_ms: number | null;
+  };
+  validation: { validated: number | null; invalid: Array<{ id: string; title?: string; reason?: string }> | null };
+  approval: {
+    approved: number | null;
+    rejected: number | null;
+    undecided: number | null;
+    automatic: boolean | null;
+    released: boolean | null;
+  };
+  execution: {
+    enabled: boolean;
+    done: boolean;
+    cases: number | null;
+    finished: number | null;
+    /** The cases that were really run: those that reached an outcome except the ones refused before they could run. */
+    ran?: number | null;
+    counts: Record<string, number> | null;
+    passed: number;
+    failed: number;
+    role: string | null;
+  };
+  findings: AutopilotReportCase[];
+  not_run: AutopilotReportCase[];
+  coverage: Array<{
+    key: string;
+    kind: string;
+    text: string;
+    cases: number;
+    ran: number;
+    passed: number;
+    failed: number;
+    not_run: number;
+    verdict: AutopilotVerdict;
+  }>;
+  coverage_summary: Partial<Record<AutopilotVerdict, number>>;
+  cost: {
+    estimated: AutopilotEstimate['totals'] | null;
+    actual: {
+      ai_prompt_tokens: number | null;
+      ai_completion_tokens: number | null;
+      ai_seconds: number | null;
+      run_seconds: number | null;
+    };
+  };
+  steps: Array<{ name: AutopilotStepName; state: AutopilotStepState; attempts: number; seconds: number | null }>;
+  notes: string[];
+}
+
+/** A case of the run that failed, or that could not give an answer. */
+export interface AutopilotReportCase {
+  case_id: string;
+  title: string;
+  requirement: string | null;
+  outcome: string;
+  reason: string | null;
+  run_id: string | null;
+  attempts: Array<{ run_id: string; outcome: string; reason: string | null }>;
+}
+
+// ------------------------------------------------------------------------------------------------ Phase 8C — scheduled regression
+// `services/orchestrator/src/regression*.rs`, routes under `/api/v1/projects/:project_id/regression`.
+
+export type RegressionOutcome = 'PASSED' | 'FAILED' | 'ERROR' | 'PENDING' | 'NOT_RUN';
+/** What became of a case between the last time and now. */
+export type RegressionChange = 'REGRESSED' | 'FIXED' | 'STILL_FAILING' | 'STILL_PASSING' | 'NEW' | 'UNCOMPARED';
+export type RegressionVerdict = 'REGRESSED' | 'FAILING' | 'PASSING' | 'RUNNING' | 'NOTHING_RAN';
+export type RegressionTrigger = 'SCHEDULE' | 'MANUAL';
+
+export interface RegressionSummary {
+  cases: number;
+  ran: number;
+  passed: number;
+  failed: number;
+  error: number;
+  pending: number;
+  not_run: number;
+  regressed: number;
+  fixed: number;
+  still_failing: number;
+  still_passing: number;
+  new: number;
+  uncompared: number;
+}
+
+/** A run as a list shows it: when, how it was started and how it came out, not its cases. */
+export interface RegressionRunAccount {
+  id: string;
+  run_id: string;
+  created_at: string;
+  trigger: RegressionTrigger;
+  run_state: string;
+  final: boolean;
+  verdict: RegressionVerdict;
+  summary: RegressionSummary;
+  skipped: number;
+}
+
+export interface RegressionSchedule {
+  id: string;
+  project_id: string;
+  name: string;
+  /** A suite of the project; null for every case of it. */
+  suite_id: string | null;
+  every_minutes: number;
+  anchor_at: string;
+  next_run_at: string;
+  concurrency: number;
+  enabled: boolean;
+  last_started_at: string | null;
+  /** Why the last time it was due did not make a run, or what to know about the one it made. */
+  last_note: string | null;
+  created_by: string;
+  created_at: string;
+  last_run: RegressionRunAccount | null;
+}
+
+export interface RegressionCase {
+  case_id: string;
+  task_id: string;
+  title: string;
+  outcome: RegressionOutcome;
+  before: 'PASSED' | 'FAILED' | 'ERROR' | null;
+  before_from: 'PREVIOUS_RUN' | 'SOURCE_RUN' | null;
+  change: RegressionChange;
+  reason: string | null;
+  source_run_id: string;
+}
+
+export interface RegressionSkipped {
+  case_id: string;
+  title: string;
+  reason: string;
+}
+
+export interface RegressionReport {
+  id: string;
+  schedule_id: string;
+  schedule_name: string;
+  project_id: string;
+  run_id: string;
+  trigger: RegressionTrigger;
+  created_at: string;
+  created_by: string;
+  run_state: string;
+  final: boolean;
+  verdict: RegressionVerdict;
+  summary: RegressionSummary;
+  /** Regressions first. */
+  cases: RegressionCase[];
+  skipped: RegressionSkipped[];
+  notes: string[];
+}
+
+/** What a schedule over a suite (or the whole project) would repeat now. */
+export interface RegressionScope {
+  repeatable: Array<{ case_id: string; title: string; source_run_id: string }>;
+  skipped: RegressionSkipped[];
+}
+
+/** Making a schedule needs `name` and `every_minutes`; changing one sends only what changes. */
+export interface RegressionScheduleBody {
+  name?: string;
+  /** null = every case of the project. */
+  suite_id?: string | null;
+  every_minutes?: number;
+  start_at?: string;
+  concurrency?: number;
+  enabled?: boolean;
+}
+
+export interface RegressionRunStarted {
+  id: string;
+  run_id: string;
+  cases: number;
+  skipped: number;
+}
+
+/** A test suite of a project (`GET .../test-suites`), as far as a schedule needs it. */
+export interface TestSuiteRow {
+  id: string;
+  name: string;
+  description?: string | null;
+}

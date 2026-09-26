@@ -560,6 +560,15 @@ pub struct TestCaseHandoffRequest {
     /// which never goes through this endpoint at all) are unaffected.
     #[serde(default)]
     pub compile_and_execute: bool,
+    /// Phase 5 — with `compile_and_execute`: compile the case against this crawl (`POST .../crawl`) of the real
+    /// application instead of from its prose alone. Every selector then has to be one the crawl found (else the case is
+    /// `NOT_EXECUTABLE`), and the role's login runs first. Ignored without `compile_and_execute`.
+    #[serde(default)]
+    pub crawl_run_id: Option<Uuid>,
+    /// Phase 5 — with `crawl_run_id`: the crawl's role the case runs as. Omitted, the case runs as the crawl's role
+    /// that never logged in.
+    #[serde(default)]
+    pub role: Option<String>,
 }
 
 /// SRD §5 Event Ordering & Idempotency: every event carries event_id, run_id,

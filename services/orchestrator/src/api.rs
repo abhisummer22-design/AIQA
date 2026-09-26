@@ -16,7 +16,7 @@ use axum::{
     extract::{Extension, Path, Query, State},
     http::{HeaderValue, StatusCode},
     response::{IntoResponse, Json, Response},
-    routing::{delete, get, post, put},
+    routing::{delete, get, patch, post, put},
     Router,
 };
 use serde::{Deserialize, Serialize};
@@ -34,7 +34,43 @@ use uuid::Uuid;
 /// handshake, so it authenticates itself via a `?key=` query parameter
 /// instead (see `project_events_ws_handler`).
 pub fn router(state: AppState) -> Router {
-    let protected = Router::new()
+    let protected = protected_routes().layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        auth::require_auth,
+    ));
+
+    Router::new()
+        .route("/health", get(health))
+        // BE-14 (API Contract §14) — project-scoped realtime stream.
+        // Mounted outside the header-based `require_auth` layer because
+        // a WebSocket upgrade can't carry an `Authorization` header,
+        // so this authenticates itself via `?key=` instead (see
+        // `project_events_ws_handler`).
+        .route(
+            "/api/v1/projects/:project_id/events",
+            get(project_events_ws_handler),
+        )
+        .route("/api/v1/logs/ws", get(logs_ws_handler))
+        .route(
+            "/api/v1/projects/:project_id/logs/ws",
+            get(project_logs_ws_handler),
+        )
+        .merge(protected)
+        .with_state(state)
+}
+
+/// The same routes as `router`'s protected part, with no authentication layer on them, for the autopilot
+/// (`autopilot_runner.rs`): a run acts as the person who started it, calling this service's own routes in process with
+/// that person's persisted identity attached to each request (and checked to still be an active key). Never bound to a
+/// socket, so nothing outside the process can reach a route without a key.
+pub(crate) fn internal_router(state: AppState) -> Router {
+    protected_routes().with_state(state)
+}
+
+/// Every route that needs an API key, in one place so that `router` (which puts the authentication layer on them) and
+/// `internal_router` (which does not) can never differ.
+fn protected_routes() -> Router<AppState> {
+    Router::new()
         // The caller's own real identity/role/scope.
         .route("/api/v1/auth/whoami", get(whoami))
         // The real coordination surface behind the Orchestrator view:
@@ -187,6 +223,51 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/projects/:project_id/audit",
             get(get_audit_log_scoped),
+        )
+        // What the AI calls made for this project came to (`ai_usage.rs`).
+        .route(
+            "/api/v1/projects/:project_id/ai-usage",
+            get(get_ai_usage_scoped),
+        )
+        // API tests made from an OpenAPI document (`openapi_api.rs`): what would be tested, run it, the report.
+        .route(
+            "/api/v1/projects/:project_id/openapi/plan",
+            post(crate::openapi_api::plan),
+        )
+        .route(
+            "/api/v1/projects/:project_id/openapi/runs",
+            post(crate::openapi_api::create_run).get(crate::openapi_api::list_runs),
+        )
+        .route(
+            "/api/v1/projects/:project_id/openapi/runs/:id",
+            get(crate::openapi_api::get_run),
+        )
+        // Scheduled regression (`regression_api.rs`): the cases run once are run again on a schedule and compared with the last time.
+        .route(
+            "/api/v1/projects/:project_id/regression/scope",
+            get(crate::regression_api::get_scope),
+        )
+        .route(
+            "/api/v1/projects/:project_id/regression/schedules",
+            post(crate::regression_api::create_schedule)
+                .get(crate::regression_api::list_schedules),
+        )
+        .route(
+            "/api/v1/projects/:project_id/regression/schedules/:id",
+            patch(crate::regression_api::update_schedule)
+                .delete(crate::regression_api::delete_schedule),
+        )
+        .route(
+            "/api/v1/projects/:project_id/regression/schedules/:id/run",
+            post(crate::regression_api::run_schedule_now),
+        )
+        .route(
+            "/api/v1/projects/:project_id/regression/schedules/:id/runs",
+            get(crate::regression_api::list_runs),
+        )
+        .route(
+            "/api/v1/projects/:project_id/regression/runs/:id",
+            get(crate::regression_api::get_run),
         )
         // Phase 4 BE-10 — see `list_test_intelligence_scoped`'s doc comment.
         .route(
@@ -407,6 +488,77 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/projects/:project_id/documents/extract-text",
             post(extract_document_text_scoped),
         )
+        // Phase 3 — the requirements read out of the uploaded documents
+        // (`requirements.rs`), listed for review and for choosing what a
+        // generation request is built from.
+        .route(
+            "/api/v1/projects/:project_id/requirements",
+            get(list_requirements_scoped),
+        )
+        // Phase 6 — the requirements against what a crawl of the
+        // application shows (`gap_check.rs`): which are on a page, which are
+        // not, which pages no document mentions, and which requirements have
+        // cases.
+        .route(
+            "/api/v1/projects/:project_id/gap-check",
+            post(gap_check_scoped),
+        )
+        // Phase 7 — a role's login steps, suggested from what a crawl saw on the
+        // login page (`login_suggest.rs`); the person confirms them.
+        .route(
+            "/api/v1/projects/:project_id/login-suggestion",
+            post(login_suggestion_scoped),
+        )
+        // Phase 7 — what an autopilot run would cost before it is started: AI
+        // calls, tokens, time and dollars per provider (`autopilot_estimate.rs`).
+        .route(
+            "/api/v1/projects/:project_id/autopilot/estimate",
+            post(autopilot_estimate_scoped),
+        )
+        // Phase 7 — an autopilot run (`autopilot.rs`): made with the estimate it is shown, started when that is accepted,
+        // watched and cancelled here. It works through this same API, as the key that made it.
+        .route(
+            "/api/v1/projects/:project_id/autopilot/runs",
+            post(crate::autopilot_api::create_run).get(crate::autopilot_api::list_runs),
+        )
+        .route(
+            "/api/v1/projects/:project_id/autopilot/runs/:run_id",
+            get(crate::autopilot_api::get_run),
+        )
+        .route(
+            "/api/v1/projects/:project_id/autopilot/runs/:run_id/start",
+            post(crate::autopilot_api::start_run),
+        )
+        .route(
+            "/api/v1/projects/:project_id/autopilot/runs/:run_id/cancel",
+            post(crate::autopilot_api::cancel_run),
+        )
+        .route(
+            "/api/v1/projects/:project_id/autopilot/runs/:run_id/continue",
+            post(crate::autopilot_api::continue_run),
+        )
+        .route(
+            "/api/v1/projects/:project_id/autopilot/runs/:run_id/resume",
+            post(crate::autopilot_api::resume_run),
+        )
+        .route(
+            "/api/v1/projects/:project_id/autopilot/runs/:run_id/approve-cases",
+            post(crate::autopilot_api::approve_cases),
+        )
+        .route(
+            "/api/v1/projects/:project_id/autopilot/runs/:run_id/events",
+            get(crate::autopilot_api::list_events),
+        )
+        .route(
+            "/api/v1/projects/:project_id/autopilot/runs/:run_id/report",
+            get(crate::autopilot_api::get_report),
+        )
+        // Phase 3 — what a requirement-driven generation would do, without
+        // calling any model: how many AI calls, what each skill is shown.
+        .route(
+            "/api/v1/projects/:project_id/test-cases/generate-ai/plan",
+            post(plan_generate_ai_scoped),
+        )
         // Phase 6 — Performance Testing: real Load/Stress/Spike/Volume
         // workload generation (`performance_testing.rs`). Reuses the exact
         // Phase 4 per-request execution core (`executor::execute_plan_once`,
@@ -439,6 +591,8 @@ pub fn router(state: AppState) -> Router {
             get(get_ai_settings_handler).put(put_ai_settings_handler),
         )
         .route("/api/v1/ai/refresh", post(refresh_ai_providers))
+        // What the AI calls came to across every project (`ai_usage.rs`); one project's own is under the project.
+        .route("/api/v1/ai/usage", get(get_ai_usage))
         // Phase B cleanup — the legacy flat, unscoped routes (`/runs*`,
         // `/evidence/:id/content`, `/intelligence/*`, `/bug-drafts*`,
         // `/runs/:id/ws`) are removed: every caller moved to the scoped
@@ -462,29 +616,6 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/projects/:project_id/logs",
             get(list_project_logs_handler),
         )
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            auth::require_auth,
-        ));
-
-    Router::new()
-        .route("/health", get(health))
-        // BE-14 (API Contract §14) — project-scoped realtime stream.
-        // Mounted outside the header-based `require_auth` layer because
-        // a WebSocket upgrade can't carry an `Authorization` header,
-        // so this authenticates itself via `?key=` instead (see
-        // `project_events_ws_handler`).
-        .route(
-            "/api/v1/projects/:project_id/events",
-            get(project_events_ws_handler),
-        )
-        .route("/api/v1/logs/ws", get(logs_ws_handler))
-        .route(
-            "/api/v1/projects/:project_id/logs/ws",
-            get(project_logs_ws_handler),
-        )
-        .merge(protected)
-        .with_state(state)
 }
 
 /// B12 remediation. Was `CorsLayer::new().allow_origin(Any)` in `main.rs` —
@@ -546,11 +677,11 @@ async fn health() -> &'static str {
     "ok"
 }
 
-fn to_500<E: std::fmt::Display>(e: E) -> ApiError {
+pub(crate) fn to_500<E: std::fmt::Display>(e: E) -> ApiError {
     ApiError::internal(e)
 }
 
-async fn audit(
+pub(crate) async fn audit(
     state: &AppState,
     ctx: &AuthContext,
     action: &str,
@@ -628,7 +759,7 @@ async fn audit_in_project(
 /// matching this file's own established convention elsewhere (`get_run`,
 /// `get_project_handler`): a project that doesn't exist can't be "yours"
 /// either way, so 404 is the more informative answer than 403.
-async fn require_scoped_project(
+pub(crate) async fn require_scoped_project(
     state: &AppState,
     ctx: &AuthContext,
     project_id: Uuid,
@@ -1206,16 +1337,29 @@ struct CustomAiProviderView {
     id: String,
     name: String,
     base_url: String,
+    /// USD per 1,000 tokens in / out as the user entered them; both `null` when no price was entered.
+    input_usd_per_1k: Option<f64>,
+    output_usd_per_1k: Option<f64>,
+    /// The environment variable the key is read from when it was given as `env:NAME` (the name is not a secret);
+    /// `null` when the key itself is stored.
+    api_key_env: Option<String>,
+    /// Whether that environment variable is set on the server right now; `null` when the key itself is stored.
+    api_key_env_set: Option<bool>,
     created_by: String,
     created_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl From<&crate::store::CustomAiProviderRow> for CustomAiProviderView {
     fn from(r: &crate::store::CustomAiProviderRow) -> Self {
+        let env_name = crate::ai_router::env_key_name(&r.api_key);
         Self {
             id: r.id.clone(),
             name: r.name.clone(),
             base_url: r.base_url.clone(),
+            input_usd_per_1k: r.input_usd_per_1k,
+            output_usd_per_1k: r.output_usd_per_1k,
+            api_key_env: env_name.map(str::to_string),
+            api_key_env_set: env_name.map(crate::ai_router::env_key_is_set),
             created_by: r.created_by.clone(),
             created_at: r.created_at,
         }
@@ -1239,6 +1383,10 @@ async fn reload_custom_providers_into_infra(state: &AppState) -> Result<(), ApiE
             name: r.name,
             base_url: r.base_url,
             api_key: r.api_key,
+            pricing: crate::ai_router::ProviderPricing::from_prices(
+                r.input_usd_per_1k,
+                r.output_usd_per_1k,
+            ),
         })
         .collect();
     state.ai_infra.set_custom_providers(configs).await;
@@ -1249,13 +1397,21 @@ async fn reload_custom_providers_into_infra(state: &AppState) -> Result<(), ApiE
 struct CreateCustomAiProviderBody {
     name: String,
     base_url: String,
+    /// The key itself, or `env:NAME` to have it read from the environment variable `NAME` instead of stored.
     api_key: String,
+    /// What the provider charges, USD per 1,000 tokens. Both or neither.
+    #[serde(default)]
+    input_usd_per_1k: Option<f64>,
+    #[serde(default)]
+    output_usd_per_1k: Option<f64>,
 }
 
 fn validate_custom_provider_fields(
     name: &str,
     base_url: &str,
     api_key: &str,
+    input_usd_per_1k: Option<f64>,
+    output_usd_per_1k: Option<f64>,
 ) -> Result<(), ApiError> {
     if name.trim().is_empty() {
         return Err(ApiError::validation("provider name must not be empty"));
@@ -1267,6 +1423,32 @@ fn validate_custom_provider_fields(
     }
     if api_key.trim().is_empty() {
         return Err(ApiError::validation("api_key must not be empty"));
+    }
+    if let Some(var) = crate::ai_router::env_key_name(api_key) {
+        let mut chars = var.chars();
+        let valid = chars
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if !valid {
+            return Err(ApiError::validation(
+                "api_key written as env:NAME must name an environment variable (letters, digits and _, not starting with a digit)",
+            ));
+        }
+    }
+    if input_usd_per_1k.is_some() != output_usd_per_1k.is_some() {
+        return Err(ApiError::validation(
+            "enter both the input and the output price per 1K tokens, or neither",
+        ));
+    }
+    if [input_usd_per_1k, output_usd_per_1k]
+        .into_iter()
+        .flatten()
+        .any(|p| !p.is_finite() || p < 0.0)
+    {
+        return Err(ApiError::validation(
+            "prices must be zero or more (USD per 1K tokens)",
+        ));
     }
     Ok(())
 }
@@ -1286,12 +1468,25 @@ async fn create_custom_ai_provider(
     let name = body.name.trim();
     let base_url = body.base_url.trim().trim_end_matches('/');
     let api_key = body.api_key.trim();
-    validate_custom_provider_fields(name, base_url, api_key)?;
+    validate_custom_provider_fields(
+        name,
+        base_url,
+        api_key,
+        body.input_usd_per_1k,
+        body.output_usd_per_1k,
+    )?;
     let id = format!("custom-ai-{}", Uuid::new_v4());
 
     state
         .store
-        .insert_custom_ai_provider(&id, name, base_url, api_key, &ctx.name)
+        .insert_custom_ai_provider(
+            &id,
+            name,
+            base_url,
+            api_key,
+            body.input_usd_per_1k.zip(body.output_usd_per_1k),
+            &ctx.name,
+        )
         .await
         .map_err(to_500)?;
     reload_custom_providers_into_infra(&state).await?;
@@ -2071,12 +2266,77 @@ async fn compile_test_case_scoped(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
-) -> Result<Json<crate::execution_plan::CompilationOutcome>, ApiError> {
+    body: Option<ApiJson<CompileRequestBody>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
     auth::require_role(&ctx, Role::Operator)?;
     require_scoped_project(&state, &ctx, project_id).await?;
     let row = scoped_test_case(&state, &ctx, project_id, id).await?;
-    let outcome = crate::execution_plan::compile(&state.ai_infra, &row).await;
-    Ok(Json(outcome))
+    let body = body.map(|ApiJson(b)| b).unwrap_or_default();
+    let grounding = grounding_for(
+        &state,
+        project_id,
+        body.crawl_run_id,
+        body.role.as_deref(),
+        &row,
+    )
+    .await?;
+    let compiled =
+        crate::execution_plan::compile_grounded(&state.ai_infra, &row, grounding.as_ref()).await;
+    Ok(Json(compilation_json(compiled)))
+}
+
+/// `POST .../test-cases/:id/compile` body — optional, and every field of it too. Naming a crawl grounds the compile in
+/// it (Phase 5, `grounding.rs`): the plan may use only selectors that crawl found, and `role`'s login runs first.
+#[derive(Debug, Default, Deserialize)]
+struct CompileRequestBody {
+    /// A crawl run of this project (`POST .../crawl`) that has finished.
+    #[serde(default)]
+    crawl_run_id: Option<Uuid>,
+    /// The crawl's role the case runs as; omitted, the crawl's role that never logged in.
+    #[serde(default)]
+    role: Option<String>,
+}
+
+/// The outcome as it always was on the wire, plus — when a crawl grounded it — `grounding`: what the compiler was
+/// given (the role, how many pages and elements, how many login steps, and the *names* of the environment variables the
+/// login reads — never a value).
+fn compilation_json(compiled: crate::execution_plan::GroundedCompilation) -> serde_json::Value {
+    let mut value = serde_json::to_value(&compiled.outcome).unwrap_or(serde_json::Value::Null);
+    if let (Some(report), Some(object)) = (compiled.report, value.as_object_mut()) {
+        object.insert(
+            "grounding".to_string(),
+            serde_json::to_value(report).unwrap_or(serde_json::Value::Null),
+        );
+    }
+    value
+}
+
+/// The grounding a compile asked for: what the crawl `crawl_run_id` — one of this project's own runs — recorded, for the
+/// case and the role it runs as. `None` when no crawl is named. The `Err` says what is wrong and what to do.
+async fn grounding_for(
+    state: &AppState,
+    project_id: Uuid,
+    crawl_run_id: Option<Uuid>,
+    role: Option<&str>,
+    case: &crate::store::TestCaseRow,
+) -> Result<Option<crate::grounding::Grounding>, ApiError> {
+    let Some(run_id) = crawl_run_id else {
+        if role.is_some_and(|r| !r.trim().is_empty()) {
+            return Err(ApiError::validation(
+                "role names one of a crawl's roles: send crawl_run_id with it",
+            ));
+        }
+        return Ok(None);
+    };
+    scoped_run_summary(state, run_id, project_id).await?;
+    let tasks = scoped_run_tasks(state, run_id).await?;
+    let task = tasks
+        .first()
+        .ok_or_else(|| ApiError::not_found("crawl run has no tasks"))?;
+    let crawl = crate::grounding::read_crawl_grounding(&task.id).map_err(ApiError::not_found)?;
+    crate::grounding::Grounding::for_case(&crawl, role, case)
+        .map(Some)
+        .map_err(ApiError::validation)
 }
 
 /// POST .../test-cases/:id/handoff — the real bridge into the existing
@@ -2116,6 +2376,8 @@ async fn handoff_test_case_scoped(
         params: serde_json::Value::Null,
         simulate: None,
         compile_and_execute: false,
+        crawl_run_id: None,
+        role: None,
     }));
 
     let task_id = id.to_string();
@@ -2125,8 +2387,29 @@ async fn handoff_test_case_scoped(
         // sent alongside `compile_and_execute: true` is ignored (see
         // `TestCaseHandoffRequest`'s own doc comment) rather than silently
         // mixed with compiled output.
-        match crate::execution_plan::compile(&state.ai_infra, &row).await {
+        let grounding = grounding_for(
+            &state,
+            project_id,
+            body.crawl_run_id,
+            body.role.as_deref(),
+            &row,
+        )
+        .await?;
+        match crate::execution_plan::compile_grounded(&state.ai_infra, &row, grounding.as_ref())
+            .await
+            .outcome
+        {
             crate::execution_plan::CompilationOutcome::Ready(plan) => {
+                // A plan that logs in reads its credentials from the orchestrator's environment when it runs:
+                // refuse now, naming the variables, rather than create a run that can only fail.
+                let missing = crate::execution_plan::missing_secrets(
+                    &crate::execution_plan::secret_names_of(&plan.actions),
+                );
+                if !missing.is_empty() {
+                    return Err(ApiError::validation(
+                        crate::execution_plan::missing_secrets_message(&missing),
+                    ));
+                }
                 crate::execution_plan::materialize_task_def(
                     task_id.clone(),
                     row.title.clone(),
@@ -2228,6 +2511,28 @@ struct GenerateAiTestCasesBody {
     /// exactly as generation always has — this is purely additive.
     #[serde(default)]
     crawl_run_id: Option<Uuid>,
+    /// Phase 3: generate from the numbered requirements read out of these
+    /// documents (`POST .../documents/extract-text` returns each one's id)
+    /// instead of from pasted document text — see `requirement_generation.rs`.
+    /// Omitted or empty, the request is generated exactly as it always was.
+    #[serde(default)]
+    requirement_document_ids: Vec<Uuid>,
+    /// Phase 4: the depth asked for (`SMOKE`, `STANDARD`, `EXHAUSTIVE` or
+    /// `CHAOS_EXPLORATORY`). With `requirement_document_ids` it turns on the
+    /// coverage report — which techniques each requirement was tested with,
+    /// against that depth's targets. Without documents it is ignored (the
+    /// depth is already part of `requirement_text`).
+    #[serde(default)]
+    depth: Option<String>,
+    /// Phase 4: after the first pass, make extra calls for the requirements
+    /// that are short of the depth's targets. Needs `depth`.
+    #[serde(default)]
+    coverage_top_up: bool,
+    /// Phase 7: only the requirements with these ids, of the documents named above (their ids are the ones people see, `FR-012`).
+    /// An autopilot run generates in groups so that what is done is kept if the service stops. Omitted or empty, all of them, as
+    /// it always was; it needs `requirement_document_ids`, and an id that none of those documents has is refused.
+    #[serde(default)]
+    requirement_keys: Vec<String>,
 }
 
 /// `generation_method` is always exactly `"ai"` or `"fallback"` — never
@@ -2279,6 +2584,10 @@ struct GenerateAiTestCasesResponse {
     total_completion_tokens: Option<u32>,
     total_estimated_cost_usd: Option<f64>,
     total_latency_ms: u64,
+    /// Requirement-driven generation only: how much of the requirement set
+    /// the run reached. Absent for a request that named no documents.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    requirements: Option<crate::requirement_generation::RequirementCoverage>,
 }
 
 /// Loads this project's real feedback signal (risk/flakiness scores +
@@ -2702,6 +3011,27 @@ async fn generate_ai_test_cases_scoped(
         )
         .await;
 
+    // Phase 3 — the numbered requirements this request is to be generated
+    // from, when it names documents.
+    if !body.requirement_keys.is_empty() && body.requirement_document_ids.is_empty() {
+        return Err(ApiError::validation(
+            "requirement_keys narrows the requirements of the documents named in requirement_document_ids: name them too",
+        ));
+    }
+    let requirement_items = if body.requirement_document_ids.is_empty() {
+        None
+    } else {
+        let items = load_requirement_items(&state, project_id, &body.requirement_document_ids).await?;
+        Some(narrow_to_requirement_keys(items, &body.requirement_keys)?)
+    };
+    // What similar past cases/documents are looked up by: the request's own
+    // text, plus — when it carries no document text itself — the start of the
+    // requirements it will be generated from.
+    let retrieval_query = match &requirement_items {
+        Some(items) => requirement_retrieval_query(&body.requirement_text, items),
+        None => body.requirement_text.clone(),
+    };
+
     let mut feedback = load_feedback_context_for_generation(&state, project_id).await;
     // Vector Store + RAG Retrieval v1 — additive, fails open (see the
     // function's own doc comment): a project with nothing embedded yet, or
@@ -2711,13 +3041,13 @@ async fn generate_ai_test_cases_scoped(
     // comment for the one boundary that's still separate (crawl-run
     // grounding, not yet wired there).
     feedback.similar_cases =
-        find_similar_approved_test_cases(&state, project_id, &body.requirement_text).await;
+        find_similar_approved_test_cases(&state, project_id, &retrieval_query).await;
     let similar_cases_used = feedback.similar_cases.len();
     // Phase 2 gap-closing — document-level RAG, same fails-open contract:
     // a project with nothing embedded yet, or no embedding provider
     // configured, generates exactly as it did before this feature existed.
     feedback.similar_documents =
-        find_similar_documents(&state, project_id, &body.requirement_text).await;
+        find_similar_documents(&state, project_id, &retrieval_query).await;
     let similar_documents_used = feedback.similar_documents.len();
 
     // Real, optional crawl grounding — resolved with the exact same
@@ -2749,15 +3079,62 @@ async fn generate_ai_test_cases_scoped(
     // ("... started"), no new schema. `project_id_str` is bound here so the
     // reference handed to `generate_test_cases` outlives the call.
     let project_id_str = project_id.to_string();
-    let outcome = crate::ai_generation::generate_test_cases(
-        &state.ai_infra,
-        &body.requirement_text,
-        &skills,
-        &feedback,
-        crawl_output.as_ref(),
-        Some((state.log_bus.as_ref(), project_id_str.as_str())),
-    )
-    .await;
+    let coverage_options = coverage_options_for(
+        body.depth.as_deref(),
+        body.coverage_top_up,
+        requirement_items.is_some(),
+    )?;
+    let (outcome, requirement_coverage) = match &requirement_items {
+        Some(items) => {
+            let budget = requirement_batch_budget(&state).await;
+            let planned = crate::requirement_generation::plan_calls(items, &skills, budget).calls.len();
+            let max_calls = requirement_max_calls();
+            if planned > max_calls {
+                return Err(ApiError::validation(format!(
+                    "this would take {planned} AI calls (more than the {max_calls} a single request may make): select fewer skills or documents, or ask for the plan first (POST .../test-cases/generate-ai/plan)"
+                )));
+            }
+            state
+                .log_bus
+                .emit(
+                    "INFO",
+                    "generation",
+                    &format!(
+                        "Generating from {} requirement(s) in {planned} AI call(s)",
+                        items.len()
+                    ),
+                    None,
+                    Some(&project_id.to_string()),
+                    None,
+                )
+                .await;
+            let run = crate::requirement_generation::generate_from_requirements(
+                &state.ai_infra,
+                &body.requirement_text,
+                items,
+                &skills,
+                &feedback,
+                crawl_output.as_ref(),
+                budget,
+                Some((state.log_bus.as_ref(), project_id_str.as_str())),
+                coverage_options,
+            )
+            .await;
+            (run.outcome, Some(run.coverage))
+        }
+        None => (
+            crate::ai_generation::generate_test_cases(
+                &state.ai_infra,
+                &body.requirement_text,
+                &skills,
+                &feedback,
+                crawl_output.as_ref(),
+                Some((state.log_bus.as_ref(), project_id_str.as_str())),
+            )
+            .await,
+            None,
+        ),
+    };
 
     let response = match outcome {
         crate::ai_generation::GenerationOutcome::Ai {
@@ -2776,6 +3153,7 @@ async fn generate_ai_test_cases_scoped(
             // Real totals summed from `waves`, not this variant's own
             // (last-wave-only, per its own doc comment) top-level fields.
             let usage = crate::ai_generation::aggregate_wave_usage(&waves);
+            record_generation_calls(&state, &waves).await;
             // The real routing decision, emitted on its own `ai_router`
             // source so the Orchestrator view can show *why* this route
             // won (score, mode, whether it was the primary choice) rather
@@ -2883,6 +3261,7 @@ async fn generate_ai_test_cases_scoped(
                 total_completion_tokens: usage.completion_tokens,
                 total_estimated_cost_usd: usage.estimated_cost_usd,
                 total_latency_ms: usage.latency_ms,
+                requirements: requirement_coverage,
             }
         }
         crate::ai_generation::GenerationOutcome::Failed { reason } => {
@@ -2920,11 +3299,307 @@ async fn generate_ai_test_cases_scoped(
                 total_completion_tokens: None,
                 total_estimated_cost_usd: None,
                 total_latency_ms: 0,
+                requirements: requirement_coverage,
             }
         }
     };
 
     Ok(Json(response))
+}
+
+/// Remembers what each call of a generation took (a wave is one call), so that the estimate of a later run can say how long
+/// a call to this provider and model lasts (`ai_call_stats`, `autopilot_estimate.rs`). Fails open: an estimate is never
+/// worth losing a generation over.
+async fn record_generation_calls(state: &AppState, waves: &[crate::ai_generation::WaveSummary]) {
+    for wave in waves.iter().filter(|w| w.succeeded()) {
+        let (Some(provider), Some(model), Some(latency_ms)) =
+            (&wave.provider, &wave.model, wave.latency_ms)
+        else {
+            continue;
+        };
+        if let Err(e) = state
+            .store
+            .record_ai_call(
+                provider,
+                model,
+                "TEST_CASE_GENERATION",
+                latency_ms,
+                wave.prompt_tokens,
+                wave.completion_tokens,
+            )
+            .await
+        {
+            tracing::warn!("could not record what a generation call took: {e}");
+        }
+    }
+}
+
+/// The requirements of `document_ids` as generation items. A document that is
+/// not this project's, or that has none, contributes nothing; if nothing at
+/// all is left, that is refused (400) rather than generated from an empty set.
+async fn load_requirement_items(
+    state: &AppState,
+    project_id: Uuid,
+    document_ids: &[Uuid],
+) -> Result<Vec<crate::requirement_generation::RequirementItem>, ApiError> {
+    let rows = state
+        .store
+        .list_requirements(&project_id.to_string(), document_ids)
+        .await
+        .map_err(to_500)?;
+    if rows.is_empty() {
+        return Err(ApiError::validation(
+            "none of the selected documents has any requirements — upload them again to have them read",
+        ));
+    }
+    Ok(rows
+        .into_iter()
+        .map(|r| crate::requirement_generation::RequirementItem {
+            key: r.key,
+            section: r.section,
+            kind: crate::requirements::RequirementKind::from_db(&r.kind),
+            text: r.text,
+        })
+        .collect())
+}
+
+/// The requirements whose id is in `keys`, in their own order; all of them when `keys` is empty. An id that none has is
+/// refused, so a typo is not a silently smaller request.
+fn narrow_to_requirement_keys(
+    items: Vec<crate::requirement_generation::RequirementItem>,
+    keys: &[String],
+) -> Result<Vec<crate::requirement_generation::RequirementItem>, ApiError> {
+    if keys.is_empty() {
+        return Ok(items);
+    }
+    let unknown: Vec<&str> = keys
+        .iter()
+        .map(String::as_str)
+        .filter(|key| !items.iter().any(|item| item.key == *key))
+        .collect();
+    if !unknown.is_empty() {
+        let shown: Vec<&str> = unknown.iter().copied().take(5).collect();
+        return Err(ApiError::validation(format!(
+            "no requirement of the selected documents has the id {}{}",
+            shown.join(", "),
+            if unknown.len() > shown.len() { " (and more)" } else { "" }
+        )));
+    }
+    Ok(items
+        .into_iter()
+        .filter(|item| keys.iter().any(|key| *key == item.key))
+        .collect())
+}
+
+/// The text a request is matched against similar past cases and documents by
+/// when it is generated from requirements: its own text plus the start of the
+/// requirements (the first 2,000 characters — enough to say what the
+/// documents are about, without embedding all of them).
+pub(crate) fn requirement_retrieval_query(
+    request_text: &str,
+    items: &[crate::requirement_generation::RequirementItem],
+) -> String {
+    let mut query = request_text.to_string();
+    let mut room = 2_000usize;
+    for item in items {
+        if room == 0 {
+            break;
+        }
+        let piece: String = item.text.chars().take(room).collect();
+        room -= piece.chars().count();
+        query.push('\n');
+        query.push_str(&piece);
+    }
+    query
+}
+
+/// How much requirement text one call may carry: what the provider that would
+/// serve it can take (`AiInfrastructure::prompt_window_tokens_for`), unless
+/// `REQUIREMENT_BATCH_CHARS` says otherwise.
+async fn requirement_batch_budget(state: &AppState) -> crate::requirement_generation::BatchBudget {
+    let window = state
+        .ai_infra
+        .prompt_window_tokens_for(crate::ai_router::AiTask::TestCaseGeneration)
+        .await;
+    crate::requirement_generation::BatchBudget::from_prompt_window(
+        window,
+        std::env::var("REQUIREMENT_BATCH_CHARS")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok()),
+    )
+}
+
+/// The most AI calls one requirement-driven request may make
+/// (`REQUIREMENT_MAX_CALLS`, default 150) — a guard against a request that
+/// would run for hours or cost far more than anyone meant.
+fn requirement_max_calls() -> usize {
+    std::env::var("REQUIREMENT_MAX_CALLS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(150)
+}
+
+/// The most rounds of gap-filling one coverage top-up makes
+/// (`COVERAGE_TOP_UP_ROUNDS`, default 2, at most 5).
+pub(crate) fn coverage_top_up_rounds() -> usize {
+    std::env::var("COVERAGE_TOP_UP_ROUNDS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .map(|n| n.clamp(1, 5))
+        .unwrap_or(2)
+}
+
+/// Phase 4 — what a request asks of the coverage engine, or `None` for a
+/// request that names no depth or no documents: those are generated exactly as
+/// before. An unknown depth, or a top-up with no depth to top up to, is a
+/// mistake worth saying so about rather than guessing.
+fn coverage_options_for(
+    depth: Option<&str>,
+    top_up: bool,
+    from_requirements: bool,
+) -> Result<Option<crate::requirement_generation::CoverageOptions>, ApiError> {
+    let Some(text) = depth.map(str::trim).filter(|d| !d.is_empty()) else {
+        if top_up && from_requirements {
+            return Err(ApiError::validation(
+                "coverage_top_up needs a depth (SMOKE, STANDARD, EXHAUSTIVE or CHAOS_EXPLORATORY)",
+            ));
+        }
+        return Ok(None);
+    };
+    let depth = crate::coverage::Depth::parse(text).ok_or_else(|| {
+        ApiError::validation(format!(
+            "depth must be SMOKE, STANDARD, EXHAUSTIVE or CHAOS_EXPLORATORY, got '{text}'"
+        ))
+    })?;
+    if !from_requirements {
+        return Ok(None);
+    }
+    Ok(Some(crate::requirement_generation::CoverageOptions {
+        depth,
+        top_up,
+        max_calls: requirement_max_calls(),
+        rounds: coverage_top_up_rounds(),
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct GeneratePlanBody {
+    #[serde(default)]
+    skills: Vec<SkillInputBody>,
+    #[serde(default)]
+    requirement_document_ids: Vec<Uuid>,
+    /// Phase 4: the depth and top-up the generation would ask for; with a
+    /// depth the plan also says which techniques would be covered.
+    #[serde(default)]
+    depth: Option<String>,
+    #[serde(default)]
+    coverage_top_up: bool,
+}
+
+#[derive(Serialize)]
+struct GeneratePlanResponse {
+    requirements_total: usize,
+    by_kind: std::collections::BTreeMap<String, usize>,
+    /// Requirements at least one selected skill will be shown.
+    offered: usize,
+    /// Of a kind no selected skill tests (at most 100 ids).
+    not_offered_keys: Vec<String>,
+    /// AI calls the request would make, and the most one request may make.
+    calls: usize,
+    max_calls: usize,
+    within_limit: bool,
+    skills: Vec<crate::requirement_generation::SkillPlan>,
+    budget_chars: usize,
+    /// Where the calls would go right now, and how many input tokens one of
+    /// them can carry there; absent when no provider can serve generation.
+    provider_name: Option<String>,
+    model: Option<String>,
+    prompt_window_tokens: Option<u32>,
+    /// Rough sizes, not a quote: what the calls carry and a typical answer.
+    estimated_prompt_tokens: u64,
+    estimated_completion_tokens: u64,
+    /// Present when the request named a depth: which techniques each
+    /// requirement would be tested with, and what a top-up may add.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    coverage: Option<crate::coverage::CoveragePlan>,
+}
+
+/// POST /api/v1/projects/:project_id/test-cases/generate-ai/plan — what a
+/// requirement-driven generation of these documents with these skills would
+/// do, worked out by the same planning the run uses and without calling any
+/// model. Operator+, like the generation it previews.
+async fn plan_generate_ai_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiJson(body): ApiJson<GeneratePlanBody>,
+) -> Result<Json<GeneratePlanResponse>, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    require_scoped_project(&state, &ctx, project_id).await?;
+    if body.requirement_document_ids.is_empty() {
+        return Err(ApiError::validation(
+            "requirement_document_ids must name at least one document",
+        ));
+    }
+    let items = load_requirement_items(&state, project_id, &body.requirement_document_ids).await?;
+    let skills: Vec<crate::ai_generation::SkillInput> = body
+        .skills
+        .into_iter()
+        .map(|s| crate::ai_generation::SkillInput {
+            id: s.id,
+            name: s.name,
+            description: s.description,
+        })
+        .collect();
+
+    let coverage_options = coverage_options_for(body.depth.as_deref(), body.coverage_top_up, true)?;
+    let budget = requirement_batch_budget(&state).await;
+    let plan = crate::requirement_generation::plan_calls(&items, &skills, budget);
+    let (prompt_tokens, completion_tokens) =
+        crate::requirement_generation::estimate_tokens(&plan, &items);
+    let mut by_kind = std::collections::BTreeMap::new();
+    for item in &items {
+        *by_kind.entry(item.kind.as_str().to_string()).or_insert(0) += 1;
+    }
+    let not_offered_keys: Vec<String> = items
+        .iter()
+        .zip(&plan.offered)
+        .filter(|(_, offered)| !**offered)
+        .map(|(item, _)| item.key.clone())
+        .take(100)
+        .collect();
+    let route = state
+        .ai_infra
+        .route_and_window_for(crate::ai_router::AiTask::TestCaseGeneration)
+        .await;
+    let max_calls = requirement_max_calls();
+    Ok(Json(GeneratePlanResponse {
+        requirements_total: items.len(),
+        by_kind,
+        offered: plan.offered_count(),
+        not_offered_keys,
+        calls: plan.calls.len(),
+        max_calls,
+        within_limit: plan.calls.len() <= max_calls,
+        skills: plan.skills.clone(),
+        budget_chars: budget.max_chars,
+        provider_name: route.as_ref().map(|(_, name, _)| name.clone()),
+        model: route.as_ref().map(|(d, _, _)| d.model_id.clone()),
+        prompt_window_tokens: route.as_ref().map(|(_, _, w)| *w),
+        estimated_prompt_tokens: prompt_tokens,
+        estimated_completion_tokens: completion_tokens,
+        coverage: coverage_options.map(|o| {
+            crate::coverage::plan_info(
+                &items,
+                &skills,
+                o.depth,
+                o.top_up,
+                o.rounds,
+                max_calls.saturating_sub(plan.calls.len()),
+            )
+        }),
+    }))
 }
 
 // ---------------------------------------------------------- Custom Testing
@@ -3297,6 +3972,38 @@ struct ExtractDocumentTextBody {
     /// the exact same `ApiJson` request path every other endpoint in this
     /// API already does, instead of a second, one-off upload mechanism.
     content_base64: String,
+    /// Which slot the file was uploaded to (BRD / PRD / FRD / SRD /
+    /// ADDITIONAL). It only prefixes the ids given to the document's
+    /// requirements; omitted, the file name is used instead.
+    #[serde(default)]
+    document_type: Option<String>,
+}
+
+/// `POST .../documents/extract-text`'s response: exactly the bounded text it
+/// has always returned, plus — when the whole document could be read and
+/// stored — what was found in it.
+#[derive(Serialize)]
+struct ExtractDocumentTextResponse {
+    #[serde(flatten)]
+    extracted: crate::doc_extract::ExtractedDocument,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    requirements_document: Option<RequirementDocumentSummary>,
+}
+
+/// What reading a whole document produced (`requirements.rs`).
+#[derive(Serialize)]
+struct RequirementDocumentSummary {
+    document_id: Uuid,
+    /// Characters of the whole document that were read; the `text` beside
+    /// this stops at 20,000.
+    full_char_count: usize,
+    /// True only for a document over the 3,000,000-character safety ceiling.
+    full_truncated: bool,
+    sections_count: usize,
+    requirements_count: usize,
+    /// Sections left out on purpose (a table of contents, a revision history).
+    skipped_sections: Vec<String>,
+    by_kind: std::collections::BTreeMap<String, usize>,
 }
 
 /// Base64 text length before decoding, not the decoded byte count — a
@@ -3317,7 +4024,7 @@ async fn extract_document_text_scoped(
     Extension(ctx): Extension<AuthContext>,
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<ExtractDocumentTextBody>,
-) -> Result<Json<crate::doc_extract::ExtractedDocument>, ApiError> {
+) -> Result<Json<ExtractDocumentTextResponse>, ApiError> {
     auth::require_role(&ctx, Role::Operator)?;
     require_scoped_project(&state, &ctx, project_id).await?;
 
@@ -3332,7 +4039,23 @@ async fn extract_document_text_scoped(
         .decode(body.content_base64.as_bytes())
         .map_err(|e| ApiError::validation(format!("content_base64 is not valid base64: {e}")))?;
 
-    let result = crate::doc_extract::extract_text(&body.file_name, &bytes);
+    // Reading a large PDF or splitting a long document into requirements is
+    // real CPU work: done off the async workers.
+    let file_name = body.file_name.clone();
+    let doc_label = body.document_type.clone().unwrap_or_default();
+    let read = tokio::task::spawn_blocking(move || {
+        crate::doc_extract::extract_both(&file_name, &bytes).map(|(bounded, whole)| {
+            let parsed = crate::requirements::parse_document(&doc_label, &file_name, &whole.text);
+            (bounded, whole, parsed)
+        })
+    })
+    .await
+    .map_err(to_500)?;
+
+    let result = read
+        .as_ref()
+        .map(|(bounded, _, _)| bounded.clone())
+        .map_err(|e| e.clone());
     audit(
         &state,
         &ctx,
@@ -3354,11 +4077,143 @@ async fn extract_document_text_scoped(
     // `persist_and_embed_document`'s own doc comment. Fails open, same as
     // that function's own contract: this never turns a successful
     // extraction into a failed response.
-    if let Ok(extracted) = &result {
-        persist_and_embed_document(&state, project_id, &body.file_name, extracted).await;
+    let mut requirements_document = None;
+    if let Ok((bounded, whole, parsed)) = &read {
+        persist_and_embed_document(&state, project_id, &body.file_name, bounded).await;
+        requirements_document = persist_requirements(
+            &state,
+            project_id,
+            &body.file_name,
+            body.document_type.as_deref(),
+            whole,
+            parsed,
+        )
+        .await;
     }
 
-    result.map(Json).map_err(ApiError::validation)
+    result
+        .map(|extracted| {
+            Json(ExtractDocumentTextResponse {
+                extracted,
+                requirements_document,
+            })
+        })
+        .map_err(ApiError::validation)
+}
+
+/// Phase 3 — stores the whole document and the requirements read out of it
+/// (`requirements.rs`, `0020_requirements.sql`). Fails open like
+/// `persist_and_embed_document`: the extraction response is the core of the
+/// endpoint, so a database problem here is a warning in the log and an absent
+/// `requirements_document`, never a failed upload.
+async fn persist_requirements(
+    state: &AppState,
+    project_id: Uuid,
+    file_name: &str,
+    doc_type: Option<&str>,
+    whole: &crate::doc_extract::FullDocument,
+    parsed: &crate::requirements::ParsedDocument,
+) -> Option<RequirementDocumentSummary> {
+    let mut hasher = Sha256::new();
+    hasher.update(whole.text.as_bytes());
+    let content_hash = hex::encode(hasher.finalize());
+    let doc_type = doc_type.map(str::trim).filter(|t| !t.is_empty());
+    match state
+        .store
+        .upsert_requirement_document(
+            &project_id.to_string(),
+            file_name,
+            doc_type,
+            &content_hash,
+            &whole.text,
+            parsed,
+        )
+        .await
+    {
+        Ok(document_id) => {
+            let mut by_kind = std::collections::BTreeMap::new();
+            for r in &parsed.requirements {
+                *by_kind.entry(r.kind.as_str().to_string()).or_insert(0) += 1;
+            }
+            Some(RequirementDocumentSummary {
+                document_id,
+                full_char_count: whole.char_count,
+                full_truncated: whole.truncated,
+                sections_count: parsed.sections_count,
+                requirements_count: parsed.requirements.len(),
+                skipped_sections: parsed.skipped_sections.clone(),
+                by_kind,
+            })
+        }
+        Err(e) => {
+            state
+                .log_bus
+                .emit(
+                    "WARN",
+                    "generation",
+                    &format!(
+                        "Could not store this document's requirements, it can only be used the way it always was: {e}"
+                    ),
+                    None,
+                    Some(&project_id.to_string()),
+                    None,
+                )
+                .await;
+            None
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct ListRequirementsQuery {
+    /// Comma-separated document ids to restrict the list to.
+    #[serde(default)]
+    document_ids: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ListRequirementsResponse {
+    documents: Vec<crate::store::RequirementDocumentRow>,
+    requirements: Vec<crate::store::RequirementRow>,
+}
+
+/// GET /api/v1/projects/:project_id/requirements — the documents that have
+/// been read for their requirements and the requirements themselves (all of
+/// the project's, or only those of `?document_ids=a,b`). Viewer+: reading
+/// what a project's documents say is not a privileged action.
+async fn list_requirements_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiQuery(q): ApiQuery<ListRequirementsQuery>,
+) -> Result<Json<ListRequirementsResponse>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let mut ids = Vec::new();
+    if let Some(list) = q.document_ids.as_deref() {
+        for part in list.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+            ids.push(Uuid::parse_str(part).map_err(|_| {
+                ApiError::validation(format!("document_ids must be UUIDs, got '{part}'"))
+            })?);
+        }
+    }
+    let pid = project_id.to_string();
+    let mut documents = state
+        .store
+        .list_requirement_documents(&pid)
+        .await
+        .map_err(to_500)?;
+    if !ids.is_empty() {
+        documents.retain(|d| ids.contains(&d.id));
+    }
+    let requirements = state
+        .store
+        .list_requirements(&pid, &ids)
+        .await
+        .map_err(to_500)?;
+    Ok(Json(ListRequirementsResponse {
+        documents,
+        requirements,
+    }))
 }
 
 // ---------------------------------------------------- Phase 6 — Performance Testing
@@ -3956,14 +4811,11 @@ async fn get_ai_status(
 ) -> Json<serde_json::Value> {
     let providers = state.ai_infra.providers_snapshot().await;
     let settings = state.ai_infra.settings().await;
-    let routing_preview = crate::ai_router::AiInfrastructure::route_among(
+    let routing_preview = crate::ai_router::AiInfrastructure::preview_route(
         &providers,
         crate::ai_router::AiTask::TestCaseGeneration,
         &settings,
-        None,
-        None,
-    )
-    .ok();
+    );
     Json(
         serde_json::json!({ "providers": providers, "settings": settings, "routing_preview": routing_preview }),
     )
@@ -3987,6 +4839,23 @@ async fn put_ai_settings_handler(
     ApiJson(body): ApiJson<crate::ai_router::AiSettings>,
 ) -> Result<Json<crate::ai_router::AiSettings>, ApiError> {
     auth::require_role(&ctx, Role::Operator)?;
+    const MAX_TASK_CHAIN: usize = 8;
+    for (task, preference) in &body.task_overrides {
+        if preference.chain.len() > MAX_TASK_CHAIN {
+            return Err(ApiError::validation(format!(
+                "the chain for {task:?} may have at most {MAX_TASK_CHAIN} entries"
+            )));
+        }
+        if preference
+            .chain
+            .iter()
+            .any(|t| t.provider.trim().is_empty() || t.model.trim().is_empty())
+        {
+            return Err(ApiError::validation(format!(
+                "every chain entry for {task:?} needs a provider and a model"
+            )));
+        }
+    }
     let mode_str = match body.mode {
         crate::ai_router::RoutingMode::Auto => "AUTO",
         crate::ai_router::RoutingMode::Manual => "MANUAL",
@@ -4044,13 +4913,81 @@ async fn refresh_ai_providers(
     Ok(Json(providers))
 }
 
+// ----------------------------------------------------------- AI usage & cost
+
+#[derive(Deserialize)]
+struct AiUsageQuery {
+    /// Calendar days to cover, the last of them today: 30 unless said, at most a year.
+    days: Option<u32>,
+    /// How far the asker's clock is ahead of UTC, in minutes (India: 330), so that a day is cut at the asker's midnight.
+    tz_offset_minutes: Option<i32>,
+    /// Only on the platform-wide route: look at this one project.
+    project_id: Option<Uuid>,
+}
+
+async fn ai_usage_report(
+    state: &AppState,
+    project: Option<&str>,
+    q: &AiUsageQuery,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let window = crate::ai_usage::Window::new(
+        chrono::Utc::now(),
+        q.days.unwrap_or(30),
+        q.tz_offset_minutes.unwrap_or(0),
+    );
+    let rows = state
+        .store
+        .ai_usage_since(&window.since_slot(), project)
+        .await
+        .map_err(to_500)?;
+    Ok(Json(crate::ai_usage::build_report(
+        &rows,
+        &window,
+        project.is_none(),
+    )))
+}
+
+/// GET /api/v1/projects/:project_id/ai-usage — what the AI calls made for this project came to (`ai_usage.rs`): calls,
+/// failures, time, tokens and the cost of the priced ones, by provider and model, by task and by day. Viewer+, like the
+/// project's runs: a key sees only its own project's.
+async fn get_ai_usage_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiQuery(q): ApiQuery<AiUsageQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    ai_usage_report(&state, Some(project_id.to_string().as_str()), &q).await
+}
+
+/// GET /api/v1/ai/usage — the same for every project at once, split by project too, or for one project with `?project_id=`.
+/// The AI providers are shared by the whole deployment and so is what they cost: an admin's view, on a key that is not tied
+/// to one project.
+async fn get_ai_usage(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiQuery(q): ApiQuery<AiUsageQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    auth::require_role(&ctx, Role::Admin)?;
+    if ctx.project_id.is_some() {
+        return Err(ApiError::forbidden(
+            "the usage of every project is for a key that is not tied to one project; ask for the project's own",
+        ));
+    }
+    if let Some(project_id) = q.project_id {
+        require_scoped_project(&state, &ctx, project_id).await?;
+    }
+    let project = q.project_id.map(|id| id.to_string());
+    ai_usage_report(&state, project.as_deref(), &q).await
+}
+
 // -------------------------------------------------------------- run create
 
 #[derive(Serialize)]
-struct CreateRunResponse {
-    run_id: Uuid,
-    state: RunState,
-    policy_notes: Option<String>,
+pub(crate) struct CreateRunResponse {
+    pub(crate) run_id: Uuid,
+    pub(crate) state: RunState,
+    pub(crate) policy_notes: Option<String>,
 }
 
 /// The actual run-creation logic (FRD §1 Execution Lifecycle: plan
@@ -4062,7 +4999,7 @@ struct CreateRunResponse {
 /// already resolved and, for the scoped caller, already verified against a
 /// real project by `require_scoped_project`; this function does not decide
 /// it, only uses it.
-async fn create_run_core(
+pub(crate) async fn create_run_core(
     state: &AppState,
     ctx: &AuthContext,
     project_id: Option<String>,
@@ -4351,7 +5288,7 @@ async fn list_runs_scoped(
 /// to the DB, same as every legacy handler) and confirms it belongs to
 /// `project_id` — the shared core every `_scoped` run-detail handler below
 /// uses, so that check is written exactly once.
-async fn scoped_run_summary(
+pub(crate) async fn scoped_run_summary(
     state: &AppState,
     run_id: Uuid,
     project_id: Uuid,
@@ -4376,7 +5313,7 @@ async fn scoped_run_summary(
 /// `get_run_scoped` (embeds them in `RunDetail`) and BE-13's standalone
 /// §12.4/§12.5 task endpoints below, so there is exactly one place that
 /// knows how to fetch a run's tasks.
-async fn scoped_run_tasks(state: &AppState, run_id: Uuid) -> Result<Vec<TaskState>, ApiError> {
+pub(crate) async fn scoped_run_tasks(state: &AppState, run_id: Uuid) -> Result<Vec<TaskState>, ApiError> {
     let mut tasks = if let Some(record) = state.runs.read().await.get(&run_id).cloned() {
         record.engine.read().await.tasks.values().cloned().collect()
     } else {
@@ -5335,7 +6272,7 @@ async fn scoped_test_plan(
     Ok(row)
 }
 
-async fn scoped_test_suite(
+pub(crate) async fn scoped_test_suite(
     state: &AppState,
     ctx: &AuthContext,
     project_id: Uuid,
@@ -5685,6 +6622,10 @@ async fn delete_test_suite_scoped(
 struct CrawlRequestBody {
     base_url: String,
     roles: Vec<crate::crawler::CrawlRole>,
+    /// Visit first the pages the project's requirements are about (`gap_check::focus_terms`): a link whose text or
+    /// address mentions a word of theirs is followed before the others. Off unless set.
+    #[serde(default)]
+    focus_requirements: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -5717,19 +6658,64 @@ async fn start_crawl_scoped(
         .await
         .map_err(|reasons| ApiError::validation(reasons.join("; ")))?;
 
+    // Login values written `env:NAME` are read from the orchestrator's environment when the crawl runs: refuse
+    // now, naming the variables, rather than start a crawl whose login can only fail.
+    let secrets = crate::crawler::crawl_secret_names(&plan);
+    let missing = crate::execution_plan::missing_secrets(&secrets);
+    if !missing.is_empty() {
+        return Err(ApiError::validation(
+            crate::execution_plan::missing_secrets_message(&missing),
+        ));
+    }
+
+    // The words the requirements are about, for a crawl asked to look for those pages first.
+    let focus_terms = if body.focus_requirements {
+        let rows = state
+            .store
+            .list_requirements(&project_id.to_string(), &[])
+            .await
+            .map_err(to_500)?;
+        let items: Vec<crate::requirement_generation::RequirementItem> = rows
+            .into_iter()
+            .map(|r| crate::requirement_generation::RequirementItem {
+                key: r.key,
+                section: r.section,
+                kind: crate::requirements::RequirementKind::from_db(&r.kind),
+                text: r.text,
+            })
+            .collect();
+        let terms = crate::gap_check::focus_terms(&items);
+        if terms.is_empty() {
+            return Err(ApiError::validation(
+                "focus_requirements needs requirements to take the pages from: upload a requirements document first (Test Case Generator, Source & Generation)",
+            ));
+        }
+        crate::crawler::validate_focus_terms(&terms)
+            .map_err(|reasons| ApiError::validation(reasons.join("; ")))?;
+        terms
+    } else {
+        Vec::new()
+    };
+
     // The task's own id doubles as the real key `crawler::read_crawl_result`
     // looks the eventual result up by — no separate id needed.
     let task_id = Uuid::new_v4().to_string();
-    let spec_path =
-        crate::crawler::materialize_crawl_spec(&task_id, &plan).map_err(ApiError::validation)?;
+    let spec_path = crate::crawler::materialize_crawl_spec_focused(&task_id, &plan, &focus_terms)
+        .map_err(ApiError::validation)?;
 
+    // The names of those variables (never their values) go with the task, so the executor can scrub the values
+    // from the crawl's evidence.
+    let mut params = serde_json::json!({ "spec": spec_path });
+    if !secrets.is_empty() {
+        params["secrets"] = serde_json::json!(secrets);
+    }
     let task = TaskDef {
         id: task_id,
         name: format!("Crawl: {}", plan.base_url),
         prerequisites: Vec::new(),
         simulate: None,
         executor: Some("playwright".to_string()),
-        params: serde_json::json!({ "spec": spec_path }),
+        params,
     };
     let run_plan = RunPlan {
         name: format!("Crawl: {}", plan.base_url),
@@ -5783,6 +6769,582 @@ async fn get_crawl_result_scoped(
         )
     })?;
     Ok(Json(output))
+}
+
+// ------------------------------------------------------------ gap check (Phase 6)
+//
+// The documents' requirements against what a crawl of the application shows. See `gap_check.rs` for what "found" means.
+
+/// `POST .../gap-check` body — optional, and every field of it too.
+#[derive(Debug, Default, Deserialize)]
+struct GapCheckRequestBody {
+    /// A crawl run of this project (`POST .../crawl`) that has finished; omitted, the project's most recent finished one.
+    #[serde(default)]
+    crawl_run_id: Option<Uuid>,
+    /// Only the pages this role's crawl reached; omitted, every role's.
+    #[serde(default)]
+    role: Option<String>,
+    /// Only the requirements of these documents (`GET .../requirements`); omitted, all of the project's.
+    #[serde(default)]
+    document_ids: Vec<Uuid>,
+    /// Also compare meaning with the embedder (`gap_verify::compare_meaning`). Calls a provider: Operator role.
+    #[serde(default)]
+    use_embeddings: bool,
+    /// Also ask the router's AI to check the requirements the words left unclear (`gap_verify::verify`). Calls a
+    /// provider: Operator role.
+    #[serde(default)]
+    verify: bool,
+    /// The most requirements the AI is asked about (default 12, at most 60).
+    #[serde(default)]
+    max_verifications: Option<usize>,
+}
+
+/// What the optional steps did (each says whether it was asked for).
+#[derive(Debug, Default, Serialize)]
+struct GapMethod {
+    embeddings: crate::gap_verify::EmbeddingReport,
+    verification: crate::gap_verify::VerificationReport,
+}
+
+#[derive(Debug, Serialize)]
+struct GapCrawlInfo {
+    run_id: Uuid,
+    /// `grounding` (links, buttons and form fields) or `result` (links and buttons only: an older crawl).
+    source: &'static str,
+    /// The role the report was limited to, if it was.
+    role: Option<String>,
+    roles: Vec<crate::gap_check::RoleEvidence>,
+}
+
+#[derive(Debug, Serialize)]
+struct GapCheckResponse {
+    crawl: GapCrawlInfo,
+    #[serde(flatten)]
+    report: crate::gap_check::GapReport,
+    /// What a reader of the report should know about the crawl behind it.
+    notes: Vec<String>,
+    method: GapMethod,
+}
+
+/// A run's crawl output: the grounding file when the crawl recorded one (links, buttons and form fields), the older
+/// result (links and buttons) when not. The `Err` says what is wrong and what to do.
+async fn gap_evidence_of_run(
+    state: &AppState,
+    project_id: Uuid,
+    run_id: Uuid,
+    role: Option<&str>,
+) -> Result<crate::gap_check::CrawlEvidence, ApiError> {
+    scoped_run_summary(state, run_id, project_id).await?;
+    let tasks = scoped_run_tasks(state, run_id).await?;
+    let task = tasks
+        .first()
+        .ok_or_else(|| ApiError::not_found("crawl run has no tasks"))?;
+    let evidence = match crate::grounding::read_crawl_grounding(&task.id) {
+        Ok(grounding) => crate::gap_check::evidence_from_grounding(&grounding, role),
+        Err(_) => match crate::crawler::read_crawl_result(&task.id) {
+            Ok(output) => crate::gap_check::evidence_from_result(&output, role),
+            Err(_) => {
+                return Err(ApiError::not_found(
+                    "this run recorded no crawl — it is not a crawl, or it is still running or did not finish",
+                ))
+            }
+        },
+    }
+    .map_err(ApiError::validation)?;
+    if evidence.pages.is_empty() {
+        return Err(ApiError::validation(
+            "the crawl reached no page (a login that failed leaves nothing to compare with): crawl again once it works",
+        ));
+    }
+    Ok(evidence)
+}
+
+/// The project's most recent crawl that left something to read (a crawl writes its result only when it has finished, so
+/// one still running is passed over). Whether a crawl can be used does not depend on the role asked for: a role it lacks,
+/// or one that reached no page, is reported by the crawl the check would have used, not passed over for an older one.
+async fn latest_crawl_run(
+    state: &AppState,
+    project_id: Uuid,
+    role: Option<&str>,
+) -> Result<(Uuid, crate::gap_check::CrawlEvidence), ApiError> {
+    let ids = state
+        .store
+        .list_run_ids(Some(&project_id.to_string()))
+        .await
+        .map_err(to_500)?;
+    for id in ids.into_iter().take(50) {
+        let Ok(summary) = scoped_run_summary(state, id, project_id).await else {
+            continue;
+        };
+        if !summary.name.starts_with("Crawl:") {
+            continue;
+        }
+        if gap_evidence_of_run(state, project_id, id, None).await.is_ok() {
+            let evidence = gap_evidence_of_run(state, project_id, id, role).await?;
+            return Ok((id, evidence));
+        }
+    }
+    Err(ApiError::not_found(
+        "this project has no finished crawl yet: crawl the application first (Test Case Generator, Crawl This Application)",
+    ))
+}
+
+/// POST /api/v1/projects/:project_id/gap-check — the project's requirements lined up against a crawl of the application:
+/// each requirement found, weak, missing or not checkable, with the pages and words behind it; the pages no requirement
+/// points at; and how many cases test each requirement. Read-only, and needs no AI provider.
+async fn gap_check_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    body: Option<ApiJson<GapCheckRequestBody>>,
+) -> Result<Json<GapCheckResponse>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let body = body.map(|ApiJson(b)| b).unwrap_or_default();
+    // The words check reads only; the embedder and the AI are provider calls.
+    if body.use_embeddings || body.verify {
+        auth::require_role(&ctx, Role::Operator)?;
+    }
+    let pid = project_id.to_string();
+
+    let rows = state
+        .store
+        .list_requirements(&pid, &body.document_ids)
+        .await
+        .map_err(to_500)?;
+    if rows.is_empty() {
+        return Err(ApiError::validation(
+            "there are no requirements to check: upload a requirements document first (Test Case Generator, Source & Generation)",
+        ));
+    }
+    let requirements: Vec<crate::requirement_generation::RequirementItem> = rows
+        .into_iter()
+        .map(|r| crate::requirement_generation::RequirementItem {
+            key: r.key,
+            section: r.section,
+            kind: crate::requirements::RequirementKind::from_db(&r.kind),
+            text: r.text,
+        })
+        .collect();
+
+    let role = body.role.as_deref().map(str::trim).filter(|r| !r.is_empty());
+    let (run_id, evidence) = match body.crawl_run_id {
+        Some(run_id) => (
+            run_id,
+            gap_evidence_of_run(&state, project_id, run_id, role).await?,
+        ),
+        None => latest_crawl_run(&state, project_id, role).await?,
+    };
+
+    let cases: Vec<crate::gap_check::CaseInfo> = state
+        .store
+        .list_test_cases(&pid, None, None)
+        .await
+        .map_err(to_500)?
+        .iter()
+        .map(crate::gap_check::CaseInfo::from)
+        .collect();
+
+    let mut analysis = crate::gap_check::analyze(&requirements, &evidence, &cases);
+    let mut method = GapMethod::default();
+    if body.use_embeddings {
+        method.embeddings =
+            crate::gap_verify::compare_meaning(&mut analysis, state.embedder.as_ref()).await;
+    }
+    if body.verify {
+        method.verification = crate::gap_verify::verify(
+            &mut analysis,
+            &state.ai_infra,
+            body.max_verifications
+                .unwrap_or(crate::gap_verify::DEFAULT_MAX_VERIFICATIONS),
+        )
+        .await;
+        audit(
+            &state,
+            &ctx,
+            "gap_check.verify",
+            Some(&run_id.to_string()),
+            None,
+            "ok",
+        )
+        .await;
+    }
+    Ok(Json(GapCheckResponse {
+        crawl: GapCrawlInfo {
+            run_id,
+            source: evidence.source,
+            role: role.map(str::to_string),
+            roles: evidence.roles.clone(),
+        },
+        report: analysis.report(),
+        notes: crate::gap_check::notes_for(&evidence),
+        method,
+    }))
+}
+
+// --------------------------------------------------- login suggestion (Phase 7)
+//
+// The steps that log a role in, proposed from the login page a crawl recorded. See `login_suggest.rs`.
+
+/// `POST .../login-suggestion` body.
+#[derive(Debug, Deserialize)]
+struct LoginSuggestionBody {
+    /// The role the steps are for: its name gives the environment variables the login reads.
+    role: String,
+    /// A crawl run of this project; omitted, its newest one that has a page with a password field.
+    #[serde(default)]
+    crawl_run_id: Option<Uuid>,
+    /// Also ask the router's AI when the rules are not sure of their answer. Calls a provider: Operator role.
+    #[serde(default)]
+    use_ai: bool,
+}
+
+/// Whether the AI was asked and what came of it.
+#[derive(Debug, Default, Serialize)]
+struct LoginSuggestionAi {
+    requested: bool,
+    used: bool,
+    /// Why it was not asked, or why its answer was not used.
+    note: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct LoginSuggestionResponse {
+    crawl_run_id: Uuid,
+    suggestion: crate::login_suggest::LoginSuggestion,
+    /// The other answer, when the AI was asked and answered differently from the rules.
+    alternatives: Vec<crate::login_suggest::LoginSuggestion>,
+    ai: LoginSuggestionAi,
+    /// The variables the steps read that are not set in the orchestrator's environment (names only): a crawl or a run with
+    /// these steps is refused until they are.
+    missing_secrets: Vec<String>,
+}
+
+/// A finished crawl's grounding: the fields and buttons of every page it reached. The `Err` says what is wrong and what to
+/// do (still running, made before grounding was recorded, another project's).
+async fn grounding_of_run(
+    state: &AppState,
+    project_id: Uuid,
+    run_id: Uuid,
+) -> Result<crate::grounding::CrawlGrounding, ApiError> {
+    scoped_run_summary(state, run_id, project_id).await?;
+    let tasks = scoped_run_tasks(state, run_id).await?;
+    let task = tasks
+        .first()
+        .ok_or_else(|| ApiError::not_found("crawl run has no tasks"))?;
+    crate::grounding::read_crawl_grounding(&task.id).map_err(ApiError::not_found)
+}
+
+/// The project's newest crawl that has a page with a password field.
+async fn newest_crawl_with_login_page(
+    state: &AppState,
+    project_id: Uuid,
+    role: &str,
+) -> Result<(Uuid, crate::grounding::CrawlGrounding), ApiError> {
+    let ids = state
+        .store
+        .list_run_ids(Some(&project_id.to_string()))
+        .await
+        .map_err(to_500)?;
+    let mut newest_problem: Option<crate::login_suggest::SuggestError> = None;
+    for id in ids.into_iter().take(50) {
+        let Ok(summary) = scoped_run_summary(state, id, project_id).await else {
+            continue;
+        };
+        if !summary.name.starts_with("Crawl:") {
+            continue;
+        }
+        let Ok(grounding) = grounding_of_run(state, project_id, id).await else {
+            continue;
+        };
+        match crate::login_suggest::suggest_by_rules(&grounding, role) {
+            Ok(_) => return Ok((id, grounding)),
+            Err(problem) => {
+                newest_problem.get_or_insert(problem);
+            }
+        }
+    }
+    Err(match newest_problem {
+        Some(problem) => ApiError::validation(problem.message()),
+        None => ApiError::not_found(
+            "this project has no crawl with recorded fields yet: crawl the application first (Test Case Generator, Crawl This Application)",
+        ),
+    })
+}
+
+/// POST /api/v1/projects/:project_id/login-suggestion — the steps that log `role` in, from the page a crawl found a password
+/// field on: open the page, fill the user name and the password (as `env:NAME` references, never values), click the button.
+/// Says how sure it is and why, and which variables the person has to set. Reads only; `use_ai` also asks the router's AI
+/// when the rules are not sure (Operator role).
+async fn login_suggestion_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiJson(body): ApiJson<LoginSuggestionBody>,
+) -> Result<Json<LoginSuggestionResponse>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    if body.use_ai {
+        auth::require_role(&ctx, Role::Operator)?;
+    }
+    let role = body.role.trim();
+    if role.is_empty() {
+        return Err(ApiError::validation("role must not be empty"));
+    }
+    crate::login_suggest::secret_names_for(role).map_err(ApiError::validation)?;
+
+    let (run_id, grounding) = match body.crawl_run_id {
+        Some(run_id) => (run_id, grounding_of_run(&state, project_id, run_id).await?),
+        None => newest_crawl_with_login_page(&state, project_id, role).await?,
+    };
+    let by_rules = crate::login_suggest::suggest_by_rules(&grounding, role)
+        .map_err(|problem| ApiError::validation(problem.message()))?;
+
+    let mut ai = LoginSuggestionAi {
+        requested: body.use_ai,
+        ..LoginSuggestionAi::default()
+    };
+    let mut suggestion = by_rules;
+    let mut alternatives = Vec::new();
+    if body.use_ai {
+        if suggestion.confidence == crate::login_suggest::Confidence::High {
+            ai.note = Some("the rules were sure of their answer, so the AI was not asked".to_string());
+        } else {
+            match crate::login_suggest::suggest_with_ai(&state.ai_infra, &grounding, role).await {
+                Ok(by_ai) => {
+                    ai.used = true;
+                    audit(
+                        &state,
+                        &ctx,
+                        "login_suggestion.ai",
+                        Some(&run_id.to_string()),
+                        Some(&by_ai.by),
+                        "ok",
+                    )
+                    .await;
+                    if by_ai.actions != suggestion.actions {
+                        // Rules that were only unsure keep the first place; rules that had a doubt worth a `low` give it
+                        // to the AI, whose answer is at most `medium`.
+                        if suggestion.confidence == crate::login_suggest::Confidence::Low {
+                            alternatives.push(std::mem::replace(&mut suggestion, by_ai));
+                        } else {
+                            alternatives.push(by_ai);
+                        }
+                    }
+                }
+                Err(why) => ai.note = Some(why),
+            }
+        }
+    }
+    let missing_secrets = crate::execution_plan::missing_secrets(&suggestion.secrets);
+    Ok(Json(LoginSuggestionResponse {
+        crawl_run_id: run_id,
+        suggestion,
+        alternatives,
+        ai,
+        missing_secrets,
+    }))
+}
+
+// -------------------------------------------------------------- autopilot (Phase 7)
+//
+// From documents to a report, in one run a person starts knowing what it costs. See `autopilot_estimate.rs`.
+
+/// `POST .../autopilot/estimate` body: what a run would be asked to do. Every field is optional.
+#[derive(Debug, Deserialize)]
+struct AutopilotEstimateBody {
+    /// The documents the run is about; omitted or empty, every document of the project that has requirements.
+    #[serde(default)]
+    requirement_document_ids: Vec<Uuid>,
+    #[serde(default)]
+    skills: Vec<SkillInputBody>,
+    /// `SMOKE`, `STANDARD`, `EXHAUSTIVE` or `CHAOS_EXPLORATORY`; omitted, the number of cases is only guessed.
+    #[serde(default)]
+    depth: Option<String>,
+    #[serde(default)]
+    coverage_top_up: bool,
+    /// Roles the crawl logs in as, `anonymous` included (default 1, at most 20).
+    #[serde(default)]
+    roles: Option<u64>,
+    #[serde(default)]
+    focus_requirements: bool,
+    /// The most requirements the gap check's AI step is asked about; omitted, the step is not used.
+    #[serde(default)]
+    verify_gaps: Option<u64>,
+    /// Whether approved cases are compiled and run (default true).
+    #[serde(default)]
+    execute: Option<bool>,
+    /// How many runs go at once (default 2, at most 8).
+    #[serde(default)]
+    run_concurrency: Option<u64>,
+}
+
+/// Where `task` would go right now, what that provider charges and what earlier calls of the task to it measured
+/// (`ai_call_stats`). `None`: nothing can serve the task.
+async fn estimate_server_for(
+    state: &AppState,
+    task: crate::ai_router::AiTask,
+    task_name: &str,
+) -> crate::autopilot_estimate::Server {
+    use crate::autopilot_estimate as est;
+    let (decision, _, _) = state.ai_infra.route_and_window_for(task).await?;
+    let providers = state.ai_infra.providers_snapshot().await;
+    let provider = providers.iter().find(|p| p.id == decision.provider_id)?;
+    let observed = state
+        .store
+        .ai_call_stats(task_name)
+        .await
+        .ok()
+        .and_then(|rows| {
+            rows.into_iter().find(|r| {
+                r.provider == decision.provider_id && r.model == decision.model_id && r.calls > 0
+            })
+        })
+        .map(|r| est::Observed {
+            calls: r.calls as u64,
+            avg_ms: r.total_ms as f64 / r.calls as f64,
+            avg_prompt_tokens: (r.token_calls > 0).then(|| r.prompt_tokens as f64 / r.token_calls as f64),
+            avg_completion_tokens: (r.token_calls > 0)
+                .then(|| r.completion_tokens as f64 / r.token_calls as f64),
+        });
+    Some(est::ProviderProfile {
+        id: provider.id.clone(),
+        name: provider.name.clone(),
+        model: decision.model_id.clone(),
+        kind: match provider.provider_type {
+            crate::ai_router::ProviderType::Local => est::ProviderKind::Local,
+            crate::ai_router::ProviderType::Api => est::ProviderKind::Api,
+            _ => est::ProviderKind::Other,
+        },
+        pricing: match provider.pricing {
+            crate::ai_router::ProviderPricing::Unmetered => est::Pricing::Unmetered,
+            crate::ai_router::ProviderPricing::Metered {
+                input_usd_per_1k,
+                output_usd_per_1k,
+            } => est::Pricing::Metered {
+                input_usd_per_1k,
+                output_usd_per_1k,
+            },
+        },
+        observed,
+    })
+}
+
+/// POST /api/v1/projects/:project_id/autopilot/estimate — what a run over this project's requirements would cost before it is
+/// started: AI calls, tokens, time and dollars, as ranges, per step and per task, each provider named with what it charges
+/// and how its speed is known, and every assumption written down. Reads only and calls no AI.
+async fn autopilot_estimate_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiJson(body): ApiJson<AutopilotEstimateBody>,
+) -> Result<Json<crate::autopilot_estimate::Estimate>, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let request = crate::autopilot::EstimateRequest {
+        requirement_document_ids: body.requirement_document_ids,
+        skills: body
+            .skills
+            .into_iter()
+            .map(|s| crate::ai_generation::SkillInput {
+                id: s.id,
+                name: s.name,
+                description: s.description,
+            })
+            .collect(),
+        depth: body.depth,
+        coverage_top_up: body.coverage_top_up,
+        roles: body.roles.unwrap_or(1),
+        focus_requirements: body.focus_requirements,
+        verify_gaps: body.verify_gaps,
+        execute: body.execute.unwrap_or(true),
+        run_concurrency: body
+            .run_concurrency
+            .unwrap_or(crate::autopilot::DEFAULT_CONCURRENCY),
+    };
+    Ok(Json(
+        build_autopilot_estimate(&state, project_id, &request).await?,
+    ))
+}
+
+/// What a run described by `request` would cost, worked out from the project's requirements and from where the AI router
+/// would send each task now. Reads only and calls no AI. Shared by the estimate route and by creating a run, so the
+/// estimate a person is shown for a run is the one they would have been shown before making it.
+pub(crate) async fn build_autopilot_estimate(
+    state: &AppState,
+    project_id: Uuid,
+    request: &crate::autopilot::EstimateRequest,
+) -> Result<crate::autopilot_estimate::Estimate, ApiError> {
+    request.check_limits().map_err(ApiError::validation)?;
+
+    let items: Vec<crate::requirement_generation::RequirementItem> = state
+        .store
+        .list_requirements(&project_id.to_string(), &request.requirement_document_ids)
+        .await
+        .map_err(to_500)?
+        .into_iter()
+        .map(|r| crate::requirement_generation::RequirementItem {
+            key: r.key,
+            section: r.section,
+            kind: crate::requirements::RequirementKind::from_db(&r.kind),
+            text: r.text,
+        })
+        .collect();
+    let skills = &request.skills;
+    let coverage_options = coverage_options_for(request.depth.as_deref(), request.coverage_top_up, true)?;
+    let budget = requirement_batch_budget(state).await;
+    let plan = crate::requirement_generation::plan_calls(&items, skills, budget);
+    let (prompt_tokens, completion_tokens) =
+        crate::requirement_generation::estimate_tokens(&plan, &items);
+    let cases_target = coverage_options
+        .map(|o| {
+            crate::coverage::plan_info(&items, skills, o.depth, o.top_up, o.rounds, 0)
+                .techniques
+                .iter()
+                .map(|t| (t.requirements * t.per_requirement) as u64)
+                .sum()
+        })
+        .unwrap_or(0);
+
+    let input = crate::autopilot_estimate::EstimateInput {
+        requirements: items.len() as u64,
+        first_pass_calls: plan.calls.len() as u64,
+        first_pass_prompt_tokens: prompt_tokens,
+        first_pass_completion_tokens: completion_tokens,
+        top_up_rounds: coverage_options
+            .filter(|o| o.top_up)
+            .map(|o| o.rounds as u64),
+        cases_target,
+        roles: request.roles,
+        focus: request.focus_requirements,
+        verify: request.verify_gaps,
+        execute: request.execute,
+        run_concurrency: request.run_concurrency,
+        generation: estimate_server_for(
+            state,
+            crate::ai_router::AiTask::TestCaseGeneration,
+            "TEST_CASE_GENERATION",
+        )
+        .await,
+        compile: estimate_server_for(
+            state,
+            crate::ai_router::AiTask::TestCaseCompilation,
+            "TEST_CASE_COMPILATION",
+        )
+        .await,
+        traceability: estimate_server_for(
+            state,
+            crate::ai_router::AiTask::Traceability,
+            "TRACEABILITY",
+        )
+        .await,
+    };
+    let mut estimate = crate::autopilot_estimate::estimate(&input);
+    let not_offered = items.len() - plan.offered_count();
+    if not_offered > 0 {
+        estimate.warnings.push(format!(
+            "{not_offered} requirement(s) are of a kind no selected skill tests, so no case would be generated for them."
+        ));
+    }
+    Ok(estimate)
 }
 
 // ----------------------------------------------------------- intelligence

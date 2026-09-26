@@ -33,12 +33,16 @@ import { useAIQA } from '../../context/AIQAContext';
 import { useProject } from '../../context/ProjectContext';
 import { DocumentUploadSection } from '../test-generator/DocumentUploadSection';
 import { ApplicationSourceSection } from '../test-generator/ApplicationSourceSection';
-import { CrawlGroundingSection } from '../test-generator/CrawlGroundingSection';
+import { CrawlGroundingSection, type GroundingCrawl } from '../test-generator/CrawlGroundingSection';
+import { RequirementCoverageSummary } from '../test-generator/RequirementCoverageSummary';
+import { RequirementGenerationSection } from '../test-generator/RequirementGenerationSection';
 import { GenerationConfigSection, TEST_CATEGORIES } from '../test-generator/GenerationConfigSection';
 import { GeneratedTestCasesView } from '../test-generator/GeneratedTestCasesView';
+import { GenerationWaveResults } from '../test-generator/GenerationWaveResults';
 import { SkillsAndMcpPanel } from '../test-generator/SkillsAndMcpPanel';
 import { TestGenerationFlow } from '../test-generator/TestGenerationFlow';
 import { useSkillSelection } from '../../hooks/useSkillSelection';
+import { useProviderNames } from '../../hooks/useProviderNames';
 import { categoryMatchedSkillIds, DEFAULT_SELECTED_SKILL_IDS } from '../../services/skillRegistry';
 import {
   UploadedRequirementDoc,
@@ -59,8 +63,39 @@ import type {
   GeneratedTestCaseDraft,
   AiRoutingMode,
   CompilationOutcome,
+  CompileRequest,
   OrchestratorLogEntry,
+  RequirementRecord,
 } from '../../types/contract';
+
+/** The default test-category selection — a fresh generation for a project
+ *  starts here, same as it always has; pulled out to a constant only so the
+ *  project-switch reset below can put it back exactly, rather than
+ *  duplicating the literal a second time. */
+const DEFAULT_SELECTED_CATEGORIES: TestGenerationCategory[] = [
+  'Functional',
+  'Non-Functional',
+  'Positive',
+  'Negative',
+  'UI/UX',
+  'Edge Case',
+  'Business Logic',
+  'API',
+  'Security',
+];
+
+/** The default (nothing connected) Application Sources state — a function,
+ *  not a shared constant object, so every caller gets its own fresh object
+ *  no `setAppSources` call could ever end up mutating a copy someone else
+ *  is still holding. */
+function defaultAppSources(): Record<AppSourceType, AppSourceConnection> {
+  return {
+    STAGING: { type: 'STAGING', label: 'Staging', url: '', status: 'IDLE' },
+    DEMO: { type: 'DEMO', label: 'Demo', url: '', status: 'IDLE' },
+    LIVE: { type: 'LIVE', label: 'Live', url: '', status: 'IDLE' },
+    FIGMA: { type: 'FIGMA', label: 'Figma', url: '', status: 'IDLE' },
+  };
+}
 
 /** Parses a real `generate_ai` wave-start log message
  *  (`ai_generation.rs::run_wave`'s own `"Wave '{wave}' ({skills}) started"`
@@ -156,7 +191,7 @@ export type HandoffChoice =
    *  reference fixture. See `GeneratedTestCasesView.tsx`'s own compile
    *  preview UI for the truthful READY/NOT_EXECUTABLE/... disclosure
    *  shown before this is sent. */
-  | { mode: 'compile' };
+  | { mode: 'compile'; grounding?: CompileRequest };
 
 // FE-4: the one, minimal, non-visual routing change made to this
 // product-owner-designed page — see `handleOpenExecutionHub` below.
@@ -173,6 +208,8 @@ export const TestCaseGeneratorPage: React.FC = () => {
   const {
     activeGenerationSession,
     setActiveGenerationSession,
+    getGenerationSession,
+    setGenerationSessionFor,
   } = useAIQA();
   const { selectedProjectId: realProjectId } = useProject();
   const navigate = useNavigate();
@@ -191,12 +228,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
 
   // 2. Application Sources State
   const [appSources, setAppSources] = useState<Record<AppSourceType, AppSourceConnection>>(
-    activeGenerationSession?.appSources || {
-      STAGING: { type: 'STAGING', label: 'Staging', url: '', status: 'IDLE' },
-      DEMO: { type: 'DEMO', label: 'Demo', url: '', status: 'IDLE' },
-      LIVE: { type: 'LIVE', label: 'Live', url: '', status: 'IDLE' },
-      FIGMA: { type: 'FIGMA', label: 'Figma', url: '', status: 'IDLE' },
-    }
+    activeGenerationSession?.appSources || defaultAppSources()
   );
 
   // 2b. Real crawl grounding (Phase 6 -> Phase 8 wiring) — the real,
@@ -204,20 +236,13 @@ export const TestCaseGeneratorPage: React.FC = () => {
   // `activeGenerationSession` yet (a session-restore concern out of this
   // increment's scope) — always starts fresh, same as `documents` does.
   const [crawlRunId, setCrawlRunId] = useState<string | null>(null);
+  // Phase 5 — the finished crawl (and its roles) a test case can be compiled against, whether or not it is also the one
+  // chosen for generation above.
+  const [groundingCrawl, setGroundingCrawl] = useState<GroundingCrawl | null>(null);
 
   // 3. Selected Test Categories (Defaults to all 14 or customizable)
   const [selectedCategories, setSelectedCategories] = useState<TestGenerationCategory[]>(
-    activeGenerationSession?.selectedCategories || [
-      'Functional',
-      'Non-Functional',
-      'Positive',
-      'Negative',
-      'UI/UX',
-      'Edge Case',
-      'Business Logic',
-      'API',
-      'Security',
-    ]
+    activeGenerationSession?.selectedCategories || DEFAULT_SELECTED_CATEGORIES
   );
 
   // 4. Generation depth (local template-selection preference — FE-16: the
@@ -225,6 +250,20 @@ export const TestCaseGeneratorPage: React.FC = () => {
   // real effect on generation, see the FE-16 report).
   const [depth, setDepth] = useState<'SMOKE' | 'STANDARD' | 'EXHAUSTIVE' | 'CHAOS_EXPLORATORY'>(
     activeGenerationSession?.depth || 'STANDARD'
+  );
+
+  // 5. Phase 3 — opt-in: generate from the numbered requirements read out of
+  // the uploaded documents (`RequirementGenerationSection`) instead of
+  // pasting the documents into every AI call. Off unless the user turned it
+  // on, and kept in the project's own session like the rest of the setup.
+  const [requirementMode, setRequirementMode] = useState<boolean>(
+    activeGenerationSession?.requirementMode ?? false
+  );
+  // 5b. Phase 4 — opt-in, within that mode: after the first pass, fill the
+  // gaps the coverage report shows (a negative case, an edge case, ...) with
+  // extra calls. Off unless the user turned it on; kept in the session too.
+  const [coverageTopUp, setCoverageTopUp] = useState<boolean>(
+    activeGenerationSession?.coverageTopUp ?? false
   );
 
   // 6. Generation State Machine: IDLE | VALIDATING | PROCESSING | GENERATING | COMPLETED | FAILED | PARTIAL
@@ -238,19 +277,20 @@ export const TestCaseGeneratorPage: React.FC = () => {
   // is a real, human-readable reason whenever generation did not produce
   // reviewable cases (network/auth failure, no compatible AI model, or a
   // real AI response that produced zero cases passing validation).
-  // `lastGenerationResult` always starts `null` on a fresh mount even when
-  // a session is restored below — it is the real backend response for a
-  // completed call *this page instance made*, never reconstructed from a
-  // prior visit's session. `generationError` is restored, because unlike
-  // that response, it is exactly what a resumed page needs to show why the
-  // last attempt didn't produce cases, with no false claim of a fresh
-  // response to go with it (see the "Generation Details" panel's own
-  // `lastGenerationResult`-gated fields further down).
+  // Both live in the project's session too, so a return to it — after a
+  // page switch or a project switch, including a generation that finished
+  // while it was off screen — still shows the real provider/model, the
+  // per-skill results and the failure reason of its last attempt. A failed
+  // attempt clears the response (nothing real is left to show for it).
   const [generationError, setGenerationError] = useState<string | null>(
     activeGenerationSession?.generationError ?? null
   );
-  const [lastGenerationResult, setLastGenerationResult] = useState<GenerateAiTestCasesResponse | null>(null);
+  const [lastGenerationResult, setLastGenerationResult] = useState<GenerateAiTestCasesResponse | null>(
+    activeGenerationSession?.lastGenerationResult ?? null
+  );
   const [lastRoutingMode, setLastRoutingMode] = useState<AiRoutingMode | null>(null);
+  // A provider added in Settings shows its own name, not its internal id.
+  const providerName = useProviderNames(lastGenerationResult !== null);
 
   // Real, in-flight "which skill is running right now" signal — a
   // project-scoped WS connection listening only for the real wave-start
@@ -350,6 +390,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
     toggleSkill,
     selectAllSkills,
     deselectAllSkills,
+    resetSelectedSkills,
     addCustomSkill,
     fileSkillErrors,
     fileSkillsDirectory,
@@ -373,7 +414,113 @@ export const TestCaseGeneratorPage: React.FC = () => {
     () => [...new Set([...selectedSkillIds, ...autoMatchedSkillIds.keys()])],
     [selectedSkillIds, autoMatchedSkillIds],
   );
+  // The skills exactly as a generation sends them — and what the requirement
+  // plan below is worked out for, so the plan can never describe a different
+  // set than the request that follows.
+  const requestSkills: GenerateAiSkillInput[] = useMemo(
+    () =>
+      effectiveSkillIds
+        .map((id) => skills.find((s) => s.id === id))
+        .filter((s): s is (typeof skills)[number] => Boolean(s))
+        .map((s) => ({ id: s.id, name: s.name, description: s.description })),
+    [effectiveSkillIds, skills],
+  );
+  // Phase 3 — the uploaded documents that have numbered requirements read
+  // from them, and whether this generation is to use those: the user opted in
+  // AND there is at least one such document. Otherwise (the default) the
+  // documents are pasted into the request as they always were.
+  const requirementDocIds = useMemo(
+    () => documents.map((d) => d.requirementsDocumentId).filter((id): id is string => Boolean(id)),
+    [documents],
+  );
+  const useRequirements = requirementMode && requirementDocIds.length > 0;
   const isGeneratingNow = ['VALIDATING', 'PROCESSING', 'GENERATING'].includes(generationState);
+
+  // The controller for each project's own `generate-ai` call currently in
+  // flight, if any, keyed by that project's id — a real map, not a single
+  // slot, because switching projects deliberately does not cancel one (see
+  // the reseed effect's own doc comment below for why it is meant to keep
+  // running instead), so this page can genuinely have more than one
+  // outstanding at once (generate for project A, switch to B before it
+  // settles, generate for B too). Set at the start of
+  // `handleTriggerGenerate`, keyed by the project that call is for; that
+  // entry is deleted once the call settles on its own (success or a real
+  // failure), so the unmount cleanup below only ever acts on calls that
+  // are genuinely still running.
+  const generationAbortControllersRef = useRef<Record<string, AbortController>>({});
+
+  // The project this page is *currently* showing, from whichever render's
+  // closure last ran this effect — kept in a ref (not just read off
+  // `realProjectId`) so `handleTriggerGenerate`'s completion handler,
+  // itself a closure over the render a real generation call actually
+  // started on, can tell "is the project I generated for still the one on
+  // screen right now" apart from "the user has since switched away from
+  // it", however much later that completion actually arrives. Doubles as
+  // the previous-vs-current comparison the reseed effect below needs;
+  // starts `null`, which only otherwise means "no project selected", so
+  // seeing it there is how that effect's very first run tells "just found
+  // out which project is active" apart from "the project genuinely
+  // changed under us".
+  const currentProjectIdRef = useRef<string | null>(null);
+
+  // Reseeds every project-scoped piece of this page's own state from that
+  // *other* real project's own real session the moment the selected
+  // project itself changes — a project switch never unmounts this page
+  // (`realProjectId` comes from `useProject()`, read inside an
+  // already-mounted `TestCaseGeneratorPage`; the `key={realProjectId}` a
+  // few hundred lines down only remounts this page's own child components,
+  // not the state declared here, above them, that it hands down to them as
+  // props), so without this, everything below kept right on showing
+  // whichever project was selected when it was last set.
+  //
+  // Reported in two parts: (1) cases just generated for project "ambiance"
+  // kept showing after switching to a brand-new project with none of its
+  // own yet — `persistedCases` correctly became empty for it (its own
+  // real, project-scoped fetch, unaffected by this), but `hasPersisted`
+  // being `false` then fell back to `generatedCases`, which was still
+  // "ambiance"'s; (2) switching back to "ambiance" afterward must show
+  // "ambiance"'s own session exactly as it was left, not a wipe — a
+  // generation genuinely in flight for it must keep running in the
+  // background the whole time, same as a person doing exactly that would
+  // expect. `activeGenerationSession` (`AIQAContext`) is the real, durable,
+  // per-project store this reseed reads from — kept correct for whichever
+  // project this page *last* showed by the continuous-mirror effect below
+  // (while this page was showing it) and by `handleTriggerGenerate`'s own
+  // completion handler (even after this page has since moved on, per that
+  // handler's own doc comment) — so a project's own entry is never stale
+  // by more than "a call for it that hasn't come back yet", which is
+  // exactly the "still generating" state a return to it should honestly
+  // show.
+  //
+  // Skipped on this page's very first render for whatever project it
+  // mounted already showing (see `currentProjectIdRef`'s own doc comment
+  // on why `null` is what that first run sees there; the dependency array
+  // already skips a render where `realProjectId` itself did not change).
+  useEffect(() => {
+    const previousProjectId = currentProjectIdRef.current;
+    currentProjectIdRef.current = realProjectId;
+    if (previousProjectId === null || previousProjectId === realProjectId) return;
+
+    const session = realProjectId ? getGenerationSession(realProjectId) : null;
+    setActiveBranch(session?.generatedCases && session.generatedCases.length > 0 ? 'GENERATED_CASES' : 'SOURCES_AND_GENERATION');
+    setDocuments(session?.documents || []);
+    setAppSources(session?.appSources || defaultAppSources());
+    setCrawlRunId(null); // see this state's own declaration — never restored from a session yet, for any project
+    setSelectedCategories(session?.selectedCategories || DEFAULT_SELECTED_CATEGORIES);
+    setDepth(session?.depth || 'STANDARD');
+    setRequirementMode(session?.requirementMode ?? false);
+    setCoverageTopUp(session?.coverageTopUp ?? false);
+    setGenerationState(session?.generationState || 'IDLE');
+    setGenerationError(session?.generationError ?? null);
+    setLastGenerationResult(session?.lastGenerationResult ?? null);
+    setLastRoutingMode(null);
+    setActiveWaveSkillNames([]);
+    setGeneratedCases(session?.generatedCases || []);
+    setSaveState('IDLE');
+    setSaveErrorMessage(null);
+    setHandoffError(null);
+    resetSelectedSkills(session?.selectedSkillIds || DEFAULT_SELECTED_SKILL_IDS);
+  }, [realProjectId, getGenerationSession, resetSelectedSkills]);
 
   // Keeps `activeGenerationSession` (`AIQAContext` — the one state React
   // Router does not tear down on an in-app page switch, see that context's
@@ -405,11 +552,14 @@ export const TestCaseGeneratorPage: React.FC = () => {
       currentStep: generatedCases.length > 0 ? 'GENERATED_CASES' : isGeneratingNow ? 'AI_PLANNING' : 'REQUIREMENT_INPUT',
       generationState,
       generationError,
+      lastGenerationResult,
       selectedCategories,
       documents,
       appSources,
       depth,
       selectedSkillIds,
+      requirementMode,
+      coverageTopUp,
       generatedCases,
       createdAt: prev?.createdAt ?? new Date().toISOString(),
     }));
@@ -417,44 +567,38 @@ export const TestCaseGeneratorPage: React.FC = () => {
     // below; `isGeneratingNow` is derived from `generationState`, already
     // listed. Neither needs its own entry.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [documents, appSources, selectedCategories, depth, generationState, generationError, generatedCases, selectedSkillIds]);
+  }, [documents, appSources, selectedCategories, depth, generationState, generationError, lastGenerationResult, generatedCases, selectedSkillIds, requirementMode, coverageTopUp]);
 
-  // The controller for whichever `generate-ai` call is currently in
-  // flight, if any — set at the start of `handleTriggerGenerate`, so the
-  // unmount cleanup just below can cancel it. `null` before the first
-  // attempt and again once one settles on its own (success or a real
-  // failure), so that cleanup only ever acts on a call this page instance
-  // actually started and that is genuinely still running.
-  const generationAbortRef = useRef<AbortController | null>(null);
-
-  // Cancels an in-flight generation call when the page is left — the same
-  // abort-on-switch pattern used just below for the persisted-cases fetch.
-  // Without this, that request outlives the page: its eventual result can
-  // only ever reach the mirrored session above, by which point this page
-  // may already be gone or a fresh visit may already be showing it, with
-  // no way to tell a genuinely-finished attempt from one that is still
-  // running. Aborting it removes that uncertainty — and if the session
-  // still says GENERATING at that point (real fields, not a fabricated
-  // guess: this only touches a session this page itself left mid-flight),
-  // it is corrected to FAILED with an honest reason, since a later visit
-  // to this page must never show a spinner for a request that no longer
-  // exists.
+  // The call that started a generation this page is showing as in flight can
+  // belong to an *earlier instance* of this page (left and re-entered while
+  // it ran): its completion handler only reaches the project's session, and
+  // this instance's own state is not subscribed to it. So when the session
+  // reports the attempt finished while this page still shows it running, take
+  // the real result from the session. Keyed on the session alone, so a new
+  // attempt (local state flips to running before the mirror effect above has
+  // written that to the session) is never reverted to the previous result.
   useEffect(() => {
-    return () => {
-      if (!generationAbortRef.current) return;
-      generationAbortRef.current.abort();
-      generationAbortRef.current = null;
-      setActiveGenerationSession((prev) =>
-        prev && prev.generationState === 'GENERATING'
-          ? {
-              ...prev,
-              generationState: 'FAILED',
-              generationError: 'Generation was interrupted because you navigated away before it finished. Click Generate to try again.',
-            }
-          : prev
-      );
-    };
-  }, [setActiveGenerationSession]);
+    const finished = activeGenerationSession;
+    if (!isGeneratingNow || !finished?.generationState) return;
+    if (['VALIDATING', 'PROCESSING', 'GENERATING'].includes(finished.generationState)) return;
+    setGeneratedCases(finished.generatedCases || []);
+    setGenerationState(finished.generationState);
+    setGenerationError(finished.generationError ?? null);
+    setLastGenerationResult(finished.lastGenerationResult ?? null);
+    setActiveWaveSkillNames([]);
+    if (finished.generationState === 'COMPLETED') setActiveBranch('GENERATED_CASES');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeGenerationSession]);
+
+  // A generation call still in flight keeps running even if this page
+  // itself is left (navigated away from entirely, not just switched to a
+  // different project) — same reasoning as the reseed effect above for a
+  // project switch: `handleTriggerGenerate`'s own completion handler
+  // writes its real result directly to `generatingForProjectId`'s session
+  // in `AIQAContext` (still mounted regardless of this page), so a later
+  // visit — to this project, from this page or a fresh one — reads that
+  // real result back, exactly as if this page had stayed open the whole
+  // time. Nothing here needs to cancel it just because this page unmounts.
 
   // Real fetch of this project's persisted test cases — same abort-on-
   // switch pattern every other real-data page in this app already uses
@@ -618,7 +762,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
       choice.mode === 'executor'
         ? { executor: choice.executor }
         : choice.mode === 'compile'
-          ? { compile_and_execute: true }
+          ? { compile_and_execute: true, ...(choice.grounding ?? {}) }
           : { simulate: { outcome: choice.outcome, delay_ms: 150 } };
     try {
       const created = await aiqaApi.testCases.handoff(realProjectId, id, body);
@@ -638,14 +782,14 @@ export const TestCaseGeneratorPage: React.FC = () => {
   const [compilePreviewForId, setCompilePreviewForId] = useState<string | null>(null);
   const [compilePreviewError, setCompilePreviewError] = useState<string | null>(null);
 
-  const handleCompilePreview = async (id: string) => {
+  const handleCompilePreview = async (id: string, grounding?: CompileRequest) => {
     if (!realProjectId) return;
     setCompilePreviewLoading(true);
     setCompilePreviewError(null);
     setCompilePreview(null);
     setCompilePreviewForId(id);
     try {
-      const outcome = await aiqaApi.testCases.compile(realProjectId, id);
+      const outcome = await aiqaApi.testCases.compile(realProjectId, id, undefined, grounding);
       setCompilePreview(outcome);
     } catch (err) {
       setCompilePreviewError(err instanceof ApiError ? err.message : 'Compilation preview failed.');
@@ -749,6 +893,13 @@ export const TestCaseGeneratorPage: React.FC = () => {
     }
     parts.push(`Requested generation depth: ${depth}.`);
     for (const doc of documents) {
+      // Phase 3 — generating from numbered requirements: a document read
+      // into them is sent by its id (never pasted as well, which is what
+      // would overflow every call), and one with text but no requirements
+      // cannot be sent in this mode at all (`RequirementGenerationSection`
+      // names it). Only the notes about content that could not be analyzed
+      // stay.
+      if (useRequirements && (doc.requirementsDocumentId || doc.extractedText)) continue;
       if (doc.extractedText) {
         const truncatedNote = doc.extractedTruncated ? ' (truncated to the first 20,000 characters)' : '';
         parts.push(`=== ${doc.label} — ${doc.fileName}${truncatedNote} ===\n${doc.extractedText}`);
@@ -778,16 +929,28 @@ export const TestCaseGeneratorPage: React.FC = () => {
     draft: GeneratedTestCaseDraft,
     index: number,
     meta: { method: 'ai' | 'fallback'; provider: string | null; model: string | null },
+    /** Requirement-driven generation only: the numbered requirements the
+     *  request was generated from, by id (`null` for an id two documents
+     *  share, which cannot be told apart). */
+    requirements?: Map<string, RequirementRecord | null>,
   ): GeneratedTestCase => {
     const skill = skills.find((s) => s.id === draft.skill_id);
     const tcId = `AI-${(index + 1).toString().padStart(3, '0')}`;
-    const docLabels = documents.map((d) => d.slotId).join(' + ') || undefined;
+    // The requirement a case was generated for, when the response names one
+    // and its text could be read back: that requirement is then the case's
+    // source — its own document, its own text — rather than every document
+    // and every setting of the request together.
+    const linked = draft.requirement_id ? requirements?.get(draft.requirement_id) ?? null : null;
+    const linkedSlot = linked ? documents.find((d) => d.requirementsDocumentId === linked.document_id)?.slotId : undefined;
+    const docLabels = linkedSlot ?? (documents.map((d) => d.slotId).join(' + ') || undefined);
     const reqText = buildRequirementText();
     const aiAnalysis =
       meta.method === 'ai'
         ? `Generated by ${meta.provider ?? 'an AI provider'}/${meta.model ?? 'an unreported model'}${
             skill ? ` (skill: ${skill.name})` : ''
-          } — evidence: ${draft.evidence}${draft.source_reference ? `, cites: "${draft.source_reference}"` : ''}.`
+          } — evidence: ${draft.evidence}${draft.requirement_id ? `, requirement: ${draft.requirement_id}` : ''}${
+            draft.technique ? `, technique: ${draft.technique}` : ''
+          }${draft.source_reference ? `, cites: "${draft.source_reference}"` : ''}.`
         : 'AI generation did not produce this case.';
 
     return {
@@ -798,12 +961,17 @@ export const TestCaseGeneratorPage: React.FC = () => {
       priority: draft.priority as GeneratedTestCase['priority'],
       severity: draft.severity as GeneratedTestCase['severity'],
       sourceDocument: docLabels,
-      requirementReference: draft.source_reference ?? undefined,
-      sourceRequirement: reqText || undefined,
+      // The requirement's own id (what the quality graph's requirement
+      // impact is looked up by) when the case is tied to one; otherwise the
+      // quoted phrase, as it always was.
+      requirementReference: draft.requirement_id ?? draft.source_reference ?? undefined,
+      sourceRequirement: linked?.text ?? (reqText || undefined),
       traceability: {
         sourceDoc: docLabels ?? 'Configuration & Skills (no document attached)',
-        requirementRef: draft.source_reference ?? `Not cited (${draft.evidence})`,
-        requirementText: reqText,
+        requirementRef: draft.requirement_id
+          ? `${draft.requirement_id}${draft.source_reference ? ` — cites: "${draft.source_reference}"` : ''}`
+          : draft.source_reference ?? `Not cited (${draft.evidence})`,
+        requirementText: linked?.text ?? reqText,
         aiAnalysis,
         testCaseId: tcId,
         testCategory: draft.category,
@@ -813,7 +981,13 @@ export const TestCaseGeneratorPage: React.FC = () => {
       },
       preconditions: draft.preconditions,
       testData: JSON.stringify(
-        { skill_id: draft.skill_id, evidence: draft.evidence, source_reference: draft.source_reference },
+        {
+          skill_id: draft.skill_id,
+          evidence: draft.evidence,
+          source_reference: draft.source_reference,
+          ...(draft.requirement_id ? { requirement_id: draft.requirement_id } : {}),
+          ...(draft.technique ? { technique: draft.technique } : {}),
+        },
         null,
         2
       ),
@@ -827,6 +1001,9 @@ export const TestCaseGeneratorPage: React.FC = () => {
         draft.skill_id,
         draft.evidence,
         meta.method === 'ai' ? 'ai-generated' : 'ai-fallback',
+        // Phase 4 — which technique the case counts for, so a saved case can
+        // be found by it later.
+        ...(draft.technique ? [`technique:${draft.technique}`] : []),
       ],
       generatedAt: new Date().toISOString(),
     };
@@ -838,6 +1015,13 @@ export const TestCaseGeneratorPage: React.FC = () => {
       setGenerationError('Select a project before generating test cases — the real AI generation endpoint is project-scoped.');
       return;
     }
+    // Frozen for this one call, in this render's closure — deliberately not
+    // read again as `realProjectId` after the `await` below, since the user
+    // may by then have switched to a different project (`realProjectId`
+    // itself would reflect *that* one instead). This is the project the
+    // real backend call below is actually made for, and the one its result
+    // belongs to, however much later it actually arrives.
+    const generatingForProjectId = realProjectId;
     const reqText = buildRequirementText();
     if (!reqText.trim()) {
       setGenerationState('FAILED');
@@ -855,12 +1039,12 @@ export const TestCaseGeneratorPage: React.FC = () => {
     // the page is left before it finishes — see that effect's own doc
     // comment.
     const controller = new AbortController();
-    generationAbortRef.current = controller;
+    generationAbortControllersRef.current[generatingForProjectId] = controller;
 
-    const requestSkills: GenerateAiSkillInput[] = effectiveSkillIds
-      .map((id) => skills.find((s) => s.id === id))
-      .filter((s): s is (typeof skills)[number] => Boolean(s))
-      .map((s) => ({ id: s.id, name: s.name, description: s.description }));
+    // Phase 3 — frozen for this call like `generatingForProjectId` above:
+    // the documents whose numbered requirements this request is generated
+    // from, or none (the default) for a request that pastes them.
+    const requirementDocumentIds = useRequirements ? requirementDocIds : [];
 
     // Best-effort, non-blocking: real routing mode for the "Generation
     // Details" panel (brief §10). A failure here must never block or fail
@@ -875,33 +1059,54 @@ export const TestCaseGeneratorPage: React.FC = () => {
 
     try {
       const response = await aiqaApi.testCases.generateAi(
-        realProjectId,
+        generatingForProjectId,
         {
           requirement_text: reqText,
           skills: requestSkills,
           crawl_run_id: crawlRunId,
+          ...(requirementDocumentIds.length > 0
+            ? {
+                requirement_document_ids: requirementDocumentIds,
+                // Phase 4 — with documents, the depth asked for turns on the
+                // coverage report; a top-up is asked for only when opted into.
+                depth,
+                ...(coverageTopUp ? { coverage_top_up: true } : {}),
+              }
+            : {}),
         },
         controller.signal,
       );
       // The call settled on its own — nothing left for the unmount
-      // cleanup above to cancel.
-      generationAbortRef.current = null;
-      setLastGenerationResult(response);
-      // The whole multi-wave call has genuinely finished by now — every
-      // wave it ran has really completed, so no wave is "in progress"
-      // anymore. Holding the glow on past this point would claim otherwise.
-      setActiveWaveSkillNames([]);
+      // cleanup above to cancel for this project.
+      delete generationAbortControllersRef.current[generatingForProjectId];
+
+      // Phase 3 — a requirement-driven run's cases each name a requirement;
+      // reading the requirements back is what lets a case show that
+      // requirement's own text and document as its source. Best-effort: if
+      // they cannot be read, the cases still carry the requirement's id and
+      // simply fall back to the request's own text as their source.
+      let requirementsById: Map<string, RequirementRecord | null> | undefined;
+      if (response.requirements && requirementDocumentIds.length > 0) {
+        try {
+          const read = await aiqaApi.requirements.list(generatingForProjectId, { documentIds: requirementDocumentIds });
+          requirementsById = new Map();
+          for (const r of read.requirements) {
+            // An id two documents share cannot be told apart by id alone.
+            requirementsById.set(r.key, requirementsById.has(r.key) ? null : r);
+          }
+        } catch {
+          requirementsById = undefined;
+        }
+      }
 
       const meta = { method: response.generation_method, provider: response.provider, model: response.model };
-      const mapped = response.test_cases.map((draft, i) => aiDraftToDisplay(draft, i, meta));
-      setGeneratedCases(mapped);
+      const mapped = response.test_cases.map((draft, i) => aiDraftToDisplay(draft, i, meta, requirementsById));
 
       let finalState: GenerationExecutionState;
       let finalError: string | null;
       if (response.generation_method === 'ai' && mapped.length > 0) {
         finalState = 'COMPLETED';
         finalError = null;
-        setActiveBranch('GENERATED_CASES');
       } else if (response.generation_method === 'ai') {
         // A real AI call ran, but every candidate case was dropped by the
         // real quality/traceability/dedup gates (`ai_generation.rs`) — a
@@ -917,17 +1122,39 @@ export const TestCaseGeneratorPage: React.FC = () => {
         finalState = 'FAILED';
         finalError = response.fallback_reason || 'No AI provider is currently available for test case generation.';
       }
-      setGenerationState(finalState);
-      setGenerationError(finalError);
 
-      // Written directly, not only left to the mirror effect above: this
-      // completion can genuinely arrive after the page has already been
-      // left (no `AbortController` cancels this specific call, only a real
-      // navigate-away does, and only via that effect's own cleanup — see
-      // its doc comment). An effect never runs again once unmounted, but
-      // this setter belongs to the still-mounted `AIQAProvider`, so it
-      // still reaches the session regardless of whether this page is.
-      setActiveGenerationSession((prev) => ({
+      // The user may have since switched to a different project — this
+      // page's own local state (`documents`/`generatedCases`/... below) is
+      // whatever *that* project is currently showing, so a completion for a
+      // project no longer on screen must not touch any of it: doing so
+      // would overwrite a different project's own real, currently-displayed
+      // state with this one's. Its real result still needs to reach
+      // somewhere durable, though — see the explicit, project-id-targeted
+      // write below, which happens either way.
+      if (currentProjectIdRef.current === generatingForProjectId) {
+        setLastGenerationResult(response);
+        // The whole multi-wave call has genuinely finished by now — every
+        // wave it ran has really completed, so no wave is "in progress"
+        // anymore. Holding the glow on past this point would claim otherwise.
+        setActiveWaveSkillNames([]);
+        setGeneratedCases(mapped);
+        setGenerationState(finalState);
+        setGenerationError(finalError);
+        if (finalState === 'COMPLETED') setActiveBranch('GENERATED_CASES');
+      }
+
+      // Written directly, not only left to the mirror effect above, and
+      // explicitly targeting the project this call was actually for (not
+      // necessarily "whichever project is selected right now" —
+      // `setActiveGenerationSession` above means that, this does not): this
+      // completion can genuinely arrive after the page has moved on to a
+      // different project, or been left entirely (nothing cancels this call
+      // on either of those). An effect keyed on this page's own state never
+      // runs again once that state stops changing for the project in
+      // question, but this setter belongs to the still-mounted
+      // `AIQAProvider`, so it still reaches that project's own session
+      // regardless of what this page is currently showing.
+      setGenerationSessionFor(generatingForProjectId, (prev) => ({
         id: prev?.id ?? `gen-${Date.now()}`,
         requirementText: reqText,
         specType: prev?.specType ?? 'NATURAL_LANGUAGE',
@@ -935,6 +1162,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
         currentStep: mapped.length > 0 ? 'GENERATED_CASES' : 'REQUIREMENT_INPUT',
         generationState: finalState,
         generationError: finalError,
+        lastGenerationResult: response,
         selectedCategories,
         documents,
         appSources,
@@ -942,30 +1170,34 @@ export const TestCaseGeneratorPage: React.FC = () => {
         generatedCases: mapped,
         createdAt: prev?.createdAt ?? new Date().toISOString(),
         selectedSkillIds,
+        requirementMode,
+        coverageTopUp,
       }));
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') {
-        // Cancelled by the unmount cleanup above because the page was left
-        // before this finished — that cleanup already corrected the
-        // mirrored session directly; this page instance is gone, so there
-        // is no local state left to update, and this must not be reported
-        // as a real generation failure (the AI/backend never actually
-        // failed — this page just stopped waiting for it).
+        // Nothing in this page aborts a generation call any more (leaving
+        // the page or switching project lets it finish); a genuine abort
+        // from elsewhere must still never be reported as a real failure of
+        // the AI/backend.
         return;
       }
-      generationAbortRef.current = null;
+      delete generationAbortControllersRef.current[generatingForProjectId];
       const message = err instanceof ApiError ? err.message : 'Test case generation failed.';
-      setLastGenerationResult(null);
-      setGenerationState('FAILED');
-      setGenerationError(message);
-      setActiveWaveSkillNames([]);
-      // Same reasoning as the success path above — a real failure can also
-      // arrive after the page has been left, so it is written directly
-      // rather than left to the mirror effect. Only `generationState`/
-      // `generationError` are patched: an attempt that failed produced no
-      // new cases, so whatever was already in the session (from an earlier
-      // successful attempt, if any) is left exactly as it was.
-      setActiveGenerationSession((prev) => (prev ? { ...prev, generationState: 'FAILED', generationError: message } : prev));
+      if (currentProjectIdRef.current === generatingForProjectId) {
+        setLastGenerationResult(null);
+        setGenerationState('FAILED');
+        setGenerationError(message);
+        setActiveWaveSkillNames([]);
+      }
+      // Same reasoning and the same explicit-project-id targeting as the
+      // success path above. Only the state, the error and the stored
+      // response are patched: an attempt that failed produced no new cases,
+      // so whatever was already in that project's session (from an earlier
+      // successful attempt, if any) is left exactly as it was — except the
+      // response, which no longer describes the latest attempt.
+      setGenerationSessionFor(generatingForProjectId, (prev) =>
+        prev ? { ...prev, generationState: 'FAILED', generationError: message, lastGenerationResult: null } : prev,
+      );
     }
   };
 
@@ -1132,7 +1364,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
               </div>
               <div>
                 <span className="text-slate-500">Provider: </span>
-                {lastGenerationResult.provider ?? 'Not Reported'}
+                {lastGenerationResult.provider ? providerName(lastGenerationResult.provider) : 'Not Reported'}
               </div>
               <div>
                 <span className="text-slate-500">Model: </span>
@@ -1178,6 +1410,12 @@ export const TestCaseGeneratorPage: React.FC = () => {
                 </>
               )}
             </div>
+          )}
+          {lastGenerationResult?.requirements && (
+            <RequirementCoverageSummary coverage={lastGenerationResult.requirements} />
+          )}
+          {lastGenerationResult?.waves && (
+            <GenerationWaveResults waves={lastGenerationResult.waves.filter((w) => !w.skipped)} providerName={providerName} />
           )}
         </div>
       )}
@@ -1309,6 +1547,24 @@ export const TestCaseGeneratorPage: React.FC = () => {
                 projectId={realProjectId}
                 crawlRunId={crawlRunId}
                 onCrawlRunIdChange={setCrawlRunId}
+                onCrawlReady={setGroundingCrawl}
+                disabled={isGeneratingNow}
+              />
+            </div>
+
+            {/* 2c. Requirement-driven generation (Phase 3) — opt-in, off by
+                default: generate from the numbered requirements read out of
+                the uploaded documents instead of pasting them. */}
+            <div className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm">
+              <RequirementGenerationSection
+                projectId={realProjectId}
+                enabled={requirementMode}
+                onEnabledChange={setRequirementMode}
+                depth={depth}
+                topUp={coverageTopUp}
+                onTopUpChange={setCoverageTopUp}
+                documents={documents}
+                skills={requestSkills}
                 disabled={isGeneratingNow}
               />
             </div>
@@ -1362,6 +1618,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
               generationState={generationState}
               lastGenerationResult={lastGenerationResult}
               generatedCasesCount={generatedCases.length}
+              providerName={providerName}
             />
           </div>
         </div>
@@ -1390,6 +1647,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
           compilePreviewLoading={compilePreviewLoading}
           compilePreviewForId={compilePreviewForId}
           compilePreviewError={compilePreviewError}
+          groundingCrawl={groundingCrawl}
         />
       )}
     </div>

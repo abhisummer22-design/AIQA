@@ -1,0 +1,55 @@
+# An example of a GitHub Actions workflow that runs AIQA. Copy it to .github/workflows/ of the repository under test, and change the two
+# `run:` lines to what you want. It is kept here, not in .github/workflows, so that it does not run in this repository.
+#
+# In the repository's settings:
+#   Variables: AIQA_URL (where AIQA runs), AIQA_PROJECT (the project's id), AIQA_SCHEDULE_ID (the schedule of a regression)
+#   Secrets:   AIQA_KEY (an API key with the operator role for that project)
+name: AIQA
+
+on:
+  schedule:
+    - cron: "0 2 * * *" # every night, 02:00 UTC
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  regression:
+    name: Scheduled regression
+    runs-on: ubuntu-latest # AIQA must be reachable from the runner: use a self-hosted one if it is not open to GitHub
+    steps:
+      - uses: actions/checkout@v4 # for scripts/ci/aiqa-ci.sh: copy it into your repository first
+      - name: Run the approved cases again
+        env:
+          AIQA_URL: ${{ vars.AIQA_URL }}
+          AIQA_KEY: ${{ secrets.AIQA_KEY }}
+          AIQA_PROJECT: ${{ vars.AIQA_PROJECT }}
+          AIQA_FAIL_ON: regressed # failing: fail on any failing case. regressed: only on one that passed last time
+        run: bash scripts/ci/aiqa-ci.sh regression "${{ vars.AIQA_SCHEDULE_ID }}"
+      - name: Keep the JUnit file
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aiqa-regression-junit
+          path: aiqa-junit.xml
+      # To see every case on the checks page, add any JUnit reporter action here, reading aiqa-junit.xml.
+
+  api-tests:
+    name: API tests from the OpenAPI document
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test the API against its document
+        env:
+          AIQA_URL: ${{ vars.AIQA_URL }}
+          AIQA_KEY: ${{ secrets.AIQA_KEY }}
+          AIQA_PROJECT: ${{ vars.AIQA_PROJECT }}
+          AIQA_JUNIT_FILE: aiqa-openapi-junit.xml
+          # A credential is a reference to a variable in AIQA's environment, never a value:
+          # AIQA_OPENAPI_AUTH: Authorization=env:AIQA_SECRET_STAGING_TOKEN
+        run: bash scripts/ci/aiqa-ci.sh openapi openapi.yaml https://staging.example.com
+      - name: Keep the JUnit file
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aiqa-openapi-junit
+          path: aiqa-openapi-junit.xml

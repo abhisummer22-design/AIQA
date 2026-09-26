@@ -639,9 +639,92 @@ macro_rules! param_or_return {
 
 // --- real adapters ---------------------------------------------------------
 
+// --- run-time secrets ------------------------------------------------------
+
+/// The variables a task says its spec reads (`params.secrets`: `AIQA_LOGIN_*` / `AIQA_SECRET_*` names — names only,
+/// never values). The spec reads them itself (`helpers/secrets.ts`); this is what lets the executor refuse to start
+/// a run whose secrets are not set, and scrub their values from what the run prints.
+fn secret_names_param(task: &TaskDef) -> Result<Vec<String>, ExecutionOutcome> {
+    let Some(raw) = task.params.get("secrets") else {
+        return Ok(Vec::new());
+    };
+    let rejected = |why: &str| ExecutionOutcome {
+        status: TaskStatus::InfraError,
+        reason: Some(format!("rejected executor parameter secrets: {why}")),
+        evidence: None,
+    };
+    let array = raw
+        .as_array()
+        .ok_or_else(|| rejected("expected an array of variable names"))?;
+    let mut names = Vec::with_capacity(array.len());
+    for item in array {
+        let name = item
+            .as_str()
+            .filter(|n| crate::execution_plan::is_valid_secret_name(n))
+            .ok_or_else(|| {
+                rejected("every entry must be a variable name starting AIQA_LOGIN_ or AIQA_SECRET_")
+            })?;
+        names.push(name.to_string());
+    }
+    Ok(names)
+}
+
+/// The values of `names` from the orchestrator's environment, or the `INFRA_ERROR` outcome that names the ones that
+/// are not set (names only).
+fn read_secrets(names: &[String]) -> Result<Vec<String>, ExecutionOutcome> {
+    let missing = crate::execution_plan::missing_secrets(names);
+    if !missing.is_empty() {
+        return Err(ExecutionOutcome {
+            status: TaskStatus::InfraError,
+            reason: Some(crate::execution_plan::missing_secrets_message(&missing)),
+            evidence: None,
+        });
+    }
+    Ok(names
+        .iter()
+        .filter_map(|name| crate::ai_router::env_value(name))
+        .collect())
+}
+
+/// The shortest secret that is scrubbed: a shorter one would also match ordinary words in the output.
+const MIN_REDACTED_SECRET_LEN: usize = 4;
+
+/// `text` with every secret value replaced by `***`. What a run prints — an error's code frame, a failed assertion —
+/// can quote what was typed; the value must reach neither the stored evidence nor a run's reason.
+pub fn redact_secrets(text: &str, values: &[String]) -> String {
+    let mut forms: Vec<String> = Vec::new();
+    for value in values.iter().filter(|v| v.len() >= MIN_REDACTED_SECRET_LEN) {
+        forms.push(value.clone());
+        // The way a JSON string or a source line would spell it.
+        if let Ok(quoted) = serde_json::to_string(value) {
+            let escaped = quoted[1..quoted.len() - 1].to_string();
+            if escaped != *value {
+                forms.push(escaped);
+            }
+        }
+    }
+    // Longest first, so a secret that contains another is not left half-scrubbed.
+    forms.sort_by_key(|form| std::cmp::Reverse(form.len()));
+    forms.iter().fold(text.to_string(), |out, form| {
+        out.replace(form.as_str(), "***")
+    })
+}
+
+fn redact_outcome(mut outcome: ExecutionOutcome, values: &[String]) -> ExecutionOutcome {
+    if values.is_empty() {
+        return outcome;
+    }
+    outcome.reason = outcome.reason.map(|r| redact_secrets(&r, values));
+    outcome.evidence = outcome.evidence.map(|e| redact_secrets(&e, values));
+    outcome
+}
+
 /// Web executor (SRD §17: "Playwright handles web"). `params.spec` selects
 /// the spec file, `params.grep` selects one test title within it (both
 /// relative to `project_dir`, which points at executors/playwright).
+/// `params.secrets` (optional) names the environment variables the spec reads
+/// at run time (`env:NAME` values): the run is refused if one is not set, and
+/// their values are scrubbed from the evidence.
 pub struct PlaywrightExecutor {
     pub project_dir: PathBuf,
 }
@@ -651,16 +734,24 @@ impl Executor for PlaywrightExecutor {
     async fn execute(&self, task: &TaskDef) -> ExecutionOutcome {
         let spec = param_or_return!(safe_param(task, "spec", "tests/sample.spec.ts"));
         let grep = param_or_return!(safe_param(task, "grep", ""));
+        let secret_names = param_or_return!(secret_names_param(task));
+        let secret_values = param_or_return!(read_secrets(&secret_names));
         let mut args = vec!["playwright", "test", spec.as_str(), "--reporter=line"];
         if !grep.is_empty() {
             args.push("--grep");
             args.push(grep.as_str());
         }
         match run_contained(shell_command("npx", &args, &self.project_dir), "playwright").await {
-            Ok(output) => outcome_from_output(output, "playwright"),
+            Ok(output) => finish_playwright(output, &secret_values),
             Err(e) => spawn_error_outcome("playwright", e),
         }
     }
+}
+
+/// What a finished Playwright run reports: its outcome, with every secret value scrubbed from the reason and from
+/// the evidence that is stored.
+fn finish_playwright(output: std::process::Output, secret_values: &[String]) -> ExecutionOutcome {
+    redact_outcome(outcome_from_output(output, "playwright"), secret_values)
 }
 
 /// API executor, Postman collections (SRD §16: "Newman is the primary
@@ -894,6 +985,11 @@ pub struct ApiAssertionResult {
     pub actual: String,
     pub passed: bool,
 }
+
+/// How `ASSERT_STATUS_IN` (followed by the statuses) and `ASSERT_BODY_SCHEMA` are named in a result. A report that reads the results says
+/// which it means by these, so they are written here once.
+pub(crate) const STATUS_IN_DESCRIPTION: &str = "Status is one of";
+pub(crate) const BODY_SCHEMA_DESCRIPTION: &str = "Body fits its schema";
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ApiResultSummary {
@@ -1181,6 +1277,76 @@ pub async fn execute_plan_once(
                     }
                 }
             }
+            Action::AssertStatusIn { statuses } => {
+                let Some((actual, _, _)) = &last_response else {
+                    failures.push("ASSERT_STATUS_IN with no prior REQUEST".to_string());
+                    continue;
+                };
+                let list = statuses
+                    .iter()
+                    .map(u16::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let passed = statuses.contains(&actual.as_u16());
+                if !passed {
+                    failures.push(format!(
+                        "expected an HTTP status among {list}, got real status {actual}"
+                    ));
+                }
+                log.push_str(&format!("ASSERT_STATUS_IN [{list}] -> actual {actual}\n"));
+                assertion_results.push(ApiAssertionResult {
+                    description: format!("{STATUS_IN_DESCRIPTION} {list}"),
+                    actual: actual.to_string(),
+                    passed,
+                });
+            }
+            Action::AssertBodySchema { schema } => {
+                let Some((_, headers, text)) = &last_response else {
+                    failures.push("ASSERT_BODY_SCHEMA with no prior REQUEST".to_string());
+                    continue;
+                };
+                match serde_json::from_str::<serde_json::Value>(text) {
+                    Ok(json) => {
+                        let problems = crate::json_schema::violations(schema, &json);
+                        let passed = problems.is_empty();
+                        let summary = if passed {
+                            "fits".to_string()
+                        } else {
+                            problems.join("; ")
+                        };
+                        if !passed {
+                            failures.push(format!(
+                                "the response body does not fit its schema: {summary}"
+                            ));
+                        }
+                        log.push_str(&format!("ASSERT_BODY_SCHEMA -> {summary}\n"));
+                        assertion_results.push(ApiAssertionResult {
+                            description: BODY_SCHEMA_DESCRIPTION.to_string(),
+                            actual: summary,
+                            passed,
+                        });
+                    }
+                    Err(e) => {
+                        // What the answer says it is, so that a body that is not what it claims (or an API that answered in
+                        // another format than the one asked for) can be told from one that is simply broken.
+                        let content_type = headers
+                            .get(reqwest::header::CONTENT_TYPE)
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("none");
+                        failures.push(format!(
+                            "response body is not valid JSON (its content type is {content_type}), cannot check it against its schema: {e}"
+                        ));
+                        log.push_str(&format!(
+                            "ASSERT_BODY_SCHEMA -> not valid JSON (content type {content_type}): {e}\n"
+                        ));
+                        assertion_results.push(ApiAssertionResult {
+                            description: BODY_SCHEMA_DESCRIPTION.to_string(),
+                            actual: format!("(not valid JSON, content type {content_type}: {e})"),
+                            passed: false,
+                        });
+                    }
+                }
+            }
             // Browser-only actions never reach this executor —
             // `execution_plan::materialize_task_def` only ever routes
             // an `ExecutionType::Api` plan here.
@@ -1252,28 +1418,103 @@ impl Executor for CompiledApiExecutor {
             };
         }
 
-        let result = execute_plan_once(&self.client, &plan).await;
-        let mut log = result.log;
+        run_validated_plan(&self.client, plan).await
+    }
+}
 
-        // Appended last, deliberately after `reason` is derived above, so
-        // the human-readable reason/evidence tail a task list already shows
-        // is never dominated by this machine-readable summary line.
-        let summary = ApiResultSummary {
-            status: result.http_status.unwrap_or(0),
-            request_duration_ms: result.duration_ms,
-            response_headers: result.response_headers,
-            assertions: result.assertions,
-        };
-        if let Ok(summary_json) = serde_json::to_string(&summary) {
-            log.push_str(&format!("RESULT_SUMMARY_JSON:{summary_json}\n"));
-        }
+/// Runs a plan that has already passed `validate_plan`: reads the secrets its request headers refer to, makes the request, checks
+/// what it expects of the answer and writes the evidence.
+///
+/// A header value written `env:NAME` is read from the environment now, when the request is made: the plan, the run's parameters and
+/// the stored evidence carry only the name, and the value is scrubbed from what the run prints.
+async fn run_validated_plan(
+    client: &reqwest::Client,
+    plan: crate::execution_plan::ExecutionPlan,
+) -> ExecutionOutcome {
+    let secret_values = match read_secrets(&crate::execution_plan::secret_names_of(&plan.actions))
+    {
+        Ok(values) => values,
+        Err(outcome) => return outcome,
+    };
+    let plan = with_resolved_header_secrets(plan);
 
-        ExecutionOutcome {
-            status: result.status,
-            reason: result.reason,
-            evidence: Some(log),
+    let result = execute_plan_once(client, &plan).await;
+    let mut log = redact_secrets(&result.log, &secret_values);
+    let result_reason = result.reason.map(|r| redact_secrets(&r, &secret_values));
+
+    // Appended last, deliberately after `reason` is derived above, so
+    // the human-readable reason/evidence tail a task list already shows
+    // is never dominated by this machine-readable summary line.
+    let summary = ApiResultSummary {
+        status: result.http_status.unwrap_or(0),
+        request_duration_ms: result.duration_ms,
+        response_headers: result.response_headers,
+        assertions: result.assertions,
+    };
+    if let Ok(summary_json) = serde_json::to_string(&summary) {
+        log.push_str(&format!("RESULT_SUMMARY_JSON:{summary_json}\n"));
+    }
+
+    ExecutionOutcome {
+        status: result.status,
+        reason: result_reason,
+        evidence: Some(log),
+    }
+}
+
+/// `plan` with each request header value written `env:NAME` replaced by what the variable holds now. Only names that pass
+/// `execution_plan::secret_name` are read, so a plan cannot ask for any variable of the orchestrator's environment.
+fn with_resolved_header_secrets(mut plan: crate::execution_plan::ExecutionPlan) -> crate::execution_plan::ExecutionPlan {
+    for action in &mut plan.actions {
+        if let crate::execution_plan::Action::Request { headers, .. } = action {
+            for value in headers.values_mut() {
+                if let Some(name) = crate::execution_plan::secret_name(value) {
+                    *value = crate::ai_router::env_value(name).unwrap_or_default();
+                }
+            }
         }
     }
+    plan
+}
+
+/// One step of a compiled browser test as a line of the run's own output (`AIQA_STEP {...}`), written just before the
+/// step runs — so a failed run's evidence ends at the step that failed, and a passing one lists what was done.
+/// Never a value: a FILL names its selector and, if it reads one, the variable (a secret's name is not a secret).
+fn step_log_line(index: usize, action: &crate::execution_plan::Action) -> String {
+    use crate::execution_plan::Action;
+    let step = match action {
+        Action::Navigate { url } => {
+            serde_json::json!({ "index": index, "type": "NAVIGATE", "url": url })
+        }
+        Action::Click { selector } => {
+            serde_json::json!({ "index": index, "type": "CLICK", "selector": selector })
+        }
+        Action::Fill { selector, value } => {
+            let mut step =
+                serde_json::json!({ "index": index, "type": "FILL", "selector": selector });
+            if let Some(name) = crate::execution_plan::secret_name(value) {
+                step["secret"] = serde_json::json!(name);
+            }
+            step
+        }
+        Action::AssertVisible { selector } => {
+            serde_json::json!({ "index": index, "type": "ASSERT_VISIBLE", "selector": selector })
+        }
+        Action::AssertText { selector, .. } => {
+            serde_json::json!({ "index": index, "type": "ASSERT_TEXT", "selector": selector })
+        }
+        Action::AssertUrl { url_contains } => {
+            serde_json::json!({ "index": index, "type": "ASSERT_URL", "url_contains": url_contains })
+        }
+        // API actions never reach a browser plan (`materialize_playwright_spec` refuses them, and a request's
+        // headers or body could hold a secret: nothing of it is formatted here).
+        _ => serde_json::json!({ "index": index, "type": "UNSUPPORTED" }),
+    };
+    let line = format!("AIQA_STEP {step}");
+    format!(
+        "  console.log({});\n",
+        serde_json::to_string(&line).unwrap_or_default()
+    )
 }
 
 /// Turns a validated `Browser`-type `ExecutionPlan` into a real, safe
@@ -1307,7 +1548,9 @@ pub fn materialize_playwright_spec(
     }
 
     let mut body = String::new();
+    let mut uses_secret = false;
     for (index, action) in plan.actions.iter().enumerate() {
+        body.push_str(&step_log_line(index, action));
         match action {
             Action::Navigate { url } => {
                 body.push_str(&format!("  await page.goto({});\n", js_str(url)))
@@ -1316,11 +1559,21 @@ pub fn materialize_playwright_spec(
                 "  await (await healingLocator(page, {}, {index}, \"CLICK\")).click();\n",
                 js_str(selector)
             )),
-            Action::Fill { selector, value } => body.push_str(&format!(
-                "  await (await healingLocator(page, {}, {index}, \"FILL\")).fill({});\n",
-                js_str(selector),
-                js_str(value)
-            )),
+            Action::Fill { selector, value } => {
+                // A value written `env:NAME` is read from the environment when the test runs: the spec holds the
+                // name, never the text.
+                let text = match crate::execution_plan::secret_name(value) {
+                    Some(name) => {
+                        uses_secret = true;
+                        format!("secret({})", js_str(name))
+                    }
+                    None => js_str(value),
+                };
+                body.push_str(&format!(
+                    "  await (await healingLocator(page, {}, {index}, \"FILL\")).fill({text});\n",
+                    js_str(selector),
+                ));
+            }
             Action::AssertVisible { selector } => body.push_str(&format!(
                 "  await expect(await healingLocator(page, {}, {index}, \"ASSERT_VISIBLE\")).toBeVisible();\n",
                 js_str(selector)
@@ -1337,11 +1590,18 @@ pub fn materialize_playwright_spec(
             Action::Request { .. }
             | Action::AssertStatus { .. }
             | Action::AssertHeader { .. }
-            | Action::AssertBodyField { .. } => {
+            | Action::AssertBodyField { .. }
+            | Action::AssertStatusIn { .. }
+            | Action::AssertBodySchema { .. } => {
                 return Err(format!("API action {action:?} cannot appear in a BROWSER plan — this plan was misrouted"));
             }
         }
     }
+
+    // Where the run ended, as one line of its own output: the evidence of a passing run says which page it reached.
+    body.push_str(
+        "  console.log(\"AIQA_FINAL \" + JSON.stringify({ url: page.url(), title: await page.title() }));\n",
+    );
 
     let safe_id: String = task_id
         .chars()
@@ -1368,12 +1628,19 @@ pub fn materialize_playwright_spec(
     } else {
         ""
     };
+    let secret_import = if uses_secret {
+        "import { secret } from \"../../helpers/secrets\";\n"
+    } else {
+        ""
+    };
     let source = format!(
         "// Generated by execution_plan::materialize_playwright_spec from a real, compiled\n\
          // test case's ExecutionPlan — every value above was embedded via a safe JSON string\n\
-         // escape, never raw-interpolated. Not hand-edited; safe to delete/regenerate.\n\
+         // escape, never raw-interpolated. Values written env:NAME are read from the environment\n\
+         // when the test runs (helpers/secrets.ts); this file holds only the name.\n\
+         // Not hand-edited; safe to delete/regenerate.\n\
          import {{ test, expect }} from \"@playwright/test\";\n\
-         {healing_import}\n\
+         {healing_import}{secret_import}\n\
          test(\"compiled plan for test case {safe_id}\", async ({{ page }}) => {{\n{body}}});\n"
     );
     std::fs::write(&full_path, source)
@@ -1589,6 +1856,327 @@ AIQA_HEALING_EVENT {"event":"heal","actionIndex":1,"actionKind":"CLICK","primary
         assert!(source.contains("quote\\\" and backslash\\\\ here"));
     }
 
+    // ------------------------------------------------------ run-time secrets
+
+    fn spec_source(rel_path: &str) -> String {
+        std::fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../executors/playwright")
+                .join(rel_path),
+        )
+        .expect("read generated spec")
+    }
+
+    fn playwright_task(params: serde_json::Value) -> TaskDef {
+        TaskDef {
+            id: "t".to_string(),
+            name: "n".to_string(),
+            prerequisites: Vec::new(),
+            simulate: None,
+            executor: Some("playwright".to_string()),
+            params,
+        }
+    }
+
+    #[test]
+    fn a_secret_fill_is_read_at_run_time_and_the_spec_never_holds_its_value() {
+        std::env::set_var("AIQA_LOGIN_T5A_SPEC_PW", "pa55-w0rd-value");
+        let plan = browser_plan(
+            "secrets",
+            vec![
+                Action::Navigate {
+                    url: "https://example.com/login".to_string(),
+                },
+                Action::Fill {
+                    selector: "#username".to_string(),
+                    value: "admin".to_string(),
+                },
+                Action::Fill {
+                    selector: "#password".to_string(),
+                    value: "env:AIQA_LOGIN_T5A_SPEC_PW".to_string(),
+                },
+            ],
+        );
+        let rel_path = materialize_playwright_spec("test-5a-secrets", &plan).expect("materialize");
+        let source = spec_source(&rel_path);
+        assert!(
+            source.contains("import { secret } from \"../../helpers/secrets\";"),
+            "{source}"
+        );
+        assert!(
+            source.contains(".fill(secret(\"AIQA_LOGIN_T5A_SPEC_PW\"));"),
+            "{source}"
+        );
+        assert!(!source.contains("pa55-w0rd-value"), "{source}");
+        assert!(
+            !source.contains("env:AIQA_LOGIN_T5A_SPEC_PW"),
+            "the reference is not left in the spec as text either: {source}"
+        );
+        // An ordinary value is still typed as written.
+        assert!(source.contains(".fill(\"admin\");"), "{source}");
+    }
+
+    /// The `AIQA_STEP` lines of a generated spec, parsed: each is `console.log("AIQA_STEP {json}")`.
+    fn logged_steps(source: &str) -> Vec<serde_json::Value> {
+        source
+            .lines()
+            .filter(|line| line.contains("AIQA_STEP"))
+            .map(|line| {
+                let literal: String =
+                    serde_json::from_str(&line[line.find('"').unwrap()..=line.rfind('"').unwrap()])
+                        .expect("a JS string literal");
+                serde_json::from_str(literal.strip_prefix("AIQA_STEP ").expect("the marker"))
+                    .expect("the step is JSON")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_compiled_spec_logs_each_step_before_it_runs_and_where_it_ended_and_never_a_value() {
+        std::env::set_var("AIQA_LOGIN_T5B_STEP_PW", "step-pw-value-9");
+        let plan = browser_plan(
+            "steps",
+            vec![
+                Action::Navigate {
+                    url: "https://example.com/login".to_string(),
+                },
+                Action::Fill {
+                    selector: "#username".to_string(),
+                    value: "typed-literal-value".to_string(),
+                },
+                Action::Fill {
+                    selector: "#password".to_string(),
+                    value: "env:AIQA_LOGIN_T5B_STEP_PW".to_string(),
+                },
+                Action::Click {
+                    selector: "#go".to_string(),
+                },
+                Action::AssertText {
+                    selector: "h1".to_string(),
+                    text: "expected heading text".to_string(),
+                },
+                Action::AssertUrl {
+                    url_contains: "/welcome".to_string(),
+                },
+            ],
+        );
+        let rel_path = materialize_playwright_spec("test-5b-steps", &plan).expect("materialize");
+        let source = spec_source(&rel_path);
+        let steps = logged_steps(&source);
+
+        let kinds: Vec<&str> = steps.iter().map(|s| s["type"].as_str().unwrap()).collect();
+        assert_eq!(
+            kinds,
+            [
+                "NAVIGATE",
+                "FILL",
+                "FILL",
+                "CLICK",
+                "ASSERT_TEXT",
+                "ASSERT_URL"
+            ]
+        );
+        let indexes: Vec<u64> = steps.iter().map(|s| s["index"].as_u64().unwrap()).collect();
+        assert_eq!(indexes, [0, 1, 2, 3, 4, 5]);
+        assert_eq!(steps[0]["url"], "https://example.com/login");
+        assert_eq!(steps[3]["selector"], "#go");
+        // A secret's step names the variable; a literal's says nothing of the value; neither logs a value.
+        assert_eq!(steps[2]["secret"], "AIQA_LOGIN_T5B_STEP_PW");
+        assert!(steps[1].get("secret").is_none() && steps[1].get("value").is_none());
+        let log_lines: String = source
+            .lines()
+            .filter(|l| l.contains("AIQA_STEP"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!log_lines.contains("typed-literal-value"), "{log_lines}");
+        assert!(!log_lines.contains("step-pw-value-9"), "{log_lines}");
+        assert!(!log_lines.contains("expected heading text"), "{log_lines}");
+
+        // Each step is logged before it runs (so a failed run's evidence ends at the step that failed).
+        let position = |needle: &str| {
+            source
+                .find(needle)
+                .unwrap_or_else(|| panic!("{needle} not in {source}"))
+        };
+        for (index, action_code) in [
+            (3, "healingLocator(page, \"#go\", 3, \"CLICK\")"),
+            (2, "healingLocator(page, \"#password\", 2, \"FILL\")"),
+        ] {
+            let logged = source
+                .lines()
+                .position(|l| {
+                    l.contains("AIQA_STEP") && l.contains(&format!("\\\"index\\\":{index},"))
+                })
+                .expect("the step is logged");
+            let action = source
+                .lines()
+                .position(|l| l.contains(action_code))
+                .unwrap();
+            assert_eq!(
+                logged + 1,
+                action,
+                "step {index} is logged on the line before it runs"
+            );
+        }
+        // And where the run ended is logged last.
+        let final_line = position("AIQA_FINAL");
+        assert!(final_line > position("toHaveURL"), "{source}");
+        assert!(source[final_line..].contains("page.url()"));
+    }
+
+    #[test]
+    fn a_plan_with_no_secret_never_imports_the_secret_helper() {
+        let plan = browser_plan(
+            "nosecret",
+            vec![Action::Fill {
+                selector: "#q".to_string(),
+                value: "text".to_string(),
+            }],
+        );
+        let rel_path = materialize_playwright_spec("test-5a-nosecret", &plan).expect("materialize");
+        let source = spec_source(&rel_path);
+        assert!(!source.contains("import { secret }"), "{source}");
+        assert!(!source.contains("secret("), "{source}");
+    }
+
+    #[test]
+    fn redaction_scrubs_every_spelling_of_a_secret_and_leaves_short_values_alone() {
+        let values = vec![
+            "pa55-w0rd".to_string(),
+            "q\"uote\\d".to_string(),
+            "abc".to_string(),
+        ];
+        let text = "typed pa55-w0rd; as JSON \"q\\\"uote\\\\d\" and raw q\"uote\\d; abc stays";
+        let out = redact_secrets(text, &values);
+        assert!(!out.contains("pa55-w0rd"), "{out}");
+        assert!(!out.contains("q\\\"uote\\\\d"), "{out}");
+        assert!(!out.contains("q\"uote\\d"), "{out}");
+        assert!(
+            out.contains("abc stays"),
+            "a value under {MIN_REDACTED_SECRET_LEN} characters is not scrubbed: {out}"
+        );
+        assert_eq!(redact_secrets("nothing here", &values), "nothing here");
+        assert_eq!(redact_secrets("anything", &[]), "anything");
+    }
+
+    #[test]
+    fn a_secret_that_contains_another_is_scrubbed_whole() {
+        let out = redact_secrets(
+            "value: super-secret-pass",
+            &["secret".to_string(), "super-secret-pass".to_string()],
+        );
+        assert_eq!(out, "value: ***");
+    }
+
+    #[test]
+    fn redact_outcome_scrubs_both_the_reason_and_the_evidence() {
+        let outcome = ExecutionOutcome {
+            status: TaskStatus::Failed,
+            reason: Some("failed typing s3cr3t-v4lue".to_string()),
+            evidence: Some("log: s3cr3t-v4lue\nmore".to_string()),
+        };
+        let out = redact_outcome(outcome, &["s3cr3t-v4lue".to_string()]);
+        assert_eq!(out.reason.as_deref(), Some("failed typing ***"));
+        assert_eq!(out.evidence.as_deref(), Some("log: ***\nmore"));
+        assert!(matches!(out.status, TaskStatus::Failed));
+    }
+
+    /// A real `Output` (the exit status comes from a real, trivial process) carrying the given stdout.
+    fn finished_process_output(stdout: &str, exit_code: i32) -> std::process::Output {
+        #[cfg(windows)]
+        let mut output = std::process::Command::new("cmd")
+            .args(["/C", &format!("exit {exit_code}")])
+            .output()
+            .expect("run a trivial process");
+        #[cfg(not(windows))]
+        let mut output = std::process::Command::new("sh")
+            .args(["-c", &format!("exit {exit_code}")])
+            .output()
+            .expect("run a trivial process");
+        output.stdout = stdout.as_bytes().to_vec();
+        output.stderr = Vec::new();
+        output
+    }
+
+    #[test]
+    fn a_finished_run_has_its_secrets_scrubbed_from_the_reason_and_the_stored_evidence() {
+        let output = finished_process_output(
+            "Error: locator.fill: expected s3cr3t-value\n  at login.spec.ts:7\n",
+            1,
+        );
+        let outcome = finish_playwright(output, &["s3cr3t-value".to_string()]);
+        assert!(matches!(outcome.status, TaskStatus::Failed));
+        let reason = outcome.reason.expect("a failed run has a reason");
+        let evidence = outcome.evidence.expect("the output is the evidence");
+        assert!(!reason.contains("s3cr3t-value"), "{reason}");
+        assert!(!evidence.contains("s3cr3t-value"), "{evidence}");
+        assert!(evidence.contains("expected ***"), "{evidence}");
+        // A passing run is scrubbed too.
+        let passed = finish_playwright(
+            finished_process_output("typed s3cr3t-value\n", 0),
+            &["s3cr3t-value".to_string()],
+        );
+        assert!(matches!(passed.status, TaskStatus::Passed));
+        assert_eq!(passed.evidence.as_deref(), Some("typed ***\n"));
+    }
+
+    #[test]
+    fn secret_names_come_from_the_task_params_and_must_be_reserved_names() {
+        assert!(secret_names_param(&playwright_task(serde_json::json!({})))
+            .unwrap()
+            .is_empty());
+        let ok = secret_names_param(&playwright_task(
+            serde_json::json!({"secrets": ["AIQA_LOGIN_A_USER", "AIQA_SECRET_B"]}),
+        ))
+        .unwrap();
+        assert_eq!(
+            ok,
+            vec!["AIQA_LOGIN_A_USER".to_string(), "AIQA_SECRET_B".to_string()]
+        );
+        for bad in [
+            serde_json::json!("AIQA_LOGIN_A"),
+            serde_json::json!(["GROQ_API_KEY"]),
+            serde_json::json!([1]),
+            serde_json::json!(["AIQA_LOGIN_A; calc"]),
+        ] {
+            let err = secret_names_param(&playwright_task(serde_json::json!({ "secrets": bad })))
+                .expect_err("rejected");
+            assert!(matches!(err.status, TaskStatus::InfraError));
+        }
+    }
+
+    #[test]
+    fn read_secrets_returns_the_trimmed_values_of_set_variables() {
+        std::env::set_var("AIQA_LOGIN_T5A_READ", "  read-me-123  ");
+        assert_eq!(
+            read_secrets(&["AIQA_LOGIN_T5A_READ".to_string()]).unwrap(),
+            vec!["read-me-123".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_run_whose_secret_is_not_set_is_refused_before_anything_is_launched() {
+        std::env::remove_var("AIQA_LOGIN_T5A_NEVER_SET");
+        // A directory that does not exist: if the executor got as far as launching, the outcome would say it
+        // failed to launch — not that a secret is missing.
+        let executor = PlaywrightExecutor {
+            project_dir: PathBuf::from("this-directory-does-not-exist"),
+        };
+        let outcome = executor
+            .execute(&playwright_task(serde_json::json!({
+                "spec": "tests/generated/x.spec.ts",
+                "secrets": ["AIQA_LOGIN_T5A_NEVER_SET"],
+            })))
+            .await;
+        assert!(matches!(outcome.status, TaskStatus::InfraError));
+        let reason = outcome.reason.expect("a reason");
+        assert!(
+            reason.contains("AIQA_LOGIN_T5A_NEVER_SET is not set"),
+            "{reason}"
+        );
+        assert!(outcome.evidence.is_none(), "nothing was launched");
+    }
+
     // ------------------------------------------- Phase 4: API Testing page
 
     #[test]
@@ -1607,6 +2195,176 @@ AIQA_HEALING_EVENT {"event":"heal","actionIndex":1,"actionKind":"CLICK","primary
                 "{name} must be treated as sensitive"
             );
         }
+    }
+
+    // ---------------------------------------------------------------------- Phase 8B: what an API answer must look like
+
+    /// A local server that answers every request with `status`, `content_type` and `body`, and keeps the text of each request it got.
+    async fn canned_server(
+        status: u16,
+        content_type: &'static str,
+        body: String,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let keep = seen.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                let keep = keep.clone();
+                let body = body.clone();
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buffer = vec![0u8; 8192];
+                    let n = socket.read(&mut buffer).await.unwrap_or(0);
+                    keep.lock()
+                        .unwrap()
+                        .push(String::from_utf8_lossy(&buffer[..n]).to_string());
+                    let response = format!(
+                        "HTTP/1.1 {status} X\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        (format!("http://{addr}"), seen)
+    }
+
+    fn get_plan(url: &str, headers: &[(&str, &str)], expect: Vec<crate::execution_plan::Action>) -> crate::execution_plan::ExecutionPlan {
+        use crate::execution_plan::{Action, CompilerMethod, ExecutionPlan, ExecutionType};
+        let mut actions = vec![Action::Request {
+            method: "GET".to_string(),
+            url: url.to_string(),
+            headers: headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            body: None,
+        }];
+        actions.extend(expect);
+        ExecutionPlan {
+            test_case_id: "t".to_string(),
+            execution_type: ExecutionType::Api,
+            target: Some(url.to_string()),
+            actions,
+            compiler: CompilerMethod::Deterministic,
+            diagnostics: Vec::new(),
+            provider: None,
+            model: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn assert_status_in_passes_for_any_status_on_its_list_and_fails_with_the_list_named_otherwise() {
+        use crate::execution_plan::Action::AssertStatusIn;
+        let client = reqwest::Client::new();
+        let (url, _) = canned_server(201, "application/json", "{}".to_string()).await;
+        let ok = execute_plan_once(&client, &get_plan(&url, &[], vec![AssertStatusIn { statuses: vec![200, 201] }])).await;
+        assert_eq!(ok.status, TaskStatus::Passed, "{:?}", ok.reason);
+        assert_eq!(ok.assertions.len(), 1);
+        assert_eq!(ok.assertions[0].description, "Status is one of 200, 201");
+        assert!(ok.assertions[0].passed);
+        assert!(ok.log.contains("ASSERT_STATUS_IN [200, 201] -> actual 201"), "{}", ok.log);
+
+        let (url, _) = canned_server(404, "application/json", "{}".to_string()).await;
+        let failed = execute_plan_once(&client, &get_plan(&url, &[], vec![AssertStatusIn { statuses: vec![200, 201] }])).await;
+        assert_eq!(failed.status, TaskStatus::Failed);
+        assert!(failed.log.contains("expected an HTTP status among 200, 201, got real status 404"), "{}", failed.log);
+        assert!(!failed.assertions[0].passed);
+        assert_eq!(failed.http_status, Some(404));
+    }
+
+    #[tokio::test]
+    async fn an_assertion_with_no_request_before_it_fails_rather_than_passing() {
+        use crate::execution_plan::Action::{AssertBodySchema, AssertStatusIn};
+        let mut plan = get_plan("http://127.0.0.1:1/", &[], vec![]);
+        plan.actions = vec![AssertStatusIn { statuses: vec![200] }, AssertBodySchema { schema: serde_json::json!({}) }];
+        let result = execute_plan_once(&reqwest::Client::new(), &plan).await;
+        assert_eq!(result.status, TaskStatus::Failed);
+        assert!(result.log.contains("ASSERT_STATUS_IN with no prior REQUEST"), "{}", result.log);
+        assert!(result.log.contains("ASSERT_BODY_SCHEMA with no prior REQUEST"), "{}", result.log);
+    }
+
+    #[tokio::test]
+    async fn assert_body_schema_passes_a_body_that_fits() {
+        use crate::execution_plan::Action::AssertBodySchema;
+        let schema = serde_json::json!({"type": "object", "required": ["id"], "properties": {"id": {"type": "integer"}, "name": {"type": "string"}}});
+        let (url, _) = canned_server(200, "application/json", r#"{"id": 3, "name": "Rex"}"#.to_string()).await;
+        let result = execute_plan_once(&reqwest::Client::new(), &get_plan(&url, &[], vec![AssertBodySchema { schema }])).await;
+        assert_eq!(result.status, TaskStatus::Passed, "{:?} {}", result.reason, result.log);
+        assert_eq!(result.assertions[0].description, "Body fits its schema");
+        assert_eq!(result.assertions[0].actual, "fits");
+        assert!(result.log.contains("ASSERT_BODY_SCHEMA -> fits"), "{}", result.log);
+    }
+
+    #[tokio::test]
+    async fn assert_body_schema_fails_a_body_that_does_not_fit_and_says_what_is_wrong() {
+        use crate::execution_plan::Action::AssertBodySchema;
+        let schema = serde_json::json!({"type": "object", "required": ["id"], "properties": {"id": {"type": "integer"}, "name": {"type": "string"}}});
+        let (url, _) = canned_server(200, "application/json", r#"{"name": 5}"#.to_string()).await;
+        let result = execute_plan_once(&reqwest::Client::new(), &get_plan(&url, &[], vec![AssertBodySchema { schema }])).await;
+        assert_eq!(result.status, TaskStatus::Failed);
+        assert!(!result.assertions[0].passed);
+        let said = &result.assertions[0].actual;
+        assert!(said.contains("required property \"id\" is missing"), "{said}");
+        assert!(said.contains("$.name: expected string, got integer"), "{said}");
+        assert!(result.log.contains("the response body does not fit its schema"), "{}", result.log);
+    }
+
+    #[tokio::test]
+    async fn assert_body_schema_fails_a_body_that_is_not_json() {
+        use crate::execution_plan::Action::AssertBodySchema;
+        let (url, _) = canned_server(200, "text/html", "<html>nope</html>".to_string()).await;
+        let result = execute_plan_once(&reqwest::Client::new(), &get_plan(&url, &[], vec![AssertBodySchema { schema: serde_json::json!({"type": "object"}) }])).await;
+        assert_eq!(result.status, TaskStatus::Failed);
+        assert!(result.assertions[0].actual.starts_with("(not valid JSON"), "{}", result.assertions[0].actual);
+        assert!(result.assertions[0].actual.contains("content type text/html"), "the answer's own content type is named: {}", result.assertions[0].actual);
+        assert!(result.log.contains("cannot check it against its schema"), "{}", result.log);
+        assert!(result.log.contains("its content type is text/html"), "{}", result.log);
+    }
+
+    #[tokio::test]
+    async fn a_header_written_env_name_is_read_when_the_request_is_made_and_kept_out_of_the_evidence() {
+        use crate::execution_plan::Action::AssertStatusIn;
+        std::env::set_var("AIQA_SECRET_T8B_TOKEN", "  tok-8b-secret-value  ");
+        // The server repeats the token in its answer, as a badly written one may.
+        let (url, seen) = canned_server(200, "application/json", r#"{"echo": "tok-8b-secret-value"}"#.to_string()).await;
+        let plan = get_plan(&url, &[("Authorization", "env:AIQA_SECRET_T8B_TOKEN")], vec![AssertStatusIn { statuses: vec![200] }]);
+        let outcome = run_validated_plan(&reqwest::Client::new(), plan).await;
+        assert_eq!(outcome.status, TaskStatus::Passed, "{:?}", outcome.reason);
+        let requests = seen.lock().unwrap().clone();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].to_lowercase().contains("authorization: tok-8b-secret-value\r\n"), "the server got the value, trimmed: {}", requests[0]);
+        assert!(!requests[0].contains("env:AIQA_SECRET_T8B_TOKEN"), "and not the reference");
+        let evidence = outcome.evidence.unwrap();
+        assert!(!evidence.contains("tok-8b-secret-value"), "the value is scrubbed from what the run keeps: {evidence}");
+        assert!(evidence.contains("***"), "{evidence}");
+        assert!(evidence.contains("RESULT_SUMMARY_JSON:"), "{evidence}");
+    }
+
+    #[tokio::test]
+    async fn a_header_that_names_a_variable_that_is_not_set_stops_the_run_before_any_request() {
+        std::env::remove_var("AIQA_SECRET_T8B_MISSING");
+        let (url, seen) = canned_server(200, "application/json", "{}".to_string()).await;
+        let plan = get_plan(&url, &[("X-Api-Key", "env:AIQA_SECRET_T8B_MISSING")], vec![]);
+        let outcome = run_validated_plan(&reqwest::Client::new(), plan).await;
+        assert_eq!(outcome.status, TaskStatus::InfraError);
+        let reason = outcome.reason.unwrap();
+        assert!(reason.contains("AIQA_SECRET_T8B_MISSING"), "{reason}");
+        assert!(seen.lock().unwrap().is_empty(), "nothing was sent");
+    }
+
+    #[test]
+    fn only_a_variable_a_plan_may_name_is_ever_read_for_a_header() {
+        use crate::execution_plan::Action;
+        std::env::set_var("GROQ_API_KEY_T8B", "must-not-leak");
+        let plan = get_plan("http://x.test/", &[("Authorization", "env:GROQ_API_KEY_T8B"), ("X-Plain", "plain")], vec![]);
+        let resolved = with_resolved_header_secrets(plan);
+        let Action::Request { headers, .. } = &resolved.actions[0] else { panic!("no request") };
+        assert_eq!(headers.get("Authorization").map(String::as_str), Some("env:GROQ_API_KEY_T8B"), "left as written, never read");
+        assert_eq!(headers.get("X-Plain").map(String::as_str), Some("plain"));
     }
 
     #[test]

@@ -574,6 +574,261 @@ describe('aiqaApi.projects.create (FE-14 §16 — real POST /api/v1/projects, pr
   });
 });
 
+describe('Phase 3 — requirements client (documents -> numbered requirements -> generation)', () => {
+  const PROJECT_ID = 'proj-phase3';
+  const DOC_A = '11111111-1111-4111-8111-111111111111';
+  const DOC_B = '22222222-2222-4222-8222-222222222222';
+
+  it('extractText sends the upload slot as document_type and returns the requirements summary untouched', async () => {
+    setApiKey('aiqa_phase3test000000');
+    const summary = {
+      document_id: DOC_A,
+      full_char_count: 90_000,
+      full_truncated: false,
+      sections_count: 12,
+      requirements_count: 140,
+      skipped_sections: ['Table of Contents'],
+      by_kind: { functional: 100, security: 40 },
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(200, { text: 'abc', char_count: 3, truncated: false, requirements_document: summary }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await aiqaApi.documents.extractText(PROJECT_ID, {
+      file_name: 'FRD.docx',
+      content_base64: 'QUJD',
+      document_type: 'FRD',
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`/api/v1/projects/${PROJECT_ID}/documents/extract-text`);
+    expect(JSON.parse(init.body as string)).toEqual({ file_name: 'FRD.docx', content_base64: 'QUJD', document_type: 'FRD' });
+    expect(res.requirements_document).toEqual(summary);
+  });
+
+  it('requirements.list asks for the whole project with no query, or for the named documents only', async () => {
+    setApiKey('aiqa_phase3test000000');
+    const fetchMock = vi.fn().mockImplementation(async () => jsonResponse(200, { documents: [], requirements: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await aiqaApi.requirements.list(PROJECT_ID);
+    await aiqaApi.requirements.list(PROJECT_ID, { documentIds: [] });
+    await aiqaApi.requirements.list(PROJECT_ID, { documentIds: [DOC_A, DOC_B] });
+
+    const urls = fetchMock.mock.calls.map((c) => (c as [string, RequestInit])[0]);
+    expect(urls[0]).toBe(`/api/v1/projects/${PROJECT_ID}/requirements`);
+    expect(urls[1]).toBe(`/api/v1/projects/${PROJECT_ID}/requirements`);
+    const named = new URL(urls[2], 'http://localhost');
+    expect(named.pathname).toBe(`/api/v1/projects/${PROJECT_ID}/requirements`);
+    expect(named.searchParams.get('document_ids')).toBe(`${DOC_A},${DOC_B}`);
+  });
+
+  it('planGenerateAi POSTs the skills and documents to the plan path and returns the plan as sent', async () => {
+    setApiKey('aiqa_phase3test000000');
+    const plan = {
+      requirements_total: 140,
+      by_kind: { functional: 100, security: 40 },
+      offered: 140,
+      not_offered_keys: [],
+      calls: 6,
+      max_calls: 150,
+      within_limit: true,
+      skills: [{ skill_name: 'Functional Testing', wave: 'Base', requirements: 140, batches: 3 }],
+      budget_chars: 12_000,
+      provider_name: 'Ollama',
+      model: 'llama3',
+      prompt_window_tokens: 4096,
+      estimated_prompt_tokens: 20_000,
+      estimated_completion_tokens: 6_000,
+    };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, plan));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await aiqaApi.testCases.planGenerateAi(PROJECT_ID, {
+      skills: [{ id: 'functional', name: 'Functional Testing' }],
+      requirement_document_ids: [DOC_A],
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`/api/v1/projects/${PROJECT_ID}/test-cases/generate-ai/plan`);
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({
+      skills: [{ id: 'functional', name: 'Functional Testing' }],
+      requirement_document_ids: [DOC_A],
+    });
+    expect(res).toEqual(plan);
+  });
+
+  it('generateAi sends requirement_document_ids only when the caller gives them', async () => {
+    setApiKey('aiqa_phase3test000000');
+    const fetchMock = vi.fn().mockImplementation(async () => jsonResponse(200, { test_cases: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await aiqaApi.testCases.generateAi(PROJECT_ID, { requirement_text: 'x', skills: [] });
+    await aiqaApi.testCases.generateAi(PROJECT_ID, { requirement_text: 'x', skills: [], requirement_document_ids: [DOC_A] });
+
+    const bodies = fetchMock.mock.calls.map((c) => JSON.parse((c as [string, RequestInit])[1].body as string));
+    expect(bodies[0]).not.toHaveProperty('requirement_document_ids');
+    expect(bodies[1].requirement_document_ids).toEqual([DOC_A]);
+  });
+
+  it('generateAi and planGenerateAi pass the depth and the top-up through, and send neither unless given', async () => {
+    setApiKey('aiqa_phase3test000000');
+    const fetchMock = vi.fn().mockImplementation(async () => jsonResponse(200, { test_cases: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await aiqaApi.testCases.generateAi(PROJECT_ID, { requirement_text: 'x', skills: [], requirement_document_ids: [DOC_A] });
+    await aiqaApi.testCases.generateAi(PROJECT_ID, {
+      requirement_text: 'x',
+      skills: [],
+      requirement_document_ids: [DOC_A],
+      depth: 'EXHAUSTIVE',
+      coverage_top_up: true,
+    });
+    await aiqaApi.testCases.planGenerateAi(PROJECT_ID, { skills: [], requirement_document_ids: [DOC_A], depth: 'SMOKE' });
+
+    const bodies = fetchMock.mock.calls.map((c) => JSON.parse((c as [string, RequestInit])[1].body as string));
+    expect(bodies[0]).not.toHaveProperty('depth');
+    expect(bodies[0]).not.toHaveProperty('coverage_top_up');
+    expect(bodies[1]).toMatchObject({ depth: 'EXHAUSTIVE', coverage_top_up: true });
+    expect(bodies[2]).toMatchObject({ depth: 'SMOKE' });
+    expect(bodies[2]).not.toHaveProperty('coverage_top_up');
+  });
+});
+
+describe('aiqaApi.testCases.compile (Phase 5 — compile against a crawl)', () => {
+  const READY = {
+    status: 'READY',
+    test_case_id: 'case-1',
+    execution_type: 'BROWSER',
+    target: null,
+    actions: [],
+    compiler: 'AI',
+    diagnostics: [],
+    provider: 'local',
+    model: 'qwen',
+  };
+
+  it('with no body it sends none — the request is exactly what it always was', async () => {
+    setApiKey('aiqa_compilebodytest0000');
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, READY));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await aiqaApi.testCases.compile('proj-1', 'case-1');
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain('/projects/proj-1/test-cases/case-1/compile');
+    expect((init as RequestInit).method).toBe('POST');
+    expect((init as RequestInit).body).toBeUndefined();
+    expect(((init as RequestInit).headers as Record<string, string>)['Content-Type']).toBeUndefined();
+  });
+
+  it('given a crawl and a role it sends them as the request body, and returns the grounding the response reports', async () => {
+    setApiKey('aiqa_compilebodytest0000');
+    const grounded = {
+      ...READY,
+      grounding: { role: 'admin', pages_in_crawl: 3, pages_offered: 2, elements_offered: 47, login_steps: 4, secrets: ['AIQA_LOGIN_ADMIN_PASSWORD'] },
+    };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, grounded));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const outcome = await aiqaApi.testCases.compile('proj-1', 'case-1', undefined, { crawl_run_id: 'crawl-1', role: 'admin' });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(String((init as RequestInit).body))).toEqual({ crawl_run_id: 'crawl-1', role: 'admin' });
+    expect(outcome.grounding?.secrets).toEqual(['AIQA_LOGIN_ADMIN_PASSWORD']);
+  });
+
+  it('a handoff can carry the same two fields alongside compile_and_execute', async () => {
+    setApiKey('aiqa_compilebodytest0000');
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(201, { run_id: 'run-1', status: 'SCHEDULED', policy_notes: null }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await aiqaApi.testCases.handoff('proj-1', 'case-1', { compile_and_execute: true, crawl_run_id: 'crawl-1', role: 'admin' });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(String((init as RequestInit).body))).toEqual({ compile_and_execute: true, crawl_run_id: 'crawl-1', role: 'admin' });
+  });
+});
+
+describe('aiqaApi.gapCheck.run (Phase 6 — the requirements against a crawl)', () => {
+  const REPORT = {
+    crawl: { run_id: 'crawl-1', source: 'grounding', role: null, roles: [{ role: 'admin', login_succeeded: true, pages: 3 }] },
+    summary: { requirements: 1, checkable: 1, found: 0, weak: 0, missing: 1, not_checkable: 0, pages: 3, undocumented_pages: 3, cases: 0, with_cases: 0, shown_without_cases: 0, tested_without_evidence: 0 },
+    requirements: [
+      {
+        key: 'FR-001',
+        section: null,
+        kind: 'functional',
+        text: 'Users can add products to a wishlist.',
+        status: 'MISSING',
+        matches: [],
+        cases: { total: 0, approved: 0, executed: 0, techniques: {}, missing_techniques: ['positive'] },
+      },
+    ],
+    undocumented_pages: [],
+    notes: [],
+    method: {
+      embeddings: { requested: false, used: false, model: null, texts: 0, failed: 0, note: null },
+      verification: { requested: false, calls: 0, checked: 0, confirmed: 0, not_found: 0, unclear: 0, failed: 0, by: [], note: null },
+    },
+  };
+
+  it('posts to the project\'s gap-check path with an empty body when given none, and returns the report as sent', async () => {
+    setApiKey('aiqa_gapchecktest000000');
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, REPORT));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const report = await aiqaApi.gapCheck.run('proj-1');
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe('/api/v1/projects/proj-1/gap-check');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(String(init.body))).toEqual({});
+    expect(report).toEqual(REPORT);
+  });
+
+  it('sends the crawl, the role and the options it is given, and nothing else', async () => {
+    setApiKey('aiqa_gapchecktest000000');
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, REPORT));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await aiqaApi.gapCheck.run('proj-1', { crawl_run_id: 'crawl-1', role: 'admin', use_embeddings: true, verify: true, max_verifications: 5 });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({ crawl_run_id: 'crawl-1', role: 'admin', use_embeddings: true, verify: true, max_verifications: 5 });
+  });
+
+  it('maps a refusal to the kind the page tells apart: no requirements, no crawl, no permission', async () => {
+    setApiKey('aiqa_gapchecktest000000');
+    const respond = (status: number, code: string, message: string) => vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(status, envelope(code, message))));
+
+    respond(400, 'VALIDATION_ERROR', 'this project has no requirements: upload a requirements document first');
+    const noRequirements = await expectApiError(aiqaApi.gapCheck.run('proj-1'));
+    expect([noRequirements.kind, noRequirements.status]).toEqual(['validation_error', 400]);
+    expect(noRequirements.message).toContain('no requirements');
+
+    respond(404, 'NOT_FOUND', 'no finished crawl');
+    const noCrawl = await expectApiError(aiqaApi.gapCheck.run('proj-1'));
+    expect([noCrawl.kind, noCrawl.status]).toEqual(['not_found', 404]);
+
+    respond(403, 'FORBIDDEN', "role 'viewer' cannot perform this action");
+    const forbidden = await expectApiError(aiqaApi.gapCheck.run('proj-1', { verify: true }));
+    expect([forbidden.kind, forbidden.status]).toEqual(['forbidden', 403]);
+  });
+
+  it('never puts the API key in the URL', async () => {
+    setApiKey('aiqa_gapchecktest000000');
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, REPORT));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await aiqaApi.gapCheck.run('proj-1');
+
+    expect(String(fetchMock.mock.calls[0][0])).not.toContain('aiqa_gapchecktest000000');
+  });
+});
+
 describe('No hardcoded credential in source (FE-2 §6, §18 item 11)', () => {
   it('API_BASE contains no embedded secret and defaults to the contract-shaped path', async () => {
     const mod = await import('./aiqaApi');

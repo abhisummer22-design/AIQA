@@ -3,11 +3,17 @@
  * Persistent shell context, environment switching, execution telemetry, and pipeline states.
  */
 
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useCallback, useContext, useState, useEffect } from 'react';
+import { useProject } from './ProjectContext';
 import {
   Environment,
   GenerationSession,
 } from '../types';
+
+/** `activeGenerationSession`/`setActiveGenerationSession` read/write this
+ *  key when no real project is selected — a real project id can never
+ *  collide with it (`ProjectContext`'s ids are the backend's own UUIDs). */
+const NO_PROJECT_KEY = '__no_project_selected__';
 
 interface AIQAContextType {
   // FE-4: `activePage`/`setActivePage` were removed from here — the real
@@ -20,9 +26,20 @@ interface AIQAContextType {
   currentEnvironment: Environment;
   setCurrentEnvironment: (env: Environment) => void;
 
-  // Generator
+  // Generator — one real session per real project (a `TestCaseGeneratorPage`
+  // visit for project A must never show project B's uploaded documents or
+  // drafted cases, and switching back to A must show exactly what was left
+  // there, not a second, different project's leftovers or a wipe). These
+  // two always read/write whichever project is *currently selected*
+  // (`useProject()`, read inside this provider); `getGenerationSession`/
+  // `setGenerationSessionFor` below reach an *explicit* project id instead,
+  // for the one caller (`TestCaseGeneratorPage`'s own generation-completion
+  // handler) that must keep targeting the project a call was actually made
+  // for, even after the user has since switched to a different one.
   activeGenerationSession: GenerationSession | null;
   setActiveGenerationSession: React.Dispatch<React.SetStateAction<GenerationSession | null>>;
+  getGenerationSession: (projectId: string) => GenerationSession | null;
+  setGenerationSessionFor: (projectId: string, action: React.SetStateAction<GenerationSession | null>) => void;
 
   // UI Modals
   isCommandPaletteOpen: boolean;
@@ -60,14 +77,46 @@ export const AIQAProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // signal already flowing through every page, not a second UI-shell
   // concept this generic context has no business owning.
 
-  // Generator Session
-  // Phase A cleanup: the fabricated pre-seeded session (3 hardcoded demo
-  // cases, `tc-gen-1..3`, that made a fresh page load look like a real AI
-  // run had happened) is removed entirely — a fresh load starts genuinely
-  // empty. The state itself stays: CustomTestingPage writes real AI
-  // analysis results into it and TestCaseGeneratorPage reads it back.
-  const [activeGenerationSession, setActiveGenerationSession] =
-    useState<GenerationSession | null>(null);
+  // Generator Session — Phase A cleanup: the fabricated pre-seeded session
+  // (3 hardcoded demo cases, `tc-gen-1..3`, that made a fresh page load
+  // look like a real AI run had happened) is removed entirely — a fresh
+  // load starts genuinely empty. The state itself stays real:
+  // `CustomTestingPage` writes real AI analysis results into it and
+  // `TestCaseGeneratorPage` reads it back.
+  //
+  // Keyed by real project id (`NO_PROJECT_KEY` when none is selected) —
+  // was a single, unscoped slot, which is exactly what let one project's
+  // session silently show while a different one was actually selected:
+  // `TestCaseGeneratorPage` never unmounts on a project switch (only on
+  // leaving the page entirely), so nothing ever reset or rescoped it. This
+  // way, switching *which* project's session is read/written is just
+  // switching which key gets looked up — no reset needed, and no leak
+  // into a different project's key either.
+  const [sessionsByProject, setSessionsByProject] = useState<Record<string, GenerationSession | null>>({});
+  const { selectedProjectId } = useProject();
+  const activeProjectKey = selectedProjectId ?? NO_PROJECT_KEY;
+
+  const setGenerationSessionFor = useCallback(
+    (projectId: string, action: React.SetStateAction<GenerationSession | null>) => {
+      setSessionsByProject((prev) => {
+        const current = prev[projectId] ?? null;
+        const next = typeof action === 'function'
+          ? (action as (p: GenerationSession | null) => GenerationSession | null)(current)
+          : action;
+        return { ...prev, [projectId]: next };
+      });
+    },
+    [],
+  );
+  const getGenerationSession = useCallback(
+    (projectId: string) => sessionsByProject[projectId] ?? null,
+    [sessionsByProject],
+  );
+  const activeGenerationSession = sessionsByProject[activeProjectKey] ?? null;
+  const setActiveGenerationSession = useCallback(
+    (action: React.SetStateAction<GenerationSession | null>) => setGenerationSessionFor(activeProjectKey, action),
+    [activeProjectKey, setGenerationSessionFor],
+  );
 
   // Actions
   const toggleSidebar = () => setIsSidebarCollapsed((prev) => !prev);
@@ -98,6 +147,8 @@ export const AIQAProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setCurrentEnvironment,
         activeGenerationSession,
         setActiveGenerationSession,
+        getGenerationSession,
+        setGenerationSessionFor,
         isCommandPaletteOpen,
         setCommandPaletteOpen,
       }}

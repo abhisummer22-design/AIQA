@@ -53,6 +53,9 @@ pub struct AppState {
     pub performance_tests: Arc<RwLock<HashMap<Uuid, Arc<PerformanceRunHandle>>>>,
     /// Real-time central log bus & ring buffer for live AIQA orchestrator activity.
     pub log_bus: Arc<LogBus>,
+    /// Phase 7 — which autopilot runs this process is working on (`autopilot_runner.rs`). What a run has done is in
+    /// the database; this only stops two tasks from working on one run.
+    pub autopilot: Arc<crate::autopilot_runner::AutopilotRegistry>,
 }
 
 impl AppState {
@@ -64,6 +67,9 @@ impl AppState {
         ai_infra: Arc<AiInfrastructure>,
         embedder: Arc<dyn Embedder>,
     ) -> Self {
+        // Every call the AI makes from now on is counted (`ai_usage.rs`): where the app is built is the one place both the
+        // running server and the tests pass through.
+        ai_infra.set_usage_sink(Arc::new(crate::ai_usage::UsageLedger::new(store.clone())));
         Self {
             runs: Arc::new(RwLock::new(HashMap::new())),
             registry,
@@ -75,6 +81,7 @@ impl AppState {
             embedder,
             performance_tests: Arc::new(RwLock::new(HashMap::new())),
             log_bus: Arc::new(LogBus::new(300)),
+            autopilot: Arc::default(),
         }
     }
 

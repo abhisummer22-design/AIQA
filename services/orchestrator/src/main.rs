@@ -175,6 +175,10 @@ async fn main() {
                 name: r.name,
                 base_url: r.base_url,
                 api_key: r.api_key,
+                pricing: aiqa_orchestrator::ai_router::ProviderPricing::from_prices(
+                    r.input_usd_per_1k,
+                    r.output_usd_per_1k,
+                ),
             })
             .collect();
         ai_infra.set_custom_providers(configs).await;
@@ -207,6 +211,14 @@ async fn main() {
         ai_infra,
         embedder,
     );
+    // Phase 7 — autopilot runs that were going when the process stopped carry on where they were.
+    match aiqa_orchestrator::autopilot_runner::resume_runs(&state).await {
+        Ok(0) => {}
+        Ok(n) => tracing::info!("picked up {n} autopilot run(s) that were going when the service stopped"),
+        Err(e) => tracing::error!("startup autopilot-resume pass failed: {e}"),
+    }
+    // Phase 8C — the schedules of regression runs are looked at every half minute.
+    aiqa_orchestrator::regression_runner::spawn(state.clone());
     // B12 — explicit origin allow-list, not a wildcard. See
     // `api::cors_layer_from_env`'s doc comment for the default and the
     // `AIQA_CORS_ALLOWED_ORIGINS` override.

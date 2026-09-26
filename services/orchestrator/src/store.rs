@@ -32,18 +32,27 @@ pub struct Store {
     pub pool: SqlitePool,
 }
 
-fn now_rfc3339() -> String {
+pub(crate) fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
-fn parse_ts(s: &str) -> chrono::DateTime<chrono::Utc> {
+pub(crate) fn parse_ts(s: &str) -> chrono::DateTime<chrono::Utc> {
     chrono::DateTime::parse_from_rfc3339(s)
         .map(|d| d.with_timezone(&chrono::Utc))
         .unwrap_or_else(|_| chrono::Utc::now())
 }
 
-fn parse_ts_opt(s: Option<String>) -> Option<chrono::DateTime<chrono::Utc>> {
+pub(crate) fn parse_ts_opt(s: Option<String>) -> Option<chrono::DateTime<chrono::Utc>> {
     s.map(|s| parse_ts(&s))
+}
+
+fn api_key_row_from(r: sqlx::sqlite::SqliteRow) -> ApiKeyRow {
+    ApiKeyRow {
+        id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap_or_default(),
+        name: r.get("name"),
+        role: r.get("role"),
+        project_id: r.get("project_id"),
+    }
 }
 
 fn healing_proposal_from_row(r: sqlx::sqlite::SqliteRow) -> Result<HealingProposalRow> {
@@ -220,6 +229,33 @@ fn document_from_row(r: sqlx::sqlite::SqliteRow) -> Result<DocumentRow> {
     })
 }
 
+fn requirement_document_from_row(r: sqlx::sqlite::SqliteRow) -> Result<RequirementDocumentRow> {
+    Ok(RequirementDocumentRow {
+        id: Uuid::parse_str(&r.get::<String, _>("id"))?,
+        file_name: r.get("file_name"),
+        doc_type: r.get("doc_type"),
+        char_count: r.get("char_count"),
+        requirements_count: r.get("requirements_count"),
+        sections_count: r.get("sections_count"),
+        skipped_sections: serde_json::from_str(&r.get::<String, _>("skipped_sections"))
+            .unwrap_or_default(),
+        furniture_lines: r.get("furniture_lines"),
+        created_at: parse_ts(&r.get::<String, _>("created_at")),
+        updated_at: parse_ts(&r.get::<String, _>("updated_at")),
+    })
+}
+
+fn requirement_from_row(r: sqlx::sqlite::SqliteRow) -> Result<RequirementRow> {
+    Ok(RequirementRow {
+        document_id: Uuid::parse_str(&r.get::<String, _>("document_id"))?,
+        key: r.get("req_key"),
+        ordinal: r.get("ordinal"),
+        section: r.get("section"),
+        kind: r.get("kind"),
+        text: r.get("text"),
+    })
+}
+
 fn test_plan_from_row(r: sqlx::sqlite::SqliteRow) -> Result<TestPlanRow> {
     Ok(TestPlanRow {
         id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap_or_default(),
@@ -286,6 +322,8 @@ fn custom_ai_provider_from_row(r: sqlx::sqlite::SqliteRow) -> CustomAiProviderRo
         name: r.get("name"),
         base_url: r.get("base_url"),
         api_key: r.get("api_key"),
+        input_usd_per_1k: r.get("input_usd_per_1k"),
+        output_usd_per_1k: r.get("output_usd_per_1k"),
         created_by: r.get("created_by"),
         created_at: parse_ts(&r.get::<String, _>("created_at")),
     }
@@ -943,23 +981,28 @@ impl Store {
     /// `0013_custom_ai_providers.sql`'s own doc comment for why `api_key` is
     /// plaintext here, not the one-way `key_hash` this app's own auth keys
     /// use). Platform-wide like `ai_settings`/`custom_skills` — no
-    /// `project_id`.
+    /// `project_id`. `prices` is the provider's (input, output) USD per 1,000
+    /// tokens when the user entered them, `None` otherwise (see migration
+    /// `0019_custom_provider_pricing.sql`).
     pub async fn insert_custom_ai_provider(
         &self,
         id: &str,
         name: &str,
         base_url: &str,
         api_key: &str,
+        prices: Option<(f64, f64)>,
         created_by: &str,
     ) -> Result<()> {
         let now = now_rfc3339();
         sqlx::query(
-            "INSERT INTO custom_ai_providers (id, name, base_url, api_key, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO custom_ai_providers (id, name, base_url, api_key, input_usd_per_1k, output_usd_per_1k, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(id)
         .bind(name)
         .bind(base_url)
         .bind(api_key)
+        .bind(prices.map(|p| p.0))
+        .bind(prices.map(|p| p.1))
         .bind(created_by)
         .bind(&now)
         .execute(&self.pool)
@@ -977,7 +1020,7 @@ impl Store {
     /// client response.
     pub async fn list_custom_ai_providers(&self) -> Result<Vec<CustomAiProviderRow>> {
         let rows = sqlx::query(
-            "SELECT id, name, base_url, api_key, created_by, created_at FROM custom_ai_providers ORDER BY created_at",
+            "SELECT id, name, base_url, api_key, input_usd_per_1k, output_usd_per_1k, created_by, created_at FROM custom_ai_providers ORDER BY created_at",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -1172,6 +1215,49 @@ impl Store {
         // project. Same no-FK convention as every other project-scoped
         // table here (`0004_projects.sql`'s own comment).
         sqlx::query("DELETE FROM documents WHERE project_id = ?")
+            .bind(&pid_str)
+            .execute(&mut *tx)
+            .await?;
+
+        // 8d. Delete requirement documents and the requirements read out of
+        // them (Phase 3) — no FK on `project_id`, same convention as above.
+        sqlx::query("DELETE FROM requirements WHERE project_id = ?")
+            .bind(&pid_str)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM requirement_documents WHERE project_id = ?")
+            .bind(&pid_str)
+            .execute(&mut *tx)
+            .await?;
+
+        // 8e. Delete autopilot runs with their steps and events (Phase 7) — children first, so this does not depend
+        // on the foreign keys' cascade being switched on.
+        sqlx::query("DELETE FROM autopilot_events WHERE run_id IN (SELECT id FROM autopilot_runs WHERE project_id = ?)")
+            .bind(&pid_str)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM autopilot_steps WHERE run_id IN (SELECT id FROM autopilot_runs WHERE project_id = ?)")
+            .bind(&pid_str)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM autopilot_runs WHERE project_id = ?")
+            .bind(&pid_str)
+            .execute(&mut *tx)
+            .await?;
+
+        // 8f. Delete the API tests made from OpenAPI documents (Phase 8B). No foreign key holds them: `run_id` is only the run's id kept
+        // as text, and the runs themselves are deleted above.
+        sqlx::query("DELETE FROM openapi_runs WHERE project_id = ?")
+            .bind(&pid_str)
+            .execute(&mut *tx)
+            .await?;
+
+        // 8g. Delete scheduled regression (Phase 8C): the runs of each schedule, then the schedules. No foreign keys, as above.
+        sqlx::query("DELETE FROM regression_runs WHERE project_id = ?")
+            .bind(&pid_str)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM regression_schedules WHERE project_id = ?")
             .bind(&pid_str)
             .execute(&mut *tx)
             .await?;
@@ -1655,6 +1741,171 @@ impl Store {
         .fetch_one(&self.pool)
         .await?;
         Ok(row.get::<i64, _>("c"))
+    }
+
+    // -------------------------------------------- requirements (Phase 3)
+
+    /// Stores a document's whole extracted text and the requirements
+    /// `requirements.rs` read out of it (see `0020_requirements.sql`). Keyed by
+    /// `(project_id, content_hash)`: the same content uploaded again refreshes
+    /// the file name and type of the existing row and leaves its requirements
+    /// alone — unless they were produced by older parsing rules
+    /// (`parser_version`), in which case they are replaced. Returns the
+    /// document's id either way.
+    pub async fn upsert_requirement_document(
+        &self,
+        project_id: &str,
+        file_name: &str,
+        doc_type: Option<&str>,
+        content_hash: &str,
+        text: &str,
+        parsed: &crate::requirements::ParsedDocument,
+    ) -> Result<Uuid> {
+        let mut tx = self.pool.begin().await?;
+        let now = now_rfc3339();
+        let skipped = serde_json::to_string(&parsed.skipped_sections)?;
+
+        let existing = sqlx::query(
+            "SELECT id, parser_version FROM requirement_documents WHERE project_id = ? AND content_hash = ?",
+        )
+        .bind(project_id)
+        .bind(content_hash)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        let (id, rewrite) = match existing {
+            Some(row) => {
+                let id: String = row.get("id");
+                let version: i64 = row.get("parser_version");
+                sqlx::query(
+                    "UPDATE requirement_documents SET file_name = ?, doc_type = ?, updated_at = ? WHERE id = ?",
+                )
+                .bind(file_name)
+                .bind(doc_type)
+                .bind(&now)
+                .bind(&id)
+                .execute(&mut *tx)
+                .await?;
+                (id, version != crate::requirements::PARSER_VERSION)
+            }
+            None => {
+                let id = Uuid::new_v4().to_string();
+                sqlx::query(
+                    "INSERT INTO requirement_documents (id, project_id, file_name, doc_type, content_hash, char_count, text, parser_version, sections_count, skipped_sections, furniture_lines, created_at, updated_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                )
+                .bind(&id)
+                .bind(project_id)
+                .bind(file_name)
+                .bind(doc_type)
+                .bind(content_hash)
+                .bind(text.chars().count() as i64)
+                .bind(text)
+                .bind(crate::requirements::PARSER_VERSION)
+                .bind(parsed.sections_count as i64)
+                .bind(&skipped)
+                .bind(parsed.furniture_lines as i64)
+                .bind(&now)
+                .bind(&now)
+                .execute(&mut *tx)
+                .await?;
+                (id, true)
+            }
+        };
+
+        if rewrite {
+            sqlx::query(
+                "UPDATE requirement_documents SET parser_version = ?, sections_count = ?, skipped_sections = ?, furniture_lines = ? WHERE id = ?",
+            )
+            .bind(crate::requirements::PARSER_VERSION)
+            .bind(parsed.sections_count as i64)
+            .bind(&skipped)
+            .bind(parsed.furniture_lines as i64)
+            .bind(&id)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query("DELETE FROM requirements WHERE document_id = ?")
+                .bind(&id)
+                .execute(&mut *tx)
+                .await?;
+            for r in &parsed.requirements {
+                sqlx::query(
+                    "INSERT INTO requirements (id, project_id, document_id, req_key, ordinal, section, kind, text)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                )
+                .bind(Uuid::new_v4().to_string())
+                .bind(project_id)
+                .bind(&id)
+                .bind(&r.key)
+                .bind(r.ordinal as i64)
+                .bind(r.section.as_deref())
+                .bind(r.kind.as_str())
+                .bind(&r.text)
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
+
+        tx.commit().await?;
+        Ok(Uuid::parse_str(&id)?)
+    }
+
+    /// A project's requirement documents in the order they were first
+    /// uploaded, each with how many requirements it holds.
+    pub async fn list_requirement_documents(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<RequirementDocumentRow>> {
+        let rows = sqlx::query(
+            "SELECT d.id, d.file_name, d.doc_type, d.char_count, d.sections_count, d.skipped_sections,
+                    d.furniture_lines, d.created_at, d.updated_at,
+                    (SELECT COUNT(*) FROM requirements r WHERE r.document_id = d.id) AS requirements_count
+             FROM requirement_documents d WHERE d.project_id = ? ORDER BY d.created_at, d.id",
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(requirement_document_from_row).collect()
+    }
+
+    /// The requirements of `document_ids` in that order (each document's own
+    /// in document order); every document of the project, oldest first, when
+    /// `document_ids` is empty. A document that belongs to another project
+    /// simply contributes nothing.
+    pub async fn list_requirements(
+        &self,
+        project_id: &str,
+        document_ids: &[Uuid],
+    ) -> Result<Vec<RequirementRow>> {
+        let mut out = Vec::new();
+        if document_ids.is_empty() {
+            let rows = sqlx::query(
+                "SELECT r.document_id, r.req_key, r.ordinal, r.section, r.kind, r.text
+                 FROM requirements r JOIN requirement_documents d ON d.id = r.document_id
+                 WHERE r.project_id = ? ORDER BY d.created_at, d.id, r.ordinal",
+            )
+            .bind(project_id)
+            .fetch_all(&self.pool)
+            .await?;
+            for row in rows {
+                out.push(requirement_from_row(row)?);
+            }
+            return Ok(out);
+        }
+        for id in document_ids {
+            let rows = sqlx::query(
+                "SELECT document_id, req_key, ordinal, section, kind, text
+                 FROM requirements WHERE project_id = ? AND document_id = ? ORDER BY ordinal",
+            )
+            .bind(project_id)
+            .bind(id.to_string())
+            .fetch_all(&self.pool)
+            .await?;
+            for row in rows {
+                out.push(requirement_from_row(row)?);
+            }
+        }
+        Ok(out)
     }
 
     /// Phase 5 (Output maturity) — the one place a case's suite membership
@@ -2210,12 +2461,19 @@ impl Store {
         .bind(key_hash)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.map(|r| ApiKeyRow {
-            id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap_or_default(),
-            name: r.get("name"),
-            role: r.get("role"),
-            project_id: r.get("project_id"),
-        }))
+        Ok(row.map(api_key_row_from))
+    }
+
+    /// The key with this id, if it exists and has not been revoked: what a background job started by a key (the
+    /// autopilot) looks up before each call it makes on that key's behalf, so revoking the key stops the job.
+    pub async fn find_active_api_key(&self, id: Uuid) -> Result<Option<ApiKeyRow>> {
+        let row = sqlx::query(
+            "SELECT id, name, role, project_id FROM api_keys WHERE id = ? AND revoked_at IS NULL",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(api_key_row_from))
     }
 
     pub async fn list_api_keys(&self) -> Result<Vec<ApiKeyListRow>> {
@@ -2962,6 +3220,72 @@ impl Store {
     /// done correctly. Paired with `count_audit` below so a caller can
     /// show a real "page N of M" / "X-Y of Z" rather than guessing from a
     /// fetched batch's length.
+    /// Adds one answered AI call to the running totals of its provider, model and task (`ai_call_stats`, migration 0021).
+    /// The tokens count only when the provider reported both, so `token_calls` is how many calls they are an average of.
+    pub async fn record_ai_call(
+        &self,
+        provider: &str,
+        model: &str,
+        task: &str,
+        latency_ms: u64,
+        prompt_tokens: Option<u32>,
+        completion_tokens: Option<u32>,
+    ) -> Result<()> {
+        let (token_calls, prompt, completion) = match (prompt_tokens, completion_tokens) {
+            (Some(p), Some(c)) => (1i64, i64::from(p), i64::from(c)),
+            _ => (0, 0, 0),
+        };
+        let now = now_rfc3339();
+        sqlx::query(
+            "INSERT INTO ai_call_stats
+                 (provider, model, task, calls, total_ms, token_calls, prompt_tokens, completion_tokens, first_at, last_at)
+             VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT (provider, model, task) DO UPDATE SET
+                 calls = calls + 1,
+                 total_ms = total_ms + excluded.total_ms,
+                 token_calls = token_calls + excluded.token_calls,
+                 prompt_tokens = prompt_tokens + excluded.prompt_tokens,
+                 completion_tokens = completion_tokens + excluded.completion_tokens,
+                 last_at = excluded.last_at",
+        )
+        .bind(provider)
+        .bind(model)
+        .bind(task)
+        .bind(i64::try_from(latency_ms).unwrap_or(i64::MAX))
+        .bind(token_calls)
+        .bind(prompt)
+        .bind(completion)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// What the calls of `task` took so far, one row per provider and model (`record_ai_call`).
+    pub async fn ai_call_stats(&self, task: &str) -> Result<Vec<AiCallStatRow>> {
+        let rows = sqlx::query(
+            "SELECT provider, model, task, calls, total_ms, token_calls, prompt_tokens, completion_tokens
+             FROM ai_call_stats WHERE task = ? ORDER BY provider, model",
+        )
+        .bind(task)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| AiCallStatRow {
+                provider: r.get("provider"),
+                model: r.get("model"),
+                task: r.get("task"),
+                calls: r.get("calls"),
+                total_ms: r.get("total_ms"),
+                token_calls: r.get("token_calls"),
+                prompt_tokens: r.get("prompt_tokens"),
+                completion_tokens: r.get("completion_tokens"),
+            })
+            .collect())
+    }
+
     pub async fn list_audit(
         &self,
         project_filter: Option<&str>,
@@ -3728,6 +4052,9 @@ pub struct CustomAiProviderRow {
     pub name: String,
     pub base_url: String,
     pub api_key: String,
+    /// USD per 1,000 tokens in / out, as entered by the user. Both set or both `None`.
+    pub input_usd_per_1k: Option<f64>,
+    pub output_usd_per_1k: Option<f64>,
     pub created_by: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
@@ -3821,6 +4148,34 @@ pub struct DocumentRow {
     pub text: String,
     pub char_count: i64,
     pub truncated: bool,
+}
+
+/// A document read for its requirements (`0020_requirements.sql`).
+/// `requirements_count` is counted when the row is read, not stored.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RequirementDocumentRow {
+    pub id: Uuid,
+    pub file_name: String,
+    pub doc_type: Option<String>,
+    pub char_count: i64,
+    pub requirements_count: i64,
+    pub sections_count: i64,
+    pub skipped_sections: Vec<String>,
+    pub furniture_lines: i64,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// One requirement read out of a document (`0020_requirements.sql`).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RequirementRow {
+    pub document_id: Uuid,
+    /// The id people see and a generated test case carries.
+    pub key: String,
+    pub ordinal: i64,
+    pub section: Option<String>,
+    pub kind: String,
+    pub text: String,
 }
 
 /// Phase 5 (Output maturity). `suite_count` is real, computed at query
@@ -3948,6 +4303,20 @@ pub struct AuditRow {
     pub target: Option<String>,
     pub detail: Option<String>,
     pub outcome: String,
+}
+
+/// The running totals of the answered calls of one task to one provider and model (`ai_call_stats`).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct AiCallStatRow {
+    pub provider: String,
+    pub model: String,
+    pub task: String,
+    pub calls: i64,
+    pub total_ms: i64,
+    /// How many of the calls reported token counts (the tokens below are sums over just those).
+    pub token_calls: i64,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

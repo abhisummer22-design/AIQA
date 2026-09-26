@@ -14,10 +14,19 @@
 //! `word/document.xml`; this reads that entry directly (a `.docx` *is*
 //! literally a zip, not a format that needs an external converter) and
 //! pulls out the real `<w:t>` text runs, the same way `skill_files.rs`
-//! parses its own format directly rather than shelling out. Legacy `.doc`
-//! (a pre-2007 OLE binary format, structurally unrelated to `.docx`) and
-//! `.pdf` are honestly reported as unsupported rather than guessed at or
-//! silently skipped — no fake/partial extraction is ever returned.
+//! parses its own format directly rather than shelling out. A text-based
+//! `.pdf` is read with `pdf-extract`; a scanned, image-only PDF has no text
+//! to read and says so. Legacy `.doc` (a pre-2007 OLE binary format,
+//! structurally unrelated to `.docx`) is honestly reported as unsupported
+//! rather than guessed at or silently skipped — no fake/partial extraction
+//! is ever returned.
+//!
+//! Two entry points read the same bytes for two different consumers:
+//! `extract_text` returns the bounded text the original single-prompt
+//! generation folds into one request, and `extract_full_text` returns the
+//! whole document (with a `.docx`'s headings, lists and tables marked the way
+//! Markdown marks them) for the requirement parser, which splits it up
+//! instead of cutting it off.
 
 use std::io::{Cursor, Read};
 
@@ -33,48 +42,71 @@ pub struct ExtractedDocument {
     pub truncated: bool,
 }
 
+/// The whole text of a document, for a consumer that splits it up rather
+/// than pasting it into one prompt.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FullDocument {
+    pub text: String,
+    pub char_count: usize,
+    /// True only when the document is larger than `MAX_FULL_TEXT_CHARS`, a
+    /// safety ceiling well above any real requirements document.
+    pub truncated: bool,
+}
+
 /// Generous enough for a real multi-page requirements document, small
 /// enough that a handful of attached documents still fit comfortably
 /// alongside the rest of a real generation prompt.
 const MAX_EXTRACTED_CHARS: usize = 20_000;
 
-/// Extracts real text from `bytes`, dispatching on `file_name`'s
-/// extension. Returns a real, specific `Err` for anything not genuinely
-/// supported — never a partially-guessed result, because that would be
-/// sent to the AI model as if it were the document's real content.
-pub fn extract_text(file_name: &str, bytes: &[u8]) -> Result<ExtractedDocument, String> {
-    let ext = file_name
+/// Safety ceiling for `extract_full_text` — about 750 pages of text. Nothing
+/// a person writes as requirements gets near it; it only stops a
+/// pathological file from filling memory and the database.
+pub const MAX_FULL_TEXT_CHARS: usize = 3_000_000;
+
+fn extension_of(file_name: &str) -> String {
+    file_name
         .rsplit('.')
         .next()
         .unwrap_or("")
-        .to_ascii_lowercase();
+        .to_ascii_lowercase()
+}
 
-    let raw = match ext.as_str() {
+/// Reads `bytes` as the format `ext` names. `structured` only matters for a
+/// `.docx`: headings, list items and table rows are marked (see
+/// `structured_docx_text`) instead of every paragraph being flattened to a
+/// bare line.
+fn read_source(ext: &str, bytes: &[u8], structured: bool) -> Result<String, String> {
+    match ext {
         "txt" | "md" | "markdown" | "json" | "yaml" | "yml" => String::from_utf8(bytes.to_vec())
-            .map_err(|e| format!("this file is not valid UTF-8 text: {e}"))?,
-        "docx" => extract_docx_text(bytes)?,
-        "doc" => {
-            return Err(
-                "legacy .doc (pre-2007 Word binary format) is not supported for content \
-                 extraction — save it as .docx and re-upload to have its real content analyzed."
-                    .to_string(),
-            )
-        }
-        "pdf" => {
-            return Err(
-                "PDF content extraction is not yet supported for AI generation.".to_string(),
-            )
-        }
-        other => {
-            return Err(format!(
-                "unsupported file extension for content extraction: .{other}"
-            ))
-        }
-    };
+            .map_err(|e| format!("this file is not valid UTF-8 text: {e}")),
+        "docx" => extract_docx_text(bytes, structured),
+        "pdf" => extract_pdf_text(bytes),
+        "doc" => Err(
+            "legacy .doc (pre-2007 Word binary format) is not supported for content \
+             extraction — save it as .docx and re-upload to have its real content analyzed."
+                .to_string(),
+        ),
+        other => Err(format!(
+            "unsupported file extension for content extraction: .{other}"
+        )),
+    }
+}
 
+fn no_text_error(ext: &str) -> String {
+    if ext == "pdf" {
+        "this PDF has no extractable text content — it may be a scan (an image of a page); \
+         scanned PDFs are not read, export it with selectable text or save it as .docx."
+            .to_string()
+    } else {
+        "this document has no extractable text content.".to_string()
+    }
+}
+
+/// The bounded reading of `raw` (see `extract_text`).
+fn bounded(ext: &str, raw: &str) -> Result<ExtractedDocument, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err("this document has no extractable text content.".to_string());
+        return Err(no_text_error(ext));
     }
 
     let total_chars = trimmed.chars().count();
@@ -93,6 +125,82 @@ pub fn extract_text(file_name: &str, bytes: &[u8]) -> Result<ExtractedDocument, 
     })
 }
 
+/// The whole-document reading of `raw` (see `extract_full_text`).
+fn whole(ext: &str, raw: &str) -> Result<FullDocument, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(no_text_error(ext));
+    }
+
+    let total_chars = trimmed.chars().count();
+    let truncated = total_chars > MAX_FULL_TEXT_CHARS;
+    let text: String = if truncated {
+        trimmed.chars().take(MAX_FULL_TEXT_CHARS).collect()
+    } else {
+        trimmed.to_string()
+    };
+    let char_count = text.chars().count();
+
+    Ok(FullDocument {
+        text,
+        char_count,
+        truncated,
+    })
+}
+
+/// Extracts real text from `bytes`, dispatching on `file_name`'s
+/// extension. Returns a real, specific `Err` for anything not genuinely
+/// supported — never a partially-guessed result, because that would be
+/// sent to the AI model as if it were the document's real content.
+pub fn extract_text(file_name: &str, bytes: &[u8]) -> Result<ExtractedDocument, String> {
+    let ext = extension_of(file_name);
+    let raw = read_source(&ext, bytes, false)?;
+    bounded(&ext, &raw)
+}
+
+/// Like `extract_text`, but for a consumer that splits the document up
+/// instead of pasting it into one prompt: nothing is cut at the
+/// 20,000-character mark, and a `.docx` keeps its headings (`# Title`), list
+/// items (`- item`) and table rows (`cell | cell`).
+pub fn extract_full_text(file_name: &str, bytes: &[u8]) -> Result<FullDocument, String> {
+    let ext = extension_of(file_name);
+    let raw = read_source(&ext, bytes, true)?;
+    whole(&ext, &raw)
+}
+
+/// Both readings of one file. Only a `.docx` reads differently for the two
+/// (structure marked or not); every other format is read once and used for
+/// both, so a large PDF is not parsed twice.
+pub fn extract_both(
+    file_name: &str,
+    bytes: &[u8],
+) -> Result<(ExtractedDocument, FullDocument), String> {
+    let ext = extension_of(file_name);
+    let plain = read_source(&ext, bytes, false)?;
+    let structured = if ext == "docx" {
+        read_source(&ext, bytes, true)?
+    } else {
+        plain.clone()
+    };
+    Ok((bounded(&ext, &plain)?, whole(&ext, &structured)?))
+}
+
+/// A text-based PDF, read with `pdf-extract`. A malformed file can make that
+/// parser panic; an upload must never take the request down, so a panic is
+/// reported the same way an unreadable file is.
+fn extract_pdf_text(bytes: &[u8]) -> Result<String, String> {
+    let owned = bytes.to_vec();
+    let outcome = std::panic::catch_unwind(move || pdf_extract::extract_text_from_mem(&owned));
+    match outcome {
+        Ok(Ok(text)) => Ok(text.replace('\u{c}', "\n")),
+        Ok(Err(e)) => Err(format!("this PDF could not be read: {e}")),
+        Err(_) => Err(
+            "this PDF could not be read: its structure is not one this reader understands."
+                .to_string(),
+        ),
+    }
+}
+
 /// A `.docx` is a real zip archive; `word/document.xml` holds the
 /// document body. Word splits a paragraph's text across many `<w:t>`
 /// runs (the same fragmentation `skills` documentation elsewhere in this
@@ -101,7 +209,7 @@ pub fn extract_text(file_name: &str, bytes: &[u8]) -> Result<ExtractedDocument, 
 /// added whitespace (matching how Word actually renders them back
 /// together), inserting a real newline at each `</w:p>` paragraph
 /// boundary.
-fn extract_docx_text(bytes: &[u8]) -> Result<String, String> {
+fn extract_docx_text(bytes: &[u8], structured: bool) -> Result<String, String> {
     let cursor = Cursor::new(bytes);
     let mut archive = zip::ZipArchive::new(cursor)
         .map_err(|e| format!("could not open this file as a .docx (zip) archive: {e}"))?;
@@ -112,7 +220,11 @@ fn extract_docx_text(bytes: &[u8]) -> Result<String, String> {
         .read_to_string(&mut xml)
         .map_err(|e| format!("could not read word/document.xml: {e}"))?;
 
-    Ok(paragraphs_from_document_xml(&xml))
+    Ok(if structured {
+        structured_docx_text(&xml)
+    } else {
+        paragraphs_from_document_xml(&xml)
+    })
 }
 
 /// Matches a real `<w:t>` text run only.
@@ -137,20 +249,143 @@ fn decode_xml_entities(s: &str) -> String {
         .replace("&amp;", "&")
 }
 
+/// The text of one paragraph's `<w:t>` runs, in order, joined with no gap.
+fn paragraph_text(paragraph_xml: &str) -> String {
+    text_run_regex()
+        .captures_iter(paragraph_xml)
+        .map(|c| decode_xml_entities(c.get(1).map(|m| m.as_str()).unwrap_or("")))
+        .collect::<String>()
+}
+
 /// Splits `document.xml` on paragraph boundaries first, so text runs
 /// belonging to different paragraphs never get glued together, then
 /// extracts and concatenates that paragraph's own `<w:t>` runs.
 fn paragraphs_from_document_xml(xml: &str) -> String {
-    let re = text_run_regex();
     xml.split("</w:p>")
-        .map(|para_xml| {
-            re.captures_iter(para_xml)
-                .map(|c| decode_xml_entities(c.get(1).map(|m| m.as_str()).unwrap_or("")))
-                .collect::<String>()
-        })
+        .map(paragraph_text)
         .filter(|p| !p.trim().is_empty())
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// The heading level a Word paragraph style stands for (`Heading1` /
+/// `heading 2` -> 1 / 2, `Title` -> 1, `Subtitle` -> 2), if it is one.
+fn heading_level(style: &str) -> Option<usize> {
+    let s = style.to_ascii_lowercase().replace(' ', "");
+    match s.as_str() {
+        "title" => return Some(1),
+        "subtitle" => return Some(2),
+        _ => {}
+    }
+    let n: usize = s.strip_prefix("heading")?.parse().ok()?;
+    (1..=6).contains(&n).then_some(n)
+}
+
+/// Table boundaries and whole paragraphs, in document order. `<w:p[ >]` so
+/// `<w:pPr>` is never taken for a paragraph, and `<w:tbl>` exactly so
+/// `<w:tblPr>` is never taken for a table.
+fn block_regex() -> &'static regex::Regex {
+    use std::sync::OnceLock;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        regex::Regex::new(
+            r"(?s)(?P<tbl_open><w:tbl>)|(?P<tbl_close></w:tbl>)|(?P<tr_open><w:tr[ >])|(?P<tr_close></w:tr>)|(?P<tc_open><w:tc[ >])|(?P<tc_close></w:tc>)|(?P<p><w:p[ >].*?</w:p>)",
+        )
+        .unwrap()
+    })
+}
+
+fn paragraph_style_regex() -> &'static regex::Regex {
+    use std::sync::OnceLock;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    RE.get_or_init(|| regex::Regex::new(r#"<w:pStyle\s+w:val="([^"]*)""#).unwrap())
+}
+
+/// What a line of `structured_docx_text` is, which decides whether a blank
+/// line separates it from the one before: consecutive list items and
+/// consecutive table rows stay together, everything else is a paragraph of
+/// its own.
+#[derive(Clone, Copy, PartialEq)]
+enum Block {
+    Text,
+    ListItem,
+    TableRow,
+}
+
+/// A `.docx` body as lines that keep its structure: a heading paragraph
+/// becomes `# Title` (as many `#` as its level), a list paragraph `- item`,
+/// a table row `cell | cell`, anything else its bare text; paragraphs are
+/// separated by a blank line, as Markdown separates them. Same runs, same
+/// entity decoding as `paragraphs_from_document_xml`; only what surrounds
+/// the text differs, so a requirement parser can tell a section title from a
+/// requirement, and a row of a requirements table from a paragraph.
+fn structured_docx_text(xml: &str) -> String {
+    let mut lines: Vec<(Block, String)> = Vec::new();
+    let mut depth = 0usize;
+    let mut cells: Vec<String> = Vec::new();
+    let mut cell: Vec<String> = Vec::new();
+
+    for caps in block_regex().captures_iter(xml) {
+        if caps.name("tbl_open").is_some() {
+            depth += 1;
+        } else if caps.name("tbl_close").is_some() {
+            depth = depth.saturating_sub(1);
+        } else if caps.name("tr_open").is_some() {
+            if depth == 1 {
+                cells.clear();
+            }
+        } else if caps.name("tc_open").is_some() {
+            if depth == 1 {
+                cell.clear();
+            }
+        } else if caps.name("tc_close").is_some() {
+            if depth == 1 {
+                cells.push(cell.join(" ").trim().to_string());
+                cell.clear();
+            }
+        } else if caps.name("tr_close").is_some() {
+            if depth == 1 {
+                if cells.iter().any(|c| !c.is_empty()) {
+                    lines.push((Block::TableRow, cells.join(" | ")));
+                }
+                cells.clear();
+            }
+        } else if let Some(p) = caps.name("p") {
+            let paragraph_xml = p.as_str();
+            let text = paragraph_text(paragraph_xml);
+            let text = text.trim();
+            if text.is_empty() {
+                continue;
+            }
+            if depth > 0 {
+                cell.push(text.to_string());
+                continue;
+            }
+            let heading = paragraph_style_regex()
+                .captures(paragraph_xml)
+                .and_then(|c| heading_level(c.get(1).map(|m| m.as_str()).unwrap_or("")));
+            if let Some(level) = heading {
+                lines.push((Block::Text, format!("{} {text}", "#".repeat(level))));
+            } else if paragraph_xml.contains("<w:numPr>") {
+                lines.push((Block::ListItem, format!("- {text}")));
+            } else {
+                lines.push((Block::Text, text.to_string()));
+            }
+        }
+    }
+    let mut out = String::new();
+    let mut previous: Option<Block> = None;
+    for (block, line) in lines {
+        if let Some(p) = previous {
+            out.push('\n');
+            if p != block || block == Block::Text {
+                out.push('\n');
+            }
+        }
+        out.push_str(&line);
+        previous = Some(block);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -166,6 +401,10 @@ mod tests {
             .iter()
             .map(|p| format!("<w:p><w:r><w:t>{p}</w:t></w:r></w:p>"))
             .collect();
+        docx_from_body(&body)
+    }
+
+    fn docx_from_body(body: &str) -> Vec<u8> {
         let document_xml = format!(
             r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
@@ -184,6 +423,47 @@ mod tests {
             zip.finish().unwrap();
         }
         buf
+    }
+
+    /// A tiny but genuine one-page text PDF (a real cross-reference table,
+    /// Helvetica text), so PDF reading is exercised on a real file format and
+    /// not on a stand-in.
+    fn build_test_pdf(lines: &[&str]) -> Vec<u8> {
+        let mut content = String::from("BT\n/F1 12 Tf\n14 TL\n72 720 Td\n");
+        for l in lines {
+            let escaped = l
+                .replace('\\', "\\\\")
+                .replace('(', "\\(")
+                .replace(')', "\\)");
+            content.push_str(&format!("({escaped}) Tj T*\n"));
+        }
+        content.push_str("ET\n");
+        let objects = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>".to_string(),
+            format!("<< /Length {} >>\nstream\n{content}endstream", content.len()),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+        ];
+        let mut out = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for (i, obj) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend(format!("{} 0 obj\n{obj}\nendobj\n", i + 1).as_bytes());
+        }
+        let xref_pos = out.len();
+        out.extend(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes());
+        for off in offsets {
+            out.extend(format!("{off:010} 00000 n \n").as_bytes());
+        }
+        out.extend(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_pos}\n%%EOF\n",
+                objects.len() + 1
+            )
+            .as_bytes(),
+        );
+        out
     }
 
     #[test]
@@ -270,12 +550,53 @@ mod tests {
     }
 
     #[test]
-    fn a_pdf_is_reported_as_unsupported_not_guessed_at() {
-        let err = extract_text("spec.pdf", b"%PDF-1.4").unwrap_err();
+    fn a_file_that_is_not_a_readable_pdf_is_a_real_error_never_a_guess_or_a_panic() {
+        for name in ["spec.pdf", "SPEC.PDF"] {
+            let err = extract_text(name, b"%PDF-1.4 this is not really a pdf").unwrap_err();
+            assert!(
+                err.contains("PDF"),
+                "expected the error to name PDF, got: {err}"
+            );
+            let err = extract_full_text(name, b"").unwrap_err();
+            assert!(err.contains("PDF"), "got: {err}");
+        }
+    }
+
+    #[test]
+    fn a_text_pdf_is_read_line_by_line() {
+        let bytes = build_test_pdf(&[
+            "3.2 Login",
+            "The system shall lock an account after 5 failed attempts.",
+            "A session token expires after 30 minutes (idle).",
+        ]);
+        let extracted = extract_text("FRD.pdf", &bytes).expect("a real text PDF must extract");
         assert!(
-            err.contains("PDF"),
-            "expected the error to name PDF, got: {err}"
+            extracted.text.contains("3.2 Login"),
+            "got: {}",
+            extracted.text
         );
+        assert!(
+            extracted
+                .text
+                .contains("lock an account after 5 failed attempts"),
+            "got: {}",
+            extracted.text
+        );
+        assert!(
+            extracted.text.contains("30 minutes (idle)"),
+            "parentheses inside a PDF string must survive: {}",
+            extracted.text
+        );
+        let full = extract_full_text("FRD.pdf", &bytes).unwrap();
+        assert!(full.text.contains("3.2 Login"));
+    }
+
+    #[test]
+    fn a_pdf_page_with_no_text_says_it_may_be_a_scan() {
+        let bytes = build_test_pdf(&[]);
+        let err = extract_text("scan.pdf", &bytes).unwrap_err();
+        assert!(err.contains("no extractable text"), "got: {err}");
+        assert!(err.contains("scan"), "got: {err}");
     }
 
     #[test]
@@ -305,8 +626,120 @@ mod tests {
     }
 
     #[test]
+    fn the_full_text_is_never_cut_at_the_prompt_cap() {
+        // Same 50,000-character document the capped reader cuts at 20,000.
+        let long_paragraph = "word ".repeat(10_000);
+        let bytes = build_test_docx(&[&long_paragraph]);
+
+        let capped = extract_text("long.docx", &bytes).unwrap();
+        let full = extract_full_text("long.docx", &bytes).unwrap();
+
+        assert!(capped.truncated);
+        assert!(!full.truncated);
+        assert_eq!(full.text.chars().count(), full.char_count);
+        assert!(
+            full.char_count > 49_000,
+            "the whole document must be there: {}",
+            full.char_count
+        );
+    }
+
+    #[test]
+    fn the_full_text_of_a_plain_file_is_the_same_text() {
+        let full = extract_full_text("notes.md", b"  # Real notes\n\nJust markdown.  ").unwrap();
+        assert_eq!(full.text, "# Real notes\n\nJust markdown.");
+        assert!(extract_full_text("notes.md", b"   ").is_err());
+        assert!(extract_full_text("notes.xyz", b"x").is_err());
+    }
+
+    #[test]
+    fn both_readings_of_a_file_are_the_same_as_reading_it_twice() {
+        let docx = docx_from_body(&format!(
+            "{}{}",
+            styled("Heading1", "3. Authentication"),
+            "<w:p><w:r><w:t>Users sign in.</w:t></w:r></w:p>"
+        ));
+        let pdf = build_test_pdf(&["3.2 Login", "The system shall lock an account."]);
+        let files: [(&str, &[u8]); 3] = [
+            ("FRD.docx", &docx),
+            ("FRD.pdf", &pdf),
+            ("notes.md", b"# Notes\n\nJust markdown."),
+        ];
+        for (name, bytes) in files {
+            let (bounded, whole) = extract_both(name, bytes).unwrap();
+            assert_eq!(bounded, extract_text(name, bytes).unwrap(), "{name}");
+            assert_eq!(whole, extract_full_text(name, bytes).unwrap(), "{name}");
+        }
+        assert!(extract_both("RTM.doc", b"x").is_err());
+        assert!(extract_both("empty.md", b"   ").is_err());
+    }
+
+    #[test]
     fn a_non_zip_docx_is_a_real_specific_error_not_a_panic() {
         let err = extract_text("corrupt.docx", b"not a zip file at all").unwrap_err();
         assert!(err.contains("zip"), "expected a zip-open error, got: {err}");
+    }
+
+    fn styled(style: &str, text: &str) -> String {
+        format!(
+            r#"<w:p><w:pPr><w:pStyle w:val="{style}"/></w:pPr><w:r><w:t>{text}</w:t></w:r></w:p>"#
+        )
+    }
+
+    #[test]
+    fn a_docx_keeps_its_headings_list_items_and_table_rows_in_the_full_text() {
+        let body = [
+            styled("Heading1", "3. Authentication"),
+            styled("Heading2", "3.2 Login"),
+            "<w:p><w:r><w:t>Users sign in with an email address.</w:t></w:r></w:p>".to_string(),
+            r#"<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>Five failed attempts lock the account.</w:t></w:r></w:p>"#.to_string(),
+            concat!(
+                "<w:tbl><w:tblPr><w:tblW w:w=\"9720\"/></w:tblPr><w:tblGrid><w:gridCol w:w=\"1000\"/></w:tblGrid>",
+                "<w:tr><w:trPr><w:cantSplit/></w:trPr><w:tc><w:tcPr><w:tcW w:w=\"1000\" w:type=\"dxa\"/></w:tcPr><w:p><w:r><w:t>ID</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Requirement</w:t></w:r></w:p></w:tc></w:tr>",
+                "<w:tr><w:trPr><w:cantSplit/></w:trPr><w:tc><w:tcPr><w:tcW w:w=\"1000\" w:type=\"dxa\"/></w:tcPr><w:p><w:r><w:t>FR-1</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Passwords are </w:t></w:r></w:p><w:p><w:r><w:t>hashed.</w:t></w:r></w:p></w:tc></w:tr>",
+                "</w:tbl>"
+            )
+            .to_string(),
+            "<w:p><w:r><w:t>After the table.</w:t></w:r></w:p>".to_string(),
+        ]
+        .concat();
+        let bytes = docx_from_body(&body);
+
+        let full = extract_full_text("FRD.docx", &bytes).unwrap();
+
+        assert_eq!(
+            full.text,
+            [
+                "# 3. Authentication",
+                "",
+                "## 3.2 Login",
+                "",
+                "Users sign in with an email address.",
+                "",
+                "- Five failed attempts lock the account.",
+                "",
+                "ID | Requirement",
+                "FR-1 | Passwords are hashed.",
+                "",
+                "After the table.",
+            ]
+            .join("\n")
+        );
+        // The bounded reader the single-prompt path uses is exactly what it was: bare lines.
+        let plain = extract_text("FRD.docx", &bytes).unwrap();
+        assert!(!plain.text.contains('#'), "got: {}", plain.text);
+        assert!(!plain.text.contains(" | "), "got: {}", plain.text);
+    }
+
+    #[test]
+    fn heading_styles_are_recognised_by_their_level_in_any_spelling() {
+        assert_eq!(heading_level("Heading1"), Some(1));
+        assert_eq!(heading_level("heading 2"), Some(2));
+        assert_eq!(heading_level("Heading6"), Some(6));
+        assert_eq!(heading_level("Heading7"), None);
+        assert_eq!(heading_level("Title"), Some(1));
+        assert_eq!(heading_level("Subtitle"), Some(2));
+        assert_eq!(heading_level("Normal"), None);
+        assert_eq!(heading_level("HeadingChar"), None);
     }
 }

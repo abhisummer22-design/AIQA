@@ -12,12 +12,14 @@
 //! such signal yet. Building targeting logic ahead of that signal existing
 //! would be guessing, not targeting.
 //!
-//! Also deliberately NOT built here: a doc-vs-reality gap check. That needs
-//! a real, structured "what the requirement documents say" side to diff
-//! this module's real "what the app actually shows" side against — this
-//! codebase has never had real document ingestion (PRD/FRD text
-//! extraction), so that other side of the diff does not exist. Attempting
-//! the gap check now would mean fabricating one half of a comparison.
+//! Also not built here: the doc-vs-reality gap check. It lives in `gap_check.rs`
+//! now that documents are read into numbered requirements (`requirements.rs`);
+//! what is left here for it is a crawl that can be told which words to look for
+//! first (`materialize_crawl_spec_focused`, and `gap_check::focus_terms` for the
+//! words a project's requirements are about): a link whose text or address mentions
+//! one is followed before the others, and may take a page beyond the usual limit.
+//! That orders and extends a crawl; it is not the "which areas are important"
+//! targeting a requirement graph would give.
 //!
 //! ```text
 //! CrawlPlan (real base_url + real per-role login sequences)
@@ -48,7 +50,11 @@
 //! exposure this module does not newly introduce (that directory is
 //! gitignored, but is not otherwise access-controlled; flagged here as an
 //! honest limitation, not solved here — the same limitation the brief's own
-//! §12 security posture section never covered either).
+//! §12 security posture section never covered either). A value written
+//! `env:NAME` is the way round it: it names an `AIQA_LOGIN_*` /
+//! `AIQA_SECRET_*` variable of the orchestrator's environment, the spec holds
+//! only that name, and `helpers/secrets.ts` reads the value when the crawl
+//! runs (`execution_plan::secret_name`).
 
 use crate::execution_plan::Action;
 use serde::{Deserialize, Serialize};
@@ -89,14 +95,54 @@ pub struct CrawlPlan {
 /// needs to embed a real plan into a spec `helpers/crawler.ts` can parse —
 /// `Action`'s own fields (`url`/`selector`/`value`) need no conversion,
 /// only `CrawlPlan`/`CrawlRole`'s own field names do.
-fn plan_to_camel_case_json(plan: &CrawlPlan) -> serde_json::Value {
-    serde_json::json!({
+fn plan_to_camel_case_json(plan: &CrawlPlan, focus_terms: &[String]) -> serde_json::Value {
+    let mut json = serde_json::json!({
         "baseUrl": plan.base_url,
         "roles": plan.roles.iter().map(|r| serde_json::json!({
             "name": r.name,
             "loginActions": r.login_actions,
         })).collect::<Vec<_>>(),
-    })
+    });
+    // Only when there are some: a crawl that names none has a spec exactly as it always had.
+    if !focus_terms.is_empty() {
+        json["focusTerms"] = serde_json::json!(focus_terms);
+    }
+    json
+}
+
+/// The most words a crawl may be told to look for first, and the longest one: they are embedded in the spec.
+pub const MAX_FOCUS_TERMS: usize = 300;
+const MAX_FOCUS_TERM_CHARS: usize = 40;
+
+/// The words a crawl looks for first (`helpers/crawler.ts`: a link whose text or address mentions one is followed before
+/// the others): each must be short, lower-case letters and digits, and there may not be many.
+pub fn validate_focus_terms(terms: &[String]) -> Result<(), Vec<String>> {
+    let mut reasons = Vec::new();
+    if terms.len() > MAX_FOCUS_TERMS {
+        reasons.push(format!(
+            "a crawl may look for at most {MAX_FOCUS_TERMS} words first, got {}",
+            terms.len()
+        ));
+    }
+    for term in terms.iter().take(MAX_FOCUS_TERMS) {
+        let chars = term.chars().count();
+        if chars < 2
+            || chars > MAX_FOCUS_TERM_CHARS
+            || !term
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        {
+            reasons.push(format!(
+                "a word to look for first must be 2 to {MAX_FOCUS_TERM_CHARS} lower-case letters or digits, got {term:?}"
+            ));
+            break;
+        }
+    }
+    if reasons.is_empty() {
+        Ok(())
+    } else {
+        Err(reasons)
+    }
 }
 
 // --------------------------------------------------------------- validation
@@ -132,6 +178,11 @@ pub async fn validate_crawl_plan(plan: &CrawlPlan) -> Result<(), Vec<String>> {
                     role.name
                 ));
             }
+            if let Action::Fill { value, .. } = action {
+                if let Some(problem) = crate::execution_plan::secret_reference_problem(value) {
+                    reasons.push(format!("role '{}': {problem}", role.name));
+                }
+            }
         }
     }
 
@@ -142,9 +193,22 @@ pub async fn validate_crawl_plan(plan: &CrawlPlan) -> Result<(), Vec<String>> {
     }
 }
 
+/// The environment variables a crawl's login sequences read (`FILL` values written `env:NAME`), each once, in name
+/// order. Names only — never a value.
+pub fn crawl_secret_names(plan: &CrawlPlan) -> Vec<String> {
+    let mut names: Vec<String> = plan
+        .roles
+        .iter()
+        .flat_map(|role| crate::execution_plan::secret_names_of(&role.login_actions))
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
 // --------------------------------------------------------- materialization
 
-fn safe_id_from(task_id: &str) -> Result<String, String> {
+pub(crate) fn safe_id_from(task_id: &str) -> Result<String, String> {
     let safe_id: String = task_id
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
@@ -161,7 +225,17 @@ fn result_file_name(safe_id: &str) -> String {
     format!("crawl-result-{safe_id}.json")
 }
 
-fn generated_dir() -> PathBuf {
+/// Beside its result a crawl writes what test cases can be compiled on (`grounding.rs` reads it).
+pub(crate) fn grounding_file_name(safe_id: &str) -> String {
+    format!("crawl-grounding-{safe_id}.json")
+}
+
+/// A crawl of a real site is several page loads per role, which takes longer than Playwright's default 30-second test
+/// timeout; without this it would be cut off before it wrote its result. The orchestrator's own task timeout
+/// (`AIQA_TASK_TIMEOUT_SECS`, 300 unless set) is what bounds the whole run.
+const CRAWL_TEST_TIMEOUT_MS: u64 = 240_000;
+
+pub(crate) fn generated_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../executors/playwright/tests/generated")
 }
 
@@ -172,8 +246,18 @@ fn generated_dir() -> PathBuf {
 /// the path (relative to `executors/playwright`) `PlaywrightExecutor`'s
 /// existing `spec` param already expects.
 pub fn materialize_crawl_spec(task_id: &str, plan: &CrawlPlan) -> Result<String, String> {
+    materialize_crawl_spec_focused(task_id, plan, &[])
+}
+
+/// [`materialize_crawl_spec`] for a crawl that looks for `focus_terms` first (`validate_focus_terms` says what is
+/// acceptable); with none, the spec is exactly what it always was.
+pub fn materialize_crawl_spec_focused(
+    task_id: &str,
+    plan: &CrawlPlan,
+    focus_terms: &[String],
+) -> Result<String, String> {
     let safe_id = safe_id_from(task_id)?;
-    let plan_json = serde_json::to_string(&plan_to_camel_case_json(plan))
+    let plan_json = serde_json::to_string(&plan_to_camel_case_json(plan, focus_terms))
         .map_err(|e| format!("failed to serialize crawl plan: {e}"))?;
     let file_name = format!("crawl-{safe_id}.spec.ts");
     let dir = generated_dir();
@@ -187,7 +271,7 @@ pub fn materialize_crawl_spec(task_id: &str, plan: &CrawlPlan) -> Result<String,
          import {{ test }} from \"@playwright/test\";\n\
          import {{ runCrawl, CrawlPlan }} from \"../../helpers/crawler\";\n\n\
          const PLAN: CrawlPlan = {plan_json};\n\n\
-         test(\"crawl {safe_id}\", async ({{ browser }}) => {{\n  await runCrawl(browser, PLAN, {result_file});\n}});\n",
+         test(\"crawl {safe_id}\", async ({{ browser }}) => {{\n  test.setTimeout({CRAWL_TEST_TIMEOUT_MS});\n  await runCrawl(browser, PLAN, {result_file});\n}});\n",
         result_file = serde_json::to_string(&result_file_name(&safe_id)).unwrap(),
     );
     std::fs::write(&full_path, source)
@@ -329,6 +413,97 @@ mod tests {
         );
     }
 
+    fn login_with_password(value: &str) -> Vec<Action> {
+        vec![
+            Action::Fill {
+                selector: "#username".to_string(),
+                value: "env:AIQA_LOGIN_ADMIN_USERNAME".to_string(),
+            },
+            Action::Fill {
+                selector: "#password".to_string(),
+                value: value.to_string(),
+            },
+        ]
+    }
+
+    #[tokio::test]
+    async fn validate_crawl_plan_accepts_secret_references_and_rejects_a_malformed_one() {
+        let plan = |value: &str| CrawlPlan {
+            base_url: crate::execution_plan::DEFAULT_TARGET.to_string(),
+            roles: vec![role("admin", login_with_password(value))],
+        };
+        assert!(validate_crawl_plan(&plan("env:AIQA_LOGIN_ADMIN_PASSWORD"))
+            .await
+            .is_ok());
+        // A literal password is still accepted — as it always was.
+        assert!(validate_crawl_plan(&plan("admin-pass")).await.is_ok());
+        // A variable that is not one of the reserved names is refused, and the message names the role.
+        let err = validate_crawl_plan(&plan("env:GROQ_API_KEY"))
+            .await
+            .expect_err("outside the reserved prefixes");
+        assert!(
+            err.iter()
+                .any(|r| r.contains("role 'admin'") && r.contains("secret reference")),
+            "err={err:?}"
+        );
+        assert!(
+            !err.iter().any(|r| r.contains("GROQ_API_KEY")),
+            "the message must not repeat what was written: {err:?}"
+        );
+    }
+
+    #[test]
+    fn crawl_secret_names_lists_each_variable_once_across_roles_in_order() {
+        let plan = CrawlPlan {
+            base_url: crate::execution_plan::DEFAULT_TARGET.to_string(),
+            roles: vec![
+                role(
+                    "admin",
+                    login_with_password("env:AIQA_LOGIN_ADMIN_PASSWORD"),
+                ),
+                role(
+                    "again",
+                    login_with_password("env:AIQA_LOGIN_ADMIN_PASSWORD"),
+                ),
+                role("anonymous", vec![]),
+            ],
+        };
+        assert_eq!(
+            crawl_secret_names(&plan),
+            vec![
+                "AIQA_LOGIN_ADMIN_PASSWORD".to_string(),
+                "AIQA_LOGIN_ADMIN_USERNAME".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn a_crawl_spec_holds_the_name_of_a_secret_and_never_its_value() {
+        std::env::set_var("AIQA_LOGIN_T5A_CRAWL_PW", "crawl-pw-value");
+        let plan = CrawlPlan {
+            base_url: "http://127.0.0.1:4174".to_string(),
+            roles: vec![role(
+                "admin",
+                vec![Action::Fill {
+                    selector: "#password".to_string(),
+                    value: "env:AIQA_LOGIN_T5A_CRAWL_PW".to_string(),
+                }],
+            )],
+        };
+        let rel_path = materialize_crawl_spec("test-5a-crawl-secret", &plan).expect("materialize");
+        let source = std::fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../executors/playwright")
+                .join(&rel_path),
+        )
+        .expect("read generated spec");
+        assert!(
+            source.contains("\"value\":\"env:AIQA_LOGIN_T5A_CRAWL_PW\""),
+            "{source}"
+        );
+        assert!(!source.contains("crawl-pw-value"), "{source}");
+    }
+
     #[tokio::test]
     async fn validate_crawl_plan_rejects_a_non_browser_action_in_a_login_sequence() {
         let plan = CrawlPlan {
@@ -377,6 +552,27 @@ mod tests {
     }
 
     #[test]
+    fn a_crawl_spec_is_given_more_time_than_playwrights_default_thirty_seconds() {
+        let plan = CrawlPlan {
+            base_url: "http://127.0.0.1:4174".to_string(),
+            roles: vec![role("anonymous", vec![])],
+        };
+        let rel_path = materialize_crawl_spec("test-crawl-timeout", &plan).expect("materialize");
+        let source = std::fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../executors/playwright")
+                .join(&rel_path),
+        )
+        .expect("read generated spec");
+        assert!(source.contains("test.setTimeout(240000);"), "{source}");
+        // It is set before the crawl starts, inside the test.
+        assert!(
+            source.find("test.setTimeout").unwrap() < source.find("await runCrawl").unwrap(),
+            "{source}"
+        );
+    }
+
+    #[test]
     fn materialize_crawl_spec_safely_escapes_a_selector_or_value_containing_quotes() {
         let plan = CrawlPlan {
             base_url: "http://127.0.0.1:4174".to_string(),
@@ -408,6 +604,88 @@ mod tests {
             Some(value) => assert_eq!(value, "quote\" and backslash\\ here"),
             other => panic!("expected a real FILL value, got {other:?}"),
         }
+    }
+
+    // ------------------------------------------------ words to look for first (Phase 6C)
+
+    fn words(list: &[&str]) -> Vec<String> {
+        list.iter().map(|w| w.to_string()).collect()
+    }
+
+    #[test]
+    fn words_to_look_for_first_are_short_lower_case_and_not_too_many() {
+        assert!(validate_focus_terms(&words(&["cart", "checkout", "report", "2fa"])).is_ok());
+        assert!(validate_focus_terms(&[]).is_ok());
+        // Each of these is refused, and the reason names what was wrong.
+        for bad in [
+            "",
+            "a",
+            "Cart",
+            "two words",
+            "a-b",
+            "caf\u{e9}",
+            "quote\"",
+            "back\\slash",
+        ] {
+            let err = validate_focus_terms(&words(&["cart", bad])).expect_err(bad);
+            assert!(
+                err.iter()
+                    .any(|r| r.contains("lower-case letters or digits")),
+                "{bad:?}: {err:?}"
+            );
+        }
+        let long = "x".repeat(41);
+        assert!(validate_focus_terms(&words(&[&long])).is_err());
+        assert!(validate_focus_terms(&words(&[&"x".repeat(40)])).is_ok());
+        let many: Vec<String> = (0..=MAX_FOCUS_TERMS).map(|i| format!("word{i}")).collect();
+        let err = validate_focus_terms(&many).expect_err("one too many");
+        assert!(err.iter().any(|r| r.contains("at most 300")), "{err:?}");
+        assert!(validate_focus_terms(&many[..MAX_FOCUS_TERMS]).is_ok());
+    }
+
+    fn generated_source(rel_path: &str) -> String {
+        std::fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../executors/playwright")
+                .join(rel_path),
+        )
+        .expect("read generated spec")
+    }
+
+    #[test]
+    fn a_crawl_told_what_to_look_for_first_carries_the_words_and_one_that_is_not_is_as_it_always_was(
+    ) {
+        let plan = CrawlPlan {
+            base_url: "http://127.0.0.1:4174".to_string(),
+            roles: vec![role("anonymous", vec![])],
+        };
+        let focused = generated_source(
+            &materialize_crawl_spec_focused(
+                "test-crawl-focused",
+                &plan,
+                &words(&["cart", "report"]),
+            )
+            .expect("focused"),
+        );
+        let start =
+            focused.find("const PLAN: CrawlPlan = ").unwrap() + "const PLAN: CrawlPlan = ".len();
+        let end = focused[start..].find(";\n").unwrap() + start;
+        let parsed: serde_json::Value =
+            serde_json::from_str(&focused[start..end]).expect("re-parse PLAN");
+        assert_eq!(parsed["focusTerms"], serde_json::json!(["cart", "report"]));
+        assert_eq!(parsed["baseUrl"], "http://127.0.0.1:4174");
+
+        // No words: the spec is the same to the byte as the one made without the feature, and has no `focusTerms`.
+        let plain =
+            generated_source(&materialize_crawl_spec("test-crawl-plain", &plan).expect("plain"));
+        let none = generated_source(
+            &materialize_crawl_spec_focused("test-crawl-plain-b", &plan, &[]).expect("no words"),
+        );
+        assert!(!plain.contains("focusTerms"), "{plain}");
+        assert_eq!(
+            plain.replace("test-crawl-plain", "ID"),
+            none.replace("test-crawl-plain-b", "ID")
+        );
     }
 
     // -------------------------------------------------------------- result parsing

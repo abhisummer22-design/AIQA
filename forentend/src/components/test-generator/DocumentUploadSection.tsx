@@ -13,6 +13,7 @@ import {
   Layers,
   ArrowDown,
   FileCheck,
+  ListChecks,
 } from 'lucide-react';
 import { RequirementDocType, UploadedRequirementDoc } from '../../types';
 import { ApiError, aiqaApi } from '../../services/aiqaApi';
@@ -101,6 +102,23 @@ const DOCUMENT_SLOTS: DocSlotConfig[] = [
 ];
 
 const ACCEPTED_EXTENSIONS = ['.pdf', '.docx', '.doc', '.md', '.txt', '.json', '.yaml', '.yml'];
+
+/** The kinds a requirement can have, in the order they are listed. */
+const REQUIREMENT_KIND_ORDER = ['functional', 'security', 'performance', 'usability', 'interface', 'data', 'context', 'reference'];
+
+/** "100 functional · 40 security", biggest groups in a fixed, readable order;
+ *  a kind this UI does not know yet is still listed, after the known ones. */
+function describeKinds(byKind: Record<string, number>): string {
+  const known = REQUIREMENT_KIND_ORDER.filter((k) => (byKind[k] ?? 0) > 0);
+  const unknown = Object.keys(byKind).filter((k) => !REQUIREMENT_KIND_ORDER.includes(k) && byKind[k] > 0);
+  return [...known, ...unknown].map((k) => `${byKind[k].toLocaleString()} ${k}`).join(' · ');
+}
+
+/** The sections left out on purpose, without letting a long list swamp the card. */
+function describeSkipped(sections: string[]): string {
+  const shown = sections.slice(0, 4).join(', ');
+  return sections.length > 4 ? `${shown} +${sections.length - 4} more` : shown;
+}
 
 export const DocumentUploadSection: React.FC<DocumentUploadSectionProps> = ({
   documents,
@@ -194,12 +212,29 @@ export const DocumentUploadSection: React.FC<DocumentUploadSectionProps> = ({
       const result = await aiqaApi.documents.extractText(projectId, {
         file_name: file.name,
         content_base64: contentBase64,
+        document_type: slotId,
       });
+      // `requirements_document` is present only when the backend also read
+      // the WHOLE document and stored its numbered requirements — an older
+      // backend, or one that could not store it, simply omits it and the
+      // file is used exactly as before.
+      const read = result.requirements_document;
       commit({
         ...baseDoc,
         extractedText: result.text,
         extractedCharCount: result.char_count,
         extractedTruncated: result.truncated,
+        ...(read
+          ? {
+              requirementsDocumentId: read.document_id,
+              fullCharCount: read.full_char_count,
+              fullTruncated: read.full_truncated,
+              requirementsCount: read.requirements_count,
+              sectionsCount: read.sections_count,
+              skippedSections: read.skipped_sections,
+              requirementsByKind: read.by_kind as Record<string, number>,
+            }
+          : {}),
       });
     } catch (err) {
       // A real extraction failure (e.g. a legacy .doc/.pdf this app
@@ -265,7 +300,7 @@ export const DocumentUploadSection: React.FC<DocumentUploadSectionProps> = ({
         {/* Accepted Formats Tag */}
         <div className="flex items-center gap-1.5 text-[10px] font-mono text-slate-400 bg-[#020617] px-2.5 py-1 rounded border border-slate-800">
           <FileCode className="w-3 h-3 text-violet-400" />
-          <span>Content analyzed: DOCX, MD, TXT, JSON, YAML. PDF/legacy .doc are attached but not yet content-analyzed.</span>
+          <span>Content analyzed: PDF, DOCX, MD, TXT, JSON, YAML. Legacy .doc is attached but not content-analyzed.</span>
         </div>
       </div>
 
@@ -401,6 +436,41 @@ export const DocumentUploadSection: React.FC<DocumentUploadSectionProps> = ({
                       <div className="flex items-start gap-1.5 px-2 py-1 rounded bg-amber-950/30 border border-amber-900/60 text-[10px] font-mono text-amber-300">
                         <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5" />
                         <span>Content not analyzed: {uploadedDoc.extractionError}</span>
+                      </div>
+                    ) : null}
+
+                    {/* What reading the WHOLE document found — the text
+                        analyzed above stops at 20,000 characters, this does
+                        not. Shown only when the backend really stored it. */}
+                    {uploadedDoc.requirementsDocumentId ? (
+                      <div
+                        data-testid={`doc-requirements-${slot.id.toLowerCase()}`}
+                        className="flex items-start gap-1.5 px-2 py-1 rounded bg-violet-950/30 border border-violet-900/60 text-[10px] font-mono text-violet-200"
+                      >
+                        <ListChecks className="w-3 h-3 shrink-0 mt-0.5 text-violet-400" />
+                        <div className="space-y-0.5 min-w-0">
+                          <div>
+                            Read in full: {(uploadedDoc.fullCharCount ?? 0).toLocaleString()} chars ·{' '}
+                            {(uploadedDoc.requirementsCount ?? 0).toLocaleString()} requirements in{' '}
+                            {(uploadedDoc.sectionsCount ?? 0).toLocaleString()} sections
+                          </div>
+                          {uploadedDoc.requirementsByKind && Object.keys(uploadedDoc.requirementsByKind).length > 0 ? (
+                            <div className="text-violet-300/80">{describeKinds(uploadedDoc.requirementsByKind)}</div>
+                          ) : null}
+                          {uploadedDoc.skippedSections && uploadedDoc.skippedSections.length > 0 ? (
+                            <div className="text-slate-400">Left out on purpose: {describeSkipped(uploadedDoc.skippedSections)}</div>
+                          ) : null}
+                          {uploadedDoc.fullTruncated ? (
+                            <div className="text-amber-300">
+                              Only the first 3,000,000 characters were read (a safety limit).
+                            </div>
+                          ) : null}
+                          {uploadedDoc.extractedTruncated ? (
+                            <div className="text-slate-400">
+                              Pasted-text generation still uses only the first 20,000 chars; "Generate from Numbered Requirements" uses all of it.
+                            </div>
+                          ) : null}
+                        </div>
                       </div>
                     ) : null}
 
