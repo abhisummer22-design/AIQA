@@ -115,6 +115,12 @@ The AI subsystem (`services/orchestrator/src/ai_router.rs`) provides a resilient
 * **Per-Task Overrides**: Directs specific tasks (e.g. `TestPlanning`, `DomAnalysis`, `BugHypothesis`) to optimal model configurations.
 * **TTL-Bounded Health Probing**: Periodically probes provider health with background caching (`AI_HEALTH_TTL_SECS`), guaranteeing the application never hangs on unreachable AI services.
 
+### What the AI Calls Came To (`ai_usage.rs`)
+Every call the router makes to a provider is counted when it ends: the ones that answer and the ones that do not (in a fallback chain, each attempt). The count is made in the one place every provider call goes through (`AiInfrastructure::execute_for`), so no page, run or fallback escapes it and nothing is counted twice; embeddings do not go through the router and are not counted. Only counts are kept, never a prompt or an answer: `ai_usage` (migration 0023) has a row for each quarter of an hour (UTC), project, provider, model and task, with the calls, the failed calls, the time of those that answered and of those that failed, the tokens the provider reported and the cost of the calls that could be priced (whole millionths of a dollar). Counting is fail-open: a call is never lost because writing its count failed. The count starts when this version starts; earlier calls are not in it, and a price that changes later does not rewrite the cost of calls already made.
+- **What is priced**: a call is given a cost only when it answered, went to a provider that has a price (Groq and Gemini at one list rate for the provider, the cheapest model's; a custom provider at the two prices entered in Settings) and reported both its token counts. A model with no price (Ollama, the MJ gateway, a hosted provider whose price was not entered) is counted and never given a cost, not even `0`; a call to a priced provider that reported no token counts is counted and not priced; a call that failed is not priced. The report says how many answered calls fall in each group (`priced_calls`, `no_price_calls`, `no_tokens_calls`), so a total never looks more certain than it is.
+- **Reading it**: `GET /api/v1/projects/:project_id/ai-usage?days=&tz_offset_minutes=` (Viewer role; a key sees only its own project) and `GET /api/v1/ai/usage` (Admin role, on a key that is not tied to one project; `?project_id=` for one project, otherwise every project at once, split by project too). `days` is calendar days back from today (30 unless said, at most 366); `tz_offset_minutes` is how far the asker's clock is ahead of UTC (India: 330), so a day is cut at the asker's own midnight. The answer has `totals`, `by_provider` (each provider and model), `by_task`, `by_day` (every day of the range, the quiet ones too) and `notes`; each is the calls, those that answered and failed, the tokens in and out, the time of the answers and of the failures, the average answer, the three counts above and the cost.
+- **On screen**: AI Usage & Cost (`AiUsagePage.tsx`, in the navigation): tiles for the calls, tokens, estimated cost (with what it rests on) and AI time; a bar for each day (calls, tokens or cost); tables by provider and model, by task and, for every project at once, by project. *This project* / *All projects*, a week, a month or a quarter, and *Refresh* choose what is read; a row whose cost is `—` had no priced call, and `*` marks a row with some calls left out of its cost.
+
 ---
 
 ## 5. Test Generation Workflow
@@ -391,6 +397,7 @@ AIQA/
             ├── agent_execution.rs  # Governed agent execution dispatcher & approval lifecycle
             ├── agents/             # TestPlanningAgent & SelfHealingAgent implementations
             ├── ai_router.rs        # Central AI Infrastructure, provider discovery & routing
+            ├── ai_usage.rs         # Counting what the AI calls came to (calls, tokens, cost) & the usage report
             ├── api.rs              # Axum REST & WebSocket route definitions
             ├── app_source.rs       # SSRF-guarded application connectivity verification
             ├── auth.rs             # API key authentication & RBAC middleware

@@ -54,6 +54,7 @@ import {
   Activity,
   Gauge,
   Brain,
+  Coins,
   Settings,
 } from 'lucide-react';
 import { DashboardPage } from '../components/pages/DashboardPage';
@@ -74,6 +75,7 @@ import { AuditPage } from '../components/pages/AuditPage';
 import { EvidencePage } from '../components/pages/EvidencePage';
 import { TelemetryPage } from '../components/pages/TelemetryPage';
 import { QaIntelligenceDashboardPage } from '../components/pages/QaIntelligenceDashboardPage';
+import { AiUsagePage } from '../components/pages/AiUsagePage';
 import { SettingsPage } from '../components/pages/SettingsPage';
 import type { NavPage } from '../types';
 
@@ -349,6 +351,19 @@ export const routeDefs: RouteDef[] = [
     badge: 'NEW',
     badgeType: 'info',
     Component: QaIntelligenceDashboardPage,
+    designStatus: 'new-follows-approved-language',
+    protectedRoute: true,
+  },
+  {
+    id: 'ai-usage',
+    path: '/ai-usage',
+    label: 'AI Usage & Cost',
+    icon: Coins,
+    badge: 'NEW',
+    badgeType: 'info',
+    Component: AiUsagePage,
+    // Phase 8A: real (`ai_usage.rs`, `.../ai-usage`, `/ai/usage`), built following the Dashboard/Test Generator visual language, same
+    // bucket as Autopilot and Requirement Coverage.
     designStatus: 'new-follows-approved-language',
     protectedRoute: true,
   },

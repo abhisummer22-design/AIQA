@@ -1640,6 +1640,52 @@ export interface AiStatusResponse {
   routing_preview: AiRoutingDecision | null;
 }
 
+// ----------------------------------------------------- AI usage & cost (Phase 8A)
+
+/** What some AI calls came to, added up (`ai_usage.rs::Tally`). Only counts: nothing here is a prompt or an answer. A cost is
+ *  only ever counted for a call that answered, went to a provider that has a price and reported both its token counts;
+ *  `no_price_calls` and `no_tokens_calls` say how many answered calls were left out of `cost_usd`, and why. */
+export interface AiUsageTally {
+  calls: number;
+  answered: number;
+  failed: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  /** Answered calls that reported both token counts. */
+  token_calls: number;
+  answered_ms: number;
+  failed_ms: number;
+  /** `null` when nothing answered. */
+  avg_answer_ms: number | null;
+  /** Answered calls that were given a cost. */
+  priced_calls: number;
+  /** Answered calls to a model with no price (a local one, or a hosted one whose price is not entered). */
+  no_price_calls: number;
+  /** Answered calls to a provider with a price that reported no token counts to price them by. */
+  no_tokens_calls: number;
+  cost_usd: number;
+}
+
+/** `GET /api/v1/projects/:id/ai-usage` and `GET /api/v1/ai/usage`. `by_project` only comes with the calls of every project. */
+export interface AiUsageReport {
+  /** The days covered, on the clock of whoever asked (`from` and `to` are dates, `to` is today). */
+  range: { days: number; from: string; to: string; tz_offset_minutes: number };
+  totals: AiUsageTally;
+  by_provider: Array<AiUsageTally & { provider: string; model: string }>;
+  by_task: Array<AiUsageTally & { task: string }>;
+  /** Every day of the range, oldest first, the quiet ones too. */
+  by_day: Array<AiUsageTally & { day: string }>;
+  /** `project_id` is `null` for the calls that were made for no project. */
+  by_project?: Array<AiUsageTally & { project_id: string | null }>;
+  notes: string[];
+}
+
+/** What the usage routes take: `days` back from today (1–366, 30 unless said), and how far ahead of UTC the asker's clock is. */
+export interface AiUsageQuery {
+  days?: number;
+  tz_offset_minutes?: number;
+}
+
 // ------------------------------------------------------------------ rbac
 
 /** `api.rs::WhoAmIResponse` — the caller's own real identity as resolved

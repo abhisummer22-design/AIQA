@@ -39,6 +39,8 @@ import type {
   AiProviderInfo,
   AiSettings,
   AiStatusResponse,
+  AiUsageQuery,
+  AiUsageReport,
   ApiErrorEnvelope,
   AuditLogResponse,
   CancelRunResponse,
@@ -799,6 +801,21 @@ export const aiqaApi = {
     getSettings: (signal?: AbortSignal) => requestJson<AiSettings>('/ai/settings', { signal }),
     updateSettings: (body: AiSettings, signal?: AbortSignal) => requestJson<AiSettings>('/ai/settings', { method: 'PUT', body, signal }),
     refresh: (signal?: AbortSignal) => requestJson<AiProviderInfo[]>('/ai/refresh', { method: 'POST', signal }),
+    /** Phase 8A — what the AI calls came to (`ai_usage.rs`): calls, failures, time, tokens and the cost of the priced ones, by
+     *  provider and model, by task and by day. `project` is one project's own (any key that may see the project); `everywhere`
+     *  is every project at once, split by project too, and takes a key that is not tied to one project (Admin role). */
+    usage: {
+      project: (projectId: string, query: AiUsageQuery = {}, signal?: AbortSignal) =>
+        requestJson<AiUsageReport>(`/projects/${projectId}/ai-usage`, {
+          query: { days: query.days, tz_offset_minutes: query.tz_offset_minutes },
+          signal,
+        }),
+      everywhere: (query: AiUsageQuery = {}, signal?: AbortSignal) =>
+        requestJson<AiUsageReport>('/ai/usage', {
+          query: { days: query.days, tz_offset_minutes: query.tz_offset_minutes },
+          signal,
+        }),
+    },
     /** Real, user-added AI providers (Settings UI ->
      *  `api.rs::create_custom_ai_provider` / `list_custom_ai_providers_handler`
      *  / `delete_custom_ai_provider_handler`) — persisted, and live for real
