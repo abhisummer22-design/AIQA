@@ -916,6 +916,19 @@ mod tests {
         ] {
             store.add_ai_usage(slot, project, &e).await.unwrap();
         }
+        // The latest moment has the provider that sorts first: oldest first is by the moment, not by the name.
+        let first_by_name = call(
+            "aaa",
+            "m",
+            AiTask::GeneralAi,
+            answered(Some(1), Some(1)),
+            10,
+            ProviderPricing::Unmetered,
+        );
+        store
+            .add_ai_usage("2026-09-26T13:30", "p1", &first_by_name)
+            .await
+            .unwrap();
         let of = |rows: &[AiUsageRow]| {
             rows.iter()
                 .map(|r| format!("{} {}", r.slot, r.project_id))
@@ -923,7 +936,13 @@ mod tests {
         };
         assert_eq!(
             of(&store.ai_usage_since("2026-09-26T13:00", None).await.unwrap()),
-            ["2026-09-26T13:00 p1", "2026-09-26T13:15 ", "2026-09-26T13:15 p1", "2026-09-26T13:30 p2"],
+            [
+                "2026-09-26T13:00 p1",
+                "2026-09-26T13:15 ",
+                "2026-09-26T13:15 p1",
+                "2026-09-26T13:30 p1",
+                "2026-09-26T13:30 p2"
+            ],
             "the moment itself is included, an earlier one is not, and a project's rows and the rows of no project are all here"
         );
         assert_eq!(
@@ -931,7 +950,7 @@ mod tests {
                 .ai_usage_since("2026-09-26T13:00", Some("p1"))
                 .await
                 .unwrap()),
-            ["2026-09-26T13:00 p1", "2026-09-26T13:15 p1"]
+            ["2026-09-26T13:00 p1", "2026-09-26T13:15 p1", "2026-09-26T13:30 p1"]
         );
         assert!(store
             .ai_usage_since("2026-09-26T13:45", None)
