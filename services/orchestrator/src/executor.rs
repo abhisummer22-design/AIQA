@@ -1272,6 +1272,68 @@ pub async fn execute_plan_once(
                     }
                 }
             }
+            Action::AssertStatusIn { statuses } => {
+                let Some((actual, _, _)) = &last_response else {
+                    failures.push("ASSERT_STATUS_IN with no prior REQUEST".to_string());
+                    continue;
+                };
+                let list = statuses
+                    .iter()
+                    .map(u16::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let passed = statuses.contains(&actual.as_u16());
+                if !passed {
+                    failures.push(format!(
+                        "expected an HTTP status among {list}, got real status {actual}"
+                    ));
+                }
+                log.push_str(&format!("ASSERT_STATUS_IN [{list}] -> actual {actual}\n"));
+                assertion_results.push(ApiAssertionResult {
+                    description: format!("Status is one of {list}"),
+                    actual: actual.to_string(),
+                    passed,
+                });
+            }
+            Action::AssertBodySchema { schema } => {
+                let Some((_, _, text)) = &last_response else {
+                    failures.push("ASSERT_BODY_SCHEMA with no prior REQUEST".to_string());
+                    continue;
+                };
+                match serde_json::from_str::<serde_json::Value>(text) {
+                    Ok(json) => {
+                        let problems = crate::json_schema::violations(schema, &json);
+                        let passed = problems.is_empty();
+                        let summary = if passed {
+                            "fits".to_string()
+                        } else {
+                            problems.join("; ")
+                        };
+                        if !passed {
+                            failures.push(format!(
+                                "the response body does not fit its schema: {summary}"
+                            ));
+                        }
+                        log.push_str(&format!("ASSERT_BODY_SCHEMA -> {summary}\n"));
+                        assertion_results.push(ApiAssertionResult {
+                            description: "Body fits its schema".to_string(),
+                            actual: summary,
+                            passed,
+                        });
+                    }
+                    Err(e) => {
+                        failures.push(format!(
+                            "response body is not valid JSON, cannot check it against its schema: {e}"
+                        ));
+                        log.push_str(&format!("ASSERT_BODY_SCHEMA -> not valid JSON: {e}\n"));
+                        assertion_results.push(ApiAssertionResult {
+                            description: "Body fits its schema".to_string(),
+                            actual: format!("(not valid JSON: {e})"),
+                            passed: false,
+                        });
+                    }
+                }
+            }
             // Browser-only actions never reach this executor —
             // `execution_plan::materialize_task_def` only ever routes
             // an `ExecutionType::Api` plan here.
@@ -1343,28 +1405,63 @@ impl Executor for CompiledApiExecutor {
             };
         }
 
-        let result = execute_plan_once(&self.client, &plan).await;
-        let mut log = result.log;
+        run_validated_plan(&self.client, plan).await
+    }
+}
 
-        // Appended last, deliberately after `reason` is derived above, so
-        // the human-readable reason/evidence tail a task list already shows
-        // is never dominated by this machine-readable summary line.
-        let summary = ApiResultSummary {
-            status: result.http_status.unwrap_or(0),
-            request_duration_ms: result.duration_ms,
-            response_headers: result.response_headers,
-            assertions: result.assertions,
-        };
-        if let Ok(summary_json) = serde_json::to_string(&summary) {
-            log.push_str(&format!("RESULT_SUMMARY_JSON:{summary_json}\n"));
-        }
+/// Runs a plan that has already passed `validate_plan`: reads the secrets its request headers refer to, makes the request, checks
+/// what it expects of the answer and writes the evidence.
+///
+/// A header value written `env:NAME` is read from the environment now, when the request is made: the plan, the run's parameters and
+/// the stored evidence carry only the name, and the value is scrubbed from what the run prints.
+async fn run_validated_plan(
+    client: &reqwest::Client,
+    plan: crate::execution_plan::ExecutionPlan,
+) -> ExecutionOutcome {
+    let secret_values = match read_secrets(&crate::execution_plan::secret_names_of(&plan.actions))
+    {
+        Ok(values) => values,
+        Err(outcome) => return outcome,
+    };
+    let plan = with_resolved_header_secrets(plan);
 
-        ExecutionOutcome {
-            status: result.status,
-            reason: result.reason,
-            evidence: Some(log),
+    let result = execute_plan_once(client, &plan).await;
+    let mut log = redact_secrets(&result.log, &secret_values);
+    let result_reason = result.reason.map(|r| redact_secrets(&r, &secret_values));
+
+    // Appended last, deliberately after `reason` is derived above, so
+    // the human-readable reason/evidence tail a task list already shows
+    // is never dominated by this machine-readable summary line.
+    let summary = ApiResultSummary {
+        status: result.http_status.unwrap_or(0),
+        request_duration_ms: result.duration_ms,
+        response_headers: result.response_headers,
+        assertions: result.assertions,
+    };
+    if let Ok(summary_json) = serde_json::to_string(&summary) {
+        log.push_str(&format!("RESULT_SUMMARY_JSON:{summary_json}\n"));
+    }
+
+    ExecutionOutcome {
+        status: result.status,
+        reason: result_reason,
+        evidence: Some(log),
+    }
+}
+
+/// `plan` with each request header value written `env:NAME` replaced by what the variable holds now. Only names that pass
+/// `execution_plan::secret_name` are read, so a plan cannot ask for any variable of the orchestrator's environment.
+fn with_resolved_header_secrets(mut plan: crate::execution_plan::ExecutionPlan) -> crate::execution_plan::ExecutionPlan {
+    for action in &mut plan.actions {
+        if let crate::execution_plan::Action::Request { headers, .. } = action {
+            for value in headers.values_mut() {
+                if let Some(name) = crate::execution_plan::secret_name(value) {
+                    *value = crate::ai_router::env_value(name).unwrap_or_default();
+                }
+            }
         }
     }
+    plan
 }
 
 /// One step of a compiled browser test as a line of the run's own output (`AIQA_STEP {...}`), written just before the
@@ -1480,7 +1577,9 @@ pub fn materialize_playwright_spec(
             Action::Request { .. }
             | Action::AssertStatus { .. }
             | Action::AssertHeader { .. }
-            | Action::AssertBodyField { .. } => {
+            | Action::AssertBodyField { .. }
+            | Action::AssertStatusIn { .. }
+            | Action::AssertBodySchema { .. } => {
                 return Err(format!("API action {action:?} cannot appear in a BROWSER plan — this plan was misrouted"));
             }
         }
@@ -2083,6 +2182,174 @@ AIQA_HEALING_EVENT {"event":"heal","actionIndex":1,"actionKind":"CLICK","primary
                 "{name} must be treated as sensitive"
             );
         }
+    }
+
+    // ---------------------------------------------------------------------- Phase 8B: what an API answer must look like
+
+    /// A local server that answers every request with `status`, `content_type` and `body`, and keeps the text of each request it got.
+    async fn canned_server(
+        status: u16,
+        content_type: &'static str,
+        body: String,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let keep = seen.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                let keep = keep.clone();
+                let body = body.clone();
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buffer = vec![0u8; 8192];
+                    let n = socket.read(&mut buffer).await.unwrap_or(0);
+                    keep.lock()
+                        .unwrap()
+                        .push(String::from_utf8_lossy(&buffer[..n]).to_string());
+                    let response = format!(
+                        "HTTP/1.1 {status} X\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        (format!("http://{addr}"), seen)
+    }
+
+    fn get_plan(url: &str, headers: &[(&str, &str)], expect: Vec<crate::execution_plan::Action>) -> crate::execution_plan::ExecutionPlan {
+        use crate::execution_plan::{Action, CompilerMethod, ExecutionPlan, ExecutionType};
+        let mut actions = vec![Action::Request {
+            method: "GET".to_string(),
+            url: url.to_string(),
+            headers: headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            body: None,
+        }];
+        actions.extend(expect);
+        ExecutionPlan {
+            test_case_id: "t".to_string(),
+            execution_type: ExecutionType::Api,
+            target: Some(url.to_string()),
+            actions,
+            compiler: CompilerMethod::Deterministic,
+            diagnostics: Vec::new(),
+            provider: None,
+            model: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn assert_status_in_passes_for_any_status_on_its_list_and_fails_with_the_list_named_otherwise() {
+        use crate::execution_plan::Action::AssertStatusIn;
+        let client = reqwest::Client::new();
+        let (url, _) = canned_server(201, "application/json", "{}".to_string()).await;
+        let ok = execute_plan_once(&client, &get_plan(&url, &[], vec![AssertStatusIn { statuses: vec![200, 201] }])).await;
+        assert_eq!(ok.status, TaskStatus::Passed, "{:?}", ok.reason);
+        assert_eq!(ok.assertions.len(), 1);
+        assert_eq!(ok.assertions[0].description, "Status is one of 200, 201");
+        assert!(ok.assertions[0].passed);
+        assert!(ok.log.contains("ASSERT_STATUS_IN [200, 201] -> actual 201"), "{}", ok.log);
+
+        let (url, _) = canned_server(404, "application/json", "{}".to_string()).await;
+        let failed = execute_plan_once(&client, &get_plan(&url, &[], vec![AssertStatusIn { statuses: vec![200, 201] }])).await;
+        assert_eq!(failed.status, TaskStatus::Failed);
+        assert!(failed.log.contains("expected an HTTP status among 200, 201, got real status 404"), "{}", failed.log);
+        assert!(!failed.assertions[0].passed);
+        assert_eq!(failed.http_status, Some(404));
+    }
+
+    #[tokio::test]
+    async fn an_assertion_with_no_request_before_it_fails_rather_than_passing() {
+        use crate::execution_plan::Action::{AssertBodySchema, AssertStatusIn};
+        let mut plan = get_plan("http://127.0.0.1:1/", &[], vec![]);
+        plan.actions = vec![AssertStatusIn { statuses: vec![200] }, AssertBodySchema { schema: serde_json::json!({}) }];
+        let result = execute_plan_once(&reqwest::Client::new(), &plan).await;
+        assert_eq!(result.status, TaskStatus::Failed);
+        assert!(result.log.contains("ASSERT_STATUS_IN with no prior REQUEST"), "{}", result.log);
+        assert!(result.log.contains("ASSERT_BODY_SCHEMA with no prior REQUEST"), "{}", result.log);
+    }
+
+    #[tokio::test]
+    async fn assert_body_schema_passes_a_body_that_fits() {
+        use crate::execution_plan::Action::AssertBodySchema;
+        let schema = serde_json::json!({"type": "object", "required": ["id"], "properties": {"id": {"type": "integer"}, "name": {"type": "string"}}});
+        let (url, _) = canned_server(200, "application/json", r#"{"id": 3, "name": "Rex"}"#.to_string()).await;
+        let result = execute_plan_once(&reqwest::Client::new(), &get_plan(&url, &[], vec![AssertBodySchema { schema }])).await;
+        assert_eq!(result.status, TaskStatus::Passed, "{:?} {}", result.reason, result.log);
+        assert_eq!(result.assertions[0].description, "Body fits its schema");
+        assert_eq!(result.assertions[0].actual, "fits");
+        assert!(result.log.contains("ASSERT_BODY_SCHEMA -> fits"), "{}", result.log);
+    }
+
+    #[tokio::test]
+    async fn assert_body_schema_fails_a_body_that_does_not_fit_and_says_what_is_wrong() {
+        use crate::execution_plan::Action::AssertBodySchema;
+        let schema = serde_json::json!({"type": "object", "required": ["id"], "properties": {"id": {"type": "integer"}, "name": {"type": "string"}}});
+        let (url, _) = canned_server(200, "application/json", r#"{"name": 5}"#.to_string()).await;
+        let result = execute_plan_once(&reqwest::Client::new(), &get_plan(&url, &[], vec![AssertBodySchema { schema }])).await;
+        assert_eq!(result.status, TaskStatus::Failed);
+        assert!(!result.assertions[0].passed);
+        let said = &result.assertions[0].actual;
+        assert!(said.contains("required property \"id\" is missing"), "{said}");
+        assert!(said.contains("$.name: expected string, got integer"), "{said}");
+        assert!(result.log.contains("the response body does not fit its schema"), "{}", result.log);
+    }
+
+    #[tokio::test]
+    async fn assert_body_schema_fails_a_body_that_is_not_json() {
+        use crate::execution_plan::Action::AssertBodySchema;
+        let (url, _) = canned_server(200, "text/html", "<html>nope</html>".to_string()).await;
+        let result = execute_plan_once(&reqwest::Client::new(), &get_plan(&url, &[], vec![AssertBodySchema { schema: serde_json::json!({"type": "object"}) }])).await;
+        assert_eq!(result.status, TaskStatus::Failed);
+        assert!(result.assertions[0].actual.starts_with("(not valid JSON"), "{}", result.assertions[0].actual);
+        assert!(result.log.contains("cannot check it against its schema"), "{}", result.log);
+    }
+
+    #[tokio::test]
+    async fn a_header_written_env_name_is_read_when_the_request_is_made_and_kept_out_of_the_evidence() {
+        use crate::execution_plan::Action::AssertStatusIn;
+        std::env::set_var("AIQA_SECRET_T8B_TOKEN", "  tok-8b-secret-value  ");
+        // The server repeats the token in its answer, as a badly written one may.
+        let (url, seen) = canned_server(200, "application/json", r#"{"echo": "tok-8b-secret-value"}"#.to_string()).await;
+        let plan = get_plan(&url, &[("Authorization", "env:AIQA_SECRET_T8B_TOKEN")], vec![AssertStatusIn { statuses: vec![200] }]);
+        let outcome = run_validated_plan(&reqwest::Client::new(), plan).await;
+        assert_eq!(outcome.status, TaskStatus::Passed, "{:?}", outcome.reason);
+        let requests = seen.lock().unwrap().clone();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].to_lowercase().contains("authorization: tok-8b-secret-value\r\n"), "the server got the value, trimmed: {}", requests[0]);
+        assert!(!requests[0].contains("env:AIQA_SECRET_T8B_TOKEN"), "and not the reference");
+        let evidence = outcome.evidence.unwrap();
+        assert!(!evidence.contains("tok-8b-secret-value"), "the value is scrubbed from what the run keeps: {evidence}");
+        assert!(evidence.contains("***"), "{evidence}");
+        assert!(evidence.contains("RESULT_SUMMARY_JSON:"), "{evidence}");
+    }
+
+    #[tokio::test]
+    async fn a_header_that_names_a_variable_that_is_not_set_stops_the_run_before_any_request() {
+        std::env::remove_var("AIQA_SECRET_T8B_MISSING");
+        let (url, seen) = canned_server(200, "application/json", "{}".to_string()).await;
+        let plan = get_plan(&url, &[("X-Api-Key", "env:AIQA_SECRET_T8B_MISSING")], vec![]);
+        let outcome = run_validated_plan(&reqwest::Client::new(), plan).await;
+        assert_eq!(outcome.status, TaskStatus::InfraError);
+        let reason = outcome.reason.unwrap();
+        assert!(reason.contains("AIQA_SECRET_T8B_MISSING"), "{reason}");
+        assert!(seen.lock().unwrap().is_empty(), "nothing was sent");
+    }
+
+    #[test]
+    fn only_a_variable_a_plan_may_name_is_ever_read_for_a_header() {
+        use crate::execution_plan::Action;
+        std::env::set_var("GROQ_API_KEY_T8B", "must-not-leak");
+        let plan = get_plan("http://x.test/", &[("Authorization", "env:GROQ_API_KEY_T8B"), ("X-Plain", "plain")], vec![]);
+        let resolved = with_resolved_header_secrets(plan);
+        let Action::Request { headers, .. } = &resolved.actions[0] else { panic!("no request") };
+        assert_eq!(headers.get("Authorization").map(String::as_str), Some("env:GROQ_API_KEY_T8B"), "left as written, never read");
+        assert_eq!(headers.get("X-Plain").map(String::as_str), Some("plain"));
     }
 
     #[test]

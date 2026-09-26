@@ -229,6 +229,19 @@ fn protected_routes() -> Router<AppState> {
             "/api/v1/projects/:project_id/ai-usage",
             get(get_ai_usage_scoped),
         )
+        // API tests made from an OpenAPI document (`openapi_api.rs`): what would be tested, run it, the report.
+        .route(
+            "/api/v1/projects/:project_id/openapi/plan",
+            post(crate::openapi_api::plan),
+        )
+        .route(
+            "/api/v1/projects/:project_id/openapi/runs",
+            post(crate::openapi_api::create_run).get(crate::openapi_api::list_runs),
+        )
+        .route(
+            "/api/v1/projects/:project_id/openapi/runs/:id",
+            get(crate::openapi_api::get_run),
+        )
         // Phase 4 BE-10 — see `list_test_intelligence_scoped`'s doc comment.
         .route(
             "/api/v1/projects/:project_id/intelligence/tests",
@@ -4944,10 +4957,10 @@ async fn get_ai_usage(
 // -------------------------------------------------------------- run create
 
 #[derive(Serialize)]
-struct CreateRunResponse {
-    run_id: Uuid,
-    state: RunState,
-    policy_notes: Option<String>,
+pub(crate) struct CreateRunResponse {
+    pub(crate) run_id: Uuid,
+    pub(crate) state: RunState,
+    pub(crate) policy_notes: Option<String>,
 }
 
 /// The actual run-creation logic (FRD §1 Execution Lifecycle: plan
@@ -4959,7 +4972,7 @@ struct CreateRunResponse {
 /// already resolved and, for the scoped caller, already verified against a
 /// real project by `require_scoped_project`; this function does not decide
 /// it, only uses it.
-async fn create_run_core(
+pub(crate) async fn create_run_core(
     state: &AppState,
     ctx: &AuthContext,
     project_id: Option<String>,
@@ -5273,7 +5286,7 @@ pub(crate) async fn scoped_run_summary(
 /// `get_run_scoped` (embeds them in `RunDetail`) and BE-13's standalone
 /// §12.4/§12.5 task endpoints below, so there is exactly one place that
 /// knows how to fetch a run's tasks.
-async fn scoped_run_tasks(state: &AppState, run_id: Uuid) -> Result<Vec<TaskState>, ApiError> {
+pub(crate) async fn scoped_run_tasks(state: &AppState, run_id: Uuid) -> Result<Vec<TaskState>, ApiError> {
     let mut tasks = if let Some(record) = state.runs.read().await.get(&run_id).cloned() {
         record.engine.read().await.tasks.values().cloned().collect()
     } else {

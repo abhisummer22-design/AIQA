@@ -532,7 +532,9 @@ impl PlanValidator {
                     Action::AssertUrl { .. }
                     | Action::AssertStatus { .. }
                     | Action::AssertHeader { .. }
-                    | Action::AssertBodyField { .. } => {}
+                    | Action::AssertBodyField { .. }
+                    | Action::AssertStatusIn { .. }
+                    | Action::AssertBodySchema { .. } => {}
                 }
             }
         }
