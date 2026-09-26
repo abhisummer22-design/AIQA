@@ -553,6 +553,47 @@ fn is_unsafe(method: &str) -> bool {
     !matches!(method, "GET" | "HEAD" | "OPTIONS")
 }
 
+/// Whether the document gives a value for something to be tried with (`example`, a first of `examples`, `default`, `const`, or an
+/// `enum` with an entry), rather than leaving it to be made up from the type.
+fn gives_a_value(schema: &Value) -> bool {
+    let Some(map) = schema.as_object() else {
+        return false;
+    };
+    let listed = |key: &str| {
+        map.get(key)
+            .and_then(Value::as_array)
+            .is_some_and(|a| !a.is_empty())
+    };
+    map.contains_key("example")
+        || map.contains_key("default")
+        || map.contains_key("const")
+        || listed("examples")
+        || listed("enum")
+}
+
+/// Whether a request for the operation has to be filled in with a path value the document does not give: it is then made up, and the API
+/// may have nothing by that name.
+fn has_made_up_path_value(operation: &Operation) -> bool {
+    operation
+        .parameters
+        .iter()
+        .any(|p| p.location == Location::Path && !gives_a_value(&p.schema))
+}
+
+/// The first few of some names, and how many more there are.
+fn some_of(names: &[String], most: usize) -> String {
+    let shown = names
+        .iter()
+        .take(most)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    match names.len().saturating_sub(most) {
+        0 => shown,
+        more => format!("{shown} and {more} more"),
+    }
+}
+
 // ---------------------------------------------------------------------------------------------------------- deriving
 
 struct Maker<'a> {
@@ -856,6 +897,7 @@ pub fn derive(spec: &Spec, options: &Options) -> Derived {
         skipped: Vec::new(),
         notes: spec.notes.clone(),
     };
+    let mut made_up: Vec<String> = Vec::new();
     for operation in &spec.operations {
         if !options.operations.is_empty() && !options.operations.contains(&operation.id) {
             continue;
@@ -870,6 +912,17 @@ pub fn derive(spec: &Spec, options: &Options) -> Derived {
         match derive_operation(operation, options, &kinds, limit) {
             Ok((cases, notes)) => {
                 derived.notes.extend(notes);
+                // A case whose own values are the point (a wrong type, an id that is not there) does not depend on the made-up one.
+                if has_made_up_path_value(operation)
+                    && cases.iter().any(|c| {
+                        matches!(
+                            c.kind,
+                            CaseKind::Happy | CaseKind::NoAuth | CaseKind::MissingRequired
+                        )
+                    })
+                {
+                    made_up.push(operation.id.clone());
+                }
                 if cases.is_empty() {
                     derived.skipped.push(SkippedOperation {
                         operation: operation.id.clone(),
@@ -883,6 +936,18 @@ pub fn derive(spec: &Spec, options: &Options) -> Derived {
                 reason,
             }),
         }
+    }
+    if !made_up.is_empty() {
+        let (who, has, their) = if made_up.len() == 1 {
+            (made_up[0].clone(), "has", "its requests use")
+        } else {
+            (
+                format!("{} operations ({})", made_up.len(), some_of(&made_up, 3)),
+                "have",
+                "their requests use",
+            )
+        };
+        derived.notes.push(format!("{who} {has} a path parameter that the document gives no example, default or enum for, so {their} a made-up value: a 404 there may only mean that the API has no such thing (give the parameter an `example` in the document to test with one that exists)"));
     }
     if derived.cases.len() > MAX_CASES {
         let left_out = derived.cases.len() - MAX_CASES;
@@ -1710,6 +1775,121 @@ mod tests {
         assert_eq!(
             case(&d, "GET /files/{name}#HAPPY").request.url,
             "https://api.example.test/v1/files/my%20file%2F1"
+        );
+    }
+
+    #[test]
+    fn a_path_value_the_document_does_not_give_is_made_up_and_one_note_says_so() {
+        let d = derived(&options());
+        let notes: Vec<&String> = d
+            .notes
+            .iter()
+            .filter(|n| n.contains("made-up value"))
+            .collect();
+        assert_eq!(notes.len(), 1, "one note for all of them: {:?}", d.notes);
+        assert!(notes[0].starts_with("2 operations ("), "{}", notes[0]);
+        assert!(
+            notes[0].contains("GET /pets/{petId}") && notes[0].contains("DELETE /pets/{petId}")
+        );
+        assert!(notes[0].contains(") have a path parameter that the document gives no example, default or enum for, so their requests use a made-up value: a 404 there may only mean that the API has no such thing"), "{}", notes[0]);
+        assert!(notes[0].ends_with(
+            "(give the parameter an `example` in the document to test with one that exists)"
+        ));
+    }
+
+    #[test]
+    fn one_operation_with_a_made_up_path_value_is_named_in_the_singular() {
+        let d = derived(&Options {
+            operations: vec!["GET /pets/{petId}".to_string()],
+            ..options()
+        });
+        let note = d
+            .notes
+            .iter()
+            .find(|n| n.contains("made-up value"))
+            .expect("a note");
+        assert!(note.starts_with("GET /pets/{petId} has a path parameter that the document gives no example, default or enum for, so its requests use a made-up value:"), "{note}");
+    }
+
+    #[test]
+    fn no_note_when_the_document_gives_the_path_value_or_the_cases_do_not_use_it() {
+        let with = |parameter: Value| {
+            let doc = json!({"openapi": "3.0.0", "paths": {"/things/{id}": {"get": {"parameters": [parameter], "responses": {"200": {"description": "ok"}, "404": {"description": "none"}}}}}});
+            derive(
+                &parse(&doc).unwrap(),
+                &Options {
+                    auth_headers: BTreeMap::new(),
+                    ..options()
+                },
+            )
+        };
+        let noted = |d: &Derived| d.notes.iter().any(|n| n.contains("made-up value"));
+        let id =
+            |schema: Value| json!({"name": "id", "in": "path", "required": true, "schema": schema});
+        assert!(noted(&with(id(json!({"type": "string"})))));
+        assert!(
+            noted(&with(json!({"name": "id", "in": "path", "required": true}))),
+            "no schema at all"
+        );
+        for given in [
+            json!({"type": "string", "example": "abc"}),
+            json!({"type": "string", "examples": ["abc"]}),
+            json!({"type": "string", "default": "abc"}),
+            json!({"type": "string", "const": "abc"}),
+            json!({"type": "string", "enum": ["abc", "def"]}),
+        ] {
+            assert!(!noted(&with(id(given.clone()))), "{given}");
+        }
+        assert!(
+            !noted(&with(
+                json!({"name": "id", "in": "path", "required": true, "example": "abc", "schema": {"type": "string"}})
+            )),
+            "an example beside the schema counts"
+        );
+        // An empty list gives nothing to try.
+        assert!(noted(&with(id(json!({"type": "string", "enum": []})))));
+        assert!(noted(&with(id(json!({"type": "string", "examples": []})))));
+        // A case with an id of its own does not depend on the made-up one.
+        let own = derive(
+            &parse(&petstore()).unwrap(),
+            &Options {
+                kinds: vec![CaseKind::NotFound],
+                ..options()
+            },
+        );
+        assert!(!own.cases.is_empty() && !noted(&own), "{:?}", own.notes);
+    }
+
+    #[test]
+    fn an_example_beside_the_schema_is_what_the_request_is_built_with() {
+        let doc = json!({"openapi": "3.0.0", "paths": {
+            "/things/{id}": {"get": {"parameters": [
+                {"name": "id", "in": "path", "required": true, "example": "t-77", "schema": {"type": "string"}},
+                {"name": "q", "in": "query", "required": true, "examples": {"a": {"value": "find me"}}, "schema": {"type": "string"}},
+            ], "responses": {"200": {"description": "ok"}}}},
+            "/things": {"post": {"requestBody": {"required": true, "content": {"application/json": {"example": {"name": "Rex", "age": 3}, "schema": {"type": "object", "required": ["name"], "properties": {"name": {"type": "string"}}}}}}, "responses": {"201": {"description": "made"}}}},
+        }});
+        let d = derive(
+            &parse(&doc).unwrap(),
+            &Options {
+                auth_headers: BTreeMap::new(),
+                include_unsafe: true,
+                ..options()
+            },
+        );
+        assert_eq!(
+            case(&d, "GET /things/{id}#HAPPY").request.url,
+            "https://api.example.test/v1/things/t-77?q=find+me"
+        );
+        assert_eq!(
+            case(&d, "POST /things#HAPPY").request.body,
+            Some(json!({"name": "Rex", "age": 3})),
+            "the body the document shows, not one made from its schema"
+        );
+        assert!(
+            !d.notes.iter().any(|n| n.contains("made-up value")),
+            "{:?}",
+            d.notes
         );
     }
 

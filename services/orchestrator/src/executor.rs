@@ -1296,7 +1296,7 @@ pub async fn execute_plan_once(
                 });
             }
             Action::AssertBodySchema { schema } => {
-                let Some((_, _, text)) = &last_response else {
+                let Some((_, headers, text)) = &last_response else {
                     failures.push("ASSERT_BODY_SCHEMA with no prior REQUEST".to_string());
                     continue;
                 };
@@ -1322,13 +1322,21 @@ pub async fn execute_plan_once(
                         });
                     }
                     Err(e) => {
+                        // What the answer says it is, so that a body that is not what it claims (or an API that answered in
+                        // another format than the one asked for) can be told from one that is simply broken.
+                        let content_type = headers
+                            .get(reqwest::header::CONTENT_TYPE)
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("none");
                         failures.push(format!(
-                            "response body is not valid JSON, cannot check it against its schema: {e}"
+                            "response body is not valid JSON (its content type is {content_type}), cannot check it against its schema: {e}"
                         ));
-                        log.push_str(&format!("ASSERT_BODY_SCHEMA -> not valid JSON: {e}\n"));
+                        log.push_str(&format!(
+                            "ASSERT_BODY_SCHEMA -> not valid JSON (content type {content_type}): {e}\n"
+                        ));
                         assertion_results.push(ApiAssertionResult {
                             description: "Body fits its schema".to_string(),
-                            actual: format!("(not valid JSON: {e})"),
+                            actual: format!("(not valid JSON, content type {content_type}: {e})"),
                             passed: false,
                         });
                     }
@@ -2307,7 +2315,9 @@ AIQA_HEALING_EVENT {"event":"heal","actionIndex":1,"actionKind":"CLICK","primary
         let result = execute_plan_once(&reqwest::Client::new(), &get_plan(&url, &[], vec![AssertBodySchema { schema: serde_json::json!({"type": "object"}) }])).await;
         assert_eq!(result.status, TaskStatus::Failed);
         assert!(result.assertions[0].actual.starts_with("(not valid JSON"), "{}", result.assertions[0].actual);
+        assert!(result.assertions[0].actual.contains("content type text/html"), "the answer's own content type is named: {}", result.assertions[0].actual);
         assert!(result.log.contains("cannot check it against its schema"), "{}", result.log);
+        assert!(result.log.contains("its content type is text/html"), "{}", result.log);
     }
 
     #[tokio::test]

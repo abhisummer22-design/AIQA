@@ -293,10 +293,13 @@ fn parameters_of(
             let schema = if swagger {
                 swagger_parameter_schema(&parameter)
             } else {
-                parameter
-                    .get("schema")
-                    .cloned()
-                    .unwrap_or_else(|| Value::Object(Map::new()))
+                with_example(
+                    parameter
+                        .get("schema")
+                        .cloned()
+                        .unwrap_or_else(|| Value::Object(Map::new())),
+                    &parameter,
+                )
             };
             let parameter = Parameter {
                 name,
@@ -327,11 +330,31 @@ fn body_of(root: &Value, operation: &Value, unresolved: &mut Vec<String>) -> Opt
     Some(Body {
         content_type: content_type.clone(),
         required: request_body.get("required").and_then(Value::as_bool) == Some(true),
-        schema: media
-            .get("schema")
-            .cloned()
-            .unwrap_or_else(|| Value::Object(Map::new())),
+        schema: with_example(
+            media
+                .get("schema")
+                .cloned()
+                .unwrap_or_else(|| Value::Object(Map::new())),
+            media,
+        ),
     })
+}
+
+/// The example a parameter or a media type gives beside its schema (`example`, else the first of `examples`), put into the schema, where
+/// a request is built from it. OpenAPI says it overrides an example of the schema itself, and a real value is what makes a request valid.
+fn with_example(mut schema: Value, holder: &Value) -> Value {
+    let example = holder.get("example").cloned().or_else(|| {
+        holder
+            .get("examples")
+            .and_then(Value::as_object)
+            .and_then(|all| all.values().next())
+            .and_then(|first| first.get("value"))
+            .cloned()
+    });
+    if let (Some(example), Some(map)) = (example, schema.as_object_mut()) {
+        map.insert("example".to_string(), example);
+    }
+    schema
 }
 
 fn responses_of(
@@ -873,6 +896,55 @@ mod tests {
             None
         );
         assert_eq!(base_address(&relative, Some("   ")), None);
+    }
+
+    #[test]
+    fn an_example_beside_a_schema_is_put_into_it_and_beats_the_schemas_own() {
+        let doc = json!({
+            "openapi": "3.0.0",
+            "paths": {"/pets/{id}": {"put": {
+                "parameters": [
+                    {"name": "id", "in": "path", "required": true, "example": 42, "schema": {"type": "integer", "example": 1}},
+                    {"name": "kind", "in": "query", "examples": {"first": {"value": "cat"}, "second": {"value": "dog"}}, "schema": {"type": "string"}},
+                    {"name": "plain", "in": "query", "schema": {"type": "string", "example": "kept"}},
+                    {"name": "loose", "in": "query", "example": "only-example"},
+                    {"name": "bare", "in": "query"},
+                ],
+                "requestBody": {"content": {"application/json": {"example": {"name": "Rex"}, "schema": {"type": "object"}}}},
+                "responses": {"200": {"description": "ok"}},
+            }}},
+        });
+        let spec = parse(&doc).unwrap();
+        let op = &spec.operations[0];
+        let schema_of = |name: &str| {
+            op.parameters
+                .iter()
+                .find(|p| p.name == name)
+                .unwrap()
+                .schema
+                .clone()
+        };
+        assert_eq!(
+            schema_of("id")["example"],
+            42,
+            "the parameter's example overrides the schema's"
+        );
+        assert_eq!(
+            schema_of("kind")["example"],
+            "cat",
+            "the first of the examples"
+        );
+        assert_eq!(schema_of("plain")["example"], "kept");
+        assert_eq!(
+            schema_of("loose"),
+            json!({"example": "only-example"}),
+            "an example with no schema is still a value to try"
+        );
+        assert_eq!(schema_of("bare"), json!({}), "nothing to add to nothing");
+        assert_eq!(
+            op.body.as_ref().unwrap().schema["example"],
+            json!({"name": "Rex"})
+        );
     }
 
     #[test]
