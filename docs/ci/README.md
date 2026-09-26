@@ -107,3 +107,33 @@ The suite's properties hold the verdict and the run's id. Times are `0`: the rep
 - A regression is refused (`409`) while the schedule's previous run has not ended, and (`400`) when nothing has been run once yet.
 - An OpenAPI run only sends what the document describes, to the address given, and never sends a credential's value to AIQA: the value is
   read from AIQA's environment when a request is made. A private address is refused by AIQA's own guard as for any test.
+
+## Run the same checks on your own machine
+
+`scripts/ci/local-checks.ps1` runs what `.github/workflows/ci.yml` runs, on your machine and without GitHub, so a change can be checked
+before it is pushed, or when GitHub's CI cannot start jobs (for example when the account's Actions minutes have run out).
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\local-checks.ps1                  # all three steps
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\local-checks.ps1 -Only frontend   # or secrets, or backend
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\local-checks.ps1 -DryRun          # only says what it would run
+```
+
+(`-ExecutionPolicy Bypass` is for this one run only; it is there so that a machine that does not allow scripts can still run it, and `npm`, which
+is a script too.)
+
+| Step | What it runs | Needs |
+|---|---|---|
+| `secrets` | Gitleaks over the commits that are not on `origin/master` yet (`-Range` changes that, `-Full` scans the whole history) and over what is staged. The repository's `.gitleaks.toml` (default rules plus its allowlist) and `.gitleaksignore` are used | `gitleaks` on `PATH` (or in `GITLEAKS_PATH`): [releases](https://github.com/gitleaks/gitleaks/releases), check the zip against the release's checksums file |
+| `frontend` | in `forentend`: `npm run lint` (tsc), `npm test` (vitest), `npm run build`; `npm install` first when `node_modules` is missing or with `-Install` | Node.js |
+| `backend` | in `services/orchestrator`: `cargo clippy --all-targets`, then `cargo test` | Rust |
+
+- The steps are independent, as CI's jobs are: each runs even when another failed, and the last lines say how each came out. Inside a step the first
+  failing command stops it.
+- Exit code `0`: every step that ran passed. `1`: a step failed. `2`: a step that was asked for alone (`-Only`) could not run because its tool is
+  missing. Asked for together, a step whose tool is missing is `SKIPPED` and says so: it was not checked.
+- CI's `cargo fmt --all` only reformats and cannot fail, so it is not repeated. Clippy warnings do not fail the backend step, as in CI.
+- `-TestThreads` (default 6) limits how many backend tests run at once, because a few timing-based tests can fail when many run together on a fast
+  machine and pass when run alone. So when up to 10 backend tests fail, they are run once more, alone. If they then pass, the step is `FLAKY`: it
+  passes (exit `0`) and its line names the tests that needed the second run, so they are not hidden. If they fail again, the step is `FAIL`.
+- The first backend run builds everything (several minutes, and a few GB in `services/orchestrator/target`); later runs are quick.
