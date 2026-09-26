@@ -55,6 +55,7 @@ import {
   Gauge,
   Brain,
   Coins,
+  FileJson,
   Settings,
 } from 'lucide-react';
 import { DashboardPage } from '../components/pages/DashboardPage';
@@ -76,6 +77,7 @@ import { EvidencePage } from '../components/pages/EvidencePage';
 import { TelemetryPage } from '../components/pages/TelemetryPage';
 import { QaIntelligenceDashboardPage } from '../components/pages/QaIntelligenceDashboardPage';
 import { AiUsagePage } from '../components/pages/AiUsagePage';
+import { OpenApiTestsPage } from '../components/pages/OpenApiTestsPage';
 import { SettingsPage } from '../components/pages/SettingsPage';
 import type { NavPage } from '../types';
 
@@ -250,6 +252,19 @@ export const routeDefs: RouteDef[] = [
     // the Dashboard/Test Generator visual language, same bucket as
     // CustomTestingPage/AuditPage/EvidencePage/ExecutionHubPage.
     Component: APITestingPage,
+    designStatus: 'new-follows-approved-language',
+    protectedRoute: true,
+  },
+  {
+    id: 'openapi-tests',
+    path: '/openapi-tests',
+    label: 'OpenAPI Tests',
+    icon: FileJson,
+    badge: 'NEW',
+    badgeType: 'info',
+    Component: OpenApiTestsPage,
+    // Phase 8B: real (`openapi_*.rs`, `.../openapi/*`), built following the Dashboard/Test Generator visual language, same bucket as
+    // API Testing and Autopilot.
     designStatus: 'new-follows-approved-language',
     protectedRoute: true,
   },
