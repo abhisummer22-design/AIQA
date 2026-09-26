@@ -224,6 +224,11 @@ fn protected_routes() -> Router<AppState> {
             "/api/v1/projects/:project_id/audit",
             get(get_audit_log_scoped),
         )
+        // What the AI calls made for this project came to (`ai_usage.rs`).
+        .route(
+            "/api/v1/projects/:project_id/ai-usage",
+            get(get_ai_usage_scoped),
+        )
         // Phase 4 BE-10 — see `list_test_intelligence_scoped`'s doc comment.
         .route(
             "/api/v1/projects/:project_id/intelligence/tests",
@@ -546,6 +551,8 @@ fn protected_routes() -> Router<AppState> {
             get(get_ai_settings_handler).put(put_ai_settings_handler),
         )
         .route("/api/v1/ai/refresh", post(refresh_ai_providers))
+        // What the AI calls came to across every project (`ai_usage.rs`); one project's own is under the project.
+        .route("/api/v1/ai/usage", get(get_ai_usage))
         // Phase B cleanup — the legacy flat, unscoped routes (`/runs*`,
         // `/evidence/:id/content`, `/intelligence/*`, `/bug-drafts*`,
         // `/runs/:id/ws`) are removed: every caller moved to the scoped
@@ -4864,6 +4871,74 @@ async fn refresh_ai_providers(
     )
     .await;
     Ok(Json(providers))
+}
+
+// ----------------------------------------------------------- AI usage & cost
+
+#[derive(Deserialize)]
+struct AiUsageQuery {
+    /// Calendar days to cover, the last of them today: 30 unless said, at most a year.
+    days: Option<u32>,
+    /// How far the asker's clock is ahead of UTC, in minutes (India: 330), so that a day is cut at the asker's midnight.
+    tz_offset_minutes: Option<i32>,
+    /// Only on the platform-wide route: look at this one project.
+    project_id: Option<Uuid>,
+}
+
+async fn ai_usage_report(
+    state: &AppState,
+    project: Option<&str>,
+    q: &AiUsageQuery,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let window = crate::ai_usage::Window::new(
+        chrono::Utc::now(),
+        q.days.unwrap_or(30),
+        q.tz_offset_minutes.unwrap_or(0),
+    );
+    let rows = state
+        .store
+        .ai_usage_since(&window.since_slot(), project)
+        .await
+        .map_err(to_500)?;
+    Ok(Json(crate::ai_usage::build_report(
+        &rows,
+        &window,
+        project.is_none(),
+    )))
+}
+
+/// GET /api/v1/projects/:project_id/ai-usage — what the AI calls made for this project came to (`ai_usage.rs`): calls,
+/// failures, time, tokens and the cost of the priced ones, by provider and model, by task and by day. Viewer+, like the
+/// project's runs: a key sees only its own project's.
+async fn get_ai_usage_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiQuery(q): ApiQuery<AiUsageQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    ai_usage_report(&state, Some(project_id.to_string().as_str()), &q).await
+}
+
+/// GET /api/v1/ai/usage — the same for every project at once, split by project too, or for one project with `?project_id=`.
+/// The AI providers are shared by the whole deployment and so is what they cost: an admin's view, on a key that is not tied
+/// to one project.
+async fn get_ai_usage(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiQuery(q): ApiQuery<AiUsageQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    auth::require_role(&ctx, Role::Admin)?;
+    if ctx.project_id.is_some() {
+        return Err(ApiError::forbidden(
+            "the usage of every project is for a key that is not tied to one project; ask for the project's own",
+        ));
+    }
+    if let Some(project_id) = q.project_id {
+        require_scoped_project(&state, &ctx, project_id).await?;
+    }
+    let project = q.project_id.map(|id| id.to_string());
+    ai_usage_report(&state, project.as_deref(), &q).await
 }
 
 // -------------------------------------------------------------- run create

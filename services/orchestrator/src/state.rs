@@ -67,6 +67,9 @@ impl AppState {
         ai_infra: Arc<AiInfrastructure>,
         embedder: Arc<dyn Embedder>,
     ) -> Self {
+        // Every call the AI makes from now on is counted (`ai_usage.rs`): where the app is built is the one place both the
+        // running server and the tests pass through.
+        ai_infra.set_usage_sink(Arc::new(crate::ai_usage::UsageLedger::new(store.clone())));
         Self {
             runs: Arc::new(RwLock::new(HashMap::new())),
             registry,

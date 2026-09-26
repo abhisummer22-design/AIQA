@@ -5,6 +5,7 @@ pub mod agent_tools;
 pub mod agents;
 pub mod ai_generation;
 pub mod ai_router;
+pub mod ai_usage;
 pub mod api;
 pub mod api_testing;
 pub mod app_source;
