@@ -248,16 +248,19 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
   useEffect(() => {
     if (!crawlRunId || !projectId || output) return;
     let cancelled = false;
+    let settled = false;
     setStatus('RUNNING');
     aiqaApi.crawl
       .result(projectId, crawlRunId)
       .then((result) => {
+        settled = true;
         if (cancelled) return;
         setOutput(result);
         setLastRunId(crawlRunId);
         setStatus('COMPLETED');
       })
       .catch(() => {
+        settled = true;
         if (cancelled) return;
         // The selection still exists in the parent, but its real summary
         // could not be re-read — an honest idle state, not a fabricated one.
@@ -265,6 +268,12 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
       });
     return () => {
       cancelled = true;
+      // Torn down before its request answered (the parent cleared
+      // `crawlRunId`, or `projectId` changed — a project switch), so neither
+      // handler above will ever run: hand back the 'RUNNING' set above, or
+      // the button stays disabled as "Crawling…". Once it has answered, the
+      // status is no longer this effect's to reset — `handleCrawl` may own it.
+      if (!settled) setStatus('IDLE');
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [crawlRunId, projectId]);

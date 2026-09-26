@@ -16,6 +16,10 @@
  * completed/failed states) is already covered end-to-end through
  * `TestCaseGeneratorPage.test.tsx`'s "crawl grounding" describe block and
  * is not re-tested here.
+ *
+ * The last describe covers the effect that restores an already-selected
+ * crawl's real summary (`crawlRunId`) — what the button shows when that
+ * restore is torn down before its request has answered.
  */
 import React from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -23,6 +27,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CrawlGroundingSection } from './CrawlGroundingSection';
 import { setApiKey } from '../../services/aiqaApi';
 import type { AppSourceConnection, AppSourceType } from '../../types';
+import type { CrawlOutput } from '../../types/contract';
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -419,5 +424,98 @@ describe('CrawlGroundingSection — visiting the pages the requirements mention 
   it('cannot be changed while a crawl is running', async () => {
     await startWith(true);
     await waitFor(() => expect((document.getElementById('crawl-focus-requirements') as HTMLInputElement).disabled).toBe(true));
+  });
+});
+
+/** A connected source, so the URL guard on the crawl button
+ *  (`!targetUrl.trim()`) is already satisfied — the URL input itself is
+ *  disabled while a restore is in flight, so it can't be typed into then. */
+function connectedSources(): Record<AppSourceType, AppSourceConnection> {
+  return {
+    ...emptySources(),
+    STAGING: { type: 'STAGING', label: 'Staging', url: 'https://target.example.com', status: 'CONNECTED' },
+  };
+}
+
+function crawlOutput(): CrawlOutput {
+  return {
+    roles: [
+      {
+        role: 'anonymous',
+        login_succeeded: true,
+        login_error: null,
+        pages: [{ url: 'https://target.example.com/login', title: 'Login', elements: [] }],
+      },
+    ],
+    visibility_matrix: [],
+  };
+}
+
+/** Stands in for the page: owns `crawlRunId` and hands the section the same
+ *  kind of setter, so the section's own `handleCrawl` really clears it. */
+function ControlledSection({ initialRunId }: { initialRunId: string | null }) {
+  const [crawlRunId, setCrawlRunId] = React.useState<string | null>(initialRunId);
+  return (
+    <CrawlGroundingSection
+      appSources={connectedSources()}
+      projectId={PROJECT_ID}
+      crawlRunId={crawlRunId}
+      onCrawlRunIdChange={setCrawlRunId}
+    />
+  );
+}
+
+describe('CrawlGroundingSection — restoring an already-selected crawl', () => {
+  it('a restore abandoned while its request is still in flight does not leave the button stuck on "Crawling…"', () => {
+    // Never answers, so the restore is genuinely still in flight when the
+    // parent clears its selection below — what a project switch does.
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(() => new Promise<Response>(() => {})));
+    setApiKey(RAW_KEY);
+
+    const section = (crawlRunId: string | null) => (
+      <CrawlGroundingSection
+        appSources={connectedSources()}
+        projectId={PROJECT_ID}
+        crawlRunId={crawlRunId}
+        onCrawlRunIdChange={noop}
+      />
+    );
+    const { rerender } = render(section('crawl-run-1'));
+
+    // Nothing but the restore has run, so it is what makes the section busy.
+    let button = document.getElementById('btn-start-crawl') as HTMLButtonElement;
+    expect(button.textContent).toMatch(/Crawling/);
+    expect(button.disabled).toBe(true);
+
+    rerender(section(null));
+
+    button = document.getElementById('btn-start-crawl') as HTMLButtonElement;
+    expect(button.textContent).not.toMatch(/Crawling/);
+    expect(button.textContent).toMatch(/Crawl This Application/);
+    expect(button.disabled).toBe(false);
+    expect((document.getElementById('crawl-target-url') as HTMLInputElement).disabled).toBe(false);
+  });
+
+  it('a restore that already answered does not reset the status of the crawl the user starts next', async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string) =>
+      String(url).endsWith('/result')
+        ? Promise.resolve(jsonResponse(200, crawlOutput()))
+        : // The crawl start request never answers, so the status
+          // `handleCrawl` set stays observable.
+          new Promise<Response>(() => {}),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    setApiKey(RAW_KEY);
+
+    render(<ControlledSection initialRunId="crawl-run-1" />);
+    await waitFor(() => expect(screen.getByText(/Crawled 1 real page/)).toBeTruthy());
+
+    // `handleCrawl` clears `crawlRunId` through the parent, which is what
+    // tears the finished restore's effect down.
+    await clickButton(document.getElementById('btn-start-crawl')!);
+
+    const button = document.getElementById('btn-start-crawl') as HTMLButtonElement;
+    expect(button.textContent).toMatch(/Starting/);
+    expect(button.disabled).toBe(true);
   });
 });
