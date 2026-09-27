@@ -28,8 +28,9 @@
 use crate::ai_generation::{
     build_crawl_context_block, build_feedback_block, build_prior_wave_block, enforce_traceability,
     finish_waves, normalize_title, parse_and_clean, partition_skills_into_waves,
-    resolve_skill_instructions, routing_mode_label, FeedbackContext, GeneratedTestCaseDraft,
-    GenerationOutcome, ResolvedSkillInstruction, SkillInput, Wave, WaveSummary,
+    resolve_skill_instructions_for_window, routing_mode_label, FeedbackContext,
+    GeneratedTestCaseDraft, GenerationOutcome, ResolvedSkillInstruction, SkillInput, Wave,
+    WaveSummary,
 };
 use crate::ai_router::{AiInfrastructure, AiRequest, AiTask, GenerationOutcome2, GenerationResult};
 use crate::coverage::{
@@ -711,6 +712,9 @@ async fn run_top_up(
 ) -> TopUpSummary {
     let provided = coverage::providers(skills);
     let provided_set: std::collections::HashSet<Technique> = provided.keys().copied().collect();
+    let window = infra
+        .prompt_window_tokens_for(AiTask::TestCaseGeneration)
+        .await;
     let mut summary = TopUpSummary {
         rounds: 0,
         calls: 0,
@@ -754,7 +758,8 @@ async fn run_top_up(
 
         for (n, batch) in batches.iter().enumerate() {
             let skill = provided[&batch.technique].clone();
-            let resolved = resolve_skill_instructions(std::slice::from_ref(&skill));
+            let resolved =
+                resolve_skill_instructions_for_window(std::slice::from_ref(&skill), window);
             let entries: Vec<(&RequirementItem, usize)> = batch
                 .entries
                 .iter()
@@ -917,6 +922,10 @@ pub async fn generate_from_requirements(
     let plan = plan_calls(items, skills, budget);
     let mut all_cases: Vec<GeneratedTestCaseDraft> = Vec::new();
     let mut waves: Vec<WaveSummary> = Vec::new();
+    // The room a call has decides which form of a built-in skill it can carry.
+    let window = infra
+        .prompt_window_tokens_for(AiTask::TestCaseGeneration)
+        .await;
 
     for call in &plan.calls {
         let batch: Vec<&RequirementItem> = call.items.iter().map(|&i| &items[i]).collect();
@@ -937,7 +946,7 @@ pub async fn generate_from_requirements(
 
         let skill_list: Vec<SkillInput> = call.skill.iter().cloned().collect();
         let skill_names: Vec<String> = skill_list.iter().map(|s| s.name.clone()).collect();
-        let resolved = resolve_skill_instructions(&skill_list);
+        let resolved = resolve_skill_instructions_for_window(&skill_list, window);
         let prompt = build_requirement_prompt(
             settings_text,
             &batch,
@@ -1089,6 +1098,7 @@ pub async fn generate_from_requirements(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai_generation::resolve_skill_instructions;
     use crate::ai_generation::test_support::skill;
     use crate::ai_router::test_support::{healthy_model, healthy_provider, FakeDiscovery};
     use crate::ai_router::{
@@ -1737,6 +1747,58 @@ mod tests {
         match &run.outcome {
             GenerationOutcome::Ai { waves, .. } => waves.clone(),
             GenerationOutcome::Failed { reason } => panic!("expected waves, got: {reason}"),
+        }
+    }
+
+    /// Like `infra_with(echo())`, for a provider that reports a prompt window
+    /// (`None` = it reports none, so the router assumes a modest 16,384).
+    fn infra_with_window(window: Option<u32>) -> (AiInfrastructure, Arc<Scripted>) {
+        let executor = Arc::new(Scripted {
+            prompts: Mutex::new(Vec::new()),
+            reply: echo(),
+        });
+        let mut executors: HashMap<&'static str, Arc<dyn AiExecutor>> = HashMap::new();
+        executors.insert("mock", executor.clone());
+        let mut model = healthy_model("mock-model", "mock", CapabilityLevel::Strong);
+        model.context_window = window;
+        let infra = AiInfrastructure::new(
+            vec![Arc::new(FakeDiscovery(healthy_provider(
+                "mock",
+                vec![model],
+            )))],
+            executors,
+        );
+        (infra, executor)
+    }
+
+    /// A built-in skill is sent in the form the call has room for: the detailed
+    /// instruction on a large window, the short one earlier releases sent on a
+    /// small one (Ollama's 4,096) — the batches are sized by the same window, so
+    /// this is what keeps the skill from outgrowing the room they left.
+    #[tokio::test]
+    async fn a_call_carries_the_detailed_skill_on_a_large_window_and_the_short_one_on_a_small_one()
+    {
+        let items = functional(2);
+        for (window, detailed) in [(Some(4_096), false), (Some(16_384), true), (None, true)] {
+            let (infra, executor) = infra_with_window(window);
+            let result = run(
+                &infra,
+                &items,
+                &[skill("f", "Functional Testing", "")],
+                12_000,
+            )
+            .await;
+            assert!(!cases_of(&result).is_empty(), "window {window:?}");
+            let prompts = executor.prompts.lock().unwrap().clone();
+            assert!(!prompts.is_empty(), "window {window:?}");
+            for prompt in &prompts {
+                assert_eq!(
+                    prompt.contains("Case standard"),
+                    detailed,
+                    "window {window:?}: {prompt}"
+                );
+                assert!(prompt.contains("Skill \"Functional Testing\""));
+            }
         }
     }
 

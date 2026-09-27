@@ -271,6 +271,272 @@ fn builtin_instruction(name: &str) -> Option<&'static str> {
     }
 }
 
+// ------------------------------------------- detailed built-in instructions
+
+/// Below this many tokens of prompt window a call gets a built-in skill's short
+/// instruction (`builtin_instruction`, the one every earlier release sent), not
+/// its detailed one. The detailed one is about 400 tokens longer, and a
+/// requirement-driven call on a 4,096-token window (Ollama's default) already
+/// spends nearly all of it on the fixed text, the earlier cases and the model's
+/// answer: a longer skill there would push the prompt past the window, and Ollama
+/// cuts a too-long prompt from its start without a word. From 7,000 tokens up
+/// (Groq's 8,000, Ollama with `OLLAMA_NUM_CTX=8192`, Gemini) it fits.
+pub const DETAILED_SKILLS_MIN_WINDOW_TOKENS: u32 = 7_000;
+
+/// What every detailed built-in instruction asks of the cases it produces,
+/// whatever the skill tests: the parts of a test case a person can run and
+/// check. It travels inside the skill text, not in `build_prompt`, so a custom
+/// or SKILL.md skill still gets exactly what its author wrote and both prompt
+/// builders (this module's and `requirement_generation`'s) carry it without a
+/// change. It must name nothing that belongs to one skill: a test checks that a
+/// Functional prompt never mentions injection.
+const CASE_STANDARD: &str = concat!(
+    "Case standard (for every case of this skill):\n",
+    "- One condition per case; no case depends on another.\n",
+    "- Use the requirement's own names, fields, roles and messages; add no feature it does not \
+     describe.\n",
+    "- Preconditions: the state needed before step 1 (role, existing data, settings).\n",
+    "- Steps: short numbered actions with concrete values. A value the requirement does not give \
+     is sample data: choose a realistic one and say it is a sample.\n",
+    "- Each step, and the case as a whole, ends in an observable result (shown, stored, returned \
+     or refused), never 'works as expected'. If the requirement gives no exact message text, say \
+     what the message must convey; do not invent wording.\n",
+    "- Title: what is done and what must happen; unique among the cases.\n",
+    "- Priority: CRITICAL for a core flow, security or data loss; HIGH for a main business rule; \
+     MEDIUM for an alternative flow or a validation; LOW for minor or cosmetic behaviour. \
+     Severity (CRITICAL, MAJOR, MINOR, TRIVIAL): the damage if the case failed.",
+);
+
+/// What a built-in skill is about, in enough detail to test it: the techniques
+/// to apply, a checklist of what to cover, and where its subject ends and
+/// another skill's begins. Every line keeps the evidence rules of `build_prompt`
+/// in force: nothing is asked for that the requirement text gives no basis for,
+/// and no number is invented. Names match `builtin_instruction`'s.
+fn builtin_detailed_focus(name: &str) -> Option<&'static str> {
+    match name.trim().to_lowercase().as_str() {
+        "functional testing" => Some(concat!(
+            "Test what the requirement says the system does, one requirement at a time. For each \
+             one cover:\n",
+            "- the main success flow from start to finish, including what is shown, stored or \
+             sent afterwards;\n",
+            "- every alternative flow, option and condition it names: each rule and each branch is \
+             its own case;\n",
+            "- each precondition and postcondition it states or clearly implies, and each \
+             dependency on another feature or system it mentions;\n",
+            "- one clearly invalid input or action for each validation or rule it states, \
+             checking the response it describes.\n",
+            "Boundary values, role and permission checks and attacks on security belong to their \
+             own skills, not here.",
+        )),
+        "edge case analysis" => Some(concat!(
+            "Test the limits of what the requirement describes:\n",
+            "- each numeric, length, count, size or date limit it states: just below, at and just \
+             above it (minimum-1, minimum, minimum+1, maximum-1, maximum, maximum+1), using only \
+             limits the text gives;\n",
+            "- empty, blank, whitespace-only and missing mandatory values; a value of a type the \
+             field accepts and one of a type it does not;\n",
+            "- unusual but valid content: the longest allowed text, special characters, mixed \
+             case, non-Latin (Unicode) text, leading and trailing spaces;\n",
+            "- unusual sequences: repeating an action, doing steps out of order, cancelling half \
+             way, going back or refreshing, two users acting on the same item;\n",
+            "- empty and full collections: zero, one and many items.\n",
+            "Each case changes one thing at the edge and expects what the requirement says at that \
+             limit. Plain rejection of clearly invalid input belongs to Negative Testing.",
+        )),
+        "security testing" => Some(concat!(
+            "Test only the security-relevant behaviour the requirement describes (sign-in, \
+             permissions, user input, sensitive data, sessions, uploads, external calls); invent \
+             no security feature the text gives no basis for. Where the surface exists, cover:\n",
+            "- authentication: missing, wrong, expired or reused credentials and tokens; any \
+             lockout or retry limit it states; the session ending after logout or timeout;\n",
+            "- authorization: reading or changing another user's data by changing an id, a lower \
+             role doing a higher role's action, opening a protected page or endpoint without \
+             signing in;\n",
+            "- input handling: injection (SQL, script/XSS, command, path traversal) in every \
+             free-text, parameter or file input it names; file type and size checks on uploads;\n",
+            "- data exposure: passwords, tokens and personal data absent from responses, \
+             messages, logs and URLs; error messages that reveal no internals;\n",
+            "- abuse: repeated or replayed requests, tampered hidden fields or parameters.\n",
+            "Expected result: the request is refused or handled safely, no other user's data is \
+             exposed, and nothing changes in the system.",
+        )),
+        "performance testing" => Some(concat!(
+            "Write performance scenarios only for behaviour the requirement describes as \
+             sensitive to time, volume or capacity. Each case states the operation under test, \
+             the load (how many users or requests and for how long, only figures the requirement \
+             gives), the metric to observe (response time, throughput, error rate, resource use) \
+             and the pass criterion.\n",
+            "Kinds: response time of one operation; behaviour under the expected load; under more \
+             than the expected load (stress); with large data volumes; concurrent users acting on \
+             the same item.\n",
+            "Never invent a number (a latency target, a user count, a duration): use the figures \
+             the requirement states; where it gives none, describe the scenario and its pass \
+             criterion in words (for example 'stays responsive and returns no errors') and mark \
+             the case inferred or exploratory.\n",
+            "Steps say how the load is applied and observed; an expected result is measurable \
+             only when the requirement states the limit.",
+        )),
+        "api testing" => Some(concat!(
+            "Test the endpoints and operations the requirement describes, and only those. For \
+             each operation cover:\n",
+            "- success: the status code it states (for example 200, 201 or 204), the response \
+             fields, types and values, headers, and what is stored afterwards;\n",
+            "- request validation: each required field missing, of the wrong type, out of range or \
+             malformed, expecting the 4xx status and error body described (for example 400 or \
+             422) and nothing stored;\n",
+            "- authentication and authorization: no token, an invalid or expired token (401), a \
+             token without the right role or for another user's resource (403 or 404);\n",
+            "- resource state: not found (404), a duplicate or conflicting create or update (409), \
+             the same request sent twice (idempotency), changing or deleting what is already \
+             deleted;\n",
+            "- contract details it describes: pagination, filtering, sorting, content type; rate \
+             limiting only if a limit is stated.\n",
+            "Each step gives the method, path, headers and body (sample data unless the \
+             requirement gives values) and the expected status and body. Use the status codes the \
+             requirement states; where it states none, use the standard code for the situation \
+             and mark the case inferred.",
+        )),
+        "database testing" => Some(concat!(
+            "Test the data behaviour the requirement describes, only where it stores, reads, \
+             changes or deletes data. Cover:\n",
+            "- create, read, update and delete: after each operation the record holds the right \
+             values, and is gone or unchanged where it should be;\n",
+            "- constraints: mandatory, unique, length, type and allowed-value rules, and \
+             referential integrity (a child without a parent, deleting a parent that still has \
+             children), each refused without partial data being saved;\n",
+            "- transactions: a multi-step change either fully happens or does not happen at all, \
+             and an error half way leaves no partial data; two users changing the same record;\n",
+            "- consistency: related records and totals stay in agreement after a change; \
+             duplicates are handled as the requirement says;\n",
+            "- retention: soft or permanent delete, history and audit records, when the \
+             requirement mentions them.\n",
+            "Steps say what to do through the application and which stored data (record, field or \
+             retrieved value) to check.",
+        )),
+        "rbac testing" => Some(concat!(
+            "Test who may do what, for the roles and permissions the requirement names, and only \
+             those. Build the role-by-action grid from the text and cover:\n",
+            "- each role doing each action it is allowed to (it succeeds);\n",
+            "- each role attempting each action it is not allowed to (it is refused as described, \
+             and nothing changes);\n",
+            "- visibility: which screens, menus, buttons, fields and records each role can and \
+             cannot see;\n",
+            "- ownership: a user acting on another user's or another team's data;\n",
+            "- changes: a role or permission changed or removed while the user is signed in, a \
+             user holding two roles;\n",
+            "- an action attempted without signing in.\n",
+            "An action the requirement does not grant to a role is tested as refused, and marked \
+             inferred.",
+        )),
+        "business case testing" => Some(concat!(
+            "Test the business rules and workflows the requirement describes, end to end. \
+             Cover:\n",
+            "- each rule and calculation (amounts, discounts, taxes, limits, dates, rounding) \
+             with values that reach every branch: every combination of the conditions the text \
+             names that leads to a different outcome (decision-table style);\n",
+            "- the whole workflow from its trigger to its final state, each status change, and \
+             the changes that must NOT be allowed;\n",
+            "- two rules applying at once (precedence and conflicts), exceptions, overrides, \
+             approvals and rejections;\n",
+            "- time rules (deadlines, expiry, cut-off times, working days): on the deadline and \
+             just after it;\n",
+            "- what the rest of the business sees afterwards (notifications, reports, records).\n",
+            "Use only the rules, values and outcomes the requirement states; an outcome the text \
+             leaves open is described in words and marked inferred.",
+        )),
+        "ui/ux testing" => Some(concat!(
+            "Test the user-facing behaviour the requirement describes, not backend-only \
+             behaviour. Cover:\n",
+            "- layout and content: each field, label, button and message the requirement names is \
+             shown and correctly labelled; required fields are marked;\n",
+            "- screen states: empty, loading, success, error and disabled, and what the user sees \
+             in each;\n",
+            "- interaction feedback: validation messages beside the field and when they appear, \
+             confirmation of success, no double submit, unsaved changes and cancel;\n",
+            "- navigation: back, refresh, direct links, tab order;\n",
+            "- accessibility: keyboard-only use (focus visible, Enter, Escape), screen-reader \
+             labels, colour contrast, error messages tied to their fields;\n",
+            "- responsive layout: the desktop, tablet and phone widths (or devices) the \
+             requirement names: nothing overflows or overlaps and every action stays reachable.\n",
+            "Steps name each control by the label the requirement uses.",
+        )),
+        "non-functional testing" => Some(concat!(
+            "Test the quality attributes the requirement text describes (how the system must be, \
+             not what it must do):\n",
+            "- performance: response time, throughput, capacity;\n",
+            "- reliability and availability: failure handling, recovery, retries, uptime, no data \
+             lost after a failure;\n",
+            "- security of data and access, only where the text gives a basis;\n",
+            "- usability and accessibility: keyboard use, screen reader, contrast, responsive \
+             layout, clear feedback;\n",
+            "- compatibility: the browsers, devices, operating systems and versions the text \
+             names;\n",
+            "- auditability and logging: which actions are recorded and with what details.\n",
+            "Use only the figures and limits the text states; where it gives none, describe the \
+             scenario and its pass criterion in words instead of inventing a number, and mark the \
+             case inferred or exploratory. Each case states the attribute under test, the \
+             condition and how the result is observed.",
+        )),
+        "negative testing" => Some(concat!(
+            "Test that the system correctly REJECTS what it must not accept. For each input, \
+             action or request the requirement describes, submit invalid, malformed, missing, \
+             out-of-contract or unauthorized data and check that:\n",
+            "- the system refuses it with the error message, status or behaviour the requirement \
+             describes (when the exact wording is not given, say what the message must convey);\n",
+            "- nothing is saved, changed, sent or charged;\n",
+            "- the user can correct the input and carry on, where the requirement describes a \
+             form or a flow.\n",
+            "Kinds of invalid input: a required value missing, wrong type or format, too short or \
+             too long, characters not allowed, a value not in the allowed list, a duplicate of \
+             something that must be unique, an action in the wrong state, an action by someone \
+             not allowed.\n",
+            "This is distinct from Edge Case Analysis (boundary values): here the point is that \
+             rejection really happens. Only for invalid inputs and actions the requirement gives \
+             a basis for.",
+        )),
+        "positive testing" => Some(concat!(
+            "Identify only the valid-input, expected-outcome scenarios directly stated or clearly \
+             implied by the requirement text: the deliberate complement to Negative Testing, so \
+             add no invalid or edge-case variations here. For each requirement cover:\n",
+            "- the normal success path with typical, well-formed, authorized input, and the exact \
+             outcome the requirement gives (result shown, record created or changed, message, \
+             redirect);\n",
+            "- each allowed option, role or variation the requirement lists as valid: one case \
+             per distinct valid variation, not several with the same effect;\n",
+            "- the state after success (what is stored, what the user can do next), including \
+             that it survives a refresh or a new session where it should.",
+        )),
+        "spike testing" => Some(concat!(
+            "Describe scenarios with a sudden, immediate jump in concurrent load or traffic to a \
+             much higher level, not a gradual ramp, and what the requirement says (or implies) \
+             the system should do under that abrupt surge: stay available, keep giving correct \
+             results, queue or refuse the excess in the way described, and recover when the load \
+             returns to normal.\n",
+            "State the level before the spike, the level during it and how long it lasts, using \
+             only figures the requirement gives; where it gives none, describe them in words and \
+             do not invent a concurrency number. Only where the requirement gives a real basis \
+             for a load-sensitive surface.",
+        )),
+        "load testing" => Some(concat!(
+            "Describe scenarios with a steady, sustained level of concurrent usage over time (the \
+             expected ongoing demand, not a sudden spike or a gradually increasing stress ramp) \
+             and check whether the system keeps its described behaviour under that constant \
+             load: response times stay within what the requirement states, no errors or lost \
+             data, no slowdown over the duration (memory or queue growth).\n",
+            "State the load level and how long it lasts using only figures the requirement gives; \
+             where it gives none, describe them in words and do not invent a concurrency number. \
+             Only where the requirement gives a real basis for a load-sensitive surface.",
+        )),
+        _ => None,
+    }
+}
+
+/// The detailed instruction of a built-in skill: what it is about, then the
+/// case standard. `None` for any name that is not a built-in.
+fn builtin_detailed_instruction(name: &str) -> Option<String> {
+    builtin_detailed_focus(name).map(|focus| format!("{focus}\n\n{CASE_STANDARD}"))
+}
+
 /// The Skill Resolver (brief step 4). Real function: given the caller's
 /// selected skills, returns one concrete instruction per skill — the
 /// built-in behavior for a recognized name, or the skill's own real
@@ -278,12 +544,50 @@ fn builtin_instruction(name: &str) -> Option<&'static str> {
 /// the Prompt Builder's output is deterministic for a given selection,
 /// which is exactly what lets a test assert "selecting X changes the
 /// prompt" without depending on hash-map iteration order.
+///
+/// This is the short form: every built-in skill resolves to the one-sentence
+/// instruction earlier releases sent. Generation itself uses
+/// [`resolve_skill_instructions_for`], which sends the detailed one when the
+/// call's window has room for it.
 pub fn resolve_skill_instructions(skills: &[SkillInput]) -> Vec<ResolvedSkillInstruction> {
+    resolve_skills(skills, false)
+}
+
+/// As [`resolve_skill_instructions`], but a built-in skill resolves to its
+/// detailed instruction unless `window_tokens` (how much prompt one call can
+/// carry, `None` = unknown) is known and below
+/// [`DETAILED_SKILLS_MIN_WINDOW_TOKENS`]. A custom or file skill resolves the
+/// same whatever the window: its own text, verbatim.
+pub fn resolve_skill_instructions_for_window(
+    skills: &[SkillInput],
+    window_tokens: Option<u32>,
+) -> Vec<ResolvedSkillInstruction> {
+    let detailed = !matches!(window_tokens, Some(w) if w < DETAILED_SKILLS_MIN_WINDOW_TOKENS);
+    resolve_skills(skills, detailed)
+}
+
+/// [`resolve_skill_instructions_for_window`] for the window the router says a
+/// test-case generation call can carry right now — the same figure the
+/// requirement batches are sized by, so a skill never outgrows the room they
+/// left for it.
+pub async fn resolve_skill_instructions_for(
+    infra: &AiInfrastructure,
+    skills: &[SkillInput],
+) -> Vec<ResolvedSkillInstruction> {
+    let window = infra
+        .prompt_window_tokens_for(AiTask::TestCaseGeneration)
+        .await;
+    resolve_skill_instructions_for_window(skills, window)
+}
+
+fn resolve_skills(skills: &[SkillInput], detailed: bool) -> Vec<ResolvedSkillInstruction> {
     skills
         .iter()
         .map(|s| {
-            let instruction = builtin_instruction(&s.name)
-                .map(|i| i.to_string())
+            let instruction = detailed
+                .then(|| builtin_detailed_instruction(&s.name))
+                .flatten()
+                .or_else(|| builtin_instruction(&s.name).map(str::to_string))
                 .unwrap_or_else(|| {
                     if s.description.trim().is_empty() {
                         format!(
@@ -1213,7 +1517,7 @@ async fn generate_one_wave(
     prior_wave_cases: &[GeneratedTestCaseDraft],
     crawl: Option<&crate::crawler::CrawlOutput>,
 ) -> GenerationOutcome {
-    let resolved = resolve_skill_instructions(skills);
+    let resolved = resolve_skill_instructions_for(infra, skills).await;
     let prompt = build_prompt(
         requirement_text,
         &resolved,
@@ -1883,6 +2187,200 @@ mod tests {
     fn resolver_falls_back_honestly_for_a_custom_skill_with_no_description() {
         let resolved = resolve_skill_instructions(&[skill("custom-2", "Made Up Thing", "")]);
         assert!(resolved[0].instruction.contains("Made Up Thing"));
+    }
+
+    // ------------------------------------------- detailed built-in instructions
+
+    const BUILT_IN_SKILL_NAMES: [&str; 14] = [
+        "Functional Testing",
+        "Edge Case Analysis",
+        "Security Testing",
+        "Performance Testing",
+        "API Testing",
+        "Database Testing",
+        "RBAC Testing",
+        "Business Case Testing",
+        "UI/UX Testing",
+        "Non-Functional Testing",
+        "Negative Testing",
+        "Positive Testing",
+        "Spike Testing",
+        "Load Testing",
+    ];
+
+    /// What a large window sends for `name` (an unknown window is not small).
+    fn detailed(name: &str) -> String {
+        resolve_skill_instructions_for_window(&[skill("s", name, "")], None)[0]
+            .instruction
+            .clone()
+    }
+
+    /// What every earlier release sent for `name`.
+    fn short(name: &str) -> String {
+        resolve_skill_instructions(&[skill("s", name, "")])[0]
+            .instruction
+            .clone()
+    }
+
+    #[test]
+    fn every_built_in_skill_has_a_detailed_instruction_far_fuller_than_its_one_sentence() {
+        for name in BUILT_IN_SKILL_NAMES {
+            let d = detailed(name);
+            let s = short(name);
+            assert!(
+                d.ends_with(CASE_STANDARD),
+                "{name}: ends in the case standard"
+            );
+            assert_ne!(d, s, "{name}");
+            assert!(
+                d.chars().count() > 3 * s.chars().count(),
+                "{name}: {} chars against {}",
+                d.chars().count(),
+                s.chars().count()
+            );
+            assert!(
+                builtin_instruction(name).is_some(),
+                "{name}: the short form stays"
+            );
+        }
+        assert!(builtin_detailed_focus("Made Up Thing").is_none());
+        assert!(builtin_detailed_instruction("Made Up Thing").is_none());
+    }
+
+    /// The batch budget reserves a fixed number of tokens for everything that is
+    /// not requirement text, and `DETAILED_SKILLS_MIN_WINDOW_TOKENS` was chosen
+    /// for a skill of about this size (2,800 characters is roughly 700 tokens).
+    /// A longer one has to change that budget and that threshold with it.
+    #[test]
+    fn a_detailed_instruction_stays_within_the_room_the_prompt_budget_leaves_for_a_skill() {
+        for name in BUILT_IN_SKILL_NAMES {
+            let chars = detailed(name).chars().count();
+            assert!(chars <= 2_800, "{name}: {chars} characters");
+        }
+    }
+
+    /// The same words the short instructions are checked for above are still in
+    /// the detailed ones: what a skill was for does not change, it gets detail.
+    #[test]
+    fn each_detailed_instruction_keeps_the_meaning_of_the_short_one() {
+        let has = |name: &str, words: &[&str]| {
+            let text = detailed(name).to_lowercase();
+            for word in words {
+                assert!(text.contains(word), "{name}: {word}: {text}");
+            }
+        };
+        has(
+            "Security Testing",
+            &["authorization", "injection", "authentication"],
+        );
+        has("UI/UX Testing", &["accessibility", "responsive"]);
+        has("Negative Testing", &["reject", "invalid"]);
+        has(
+            "Positive Testing",
+            &["valid-input", "complement to negative testing"],
+        );
+        has("Spike Testing", &["sudden", "not a gradual ramp"]);
+        has("Load Testing", &["sustained", "not a sudden spike"]);
+        has(
+            "Non-Functional Testing",
+            &[
+                "performance",
+                "reliability",
+                "usability",
+                "accessibility",
+                "compatibility",
+                "only the figures and limits the text states",
+            ],
+        );
+        assert_ne!(detailed("Spike Testing"), detailed("Load Testing"));
+        assert!(!detailed("Non-Functional Testing")
+            .to_lowercase()
+            .contains("custom skill"));
+    }
+
+    /// The evidence rules of the prompt say never to invent a number; every
+    /// skill whose subject is a quantity says the same in its own words.
+    #[test]
+    fn the_skills_about_load_and_limits_say_not_to_invent_a_number() {
+        for name in [
+            "Performance Testing",
+            "Non-Functional Testing",
+            "Spike Testing",
+            "Load Testing",
+            "Edge Case Analysis",
+        ] {
+            let text = detailed(name).to_lowercase();
+            assert!(
+                text.contains("invent") || text.contains("only limits the text gives"),
+                "{name}: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_detailed_instruction_needs_room_and_a_small_window_gets_the_short_one() {
+        let skills = [skill("f", "Functional Testing", "")];
+        let pick = |w| {
+            resolve_skill_instructions_for_window(&skills, w)[0]
+                .instruction
+                .clone()
+        };
+        assert_eq!(
+            pick(Some(4_096)),
+            short("Functional Testing"),
+            "Ollama's default"
+        );
+        assert_eq!(
+            pick(Some(DETAILED_SKILLS_MIN_WINDOW_TOKENS - 1)),
+            short("Functional Testing")
+        );
+        assert_eq!(
+            pick(Some(DETAILED_SKILLS_MIN_WINDOW_TOKENS)),
+            detailed("Functional Testing")
+        );
+        assert_eq!(
+            pick(Some(8_000)),
+            detailed("Functional Testing"),
+            "Groq's free tier"
+        );
+        assert_eq!(
+            pick(None),
+            detailed("Functional Testing"),
+            "an unknown window is not assumed to be small"
+        );
+    }
+
+    #[test]
+    fn a_custom_skill_resolves_to_its_own_text_whatever_the_window() {
+        for window in [None, Some(4_096), Some(1_000_000)] {
+            let resolved = resolve_skill_instructions_for_window(
+                &[skill(
+                    "custom-1",
+                    "Boundary Testing for Indian PIN Codes",
+                    "PIN codes must be exactly 6 digits.",
+                )],
+                window,
+            );
+            assert_eq!(
+                resolved[0].instruction,
+                "PIN codes must be exactly 6 digits."
+            );
+        }
+    }
+
+    /// The Functional prompt must stay free of another skill's subject even with
+    /// the detailed text: the shared case standard names nothing skill-specific.
+    #[test]
+    fn a_functional_prompt_with_the_detailed_instruction_has_no_security_wording() {
+        let prompt = build_prompt(
+            "Users can log in.",
+            &resolve_skill_instructions_for_window(&[skill("f", "Functional Testing", "")], None),
+            &FeedbackContext::default(),
+            &[],
+            None,
+        );
+        assert!(prompt.contains("Case standard"));
+        assert!(!prompt.to_lowercase().contains("injection"));
     }
 
     // --------------------------------------------------------- prompt builder
