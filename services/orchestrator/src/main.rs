@@ -83,11 +83,28 @@ async fn main() {
     let policy = PolicyConfig::from_env();
     let evidence = LocalEvidenceStore::new(default_root()).expect("failed to init evidence store");
 
+    // Real, live-toggleable (Settings -> Test Execution): whether a Playwright run shows its
+    // real browser window. Loaded once here from the same persisted row `PUT
+    // /api/v1/execution-settings` writes, then shared (not copied) with `AppState` below, so a
+    // change made through that route and this same atomic is what the executor's very next run
+    // reads. Off (headless) when never set — the only behavior every earlier release had.
+    let show_browser_window = Arc::new(std::sync::atomic::AtomicBool::new(
+        store
+            .get_show_browser_window()
+            .await
+            .unwrap_or_else(|e| {
+                tracing::error!("could not read the execution display setting, defaulting to headless: {e}");
+                None
+            })
+            .unwrap_or(false),
+    ));
+
     let registry = ExecutorRegistry::new(Arc::new(SimulatedExecutor))
         .register(
             "playwright",
             Arc::new(PlaywrightExecutor {
                 project_dir: executor_project_dir("playwright"),
+                show_browser_window: show_browser_window.clone(),
             }),
         )
         .register(
@@ -203,7 +220,7 @@ async fn main() {
         });
     }
     let embedder: Arc<dyn Embedder> = Arc::new(GeminiEmbedder::from_env());
-    let state = AppState::new(
+    let mut state = AppState::new(
         Arc::new(registry),
         store,
         policy,
@@ -211,6 +228,10 @@ async fn main() {
         ai_infra,
         embedder,
     );
+    // The same shared atomic the real `PlaywrightExecutor` above already holds a clone of —
+    // replacing `AppState::new`'s own fresh (default-false) one, so the PUT handler and that
+    // executor genuinely agree on one live value, not two that could drift apart.
+    state.show_browser_window = show_browser_window;
     // Phase 7 — autopilot runs that were going when the process stopped carry on where they were.
     match aiqa_orchestrator::autopilot_runner::resume_runs(&state).await {
         Ok(0) => {}

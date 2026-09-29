@@ -1348,6 +1348,35 @@ impl Store {
         Ok(())
     }
 
+    // ------------------------------------------------- execution display settings
+
+    /// The persisted "show the browser window while a Playwright run executes" preference —
+    /// `None` when it was never set (the caller should then use the old default: off/headless,
+    /// the only behavior every earlier release had).
+    pub async fn get_show_browser_window(&self) -> Result<Option<bool>> {
+        let row = sqlx::query(
+            "SELECT show_browser_window FROM execution_display_settings WHERE id = 'global'",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| {
+            let v: i64 = r.get("show_browser_window");
+            v != 0
+        }))
+    }
+
+    pub async fn set_show_browser_window(&self, show: bool) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO execution_display_settings (id, show_browser_window, updated_at) VALUES ('global', ?, ?)
+             ON CONFLICT(id) DO UPDATE SET show_browser_window = excluded.show_browser_window, updated_at = excluded.updated_at",
+        )
+        .bind(show as i64)
+        .bind(now_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     // ------------------------------------------------------------- test cases
     //
     // AUD-005 — see `domain.rs`'s test-case section doc comment for the full

@@ -1604,6 +1604,15 @@ export interface AiSettings {
   task_overrides?: Record<string, TaskProviderPreference>;
 }
 
+/** `api.rs::ExecutionSettings` — `GET`/`PUT /api/v1/execution-settings`. Real, platform-wide,
+ *  live-toggleable: whether a Playwright run shows its real browser window on screen instead of
+ *  running headless (`executor.rs::PlaywrightExecutor`). Off by default — every earlier release
+ *  ran headless unconditionally, and a PUT takes effect on the very next Playwright run, no
+ *  restart needed. */
+export interface ExecutionSettings {
+  show_browser_window: boolean;
+}
+
 /** `ai_router.rs::TaskProviderPreference` — each field independently
  *  optional: pin just the provider (any of its models) or just the model
  *  (whichever provider serves it) for one specific task. `chain` is an

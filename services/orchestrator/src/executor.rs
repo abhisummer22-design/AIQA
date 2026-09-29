@@ -719,6 +719,14 @@ fn redact_outcome(mut outcome: ExecutionOutcome, values: &[String]) -> Execution
     outcome
 }
 
+/// The env var to add to a Playwright run's real environment when it should show its real
+/// browser window on screen, or `None` to leave what `shell_command` already builds exactly as
+/// it is — headless, the only behavior every earlier release had.
+/// `playwright.config.ts` reads this and turns `headless` off only for the exact value `"1"`.
+fn headed_env_var(show_browser_window: bool) -> Option<(&'static str, &'static str)> {
+    show_browser_window.then_some(("AIQA_PLAYWRIGHT_HEADED", "1"))
+}
+
 /// Web executor (SRD §17: "Playwright handles web"). `params.spec` selects
 /// the spec file, `params.grep` selects one test title within it (both
 /// relative to `project_dir`, which points at executors/playwright).
@@ -727,6 +735,12 @@ fn redact_outcome(mut outcome: ExecutionOutcome, values: &[String]) -> Execution
 /// their values are scrubbed from the evidence.
 pub struct PlaywrightExecutor {
     pub project_dir: PathBuf,
+    /// Real, live-toggleable "show the browser window while this runs" preference
+    /// (`GET`/`PUT /api/v1/execution-settings`, `state.rs::AppState::show_browser_window`) — read
+    /// fresh on every single run, so a change made through Settings takes effect on the very next
+    /// Playwright run, not just after a restart. Off by default: every earlier release ran
+    /// headless unconditionally, and still does unless this was explicitly turned on.
+    pub show_browser_window: Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[async_trait]
@@ -741,7 +755,14 @@ impl Executor for PlaywrightExecutor {
             args.push("--grep");
             args.push(grep.as_str());
         }
-        match run_contained(shell_command("npx", &args, &self.project_dir), "playwright").await {
+        let mut cmd = shell_command("npx", &args, &self.project_dir);
+        let show_browser_window = self
+            .show_browser_window
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if let Some((key, value)) = headed_env_var(show_browser_window) {
+            cmd.env(key, value);
+        }
+        match run_contained(cmd, "playwright").await {
             Ok(output) => finish_playwright(output, &secret_values),
             Err(e) => spawn_error_outcome("playwright", e),
         }
@@ -2146,6 +2167,15 @@ AIQA_HEALING_EVENT {"event":"heal","actionIndex":1,"actionKind":"CLICK","primary
     }
 
     #[test]
+    fn headed_env_var_is_set_only_when_the_toggle_is_on() {
+        assert_eq!(
+            headed_env_var(true),
+            Some(("AIQA_PLAYWRIGHT_HEADED", "1"))
+        );
+        assert_eq!(headed_env_var(false), None);
+    }
+
+    #[test]
     fn read_secrets_returns_the_trimmed_values_of_set_variables() {
         std::env::set_var("AIQA_LOGIN_T5A_READ", "  read-me-123  ");
         assert_eq!(
@@ -2161,6 +2191,7 @@ AIQA_HEALING_EVENT {"event":"heal","actionIndex":1,"actionKind":"CLICK","primary
         // failed to launch — not that a secret is missing.
         let executor = PlaywrightExecutor {
             project_dir: PathBuf::from("this-directory-does-not-exist"),
+            show_browser_window: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         let outcome = executor
             .execute(&playwright_task(serde_json::json!({

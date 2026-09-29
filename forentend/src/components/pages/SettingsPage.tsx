@@ -22,7 +22,7 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { Settings as SettingsIcon, Key, Sparkles, Save, Loader2, RefreshCw, AlertTriangle, CircleHelp, Plus, Trash2 } from 'lucide-react';
+import { Settings as SettingsIcon, Key, Sparkles, Save, Loader2, RefreshCw, AlertTriangle, CircleHelp, Plus, Trash2, Video } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { renderAuthState } from '../state/StateViews';
 import { SectionHeader } from '../common/SectionHeader';
@@ -619,7 +619,120 @@ const AiIntelligencePanel: React.FC = () => {
   );
 };
 
-type SettingsTab = 'authentication' | 'aiModels';
+/**
+ * Test Execution — real, live-toggleable browser visibility.
+ *
+ * `GET`/`PUT /api/v1/execution-settings` (`state.rs::AppState::show_browser_window`,
+ * `executor.rs::PlaywrightExecutor`): whether a Playwright run's real Chromium browser window is
+ * shown on screen while it drives a test, instead of running headless — headless (off) is the
+ * default every earlier release always used, and stays the default here unless this is turned
+ * on. The very next Playwright run after a change reads the new value; nothing needs a restart.
+ */
+const TestExecutionPanel: React.FC = () => {
+  const [value, setValue] = useState<boolean | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const s = await aiqaApi.executionSettings.get();
+        if (!cancelled) setValue(s.show_browser_window);
+      } catch (err) {
+        if (!cancelled) setError(err instanceof ApiError ? err.message : 'Failed to load execution settings.');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleToggle = async () => {
+    if (value === null || saving) return;
+    const next = !value;
+    setSaving(true);
+    setError(null);
+    try {
+      const saved = await aiqaApi.executionSettings.update({ show_browser_window: next });
+      setValue(saved.show_browser_window);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to save the execution setting.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="p-6 flex items-center justify-center gap-2 text-content-secondary text-xs">
+        <Loader2 className="w-4 h-4 animate-spin" />
+        <span>Loading execution settings…</span>
+      </div>
+    );
+  }
+
+  return (
+    <div id="test-execution-panel" className="space-y-3">
+      <div className="pb-2 border-b border-border-default">
+        <h3 className="text-xs font-bold text-content-primary uppercase font-mono">Test Execution</h3>
+        <p className="text-content-secondary text-xs mt-0.5">Whether a real browser window is shown while a Playwright test runs</p>
+      </div>
+
+      <div className="flex items-center justify-between gap-3 p-3 rounded-lg bg-surface-page border border-border-default">
+        <div className="min-w-0 pr-2">
+          <p className="text-content-primary font-semibold text-xs">Show the browser window while tests run</p>
+          <p className="text-content-secondary text-[11px] mt-1">
+            Off by default — tests run headless (invisibly), which is usually a little faster. Turn this on only when
+            you want to watch a run live; turn it back off when you don't, since a visible window needs a real screen
+            to open on.
+          </p>
+        </div>
+        <button
+          type="button"
+          id="btn-toggle-show-browser-window"
+          role="switch"
+          aria-checked={value ?? false}
+          aria-label="Show the browser window while tests run"
+          onClick={() => void handleToggle()}
+          disabled={saving}
+          className={`shrink-0 relative w-9 h-5 rounded-full transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
+            value ? 'bg-violet-600' : 'bg-slate-700'
+          }`}
+        >
+          <span
+            className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+              value ? 'translate-x-4' : 'translate-x-0'
+            }`}
+          />
+        </button>
+      </div>
+
+      <p className="text-[10px] font-mono text-content-muted flex items-start gap-1.5">
+        <CircleHelp className="w-3 h-3 shrink-0 mt-0.5" />
+        <span>Saved to the real orchestrator backend and read by the very next Playwright run — no restart needed.</span>
+      </p>
+
+      {saving && (
+        <p className="text-[11px] text-violet-300 flex items-center gap-1.5">
+          <Loader2 className="w-3 h-3 animate-spin" />
+          Saving…
+        </p>
+      )}
+      {error && (
+        <p id="test-execution-error" role="alert" className="text-[11px] text-rose-300 flex items-start gap-1.5">
+          <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5" />
+          <span>{error}</span>
+        </p>
+      )}
+    </div>
+  );
+};
+
+type SettingsTab = 'authentication' | 'aiModels' | 'testExecution';
 
 export const SettingsPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<SettingsTab>('authentication');
@@ -627,6 +740,7 @@ export const SettingsPage: React.FC = () => {
   const tabs: Array<{ id: SettingsTab; label: string; icon: React.ComponentType<{ className?: string }> }> = [
     { id: 'authentication', label: 'Authentication & SSO', icon: Key },
     { id: 'aiModels', label: 'AI Models & Reasoning', icon: Sparkles },
+    { id: 'testExecution', label: 'Test Execution', icon: Video },
   ];
 
   return (
@@ -679,6 +793,8 @@ export const SettingsPage: React.FC = () => {
           )}
 
           {activeTab === 'aiModels' && <AiIntelligencePanel />}
+
+          {activeTab === 'testExecution' && <TestExecutionPanel />}
         </div>
       </div>
     </div>

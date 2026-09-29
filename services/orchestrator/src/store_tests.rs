@@ -1373,3 +1373,24 @@ async fn a_requirement_document_upload_waits_for_another_writer_instead_of_faili
     let docs = store.list_requirement_documents("p1").await.unwrap();
     assert_eq!((docs.len(), docs[0].id, docs[0].requirements_count), (1, id, 2));
 }
+
+// ------------------------------------------- execution display settings
+
+/// A fresh database has no row yet — the caller (the executor, via `AppState`) must fall back to
+/// the old default (off/headless) itself; the store never invents a stored preference.
+#[tokio::test]
+async fn show_browser_window_is_none_until_it_is_ever_set() {
+    let (store, _dir) = temp_store().await;
+    assert_eq!(store.get_show_browser_window().await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn show_browser_window_persists_and_can_be_turned_back_off() {
+    let (store, _dir) = temp_store().await;
+
+    store.set_show_browser_window(true).await.unwrap();
+    assert_eq!(store.get_show_browser_window().await.unwrap(), Some(true));
+
+    store.set_show_browser_window(false).await.unwrap();
+    assert_eq!(store.get_show_browser_window().await.unwrap(), Some(false));
+}

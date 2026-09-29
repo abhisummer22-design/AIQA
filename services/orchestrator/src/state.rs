@@ -56,6 +56,14 @@ pub struct AppState {
     /// Phase 7 — which autopilot runs this process is working on (`autopilot_runner.rs`). What a run has done is in
     /// the database; this only stops two tasks from working on one run.
     pub autopilot: Arc<crate::autopilot_runner::AutopilotRegistry>,
+    /// Real, live-toggleable "show the browser window while a Playwright run executes"
+    /// preference (`GET`/`PUT /api/v1/execution-settings`). Off by default — every earlier
+    /// release ran headless unconditionally. `main.rs` loads the persisted value into this same
+    /// `Arc` at startup, before constructing the real `PlaywrightExecutor` the registry holds
+    /// with a clone of it, so a change made through this state's own `store` and this atomic
+    /// (the PUT handler updates both) is what that executor's very next run actually reads —
+    /// never a setting that "looks" saved but does not change execution behavior.
+    pub show_browser_window: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl AppState {
@@ -82,6 +90,7 @@ impl AppState {
             performance_tests: Arc::new(RwLock::new(HashMap::new())),
             log_bus: Arc::new(LogBus::new(300)),
             autopilot: Arc::default(),
+            show_browser_window: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 

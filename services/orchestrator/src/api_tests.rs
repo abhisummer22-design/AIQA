@@ -15958,3 +15958,96 @@ async fn the_skill_viewer_shows_the_detailed_built_in_instruction_and_a_custom_s
     assert!(edge.contains("minimum-1") && edge.contains("Case standard"), "{edge}");
     assert_eq!(body[1]["instruction"], "PIN codes have exactly 6 digits.");
 }
+
+// -------------------------------------------------------- execution settings
+
+#[tokio::test]
+async fn execution_settings_default_to_headless_and_a_put_changes_the_real_live_flag() {
+    let (state, _dir) = test_state().await;
+    let viewer = mint_key(&state, "viewer", None).await;
+    let operator = mint_key(&state, "operator", None).await;
+
+    // Never set: a fresh install must default to off (headless) — the only behavior every
+    // earlier release had.
+    let (status, body) = send(&state, req("GET", "/api/v1/execution-settings", Some(&viewer), None)).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["show_browser_window"], false, "body={body}");
+    assert!(
+        !state.show_browser_window.load(std::sync::atomic::Ordering::Relaxed),
+        "the real, live flag a PlaywrightExecutor would read must default to off too"
+    );
+
+    let (status, body) = send(
+        &state,
+        req(
+            "PUT",
+            "/api/v1/execution-settings",
+            Some(&operator),
+            Some(serde_json::json!({"show_browser_window": true})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["show_browser_window"], true, "body={body}");
+
+    // The real, live in-memory flag a PlaywrightExecutor holds a clone of — not just the DB row —
+    // must reflect it in the same request, so the very next run already sees the change.
+    assert!(
+        state.show_browser_window.load(std::sync::atomic::Ordering::Relaxed),
+        "the PUT must update the real live flag, not only persist a row nothing reads yet"
+    );
+
+    // A fresh, independent GET (not just an echo of the PUT body) must show the real, persisted setting.
+    let (status, refetched) = send(&state, req("GET", "/api/v1/execution-settings", Some(&viewer), None)).await;
+    assert_eq!(status, StatusCode::OK, "body={refetched}");
+    assert_eq!(refetched["show_browser_window"], true);
+}
+
+#[tokio::test]
+async fn execution_settings_survive_a_fresh_store_reload_real_durable_persistence() {
+    let (state, dir) = test_state().await;
+    let operator = mint_key(&state, "operator", None).await;
+    send(
+        &state,
+        req(
+            "PUT",
+            "/api/v1/execution-settings",
+            Some(&operator),
+            Some(serde_json::json!({"show_browser_window": true})),
+        ),
+    )
+    .await;
+
+    // A completely independent `Store` connection against the same real sqlite file — proves
+    // this is durable, on-disk persistence, not an in-memory echo of the request that set it
+    // (the same way a restarted orchestrator process would pick it back up at startup).
+    let reloaded = crate::store::Store::connect(&dir.path().join("api.sqlite3"))
+        .await
+        .expect("reconnect");
+    assert_eq!(
+        reloaded.get_show_browser_window().await.expect("query"),
+        Some(true)
+    );
+}
+
+#[tokio::test]
+async fn execution_settings_put_requires_operator_a_viewer_is_refused_and_changes_nothing() {
+    let (state, _dir) = test_state().await;
+    let viewer = mint_key(&state, "viewer", None).await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "PUT",
+            "/api/v1/execution-settings",
+            Some(&viewer),
+            Some(serde_json::json!({"show_browser_window": true})),
+        ),
+    )
+    .await;
+    assert_envelope(status, &body, StatusCode::FORBIDDEN, "FORBIDDEN");
+    assert!(
+        !state.show_browser_window.load(std::sync::atomic::Ordering::Relaxed),
+        "a refused request must never change the real live flag"
+    );
+}

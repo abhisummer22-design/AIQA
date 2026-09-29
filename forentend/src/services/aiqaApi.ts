@@ -41,6 +41,7 @@ import type {
   AiStatusResponse,
   AiUsageQuery,
   AiUsageReport,
+  ExecutionSettings,
   OpenApiPlan,
   OpenApiReport,
   OpenApiRequestBody,
@@ -900,6 +901,15 @@ export const aiqaApi = {
       delete: (id: string, signal?: AbortSignal) =>
         requestVoid(`/ai/providers/custom/${encodeURIComponent(id)}`, { method: 'DELETE', signal }),
     },
+  },
+  /** Real, platform-wide, live-toggleable execution display preference (`api.rs::
+   *  ExecutionSettings`, `executor.rs::PlaywrightExecutor`) — whether a Playwright run shows its
+   *  real browser window instead of running headless. A PUT takes effect on the very next
+   *  Playwright run, no restart needed. */
+  executionSettings: {
+    get: (signal?: AbortSignal) => requestJson<ExecutionSettings>('/execution-settings', { signal }),
+    update: (body: ExecutionSettings, signal?: AbortSignal) =>
+      requestJson<ExecutionSettings>('/execution-settings', { method: 'PUT', body, signal }),
   },
 
   /** Build order item 2 (22 Aug 2026, System Telemetry) — `GET /metrics`

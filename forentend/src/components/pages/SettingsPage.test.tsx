@@ -728,3 +728,95 @@ describe('SettingsPage — custom provider price and environment key', () => {
     expect(created[0].api_key).toBe('env:OPENAI_API_KEY');
   });
 });
+
+async function openTestExecutionTab(): Promise<void> {
+  await act(async () => {
+    screen.getByText('Test Execution').click();
+  });
+}
+
+describe('SettingsPage — Test Execution panel (show the browser window while tests run)', () => {
+  it('loads the real, persisted setting and shows it off by default', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        if (url.endsWith('/execution-settings')) return jsonResponse(200, { show_browser_window: false });
+        return jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await waitFor(() => expect(screen.getByText('System Settings & Governance')).toBeTruthy());
+    await openTestExecutionTab();
+
+    await waitFor(() => expect(document.getElementById('btn-toggle-show-browser-window')).toBeTruthy());
+    const toggle = document.getElementById('btn-toggle-show-browser-window')!;
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('shows it on when the real backend already has it on', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        if (url.endsWith('/execution-settings')) return jsonResponse(200, { show_browser_window: true });
+        return jsonResponse(200, []);
+      }),
+    );
+
+    renderApp();
+    await waitFor(() => expect(screen.getByText('System Settings & Governance')).toBeTruthy());
+    await openTestExecutionTab();
+
+    await waitFor(() => expect(document.getElementById('btn-toggle-show-browser-window')?.getAttribute('aria-checked')).toBe('true'));
+  });
+
+  it('clicking the toggle sends a real PUT and reflects the real, saved response — not just an optimistic flip', async () => {
+    let putBody: unknown = null;
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/execution-settings') && init?.method === 'PUT') {
+        putBody = JSON.parse(String(init.body));
+        return jsonResponse(200, { show_browser_window: true });
+      }
+      if (url.endsWith('/execution-settings')) return jsonResponse(200, { show_browser_window: false });
+      return jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await waitFor(() => expect(screen.getByText('System Settings & Governance')).toBeTruthy());
+    await openTestExecutionTab();
+    await waitFor(() => expect(document.getElementById('btn-toggle-show-browser-window')?.getAttribute('aria-checked')).toBe('false'));
+
+    await act(async () => {
+      document.getElementById('btn-toggle-show-browser-window')!.click();
+    });
+
+    await waitFor(() => expect(document.getElementById('btn-toggle-show-browser-window')?.getAttribute('aria-checked')).toBe('true'));
+    expect(putBody).toEqual({ show_browser_window: true });
+  });
+
+  it('a failed save shows a real error and does not pretend the toggle changed', async () => {
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/execution-settings') && init?.method === 'PUT') {
+        return jsonResponse(403, { error: { code: 'FORBIDDEN', message: 'Operator role required.', details: {}, request_id: 'req_1' } });
+      }
+      if (url.endsWith('/execution-settings')) return jsonResponse(200, { show_browser_window: false });
+      return jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderApp();
+    await waitFor(() => expect(screen.getByText('System Settings & Governance')).toBeTruthy());
+    await openTestExecutionTab();
+    await waitFor(() => expect(document.getElementById('btn-toggle-show-browser-window')?.getAttribute('aria-checked')).toBe('false'));
+
+    await act(async () => {
+      document.getElementById('btn-toggle-show-browser-window')!.click();
+    });
+
+    await waitFor(() => expect(document.getElementById('test-execution-error')).toBeTruthy());
+    expect(document.getElementById('test-execution-error')!.textContent).toContain('Operator role required.');
+    // The toggle must still show the real, last-known-saved state — never a value the save never actually reached.
+    expect(document.getElementById('btn-toggle-show-browser-window')?.getAttribute('aria-checked')).toBe('false');
+  });
+});

@@ -591,6 +591,12 @@ fn protected_routes() -> Router<AppState> {
             get(get_ai_settings_handler).put(put_ai_settings_handler),
         )
         .route("/api/v1/ai/refresh", post(refresh_ai_providers))
+        // Platform-wide, like `/ai/settings` above: whether a Playwright run shows its real
+        // browser window (`executor.rs::PlaywrightExecutor`) instead of running headless.
+        .route(
+            "/api/v1/execution-settings",
+            get(get_execution_settings_handler).put(put_execution_settings_handler),
+        )
         // What the AI calls came to across every project (`ai_usage.rs`); one project's own is under the project.
         .route("/api/v1/ai/usage", get(get_ai_usage))
         // Phase B cleanup — the legacy flat, unscoped routes (`/runs*`,
@@ -4887,6 +4893,62 @@ async fn put_ai_settings_handler(
         "ai.settings.update",
         None,
         Some(mode_str),
+        "ok",
+    )
+    .await;
+    Ok(Json(body))
+}
+
+/// `GET`/`PUT /api/v1/execution-settings` — real, platform-wide, live-toggleable execution
+/// display preference (`state.rs::AppState::show_browser_window`,
+/// `executor.rs::PlaywrightExecutor`). No project scoping, same reasoning `/ai/settings` above
+/// gives: the real `PlaywrightExecutor` the registry holds is one shared instance across the
+/// whole deployment, not one per project.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+struct ExecutionSettings {
+    show_browser_window: bool,
+}
+
+/// Viewer+, matching `/ai/settings`: reading this preference is not a privileged action.
+async fn get_execution_settings_handler(
+    State(state): State<AppState>,
+    Extension(_ctx): Extension<AuthContext>,
+) -> Json<ExecutionSettings> {
+    Json(ExecutionSettings {
+        show_browser_window: state
+            .show_browser_window
+            .load(std::sync::atomic::Ordering::Relaxed),
+    })
+}
+
+/// Persists for real (`execution_display_settings`, a real singleton row, same shape
+/// `upsert_ai_settings` already uses) and updates the real, live in-memory flag the
+/// `PlaywrightExecutor` the registry holds actually reads, in the same request — never a
+/// setting that "looks" saved but does not change what the very next Playwright run does.
+async fn put_execution_settings_handler(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiJson(body): ApiJson<ExecutionSettings>,
+) -> Result<Json<ExecutionSettings>, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    state
+        .store
+        .set_show_browser_window(body.show_browser_window)
+        .await
+        .map_err(to_500)?;
+    state
+        .show_browser_window
+        .store(body.show_browser_window, std::sync::atomic::Ordering::Relaxed);
+    audit(
+        &state,
+        &ctx,
+        "execution_settings.update",
+        None,
+        Some(if body.show_browser_window {
+            "show_browser_window=true"
+        } else {
+            "show_browser_window=false"
+        }),
         "ok",
     )
     .await;
