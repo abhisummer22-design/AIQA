@@ -1276,21 +1276,22 @@ struct ResolveSkillsBody {
 /// POST /api/v1/skills/resolve — returns the real instruction each supplied
 /// skill resolves to.
 ///
-/// This deliberately calls `ai_generation::resolve_skill_instructions` — the
-/// exact function the generator itself uses — rather than re-deriving the
-/// text. That is the whole point: what a user reads here is provably the
-/// same string that gets embedded in the real prompt, so this view cannot
-/// drift from generation behaviour the way a second, display-only copy of
-/// the instructions would.
+/// This deliberately calls `ai_generation::resolve_skill_instructions_for` —
+/// the exact function the generator itself uses, with the window of the
+/// provider that would serve a generation right now — rather than
+/// re-deriving the text. That is the whole point: what a user reads here is
+/// provably the same string that gets embedded in the real prompt, so this
+/// view cannot drift from generation behaviour the way a second,
+/// display-only copy of the instructions would. (A provider whose window is
+/// small gets the short built-in instructions, so this shows those.)
 ///
 /// Viewer+, matching `GET /skills`: reading what a skill instructs is not a
 /// privileged action.
 async fn resolve_skills(
+    State(state): State<AppState>,
     ApiJson(body): ApiJson<ResolveSkillsBody>,
 ) -> Json<Vec<crate::ai_generation::ResolvedSkillInstruction>> {
-    Json(crate::ai_generation::resolve_skill_instructions(
-        &body.skills,
-    ))
+    Json(crate::ai_generation::resolve_skill_instructions_for(&state.ai_infra, &body.skills).await)
 }
 
 /// GET /api/v1/skills — any authenticated key (Viewer+) may list; selecting

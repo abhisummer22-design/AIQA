@@ -15930,3 +15930,31 @@ async fn phase8d_an_openapi_report_is_waited_for_and_read_as_junit_and_says_how_
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert!(body.contains("json, markdown or junit"), "{body}");
 }
+
+/// The skill viewer asks the orchestrator what a skill instructs
+/// (`POST /api/v1/skills/resolve`). A built-in skill resolves to its detailed
+/// instruction (the test infrastructure has no provider, so no window is known,
+/// and an unknown window is never taken for a small one); a custom skill to its
+/// own text, verbatim.
+#[tokio::test]
+async fn the_skill_viewer_shows_the_detailed_built_in_instruction_and_a_custom_skill_verbatim() {
+    let (state, _dir) = test_state().await;
+    let viewer = mint_key(&state, "viewer", None).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            "/api/v1/skills/resolve",
+            Some(&viewer),
+            Some(serde_json::json!({"skills": [
+                {"id": "skill-edge-case-analysis", "name": "Edge Case Analysis", "description": "Boundary values."},
+                {"id": "custom-1", "name": "PIN codes", "description": "PIN codes have exactly 6 digits."}
+            ]})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let edge = body[0]["instruction"].as_str().expect("an instruction");
+    assert!(edge.contains("minimum-1") && edge.contains("Case standard"), "{edge}");
+    assert_eq!(body[1]["instruction"], "PIN codes have exactly 6 digits.");
+}

@@ -555,6 +555,10 @@ OLLAMA_TIMEOUT_SECS=120
 OLLAMA_DISCOVERY_TIMEOUT_SECS=5
 # Optional — context window (tokens) sent as options.num_ctx with every request.
 # Unset leaves Ollama's own default, which can silently cut a long prompt (e.g. 16384).
+# Test-case generation sends the built-in skills (Functional, Edge Case, Security, ...) in
+# their detailed form, which gives more accurate cases, only when a call can carry 7000
+# tokens or more (Groq's 8000, Ollama with OLLAMA_NUM_CTX=8192, Gemini). On a smaller window
+# (Ollama's own 4096) they send the short one-sentence form, so the prompt still fits.
 OLLAMA_NUM_CTX=
 
 # Groq Cloud Configuration
