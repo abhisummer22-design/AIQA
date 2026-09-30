@@ -106,17 +106,21 @@ describe('CrawlGroundingSection — login role builder', () => {
     const roleCard = document.querySelector('[id^="login-role-"]')!;
     await changeInput(roleCard.querySelector('input[type="text"]')!, 'admin');
 
-    // The default 4-step template: NAVIGATE, FILL, FILL, CLICK.
+    // The default 4-step template: NAVIGATE, FILL, FILL, CLICK — each now
+    // captioned (Login page/Username/Password/Login button), which is why
+    // the selector inputs no longer share one generic "#selector" placeholder.
     const urlInputs = roleCard.querySelectorAll('input[placeholder="https://your-app.example.com/login"]');
-    const selectorInputs = roleCard.querySelectorAll('input[placeholder="#selector"]');
+    const usernameSelectorInput = roleCard.querySelector('input[placeholder="#username or input[name=email]"]')!;
+    const passwordSelectorInput = roleCard.querySelector('input[placeholder="#password"]')!;
+    const loginButtonSelectorInput = roleCard.querySelector('input[placeholder="button[type=submit]"]')!;
     const valueInputs = roleCard.querySelectorAll('input[placeholder="value"]');
 
     await changeInput(urlInputs[0], 'https://target.example.com/login');
-    await changeInput(selectorInputs[0], '#username');
+    await changeInput(usernameSelectorInput, '#username');
     await changeInput(valueInputs[0], 'admin');
-    await changeInput(selectorInputs[1], '#password');
+    await changeInput(passwordSelectorInput, '#password');
     await changeInput(valueInputs[1], 'hunter2');
-    await changeInput(selectorInputs[2], '#submit-login');
+    await changeInput(loginButtonSelectorInput, '#submit-login');
 
     await clickButton(document.getElementById('btn-start-crawl')!);
 
@@ -240,14 +244,16 @@ describe('CrawlGroundingSection — Phase 5: env:NAME logins, and the crawl on o
     const roleCard = document.querySelector('[id^="login-role-"]')!;
     await changeInput(roleCard.querySelector('input[type="text"]')!, 'admin');
     const urlInputs = roleCard.querySelectorAll('input[placeholder="https://your-app.example.com/login"]');
-    const selectorInputs = roleCard.querySelectorAll('input[placeholder="#selector"]');
+    const usernameSelectorInput = roleCard.querySelector('input[placeholder="#username or input[name=email]"]')!;
+    const passwordSelectorInput = roleCard.querySelector('input[placeholder="#password"]')!;
+    const loginButtonSelectorInput = roleCard.querySelector('input[placeholder="button[type=submit]"]')!;
     const valueInputs = roleCard.querySelectorAll('input[placeholder="value"]');
     await changeInput(urlInputs[0], 'https://target.example.com/login');
-    await changeInput(selectorInputs[0], '#username');
+    await changeInput(usernameSelectorInput, '#username');
     await changeInput(valueInputs[0], values.username);
-    await changeInput(selectorInputs[1], '#password');
+    await changeInput(passwordSelectorInput, '#password');
     await changeInput(valueInputs[1], values.password);
-    await changeInput(selectorInputs[2], '#submit-login');
+    await changeInput(loginButtonSelectorInput, '#submit-login');
   }
 
   it('a login written as env:NAME references is sent as written — the browser never holds a password', async () => {
