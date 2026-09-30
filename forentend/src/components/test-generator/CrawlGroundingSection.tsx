@@ -80,6 +80,12 @@ interface AuthRoleDraft {
   localId: number;
   name: string;
   steps: LoginStepDraft[];
+  /** 'quick' shows only Login page URL / Username / Password — the real selectors used to find those
+   *  fields are the QUICK_*_SELECTOR guesses below, never shown or editable. 'advanced' is the original
+   *  NAVIGATE/FILL/CLICK builder (with the captions above), for a login page the guesses do not fit.
+   *  Both modes read and write the exact same `steps`, so switching between them never loses anything
+   *  already typed. */
+  mode: 'quick' | 'advanced';
 }
 
 /** A login value written `env:NAME` is read from the orchestrator's environment when the crawl (or a test compiled from
@@ -112,6 +118,16 @@ function selectorPlaceholder(caption: string | null): string {
   }
 }
 
+/** Quick mode's best-effort guesses for a standard single-page login form — the same handful of
+ *  patterns a password manager's own autofill relies on. `input[type="password"]` in particular is
+ *  reliable on almost any real login page. Any one of these can still be wrong for an unusual login
+ *  page; "Advanced" shows these exact values (pre-filled, already in use) so they can be corrected
+ *  instead of guessed at blind. */
+const QUICK_USERNAME_SELECTOR =
+  'input[type="email"], input[name="username"], input[name="email"], input[id="username"], input[id="email"], input[type="text"]';
+const QUICK_PASSWORD_SELECTOR = 'input[type="password"]';
+const QUICK_SUBMIT_SELECTOR = 'button[type="submit"], input[type="submit"]';
+
 function toPlanAction(step: LoginStepDraft): PlanAction {
   switch (step.type) {
     case 'NAVIGATE':
@@ -138,6 +154,22 @@ function authRolesValidationError(roles: AuthRoleDraft[]): string | null {
   for (const role of roles) {
     if (!role.name.trim()) return 'Every login role needs a name.';
     if (role.steps.length === 0) return `Role "${role.name}" needs at least one login step.`;
+    // Quick mode never shows a selector, so its own errors read as its own three fields, not as
+    // NAVIGATE/FILL jargon it never showed. Its selectors are always the QUICK_*_SELECTOR defaults,
+    // so nothing below in this branch needs to check them.
+    if (role.mode === 'quick' && role.steps.length === 4) {
+      const [navigate, username, password] = role.steps;
+      if (!navigate.url.trim()) return `Role "${role.name}": enter the login page URL.`;
+      if (!username.value.trim()) return `Role "${role.name}": enter a username or email.`;
+      if (username.value.startsWith('env:') && !SECRET_REFERENCE.test(username.value)) {
+        return `Role "${role.name}": a value starting env: must name a variable that starts AIQA_LOGIN_ or AIQA_SECRET_ (for example env:AIQA_LOGIN_ADMIN_PASSWORD).`;
+      }
+      if (!password.value) return `Role "${role.name}": enter a password (or an env: reference).`;
+      if (password.value.startsWith('env:') && !SECRET_REFERENCE.test(password.value)) {
+        return `Role "${role.name}": a value starting env: must name a variable that starts AIQA_LOGIN_ or AIQA_SECRET_ (for example env:AIQA_LOGIN_ADMIN_PASSWORD).`;
+      }
+      continue;
+    }
     for (const step of role.steps) {
       if (step.type === 'NAVIGATE' && !step.url.trim()) {
         return `Role "${role.name}": a NAVIGATE step needs a URL.`;
@@ -155,6 +187,78 @@ function authRolesValidationError(roles: AuthRoleDraft[]): string | null {
   }
   return null;
 }
+
+interface QuickLoginFieldsProps {
+  role: AuthRoleDraft;
+  updateStep: (roleId: number, stepId: number, patch: Partial<LoginStepDraft>) => void;
+  onSwitchToAdvanced: () => void;
+  disabled: boolean;
+}
+
+/** The three fields a normal login needs: Login page URL, Username/email, Password — writing
+ *  straight into the exact same `steps` the advanced builder edits (`role.steps[0].url`,
+ *  `role.steps[1].value`, `role.steps[2].value`). Their selectors are never shown here — they were
+ *  already set to the QUICK_*_SELECTOR guesses by `addAuthRole` and stay that way unless "Advanced"
+ *  is used to change them. Only rendered while `role.steps.length === 4` (its caller checks this),
+ *  so the fixed [0]/[1]/[2] indexing below is always the real NAVIGATE/username-FILL/password-FILL. */
+const QuickLoginFields: React.FC<QuickLoginFieldsProps> = ({ role, updateStep, onSwitchToAdvanced, disabled }) => {
+  const [navigateStep, usernameStep, passwordStep] = role.steps;
+  return (
+    <div className="space-y-2 pl-2 border-l border-slate-800">
+      <div className="space-y-1">
+        <label className="text-[10px] font-mono text-slate-500 uppercase tracking-wide">Login page URL</label>
+        <input
+          type="text"
+          placeholder="https://your-app.example.com/login"
+          value={navigateStep.url}
+          onChange={(e) => updateStep(role.localId, navigateStep.localId, { url: e.target.value })}
+          disabled={disabled}
+          className="w-full px-2 py-1 rounded bg-[#0B1120] border border-slate-700 text-[11px] font-mono text-slate-100 placeholder-slate-500 focus:outline-none"
+        />
+      </div>
+      <div className="space-y-1">
+        <label className="text-[10px] font-mono text-slate-500 uppercase tracking-wide">Username / email</label>
+        <input
+          type="text"
+          placeholder="you@example.com"
+          value={usernameStep.value}
+          onChange={(e) => updateStep(role.localId, usernameStep.localId, { value: e.target.value })}
+          disabled={disabled}
+          className="w-full px-2 py-1 rounded bg-[#0B1120] border border-slate-700 text-[11px] font-mono text-slate-100 placeholder-slate-500 focus:outline-none"
+        />
+      </div>
+      <div className="space-y-1">
+        <label className="text-[10px] font-mono text-slate-500 uppercase tracking-wide">Password</label>
+        <div className="flex items-center gap-1">
+          <input
+            type={passwordStep.isSecret ? 'password' : 'text'}
+            placeholder="your password, or env:AIQA_LOGIN_ADMIN_PASSWORD"
+            value={passwordStep.value}
+            onChange={(e) => updateStep(role.localId, passwordStep.localId, { value: e.target.value })}
+            disabled={disabled}
+            className="flex-1 min-w-0 px-2 py-1 rounded bg-[#0B1120] border border-slate-700 text-[11px] font-mono text-slate-100 placeholder-slate-500 focus:outline-none"
+          />
+          <button
+            type="button"
+            onClick={() => updateStep(role.localId, passwordStep.localId, { isSecret: !passwordStep.isSecret })}
+            title={passwordStep.isSecret ? 'Value hidden — click to reveal while typing' : 'Click to mask this value'}
+            className="p-1 rounded text-slate-500 hover:text-slate-300 shrink-0 cursor-pointer"
+          >
+            {passwordStep.isSecret ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+          </button>
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={onSwitchToAdvanced}
+        disabled={disabled}
+        className="text-[10px] font-mono text-teal-400 hover:text-teal-300 disabled:opacity-50 cursor-pointer"
+      >
+        Advanced (customize exactly what it clicks/fills) →
+      </button>
+    </div>
+  );
+};
 
 interface CrawlGroundingSectionProps {
   appSources: Record<AppSourceType, AppSourceConnection>;
@@ -203,11 +307,35 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
       {
         localId: roleId,
         name: '',
+        // Quick by default — the whole point of the four steps below already being filled in with a
+        // best-effort real selector is that a caller who trusts the guess never has to see them.
+        mode: 'quick',
         steps: [
-          { localId: nextLocalId.current++, type: 'NAVIGATE', url: '', selector: '', value: '', isSecret: false },
-          { localId: nextLocalId.current++, type: 'FILL', url: '', selector: '', value: '', isSecret: false },
-          { localId: nextLocalId.current++, type: 'FILL', url: '', selector: '', value: '', isSecret: true },
-          { localId: nextLocalId.current++, type: 'CLICK', url: '', selector: '', value: '', isSecret: false },
+          { localId: nextLocalId.current++, type: 'NAVIGATE', url: targetUrl, selector: '', value: '', isSecret: false },
+          {
+            localId: nextLocalId.current++,
+            type: 'FILL',
+            url: '',
+            selector: QUICK_USERNAME_SELECTOR,
+            value: '',
+            isSecret: false,
+          },
+          {
+            localId: nextLocalId.current++,
+            type: 'FILL',
+            url: '',
+            selector: QUICK_PASSWORD_SELECTOR,
+            value: '',
+            isSecret: true,
+          },
+          {
+            localId: nextLocalId.current++,
+            type: 'CLICK',
+            url: '',
+            selector: QUICK_SUBMIT_SELECTOR,
+            value: '',
+            isSecret: false,
+          },
         ],
       },
     ]);
@@ -219,6 +347,10 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
 
   const updateAuthRoleName = (roleId: number, name: string) => {
     setAuthRoles((prev) => prev.map((r) => (r.localId === roleId ? { ...r, name } : r)));
+  };
+
+  const setRoleMode = (roleId: number, mode: 'quick' | 'advanced') => {
+    setAuthRoles((prev) => prev.map((r) => (r.localId === roleId ? { ...r, mode } : r)));
   };
 
   const addStep = (roleId: number) => {
@@ -496,6 +628,14 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
                   </button>
                 </div>
 
+                {role.mode === 'quick' && role.steps.length === 4 ? (
+                  <QuickLoginFields
+                    role={role}
+                    updateStep={updateStep}
+                    onSwitchToAdvanced={() => setRoleMode(role.localId, 'advanced')}
+                    disabled={disabled || isBusy}
+                  />
+                ) : (
                 <div className="space-y-1.5 pl-2 border-l border-slate-800">
                   {role.steps.map((step, idx) => {
                     const caption = stepCaption(idx);
@@ -577,16 +717,29 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
                     </div>
                     );
                   })}
-                  <button
-                    type="button"
-                    onClick={() => addStep(role.localId)}
-                    disabled={disabled || isBusy}
-                    className="flex items-center gap-1 text-[10px] font-mono text-teal-400 hover:text-teal-300 disabled:opacity-50 cursor-pointer"
-                  >
-                    <Plus className="w-3 h-3" />
-                    <span>Add step</span>
-                  </button>
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => addStep(role.localId)}
+                      disabled={disabled || isBusy}
+                      className="flex items-center gap-1 text-[10px] font-mono text-teal-400 hover:text-teal-300 disabled:opacity-50 cursor-pointer"
+                    >
+                      <Plus className="w-3 h-3" />
+                      <span>Add step</span>
+                    </button>
+                    {role.steps.length === 4 && (
+                      <button
+                        type="button"
+                        onClick={() => setRoleMode(role.localId, 'quick')}
+                        disabled={disabled || isBusy}
+                        className="text-[10px] font-mono text-slate-500 hover:text-slate-300 disabled:opacity-50 cursor-pointer"
+                      >
+                        ← Back to Quick
+                      </button>
+                    )}
+                  </div>
                 </div>
+                )}
               </div>
             ))}
 
