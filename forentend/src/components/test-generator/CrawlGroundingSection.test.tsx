@@ -106,6 +106,10 @@ describe('CrawlGroundingSection — login role builder', () => {
     const roleCard = document.querySelector('[id^="login-role-"]')!;
     await changeInput(roleCard.querySelector('input[type="text"]')!, 'admin');
 
+    // A freshly-added role opens in Quick mode; this test wants the exact
+    // PlanActions the raw builder sends, so switch to Advanced first.
+    await clickButton(screen.getByText('Advanced (customize exactly what it clicks/fills) →'));
+
     // The default 4-step template: NAVIGATE, FILL, FILL, CLICK — each now
     // captioned (Login page/Username/Password/Login button), which is why
     // the selector inputs no longer share one generic "#selector" placeholder.
@@ -142,6 +146,8 @@ describe('CrawlGroundingSection — login role builder', () => {
     await clickButton(document.getElementById('btn-add-login-role')!);
 
     const roleCard = document.querySelector('[id^="login-role-"]')!;
+    // This test wants the raw builder's own inputs — a freshly-added role opens in Quick mode instead.
+    await clickButton(screen.getByText('Advanced (customize exactly what it clicks/fills) →'));
     const valueInputs = roleCard.querySelectorAll('input[placeholder="value"]') as NodeListOf<HTMLInputElement>;
 
     expect(valueInputs[0].type).toBe('text');
@@ -196,6 +202,8 @@ describe('CrawlGroundingSection — login role builder', () => {
 
     const roleCard = document.querySelector('[id^="login-role-"]')!;
     await changeInput(roleCard.querySelector('input[type="text"]')!, 'admin');
+    // Per-step removal is an Advanced-only control — a freshly-added role opens in Quick mode.
+    await clickButton(screen.getByText('Advanced (customize exactly what it clicks/fills) →'));
 
     // Remove all 4 default steps, one at a time.
     for (let i = 0; i < 4; i++) {
@@ -236,24 +244,121 @@ describe('CrawlGroundingSection — login role builder', () => {
   });
 });
 
+describe('CrawlGroundingSection — Quick login mode (the default for a freshly-added role)', () => {
+  it('shows only Login page URL / Username / Password — no NAVIGATE/FILL/CLICK dropdown, no raw selector input', async () => {
+    render(
+      <CrawlGroundingSection appSources={emptySources()} projectId={PROJECT_ID} crawlRunId={null} onCrawlRunIdChange={noop} />,
+    );
+    await clickButton(document.getElementById('btn-add-login-role')!);
+
+    const roleCard = document.querySelector('[id^="login-role-"]')!;
+    expect(roleCard.querySelector('select')).toBeNull();
+    expect(screen.getByPlaceholderText('https://your-app.example.com/login')).toBeTruthy();
+    expect(screen.getByPlaceholderText('you@example.com')).toBeTruthy();
+    expect(screen.getByPlaceholderText('your password, or env:AIQA_LOGIN_ADMIN_PASSWORD')).toBeTruthy();
+    expect(screen.getByText('Advanced (customize exactly what it clicks/fills) →')).toBeTruthy();
+  });
+
+  it('sends real PlanActions built from just Login page URL / Username / Password, using the best-effort default selectors', async () => {
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/crawl') && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body));
+        expect(body.roles[1]).toEqual({
+          name: 'admin',
+          login_actions: [
+            { type: 'NAVIGATE', url: 'https://target.example.com/login' },
+            {
+              type: 'FILL',
+              selector:
+                'input[type="email"], input[name="username"], input[name="email"], input[id="username"], input[id="email"], input[type="text"]',
+              value: 'admin@example.com',
+            },
+            { type: 'FILL', selector: 'input[type="password"]', value: 'hunter2' },
+            { type: 'CLICK', selector: 'button[type="submit"], input[type="submit"]' },
+          ],
+        });
+        return jsonResponse(201, { run_id: 'crawl-run-1' });
+      }
+      return jsonResponse(200, {});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    setApiKey(RAW_KEY);
+
+    render(
+      <CrawlGroundingSection appSources={emptySources()} projectId={PROJECT_ID} crawlRunId={null} onCrawlRunIdChange={noop} />,
+    );
+
+    await changeInput(document.getElementById('crawl-target-url')!, 'https://target.example.com');
+    await clickButton(document.getElementById('btn-add-login-role')!);
+    const roleCard = document.querySelector('[id^="login-role-"]')!;
+    await changeInput(roleCard.querySelector('input[type="text"]')!, 'admin');
+    await changeInput(screen.getByPlaceholderText('https://your-app.example.com/login'), 'https://target.example.com/login');
+    await changeInput(screen.getByPlaceholderText('you@example.com'), 'admin@example.com');
+    await changeInput(screen.getByPlaceholderText('your password, or env:AIQA_LOGIN_ADMIN_PASSWORD'), 'hunter2');
+
+    await clickButton(document.getElementById('btn-start-crawl')!);
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([u, i]) => String(u).includes('/crawl') && (i as RequestInit)?.method === 'POST')).toBe(true),
+    );
+  });
+
+  it('a missing username gives a friendly, jargon-free error — never "a FILL step needs a value"', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    setApiKey(RAW_KEY);
+    render(
+      <CrawlGroundingSection appSources={emptySources()} projectId={PROJECT_ID} crawlRunId={null} onCrawlRunIdChange={noop} />,
+    );
+
+    await changeInput(document.getElementById('crawl-target-url')!, 'https://target.example.com');
+    await clickButton(document.getElementById('btn-add-login-role')!);
+    const roleCard = document.querySelector('[id^="login-role-"]')!;
+    await changeInput(roleCard.querySelector('input[type="text"]')!, 'admin');
+    await changeInput(screen.getByPlaceholderText('your password, or env:AIQA_LOGIN_ADMIN_PASSWORD'), 'hunter2');
+
+    await clickButton(document.getElementById('btn-start-crawl')!);
+
+    await waitFor(() => expect(screen.getByText(/enter a username or email/)).toBeTruthy());
+    expect(screen.queryByText(/FILL step needs a value/)).toBeNull();
+    expect(fetchMock.mock.calls.some(([u]) => String(u).includes('/crawl'))).toBe(false);
+  });
+
+  it('switching to Advanced keeps exactly what Quick mode already had typed in — nothing is lost', async () => {
+    render(
+      <CrawlGroundingSection appSources={emptySources()} projectId={PROJECT_ID} crawlRunId={null} onCrawlRunIdChange={noop} />,
+    );
+    await changeInput(document.getElementById('crawl-target-url')!, 'https://target.example.com');
+    await clickButton(document.getElementById('btn-add-login-role')!);
+    const roleCard = document.querySelector('[id^="login-role-"]')!;
+    await changeInput(roleCard.querySelector('input[type="text"]')!, 'admin');
+    await changeInput(screen.getByPlaceholderText('you@example.com'), 'admin@example.com');
+    await changeInput(screen.getByPlaceholderText('your password, or env:AIQA_LOGIN_ADMIN_PASSWORD'), 'hunter2');
+
+    await clickButton(screen.getByText('Advanced (customize exactly what it clicks/fills) →'));
+
+    const valueInputs = roleCard.querySelectorAll('input[placeholder="value"]') as NodeListOf<HTMLInputElement>;
+    expect(valueInputs[0].value).toBe('admin@example.com');
+    expect(valueInputs[1].value).toBe('hunter2');
+    const usernameSelectorInput = roleCard.querySelector(
+      'input[placeholder="#username or input[name=email]"]',
+    ) as HTMLInputElement;
+    expect(usernameSelectorInput.value).toBe(
+      'input[type="email"], input[name="username"], input[name="email"], input[id="username"], input[id="email"], input[type="text"]',
+    );
+  });
+});
+
 describe('CrawlGroundingSection — Phase 5: env:NAME logins, and the crawl on offer', () => {
-  /** A fresh login role with the default four steps, filled from `values` (username, then password). */
+  /** A fresh login role in its default Quick mode — just a name, username and password (the login
+   *  page URL is left as Quick mode's own default, the current crawl target). */
   async function addRole(values: { username: string; password: string }) {
     await changeInput(document.getElementById('crawl-target-url')!, 'https://target.example.com');
     await clickButton(document.getElementById('btn-add-login-role')!);
     const roleCard = document.querySelector('[id^="login-role-"]')!;
     await changeInput(roleCard.querySelector('input[type="text"]')!, 'admin');
-    const urlInputs = roleCard.querySelectorAll('input[placeholder="https://your-app.example.com/login"]');
-    const usernameSelectorInput = roleCard.querySelector('input[placeholder="#username or input[name=email]"]')!;
-    const passwordSelectorInput = roleCard.querySelector('input[placeholder="#password"]')!;
-    const loginButtonSelectorInput = roleCard.querySelector('input[placeholder="button[type=submit]"]')!;
-    const valueInputs = roleCard.querySelectorAll('input[placeholder="value"]');
-    await changeInput(urlInputs[0], 'https://target.example.com/login');
-    await changeInput(usernameSelectorInput, '#username');
-    await changeInput(valueInputs[0], values.username);
-    await changeInput(passwordSelectorInput, '#password');
-    await changeInput(valueInputs[1], values.password);
-    await changeInput(loginButtonSelectorInput, '#submit-login');
+    await changeInput(screen.getByPlaceholderText('you@example.com'), values.username);
+    await changeInput(screen.getByPlaceholderText('your password, or env:AIQA_LOGIN_ADMIN_PASSWORD'), values.password);
   }
 
   it('a login written as env:NAME references is sent as written — the browser never holds a password', async () => {
