@@ -86,6 +86,32 @@ interface AuthRoleDraft {
  *  it) runs — nothing is embedded or stored. Only these names can be referenced (`execution_plan.rs::secret_name`). */
 const SECRET_REFERENCE = /^env:\s*(AIQA_LOGIN_|AIQA_SECRET_)[A-Za-z0-9_]*\s*$/;
 
+/** Plain-English caption for the first four steps of a freshly-added role
+ *  (`addAuthRole` below always creates exactly this NAVIGATE/FILL/FILL/CLICK
+ *  shape) — shown above the row so a reader does not need to know what
+ *  "NAVIGATE"/"FILL"/"CLICK" mean to fill the form in. Any step added beyond
+ *  these four (`addStep`) is a custom/advanced one with no fixed meaning, so
+ *  it keeps the plain numbered label instead. The dropdown and inputs below
+ *  are unchanged either way — this is a label only, never a restriction. */
+const DEFAULT_STEP_CAPTIONS = ['Login page', 'Username', 'Password', 'Login button'];
+
+function stepCaption(idx: number): string | null {
+  return DEFAULT_STEP_CAPTIONS[idx] ?? null;
+}
+
+function selectorPlaceholder(caption: string | null): string {
+  switch (caption) {
+    case 'Username':
+      return '#username or input[name=email]';
+    case 'Password':
+      return '#password';
+    case 'Login button':
+      return 'button[type=submit]';
+    default:
+      return '#selector';
+  }
+}
+
 function toPlanAction(step: LoginStepDraft): PlanAction {
   switch (step.type) {
     case 'NAVIGATE':
@@ -471,8 +497,16 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
                 </div>
 
                 <div className="space-y-1.5 pl-2 border-l border-slate-800">
-                  {role.steps.map((step, idx) => (
-                    <div key={step.localId} className="flex items-center gap-1.5">
+                  {role.steps.map((step, idx) => {
+                    const caption = stepCaption(idx);
+                    return (
+                    <div key={step.localId} className="space-y-0.5">
+                      {caption && (
+                        <div className="text-[9px] font-mono text-teal-500/80 uppercase tracking-wide pl-[26px]">
+                          {caption}
+                        </div>
+                      )}
+                    <div className="flex items-center gap-1.5">
                       <span className="text-[10px] font-mono text-slate-500 w-4 text-right shrink-0">{idx + 1}.</span>
                       <select
                         value={step.type}
@@ -501,7 +535,7 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
                       {(step.type === 'FILL' || step.type === 'CLICK') && (
                         <input
                           type="text"
-                          placeholder="#selector"
+                          placeholder={selectorPlaceholder(caption)}
                           value={step.selector}
                           onChange={(e) => updateStep(role.localId, step.localId, { selector: e.target.value })}
                           disabled={disabled || isBusy}
@@ -540,7 +574,9 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
                         <Trash2 className="w-3 h-3" />
                       </button>
                     </div>
-                  ))}
+                    </div>
+                    );
+                  })}
                   <button
                     type="button"
                     onClick={() => addStep(role.localId)}
