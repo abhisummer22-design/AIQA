@@ -556,7 +556,7 @@ export const DashboardPage: React.FC = () => {
           {/* Left: Current Project Detail (7 Cols on desktop) */}
           <div
             id="current-project-detail-panel"
-            className="lg:col-span-7 p-4 rounded-lg bg-surface-card border border-border-default flex flex-col justify-between space-y-4"
+            className="lg:col-span-7 p-4 rounded-lg bg-surface-card border border-border-default flex flex-col space-y-4"
           >
             {/* Project Title & Metadata Header */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-border-default/80">
