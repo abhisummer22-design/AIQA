@@ -83,7 +83,13 @@ describe('GenerationWaveResults', () => {
     expect(screen.queryByText(/custom-ai-3f2a/)).toBeNull();
   });
 
-  it('marks a call a fallback served, and says so honestly when usage was not reported', () => {
+  // The label is "provider fallback", deliberately not a bare "fallback": this
+  // is the router serving a wave from a provider other than the one it
+  // preferred, which is a different fact from the request-level generation
+  // method the Generation Details tile reports. Both used to read "fallback",
+  // so a run that was pure AI could show "Fallback: No" here while every row
+  // claimed a fallback had occurred.
+  it('marks a call a provider fallback served (not a bare "fallback"), and says so honestly when usage was not reported', () => {
     render(
       <GenerationWaveResults
         waves={[wave({ fallback_used: true, prompt_tokens: null, completion_tokens: null, latency_ms: null })]}
@@ -91,7 +97,7 @@ describe('GenerationWaveResults', () => {
     );
 
     const row = screen.getByText('Functional Testing').closest('li')!;
-    expect(within(row).getByText('fallback')).toBeTruthy();
+    expect(within(row).getByText('provider fallback')).toBeTruthy();
     expect(within(row).getByText('Tokens not reported')).toBeTruthy();
     expect(within(row).getByText('Time not reported')).toBeTruthy();
   });

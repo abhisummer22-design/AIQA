@@ -1381,10 +1381,25 @@ export const TestCaseGeneratorPage: React.FC = () => {
                   : 'None selected'}
               </div>
               <div>
-                <span className="text-slate-500">Fallback: </span>
+                {/*
+                  Two different things were both called "fallback" and read as a
+                  contradiction on screen: this one is the *request-level*
+                  generation method (was the answer AI, or the app's own
+                  similar-cases fallback?), while each per-skill row's `fallback`
+                  badge is the *router-level* fact that the provider the router
+                  preferred first refused and it used another. Naming them
+                  separately is the fix — neither value was wrong.
+                */}
+                <span className="text-slate-500">Method: </span>
                 {lastGenerationResult.generation_method === 'fallback'
-                  ? `Yes — ${lastGenerationResult.fallback_reason ?? 'no reason reported'}`
-                  : 'No'}
+                  ? `Fallback — ${lastGenerationResult.fallback_reason ?? 'no reason reported'}`
+                  : `AI (${
+                      lastGenerationResult.provider
+                        ? `${providerName(lastGenerationResult.provider)} / ${
+                            lastGenerationResult.model ?? 'model not reported'
+                          }`
+                        : 'provider not reported'
+                    })`}
               </div>
               {lastGenerationResult.generation_method === 'ai' && (
                 <>

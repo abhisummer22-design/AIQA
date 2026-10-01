@@ -85,7 +85,19 @@ export const GenerationWaveResults: React.FC<GenerationWaveResultsProps> = ({ wa
                   {w.case_count} {w.case_count === 1 ? 'case' : 'cases'}
                 </span>
                 <span>{[w.provider ? providerName(w.provider) : null, w.model].filter(Boolean).join(' / ') || 'Provider not reported'}</span>
-                {w.fallback_used === true && <span className="text-amber-300">fallback</span>}
+                {/*
+                  Router-level, not request-level: this wave's provider was
+                  not the router's first choice, so it used another one (or the
+                  preferred provider was unreachable). Distinct from the summary
+                  tile's "Method", which reports the request-level generation
+                  method — the two were previously both labelled "fallback" and
+                  looked contradictory when one said Yes and the other No.
+                */}
+                  {w.fallback_used === true && (
+                    <span className="text-amber-300" title="The router's preferred provider was used first and did not answer; this wave was served by another provider">
+                      provider fallback
+                    </span>
+                  )}
                 <span>{tokensLabel(w)}</span>
                 <span>{latencyLabel(w)}</span>
               </>

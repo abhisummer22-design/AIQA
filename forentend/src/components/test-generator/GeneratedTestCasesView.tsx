@@ -57,6 +57,27 @@ const HANDOFF_OPTIONS = [
 /** Every canonical category id, keyed by its own stem, for `resolveCategoryId`. */
 const CATEGORY_ID_BY_STEM = new Map(TEST_CATEGORIES.map((c) => [c.id.toLowerCase(), c.id]));
 
+/** The filter chip that holds cases whose own `category` text is not one of the
+ * 14 canonical ids — so they are reachable instead of being visible only under
+ * "All Categories".
+ *
+ * Observed live: a `qwen3:14b` run returned `Sample Step Display` as a case's
+ * `category` — a fragment of the requirement line it had echoed, not a category
+ * at all. Such a case resolved to no canonical id, so it matched no chip: 40 of
+ * 72 cases were reachable *only* via "All Categories" (UI/UX 18 + Edge Case 14
+ * were the only non-zero chips), and clicking any other chip appeared to lose
+ * them. They were never filtered out of the list — they were simply unreachable
+ * from every chip. This bucket names them honestly rather than forcing them into
+ * a category they do not belong to. */
+const UNCATEGORISED_ID = '__uncategorised__';
+
+/** Whether a resolved category id is one of the 14 real ones. */
+const isCanonicalCategory = (id: string): boolean => CATEGORY_ID_BY_STEM.has(id);
+
+/** Whether this case belongs in the "Uncategorised" chip. */
+const isUncategorised = (tc: { category: string }): boolean =>
+  !isCanonicalCategory(resolveCategoryId(tc.category));
+
 /** A generated test case's real `category` field is freeform AI output
  *  (`ai_generation.rs::GeneratedTestCaseDraft.category: String` — the
  *  model is never constrained to the 14 canonical category ids), and it
@@ -215,7 +236,11 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
 
   // Filtered cases
   const filteredCases = testCases.filter((tc) => {
-    if (selectedCategory !== 'ALL' && resolveCategoryId(tc.category) !== selectedCategory) return false;
+    if (selectedCategory === UNCATEGORISED_ID) {
+      if (!isUncategorised(tc)) return false;
+    } else if (selectedCategory !== 'ALL' && resolveCategoryId(tc.category) !== selectedCategory) {
+      return false;
+    }
     if (statusFilter !== 'ALL' && tc.status !== statusFilter) return false;
     if (priorityFilter !== 'ALL' && tc.priority !== priorityFilter) return false;
     if (searchQuery.trim()) {
@@ -573,6 +598,40 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
               </button>
             );
           })}
+
+          {/* Cases whose own `category` text is not one of the 14 canonical ids.
+           Rendered last so it sits after the real categories, and only when
+           there is at least one — a chip reading 0 for a bucket that never
+           happens is noise. */}
+          {(() => {
+            const uncategorised = testCases.filter(isUncategorised);
+            if (uncategorised.length === 0) return null;
+            const isSelected = selectedCategory === UNCATEGORISED_ID;
+            return (
+              <button
+                type="button"
+                onClick={() => setSelectedCategory(UNCATEGORISED_ID)}
+                title="Cases whose category the AI did not write as one of the 14 named categories"
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-mono whitespace-nowrap transition-all cursor-pointer shrink-0 ${
+                  isSelected
+                    ? 'bg-violet-600 text-white font-bold shadow-sm'
+                    : 'bg-[#020617] hover:bg-slate-900 border border-slate-800/80 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <HelpCircle className={`w-3.5 h-3.5 shrink-0 ${isSelected ? 'text-white' : 'text-amber-400'}`} />
+                <span>Uncategorised</span>
+                <span
+                  className={`text-[10px] px-1.5 py-0.2 rounded font-mono font-bold ${
+                    isSelected
+                      ? 'bg-violet-900 text-violet-100'
+                      : 'bg-amber-950/60 text-amber-300 border border-amber-800/60'
+                  }`}
+                >
+                  {uncategorised.length}
+                </span>
+              </button>
+            );
+          })()}
         </div>
       </div>
 

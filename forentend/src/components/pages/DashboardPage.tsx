@@ -556,7 +556,19 @@ export const DashboardPage: React.FC = () => {
           {/* Left: Current Project Detail (7 Cols on desktop) */}
           <div
             id="current-project-detail-panel"
-            className="lg:col-span-7 p-4 rounded-lg bg-surface-card border border-border-default flex flex-col space-y-4"
+            /* `self-start` so this card sizes to its own content instead of
+               being stretched to the height of its neighbour. `items-stretch`
+               on the grid below is the CSS default for grid items, so removing
+               it alone changes nothing — this card has to opt out explicitly.
+               Measured before the fix: the AI Engine panel next to it is 798px
+               tall once a project has several providers plus the full
+               capability profile, which stretched this card to the same 798px
+               while its own content occupied 290px — a 508px empty rectangle,
+               64% of the primary dashboard card, and the exact symptom the
+               `dd28222` commit claimed to have fixed. That commit removed
+               `justify-between` (so the sections stopped being spread apart)
+               but the stretch came from the grid cell, not from `justify-between`. */
+            className="lg:col-span-7 self-start p-4 rounded-lg bg-surface-card border border-border-default flex flex-col space-y-4"
           >
             {/* Project Title & Metadata Header */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-border-default/80">
