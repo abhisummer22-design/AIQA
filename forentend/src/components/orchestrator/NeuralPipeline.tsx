@@ -91,12 +91,12 @@ const StageNode: React.FC<{
       <div className="flex items-center gap-2 min-w-0">
         <Icon
           className={`w-4 h-4 shrink-0 ${
-            unavailable ? 'text-slate-600' : active ? 'text-yellow-300' : 'text-violet-400'
+            unavailable ? 'text-content-muted' : active ? 'text-yellow-300' : 'text-violet-400'
           }`}
         />
         <span
           className={`text-[11px] font-mono font-bold truncate ${
-            unavailable ? 'text-slate-500 line-through' : 'text-slate-100'
+            unavailable ? 'text-content-muted line-through' : 'text-slate-100'
           }`}
         >
           {stage.label}
@@ -205,7 +205,7 @@ export const NeuralPipeline: React.FC<NeuralPipelineProps> = ({ projectId }) => 
           <BrainCircuit className="w-4 h-4 text-yellow-400 shrink-0" />
           <div className="min-w-0">
             <h2 className="text-sm font-bold text-slate-100 tracking-tight">Neural Pipeline</h2>
-            <p className="text-[11px] text-slate-500">Real execution loop — each stage backed by a real module</p>
+            <p className="text-[11px] text-content-muted">Real execution loop — each stage backed by a real module</p>
           </div>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
@@ -290,7 +290,7 @@ export const NeuralPipeline: React.FC<NeuralPipelineProps> = ({ projectId }) => 
               derived rather than a single hardcoded id. */}
           {supportingStages.length > 0 && (
             <div className="space-y-1.5 pt-1">
-              <p className="text-[10px] font-mono uppercase tracking-wider text-slate-500">
+              <p className="text-[10px] font-mono uppercase tracking-wider text-content-muted">
                 Supporting capabilities
               </p>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
@@ -304,7 +304,7 @@ export const NeuralPipeline: React.FC<NeuralPipelineProps> = ({ projectId }) => 
           {/* What this pipeline genuinely does NOT have. */}
           {unavailableStages.length > 0 && (
             <div className="space-y-1.5 pt-1">
-              <p className="text-[10px] font-mono uppercase tracking-wider text-slate-500">
+              <p className="text-[10px] font-mono uppercase tracking-wider text-content-muted">
                 Not part of this pipeline
               </p>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
@@ -314,7 +314,7 @@ export const NeuralPipeline: React.FC<NeuralPipelineProps> = ({ projectId }) => 
               </div>
               <ul className="space-y-1">
                 {unavailableStages.map((s) => (
-                  <li key={s.id} className="text-[10px] font-mono text-slate-500 leading-snug">
+                  <li key={s.id} className="text-[10px] font-mono text-content-muted leading-snug">
                     <span className="text-slate-400">{s.label}:</span> {s.backing}
                   </li>
                 ))}
@@ -322,7 +322,7 @@ export const NeuralPipeline: React.FC<NeuralPipelineProps> = ({ projectId }) => 
             </div>
           )}
 
-          <p className="text-[10px] font-mono text-slate-500 flex items-start gap-1.5">
+          <p className="text-[10px] font-mono text-content-muted flex items-start gap-1.5">
             <CheckCircle2 className="w-3 h-3 shrink-0 mt-0.5" />
             <span>
               Flow animates only while tasks are genuinely executing. {data.active_runs} active run

@@ -113,13 +113,13 @@ export const SkillDetailModal: React.FC<SkillDetailModalProps> = ({ skill, onClo
                 {badgeLabel}
               </span>
             </div>
-            <p className="text-[10px] font-mono text-slate-500 mt-0.5 truncate">{skill.id}</p>
+            <p className="text-[10px] font-mono text-content-muted mt-0.5 truncate">{skill.id}</p>
           </div>
           <button
             type="button"
             onClick={onClose}
             aria-label="Close skill detail"
-            className="p-1.5 text-slate-500 hover:text-slate-300 rounded cursor-pointer shrink-0"
+            className="p-1.5 text-content-muted hover:text-slate-300 rounded cursor-pointer shrink-0"
           >
             <X className="w-4 h-4" />
           </button>
@@ -134,7 +134,7 @@ export const SkillDetailModal: React.FC<SkillDetailModalProps> = ({ skill, onClo
                 <dl className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 pt-1 text-[10px] font-mono">
                   {metadataEntries.map(([key, value]) => (
                     <React.Fragment key={key}>
-                      <dt className="text-slate-500">{key}</dt>
+                      <dt className="text-content-muted">{key}</dt>
                       <dd className="text-slate-300 truncate">{Array.isArray(value) ? value.join(', ') : String(value)}</dd>
                     </React.Fragment>
                   ))}
@@ -180,7 +180,7 @@ export const SkillDetailModal: React.FC<SkillDetailModalProps> = ({ skill, onClo
           )}
 
           {!loading && !error && (
-            <p className="text-[10px] font-mono text-slate-500 flex items-start gap-1.5">
+            <p className="text-[10px] font-mono text-content-muted flex items-start gap-1.5">
               <Info className="w-3 h-3 shrink-0 mt-0.5" />
               <span>
                 {isFile

@@ -275,7 +275,7 @@ describe('a case', () => {
     expect(row.textContent).not.toContain('expected');
     const reason = row.querySelector('[data-reason]') as HTMLElement;
     expect(reason.textContent).toContain('POST changes data');
-    expect(reason.className).toContain('text-slate-500');
+    expect(reason.className).toContain('text-content-muted');
     expect(reason.className).not.toContain('rose');
   });
 

@@ -33,9 +33,9 @@ const TILE: Record<Tone, string> = {
 
 const Tile: React.FC<{ id: string; label: string; value: string; tone?: Tone; note?: string }> = ({ id, label, value, tone = 'plain', note }) => (
   <div id={id} className={`p-3 rounded-lg border ${TILE[tone]}`}>
-    <div className="text-[10px] uppercase tracking-wide text-slate-500">{label}</div>
+    <div className="text-[10px] uppercase tracking-wide text-content-muted">{label}</div>
     <div className="text-sm font-mono text-slate-100">{value}</div>
-    {note && <div className="text-[10px] text-slate-500 mt-0.5">{note}</div>}
+    {note && <div className="text-[10px] text-content-muted mt-0.5">{note}</div>}
   </div>
 );
 
@@ -44,7 +44,7 @@ const CaseRow: React.FC<{ c: RegressionCase }> = ({ c }) => (
     <div className="flex flex-wrap items-center gap-2 text-[11px]">
       <Badge tone={changeTone(c)}>{CHANGE_LABEL[c.change]}</Badge>
       <span className="text-slate-200">{c.title}</span>
-      <span className="ml-auto text-slate-500">{OUTCOME_LABEL[c.outcome]}</span>
+      <span className="ml-auto text-content-muted">{OUTCOME_LABEL[c.outcome]}</span>
     </div>
     <div className="text-[11px] text-slate-400">{changeLine(c)}</div>
     {c.reason && (
@@ -70,7 +70,7 @@ export const RegressionReportView: React.FC<{
     <section id="regression-report" className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <h2 className="text-sm font-semibold text-slate-100">{report.schedule_name}</h2>
-        <span id="regression-report-time" className="text-[11px] text-slate-500">
+        <span id="regression-report-time" className="text-[11px] text-content-muted">
           {formatTimestamp(report.created_at)} · {report.trigger === 'SCHEDULE' ? 'by the schedule' : 'run by hand'}
         </span>
         <Badge id="regression-verdict" data-verdict={report.verdict} tone={verdictTone(report.verdict)}>
@@ -128,7 +128,7 @@ export const RegressionReportView: React.FC<{
           ))}
         </ul>
       ) : (
-        <p id="regression-no-cases" className="text-[11px] text-slate-500">
+        <p id="regression-no-cases" className="text-[11px] text-content-muted">
           No case was repeated in this run.
         </p>
       )}

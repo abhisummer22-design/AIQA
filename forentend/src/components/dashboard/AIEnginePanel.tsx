@@ -53,15 +53,15 @@ export interface AIEnginePanelProps {
 const levelStyles: Record<AiCapabilityLevel, string> = {
   STRONG: 'text-emerald-300 bg-emerald-950/70 border-emerald-800',
   BASIC: 'text-yellow-300 bg-yellow-950/70 border-yellow-800',
-  UNKNOWN: 'text-slate-400 bg-slate-800/70 border-slate-700',
-  NONE: 'text-slate-500 bg-slate-900 border-slate-800',
+  UNKNOWN: 'text-content-secondary bg-slate-800/70 border-border-default',
+  NONE: 'text-content-muted bg-slate-900 border-border-default',
 };
 
 const providerStatusStyles: Record<string, string> = {
   HEALTHY: 'text-emerald-300 bg-emerald-950/70 border-emerald-800',
   AVAILABLE: 'text-emerald-300 bg-emerald-950/70 border-emerald-800',
   DEGRADED: 'text-amber-300 bg-amber-950/70 border-amber-800',
-  NOT_CONFIGURED: 'text-slate-400 bg-slate-800/70 border-slate-700',
+  NOT_CONFIGURED: 'text-content-secondary bg-slate-800/70 border-border-default',
   UNAVAILABLE: 'text-rose-300 bg-rose-950/70 border-rose-800',
   ERROR: 'text-rose-300 bg-rose-950/70 border-rose-800',
 };
@@ -69,7 +69,7 @@ const providerStatusStyles: Record<string, string> = {
 const Pill: React.FC<{ label: string; className?: string }> = ({ label, className }) => (
   <span
     className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[9px] font-mono font-bold uppercase tracking-wide shrink-0 ${
-      className ?? 'text-slate-400 bg-slate-800/60 border-slate-700'
+      className ?? 'text-content-secondary bg-slate-800/60 border-border-default'
     }`}
   >
     {label}
@@ -90,14 +90,14 @@ export const AIEnginePanel: React.FC<AIEnginePanelProps> = ({ status, loading, e
   return (
     <div
       id="ai-engine-panel"
-      className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 h-full flex flex-col space-y-3"
+      className="p-4 rounded-lg bg-surface-card border border-border-default h-full flex flex-col space-y-3"
     >
-      <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-800/80">
+      <div className="flex items-center justify-between gap-2 pb-2 border-b border-border-default/80">
         <div className="flex items-center gap-2 min-w-0">
           <BrainCircuit className="w-4 h-4 text-yellow-400 shrink-0" />
           <div className="min-w-0">
-            <h3 className="text-xs font-bold text-slate-100 font-mono uppercase tracking-wider">AI Engine</h3>
-            <p className="text-[10px] text-slate-500">Real model routing and capabilities</p>
+            <h3 className="text-xs font-bold text-content-primary font-mono uppercase tracking-wider">AI Engine</h3>
+            <p className="text-[10px] text-content-muted">Real model routing and capabilities</p>
           </div>
         </div>
         {loading && <Loader2 className="w-3.5 h-3.5 animate-spin text-violet-400 shrink-0" />}
@@ -106,18 +106,18 @@ export const AIEnginePanel: React.FC<AIEnginePanelProps> = ({ status, loading, e
       {error ? (
         <div className="flex-1 flex flex-col items-center justify-center text-center gap-2 py-4">
           <AlertTriangle className="w-5 h-5 text-rose-400" />
-          <p className="text-[11px] text-slate-400 max-w-[240px]">{error}</p>
+          <p className="text-[11px] text-content-secondary max-w-[240px]">{error}</p>
           <button
             type="button"
             id="btn-ai-engine-retry"
             onClick={onRetry}
-            className="px-2.5 py-1 rounded bg-[#020617] border border-slate-700 hover:border-violet-600 text-slate-300 hover:text-violet-300 font-mono text-[11px] cursor-pointer"
+            className="px-2.5 py-1 rounded bg-surface-card border border-border-default hover:border-violet-600 text-content-secondary hover:text-violet-300 font-mono text-[11px] cursor-pointer"
           >
             Retry
           </button>
         </div>
       ) : !status ? (
-        <div className="flex-1 flex items-center justify-center gap-2 text-xs font-mono text-slate-400">
+        <div className="flex-1 flex items-center justify-center gap-2 text-xs font-mono text-content-secondary">
           <Loader2 className="w-4 h-4 animate-spin text-violet-400" /> Loading real engine state…
         </div>
       ) : (
@@ -136,33 +136,33 @@ export const AIEnginePanel: React.FC<AIEnginePanelProps> = ({ status, loading, e
 
           {/* Active route — the real decision, or an honest absence. */}
           {routing ? (
-            <div className="rounded-md bg-[#020617] border border-violet-800/70 p-3 space-y-1.5">
+            <div className="rounded-md bg-surface-card border border-violet-800/70 p-3 space-y-1.5">
               <div className="flex items-center justify-between gap-2 flex-wrap">
                 <span className="text-xs font-mono font-bold text-violet-300 truncate">
                   {routing.provider_id} / {routing.model_id}
                 </span>
                 <Pill label={`${status.settings.mode} mode`} className="text-violet-300 bg-violet-950/60 border-violet-800" />
               </div>
-              <p className="text-[10px] text-slate-400 leading-snug">{routing.reason}</p>
+              <p className="text-[10px] text-content-secondary leading-snug">{routing.reason}</p>
               <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-[10px] font-mono text-slate-500">score {routing.routing_score.toFixed(2)}</span>
+                <span className="text-[10px] font-mono text-content-muted">score {routing.routing_score.toFixed(2)}</span>
                 {activeModel?.parameter_size && (
-                  <span className="text-[10px] font-mono text-slate-500">{activeModel.parameter_size}</span>
+                  <span className="text-[10px] font-mono text-content-muted">{activeModel.parameter_size}</span>
                 )}
                 <Pill
                   label={status.settings.fallback_enabled ? 'fallback on' : 'fallback off'}
                   className={
                     status.settings.fallback_enabled
                       ? 'text-emerald-300 bg-emerald-950/60 border-emerald-800'
-                      : 'text-slate-400 bg-slate-800/60 border-slate-700'
+                      : 'text-content-secondary bg-slate-800/60 border-border-default'
                   }
                 />
               </div>
             </div>
           ) : (
-            <div className="rounded-md bg-[#020617] border border-slate-800 p-3 flex items-start gap-2">
-              <CircleSlash className="w-3.5 h-3.5 text-slate-500 shrink-0 mt-0.5" />
-              <p className="text-[11px] text-slate-400">
+            <div className="rounded-md bg-surface-card border border-border-default p-3 flex items-start gap-2">
+              <CircleSlash className="w-3.5 h-3.5 text-content-muted shrink-0 mt-0.5" />
+              <p className="text-[11px] text-content-secondary">
                 No compatible model is available for test-case generation right now. Nothing is shown in its
                 place.
               </p>
@@ -172,7 +172,7 @@ export const AIEnginePanel: React.FC<AIEnginePanelProps> = ({ status, loading, e
           {/* Real capability profile of the model that would actually run. */}
           {activeModel && (
             <div className="space-y-1.5">
-              <p className="text-[10px] font-mono uppercase tracking-wider text-slate-500">
+              <p className="text-[10px] font-mono uppercase tracking-wider text-content-muted">
                 Real capability profile
               </p>
               <div className="grid grid-cols-2 gap-1">
@@ -181,9 +181,9 @@ export const AIEnginePanel: React.FC<AIEnginePanelProps> = ({ status, loading, e
                   return (
                     <div
                       key={key}
-                      className="flex items-center justify-between gap-1.5 px-2 py-1 rounded bg-[#020617] border border-slate-800"
+                      className="flex items-center justify-between gap-1.5 px-2 py-1 rounded bg-surface-card border border-border-default"
                     >
-                      <span className="text-[10px] font-mono text-slate-400 truncate">{label}</span>
+                      <span className="text-[10px] font-mono text-content-secondary truncate">{label}</span>
                       <Pill
                         label={level ?? 'UNKNOWN'}
                         className={levelStyles[(level ?? 'UNKNOWN') as AiCapabilityLevel]}
@@ -192,7 +192,7 @@ export const AIEnginePanel: React.FC<AIEnginePanelProps> = ({ status, loading, e
                   );
                 })}
               </div>
-              <p className="text-[10px] font-mono text-slate-500 flex items-start gap-1.5">
+              <p className="text-[10px] font-mono text-content-muted flex items-start gap-1.5">
                 <Info className="w-3 h-3 shrink-0 mt-0.5" />
                 <span>
                   Levels come from real discovery. <span className="font-mono">UNKNOWN</span> means the source
@@ -206,15 +206,15 @@ export const AIEnginePanel: React.FC<AIEnginePanelProps> = ({ status, loading, e
 
           {/* Real provider health. */}
           <div className="space-y-1 mt-auto">
-            <p className="text-[10px] font-mono uppercase tracking-wider text-slate-500">Providers</p>
+            <p className="text-[10px] font-mono uppercase tracking-wider text-content-muted">Providers</p>
             {status.providers.map((p) => (
               <div
                 key={p.id}
-                className="flex items-center justify-between gap-2 px-2 py-1 rounded bg-[#020617] border border-slate-800"
+                className="flex items-center justify-between gap-2 px-2 py-1 rounded bg-surface-card border border-border-default"
               >
-                <span className="text-[10px] font-mono text-slate-300 truncate">
+                <span className="text-[10px] font-mono text-content-secondary truncate">
                   {p.name}
-                  <span className="text-slate-600"> · {p.models.length} model{p.models.length === 1 ? '' : 's'}</span>
+                  <span className="text-content-muted"> · {p.models.length} model{p.models.length === 1 ? '' : 's'}</span>
                 </span>
                 <Pill label={p.status} className={providerStatusStyles[p.status]} />
               </div>

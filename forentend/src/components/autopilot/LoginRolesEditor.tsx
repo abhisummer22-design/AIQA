@@ -62,7 +62,7 @@ const SuggestionCard: React.FC<{ id: string; suggestion: LoginSuggestion; primar
   <div id={id} className="p-2 rounded bg-[#020617] border border-slate-800 space-y-1.5">
     <div className="flex flex-wrap items-center gap-2">
       <span className={`px-1.5 py-0.5 rounded border text-[10px] font-mono uppercase ${CONFIDENCE_CLS[suggestion.confidence]}`}>{suggestion.confidence}</span>
-      <span className="text-[10px] text-slate-500">
+      <span className="text-[10px] text-content-muted">
         {primary ? 'proposed' : 'another answer'} by {suggestion.by} from <span className="font-mono">{suggestion.page_url}</span>
       </span>
     </div>
@@ -215,7 +215,7 @@ export const LoginRolesEditor: React.FC<Props> = ({ projectId, baseUrl, roles, o
                 aria-label={`Remove role ${index + 1}`}
                 onClick={() => onChange(roles.filter((r) => r.localId !== role.localId))}
                 disabled={disabled}
-                className="ml-auto p-1 rounded text-slate-500 hover:text-rose-300 hover:bg-slate-800/60 cursor-pointer disabled:opacity-50"
+                className="ml-auto p-1 rounded text-content-muted hover:text-rose-300 hover:bg-slate-800/60 cursor-pointer disabled:opacity-50"
               >
                 <Trash2 className="w-3.5 h-3.5" />
               </button>
@@ -254,7 +254,7 @@ export const LoginRolesEditor: React.FC<Props> = ({ projectId, baseUrl, roles, o
                   <SuggestionCard key={i} id={`role-${index}-suggestion-${i + 1}`} suggestion={alt} primary={false} onUse={() => takeSuggestion(role, alt)} disabled={disabled} />
                 ))}
                 {suggestion.response.ai.requested && !suggestion.response.ai.used && suggestion.response.ai.note && (
-                  <p className="text-[10px] text-slate-500">AI: {suggestion.response.ai.note}</p>
+                  <p className="text-[10px] text-content-muted">AI: {suggestion.response.ai.note}</p>
                 )}
                 {suggestion.response.missing_secrets.length > 0 && (
                   <p id={`role-${index}-missing-secrets`} className="text-[11px] text-amber-300">
@@ -269,7 +269,7 @@ export const LoginRolesEditor: React.FC<Props> = ({ projectId, baseUrl, roles, o
             <ol className="space-y-1">
               {role.steps.map((step, i) => (
                 <li key={step.localId} id={`role-${index}-step-${i}`} className="flex flex-wrap items-center gap-1.5">
-                  <span className="text-[10px] text-slate-500 w-4">{i + 1}.</span>
+                  <span className="text-[10px] text-content-muted w-4">{i + 1}.</span>
                   <select
                     aria-label={`Role ${index + 1} step ${i + 1} type`}
                     value={step.type}
@@ -316,7 +316,7 @@ export const LoginRolesEditor: React.FC<Props> = ({ projectId, baseUrl, roles, o
                     aria-label={`Remove step ${i + 1} of role ${index + 1}`}
                     onClick={() => updateRole(role.localId, { steps: role.steps.filter((s) => s.localId !== step.localId) })}
                     disabled={disabled}
-                    className="p-1 rounded text-slate-500 hover:text-rose-300 cursor-pointer disabled:opacity-50"
+                    className="p-1 rounded text-content-muted hover:text-rose-300 cursor-pointer disabled:opacity-50"
                   >
                     <Trash2 className="w-3 h-3" />
                   </button>
@@ -336,7 +336,7 @@ export const LoginRolesEditor: React.FC<Props> = ({ projectId, baseUrl, roles, o
                   <Plus className="w-3 h-3" /> {type === 'NAVIGATE' ? 'open page' : type === 'FILL' ? 'fill field' : 'click'}
                 </button>
               ))}
-              <span className="text-[10px] text-slate-500">
+              <span className="text-[10px] text-content-muted">
                 Use <span className="font-mono">env:AIQA_LOGIN_…</span> for user names and passwords: the value is read from the orchestrator’s environment, never stored.
               </span>
             </div>

@@ -168,7 +168,7 @@ export const GatePanel: React.FC<Props> = ({ projectId, runId, suiteId, onDetail
                     {STATUS_WORD[c.status] ?? c.status}
                   </span>
                   {c.requirement_reference && <span className="font-mono text-[10px] text-slate-400">{c.requirement_reference}</span>}
-                  {technique && <span className="font-mono text-[10px] text-slate-500">{technique}</span>}
+                  {technique && <span className="font-mono text-[10px] text-content-muted">{technique}</span>}
                   <span className="ml-auto flex gap-1">
                     {c.status === 'VALIDATED' && (
                       <button
@@ -203,7 +203,7 @@ export const GatePanel: React.FC<Props> = ({ projectId, runId, suiteId, onDetail
                     <ol className="list-decimal pl-5 space-y-0.5">
                       {c.steps.map((s) => (
                         <li key={s.step_number}>
-                          {s.action} <span className="text-slate-500">→ {s.expected_result}</span>
+                          {s.action} <span className="text-content-muted">→ {s.expected_result}</span>
                         </li>
                       ))}
                     </ol>

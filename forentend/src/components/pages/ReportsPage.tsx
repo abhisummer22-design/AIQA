@@ -844,7 +844,7 @@ export const ReportsPage: React.FC = () => {
 
     if (findings && visibleFindings.length === 0) {
       return (
-        <div className="py-8 text-center text-xs text-slate-500 font-mono">
+        <div className="py-8 text-center text-xs text-content-muted font-mono">
           No findings match &ldquo;{search}&rdquo;. ({findings.length} total loaded.)
         </div>
       );
@@ -871,12 +871,12 @@ export const ReportsPage: React.FC = () => {
                       <span className={`px-1.5 py-0.2 rounded border font-mono text-[9px] font-bold uppercase ${reviewStateBadgeClass(finding.review_state)}`}>
                         {formatStatusLabel(finding.review_state)}
                       </span>
-                      <span className="text-[10px] font-mono text-slate-500">
+                      <span className="text-[10px] font-mono text-content-muted">
                         {Math.round(finding.confidence * 100)}% confidence
                       </span>
                     </div>
                     <h4 className="text-xs font-bold text-slate-100 font-sans truncate">{finding.title}</h4>
-                    <p className="text-[10px] text-slate-500 font-mono">Created {formatTimestamp(finding.created_at)}</p>
+                    <p className="text-[10px] text-content-muted font-mono">Created {formatTimestamp(finding.created_at)}</p>
                   </div>
                 </div>
               </button>
@@ -911,29 +911,29 @@ export const ReportsPage: React.FC = () => {
                         Root-Cause Analysis (failure cluster {analysis.failure_cluster.id.slice(0, 8)})
                       </div>
                       <div className="text-slate-300">
-                        <span className="text-slate-500">Signature: </span>
+                        <span className="text-content-muted">Signature: </span>
                         {analysis.failure_cluster.signature}
                       </div>
                       <div className="text-slate-300">
-                        <span className="text-slate-500">Hypothesis: </span>
+                        <span className="text-content-muted">Hypothesis: </span>
                         {analysis.failure_cluster.root_cause_hypothesis ?? 'not available'}
                       </div>
                       <div className="flex flex-wrap gap-x-4 text-slate-300">
                         <span>
-                          <span className="text-slate-500">Occurrences: </span>
+                          <span className="text-content-muted">Occurrences: </span>
                           {analysis.failure_cluster.occurrence_count}
                         </span>
                         <span>
-                          <span className="text-slate-500">First seen: </span>
+                          <span className="text-content-muted">First seen: </span>
                           {formatTimestamp(analysis.failure_cluster.first_seen_at)}
                         </span>
                         <span>
-                          <span className="text-slate-500">Last seen: </span>
+                          <span className="text-content-muted">Last seen: </span>
                           {formatTimestamp(analysis.failure_cluster.last_seen_at)}
                         </span>
                         {analysis.failure_cluster.reproducibility != null && (
                           <span>
-                            <span className="text-slate-500">Reproducibility: </span>
+                            <span className="text-content-muted">Reproducibility: </span>
                             {Math.round(analysis.failure_cluster.reproducibility * 100)}%
                           </span>
                         )}
@@ -970,11 +970,11 @@ export const ReportsPage: React.FC = () => {
                         Dismiss
                       </button>
                       {reviewingId === finding.id && (
-                        <span className="text-[10px] font-mono text-slate-500">Saving…</span>
+                        <span className="text-[10px] font-mono text-content-muted">Saving…</span>
                       )}
                     </div>
                   ) : (
-                    <p id={`finding-review-attribution-${finding.id}`} className="text-[10px] font-mono text-slate-500">
+                    <p id={`finding-review-attribution-${finding.id}`} className="text-[10px] font-mono text-content-muted">
                       Reviewed — {finding.review_state === 'CONFIRMED' ? 'confirmed as a real defect' : 'dismissed'}
                       {finding.promoted_by ? ` by ${finding.promoted_by}` : ''}
                       {/* FE-19 — real `Finding.promoted_at` exposure. Already
@@ -1041,7 +1041,7 @@ export const ReportsPage: React.FC = () => {
       <div className="overflow-x-auto">
         <table className="w-full text-left text-xs">
           <thead>
-            <tr className="font-mono text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800">
+            <tr className="font-mono text-[10px] uppercase tracking-wider text-content-muted border-b border-slate-800">
               <th scope="col" className="py-2 pr-2.5 font-normal">Test</th>
               <th scope="col" className="py-2 px-2.5 font-normal">Risk</th>
               <th scope="col" className="py-2 px-2.5 font-normal">Failure Rate</th>
@@ -1064,7 +1064,7 @@ export const ReportsPage: React.FC = () => {
                 <td className="py-2 px-2.5">{formatPct(row.flakiness_score)}</td>
                 <td className="py-2 px-2.5">{formatMs(row.execution_cost_ms)}</td>
                 <td className="py-2 px-2.5">{row.dependency_count ?? '—'}</td>
-                <td className="py-2 pl-2.5 text-slate-500">
+                <td className="py-2 pl-2.5 text-content-muted">
                   {row.window_runs === null
                     ? '—'
                     : `${row.window_runs} run${row.window_runs === 1 ? '' : 's'}${row.window_failures !== null ? `, ${row.window_failures} failed` : ''}`}
@@ -1140,7 +1140,7 @@ export const ReportsPage: React.FC = () => {
       {selectedProjectId && findings && findings.length > 0 && (
         <div className="flex items-center gap-2 p-2.5 rounded-lg border border-slate-800 bg-[#0B1120]">
           <div className="relative w-full max-w-sm">
-            <Search className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
+            <Search className="w-3.5 h-3.5 text-content-muted absolute left-2.5 top-1/2 -translate-y-1/2" />
             <label htmlFor="findings-search-input" className="sr-only">
               Search findings
             </label>
@@ -1165,11 +1165,11 @@ export const ReportsPage: React.FC = () => {
           <div className="flex items-center gap-1.5 px-1">
             <Gauge className="w-3.5 h-3.5 text-violet-400" />
             <h2 className="text-xs font-bold text-slate-100 font-mono uppercase tracking-wider">Test Intelligence</h2>
-            <span className="text-[10px] font-mono text-slate-500">
+            <span className="text-[10px] font-mono text-content-muted">
               {testIntel ? `${testIntel.length} TEST${testIntel.length === 1 ? '' : 'S'}` : ''}
             </span>
           </div>
-          <p className="px-1 text-[11px] text-slate-500">
+          <p className="px-1 text-[11px] text-content-muted">
             Real, deterministic risk/value/flakiness scoring computed from this project's actual task execution history — not an AI prediction.
           </p>
           <section id="test-intelligence-content" className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm" aria-live="polite">

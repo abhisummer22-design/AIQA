@@ -386,7 +386,7 @@ export const EvidencePage: React.FC = () => {
     if (kind === 'image') return <ImageIcon className="w-3.5 h-3.5 text-yellow-400" />;
     if (kind === 'json') return <FileJson className="w-3.5 h-3.5 text-amber-400" />;
     if (kind === 'text') return <FileText className="w-3.5 h-3.5 text-slate-400" />;
-    return <FileQuestion className="w-3.5 h-3.5 text-slate-500" />;
+    return <FileQuestion className="w-3.5 h-3.5 text-content-muted" />;
   };
 
   const renderPreviewBody = (row: EvidenceRow) => {
@@ -424,7 +424,7 @@ export const EvidencePage: React.FC = () => {
           </pre>
         )}
         {kind === 'unsupported' && (
-          <p className="text-xs text-slate-500 italic">
+          <p className="text-xs text-content-muted italic">
             Preview unavailable for {row.content_type ?? 'this content type'}.
           </p>
         )}
@@ -525,9 +525,9 @@ export const EvidencePage: React.FC = () => {
                 className="w-full flex items-center gap-3 py-2.5 text-left hover:bg-slate-900/40 transition-colors cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-violet-400 rounded"
               >
                 {isOpen ? (
-                  <ChevronDown className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                  <ChevronDown className="w-3.5 h-3.5 text-content-muted shrink-0" />
                 ) : (
-                  <ChevronRight className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                  <ChevronRight className="w-3.5 h-3.5 text-content-muted shrink-0" />
                 )}
                 {kindIcon(row.content_type)}
                 <span className="font-mono text-xs font-semibold text-slate-100 shrink-0">{row.kind}</span>
@@ -536,7 +536,7 @@ export const EvidencePage: React.FC = () => {
                     task: {row.task_id}
                   </span>
                 )}
-                <span className="ml-auto flex items-center gap-3 shrink-0 text-[10px] font-mono text-slate-500">
+                <span className="ml-auto flex items-center gap-3 shrink-0 text-[10px] font-mono text-content-muted">
                   <span>{formatFileSize(row.size_bytes)}</span>
                   <span>{formatTimestamp(row.created_at)}</span>
                 </span>

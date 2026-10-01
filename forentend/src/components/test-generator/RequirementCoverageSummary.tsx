@@ -28,7 +28,7 @@ export const RequirementCoverageSummary: React.FC<RequirementCoverageSummaryProp
   return (
     <div id="requirement-coverage" className="pt-2 border-t border-slate-800/80 space-y-1.5">
       <div className="text-slate-300">
-        <span className="text-slate-500">Requirements: </span>
+        <span className="text-content-muted">Requirements: </span>
         {coverage.covered.toLocaleString()} of {coverage.total.toLocaleString()} {plural(coverage.covered, 'has', 'have')} a case ·{' '}
         {coverage.offered.toLocaleString()} {plural(coverage.offered, 'was', 'were')} shown to a skill ·{' '}
         {coverage.calls.toLocaleString()} AI {plural(coverage.calls, 'call', 'calls')} (about{' '}

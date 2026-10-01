@@ -47,7 +47,7 @@ export const McpConnectModal: React.FC<McpConnectModalProps> = ({ onClose }) => 
             type="button"
             onClick={onClose}
             aria-label="Close Connect MCP dialog"
-            className="p-1.5 text-slate-500 hover:text-slate-300 rounded cursor-pointer"
+            className="p-1.5 text-content-muted hover:text-slate-300 rounded cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
@@ -58,7 +58,7 @@ export const McpConnectModal: React.FC<McpConnectModalProps> = ({ onClose }) => 
             id="mcp-status-badge"
             className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-mono font-semibold bg-slate-900 border border-slate-700 text-slate-400"
           >
-            <Radio className="w-3 h-3 text-slate-500" />
+            <Radio className="w-3 h-3 text-content-muted" />
             <span>{MCP_BACKEND_CONFIGURED ? 'Connected' : 'Not Configured'}</span>
           </div>
 
@@ -79,7 +79,7 @@ export const McpConnectModal: React.FC<McpConnectModalProps> = ({ onClose }) => 
             </ul>
           </div>
 
-          <p className="text-[11px] font-mono text-slate-500">
+          <p className="text-[11px] font-mono text-content-muted">
             No connection information is collected or stored by this dialog.
           </p>
         </div>

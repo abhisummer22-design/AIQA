@@ -101,8 +101,8 @@ const taskStatusStyles: Record<string, string> = {
   FAILED: 'text-rose-400 bg-rose-950/60 border-rose-800',
   TIMEOUT: 'text-rose-400 bg-rose-950/60 border-rose-800',
   INFRA_ERROR: 'text-orange-400 bg-orange-950/60 border-orange-800',
-  SKIPPED: 'text-slate-500 bg-slate-900 border-slate-800',
-  CANCELLED: 'text-slate-500 bg-slate-900 border-slate-800',
+  SKIPPED: 'text-content-muted bg-slate-900 border-slate-800',
+  CANCELLED: 'text-content-muted bg-slate-900 border-slate-800',
   NEEDS_REVIEW: 'text-amber-400 bg-amber-950/60 border-amber-800',
 };
 
@@ -130,7 +130,7 @@ const PanelCard: React.FC<{
         <Icon className={`w-4 h-4 shrink-0 ${iconClassName}`} />
         <div className="min-w-0">
           <h2 className="text-sm font-bold text-slate-100 tracking-tight">{title}</h2>
-          <p className="text-[11px] text-slate-500">{subtitle}</p>
+          <p className="text-[11px] text-content-muted">{subtitle}</p>
         </div>
       </div>
       {headerRight}
@@ -154,10 +154,10 @@ const TaskDag: React.FC<{ tasks: TaskState[] }> = ({ tasks }) => (
         <Pill label={task.status} className={taskStatusStyles[task.status]} />
         <div className="min-w-0 flex-1">
           <div className="text-xs text-slate-200 truncate">{task.name}</div>
-          <div className="text-[10px] font-mono text-slate-500 flex flex-wrap items-center gap-x-2">
+          <div className="text-[10px] font-mono text-content-muted flex flex-wrap items-center gap-x-2">
             <span>{task.id}</span>
             {task.prerequisites.length > 0 && (
-              <span className="text-slate-600">after: {task.prerequisites.join(', ')}</span>
+              <span className="text-content-muted">after: {task.prerequisites.join(', ')}</span>
             )}
             {task.reason && <span className="text-rose-400/80">{task.reason}</span>}
           </div>
@@ -260,7 +260,7 @@ export const AIQAOrchestratorPage: React.FC = () => {
         actions={
           <div className="flex items-center gap-2">
             {lastUpdated && (
-              <span className="text-[10px] font-mono text-slate-500">
+              <span className="text-[10px] font-mono text-content-muted">
                 updated {lastUpdated.toTimeString().slice(0, 8)}
               </span>
             )}
@@ -337,7 +337,7 @@ export const AIQAOrchestratorPage: React.FC = () => {
                   </div>
                   <p className="text-[11px] text-slate-400">{routing.reason}</p>
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-[10px] font-mono text-slate-500">
+                    <span className="text-[10px] font-mono text-content-muted">
                       routing score {routing.routing_score.toFixed(2)}
                     </span>
                     <Pill
@@ -352,7 +352,7 @@ export const AIQAOrchestratorPage: React.FC = () => {
                 </div>
               ) : (
                 <div className="rounded-md bg-[#020617] border border-slate-800 p-3 flex items-start gap-2">
-                  <CircleSlash className="w-3.5 h-3.5 text-slate-500 shrink-0 mt-0.5" />
+                  <CircleSlash className="w-3.5 h-3.5 text-content-muted shrink-0 mt-0.5" />
                   <p className="text-[11px] text-slate-400">
                     No compatible model is currently available for test-case generation. No route is shown
                     rather than a guessed one.
@@ -368,7 +368,7 @@ export const AIQAOrchestratorPage: React.FC = () => {
                   >
                     <div className="min-w-0">
                       <div className="text-xs text-slate-200 truncate">{provider.name}</div>
-                      <div className="text-[10px] font-mono text-slate-500">
+                      <div className="text-[10px] font-mono text-content-muted">
                         {provider.models.length} model{provider.models.length === 1 ? '' : 's'} discovered
                       </div>
                     </div>
@@ -377,7 +377,7 @@ export const AIQAOrchestratorPage: React.FC = () => {
                 ))}
               </ul>
 
-              <p className="text-[10px] font-mono text-slate-500 flex items-start gap-1.5">
+              <p className="text-[10px] font-mono text-content-muted flex items-start gap-1.5">
                 <Info className="w-3 h-3 shrink-0 mt-0.5" />
                 <span>
                   Routing score is a documented capability/health heuristic — not an accuracy or quality
@@ -404,7 +404,7 @@ export const AIQAOrchestratorPage: React.FC = () => {
                   </li>
                 ))}
               </ul>
-              <p className="text-[10px] font-mono text-slate-500 flex items-start gap-1.5">
+              <p className="text-[10px] font-mono text-content-muted flex items-start gap-1.5">
                 <ShieldAlert className="w-3 h-3 shrink-0 mt-0.5" />
                 <span>
                   Gates are the real rules evaluated before scheduling — a gated executor sends its run to
@@ -435,7 +435,7 @@ export const AIQAOrchestratorPage: React.FC = () => {
                   }
                 />
                 {realtime.lastEventAt && (
-                  <span className="text-[10px] font-mono text-slate-500">
+                  <span className="text-[10px] font-mono text-content-muted">
                     last event {new Date(realtime.lastEventAt).toTimeString().slice(0, 8)}
                   </span>
                 )}
@@ -444,7 +444,7 @@ export const AIQAOrchestratorPage: React.FC = () => {
           >
             {orchState.active_runs.length === 0 ? (
               <div className="rounded-md bg-[#020617] border border-slate-800 p-3 flex items-start gap-2">
-                <CheckCircle2 className="w-3.5 h-3.5 text-slate-500 shrink-0 mt-0.5" />
+                <CheckCircle2 className="w-3.5 h-3.5 text-content-muted shrink-0 mt-0.5" />
                 <p className="text-[11px] text-slate-400">
                   No runs are currently being driven by this backend process. Runs that finished before the
                   backend last restarted are history — open them in the Execution Hub.
@@ -457,7 +457,7 @@ export const AIQAOrchestratorPage: React.FC = () => {
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-xs font-semibold text-slate-100">{run.name}</span>
                       <Pill label={run.state} className={taskStatusStyles[run.state]} />
-                      <span className="text-[10px] font-mono text-slate-500">
+                      <span className="text-[10px] font-mono text-content-muted">
                         concurrency {run.concurrency} · {run.tasks.length} task
                         {run.tasks.length === 1 ? '' : 's'}
                       </span>

@@ -132,14 +132,14 @@ const MatchDetail: React.FC<{ match: GapPageMatch }> = ({ match }) => (
       <span className="font-mono text-[11px] text-slate-100 break-all">{pathOf(match.url)}</span>
       {match.title && <span className="text-[11px] text-slate-400">{match.title}</span>}
       <span className="font-mono text-[10px] text-violet-300">{percent(match.score)} of what it says</span>
-      <span className="text-[10px] text-slate-500">{BASIS_LABEL[match.basis] ?? match.basis}</span>
+      <span className="text-[10px] text-content-muted">{BASIS_LABEL[match.basis] ?? match.basis}</span>
       {match.similarity !== undefined && (
-        <span className="text-[10px] text-slate-500">similarity {match.similarity.toFixed(2)}</span>
+        <span className="text-[10px] text-content-muted">similarity {match.similarity.toFixed(2)}</span>
       )}
     </div>
     {match.terms.length > 0 && (
       <div className="flex flex-wrap items-center gap-1">
-        <span className="text-[10px] text-slate-500">words on the page:</span>
+        <span className="text-[10px] text-content-muted">words on the page:</span>
         {match.terms.map((t) => (
           <Chip key={t} tone="violet">
             {t}
@@ -149,13 +149,13 @@ const MatchDetail: React.FC<{ match: GapPageMatch }> = ({ match }) => (
     )}
     {match.elements.length > 0 && (
       <div className="flex flex-wrap items-center gap-1">
-        <span className="text-[10px] text-slate-500">carried by:</span>
+        <span className="text-[10px] text-content-muted">carried by:</span>
         {match.elements.map((e) => (
           <Chip key={e}>{e}</Chip>
         ))}
       </div>
     )}
-    {match.roles.length > 0 && <div className="text-[10px] text-slate-500">reached by: {match.roles.join(', ')}</div>}
+    {match.roles.length > 0 && <div className="text-[10px] text-content-muted">reached by: {match.roles.join(', ')}</div>}
   </li>
 );
 
@@ -176,9 +176,9 @@ const RequirementRow: React.FC<{
         className="w-full grid grid-cols-[auto_1fr] md:grid-cols-[auto_minmax(0,1fr)_auto_minmax(0,14rem)_auto] items-start gap-x-3 gap-y-1 py-2.5 text-left hover:bg-slate-900/40 transition-colors cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-violet-400 rounded"
       >
         {open ? (
-          <ChevronDown className="w-3.5 h-3.5 mt-0.5 text-slate-500 shrink-0" />
+          <ChevronDown className="w-3.5 h-3.5 mt-0.5 text-content-muted shrink-0" />
         ) : (
-          <ChevronRight className="w-3.5 h-3.5 mt-0.5 text-slate-500 shrink-0" />
+          <ChevronRight className="w-3.5 h-3.5 mt-0.5 text-content-muted shrink-0" />
         )}
         <span className="min-w-0">
           <span className="flex items-center gap-2">
@@ -217,10 +217,10 @@ const RequirementRow: React.FC<{
       {open && (
         <div className="pb-3 pl-9 pr-2 space-y-3 text-xs">
           <p className="text-slate-300 whitespace-pre-wrap break-words">{r.text}</p>
-          {r.section && <div className="text-[10px] text-slate-500">section: {r.section}</div>}
+          {r.section && <div className="text-[10px] text-content-muted">section: {r.section}</div>}
 
           <div className="space-y-1.5">
-            <div className="text-[10px] font-mono uppercase text-slate-500">
+            <div className="text-[10px] font-mono uppercase text-content-muted">
               Pages it points at {r.basis ? `· ${r.basis === 'ai' && r.status !== 'FOUND' ? 'checked by the AI' : (BASIS_LABEL[r.basis] ?? r.basis)}` : ''}
             </div>
             {r.matches.length > 0 ? (
@@ -230,7 +230,7 @@ const RequirementRow: React.FC<{
                 ))}
               </ul>
             ) : (
-              <p className="text-slate-500 italic">{STATUS_META[r.status].hint}</p>
+              <p className="text-content-muted italic">{STATUS_META[r.status].hint}</p>
             )}
           </div>
 
@@ -239,7 +239,7 @@ const RequirementRow: React.FC<{
               <div className="flex items-center gap-2 text-[11px]">
                 <Bot className="w-3.5 h-3.5 text-violet-300" />
                 <span className="font-mono text-violet-200">AI check: {formatStatusLabel(r.verification.verdict)}</span>
-                <span className="text-[10px] text-slate-500">{r.verification.by}</span>
+                <span className="text-[10px] text-content-muted">{r.verification.by}</span>
               </div>
               {r.verification.reason && <p className="text-slate-300">{r.verification.reason}</p>}
               {r.verification.pages.length > 0 && (
@@ -249,7 +249,7 @@ const RequirementRow: React.FC<{
           )}
 
           <div className="space-y-1">
-            <div className="text-[10px] font-mono uppercase text-slate-500">Cases</div>
+            <div className="text-[10px] font-mono uppercase text-content-muted">Cases</div>
             {r.cases.total > 0 ? (
               <div className="flex flex-wrap items-center gap-1.5">
                 <Chip>{r.cases.total} total</Chip>
@@ -266,7 +266,7 @@ const RequirementRow: React.FC<{
             )}
             {r.cases.missing_techniques.length > 0 && (
               <div className="flex flex-wrap items-center gap-1.5">
-                <span className="text-[10px] text-slate-500">still without a case:</span>
+                <span className="text-[10px] text-content-muted">still without a case:</span>
                 {r.cases.missing_techniques.map((t) => (
                   <Chip key={t} tone="amber">
                     {t}
@@ -494,7 +494,7 @@ export const RequirementCoveragePage: React.FC = () => {
     <section id="gap-controls" className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm space-y-3">
       <div className="flex flex-col md:flex-row md:items-end gap-3">
         <div className="space-y-1">
-          <label htmlFor="gap-crawl-select" className="block text-[10px] font-mono uppercase text-slate-500">
+          <label htmlFor="gap-crawl-select" className="block text-[10px] font-mono uppercase text-content-muted">
             Crawl
           </label>
           <select
@@ -516,7 +516,7 @@ export const RequirementCoveragePage: React.FC = () => {
           </select>
         </div>
         <div className="space-y-1">
-          <label htmlFor="gap-role-select" className="block text-[10px] font-mono uppercase text-slate-500">
+          <label htmlFor="gap-role-select" className="block text-[10px] font-mono uppercase text-content-muted">
             Role
           </label>
           <select
@@ -591,7 +591,7 @@ export const RequirementCoveragePage: React.FC = () => {
           <span>Run with options</span>
         </button>
       </div>
-      <p className="text-[10px] text-slate-500">
+      <p className="text-[10px] text-content-muted">
         The check of words runs by itself and costs nothing. The two options call a provider (the embedder, the AI routed for
         Traceability in Settings) and run only from the button.
       </p>
@@ -601,7 +601,7 @@ export const RequirementCoveragePage: React.FC = () => {
   const tile = (id: string, label: string, value: number, tone: string) => (
     <div id={id} key={id} className="p-2.5 rounded-md bg-[#020617] border border-slate-800">
       <div className={`text-lg font-mono font-semibold ${tone}`}>{value.toLocaleString()}</div>
-      <div className="text-[10px] text-slate-500 leading-tight">{label}</div>
+      <div className="text-[10px] text-content-muted leading-tight">{label}</div>
     </div>
   );
 
@@ -670,7 +670,7 @@ export const RequirementCoveragePage: React.FC = () => {
               {plural(summary.tested_without_evidence, 'it', 'them')} in the crawl
             </span>
           </div>
-          <p className="text-[10px] text-slate-500">
+          <p className="text-[10px] text-content-muted">
             &ldquo;Found&rdquo; is evidence that a feature has somewhere to live — a page carries the words the requirement is
             about — not proof that it works. &ldquo;No UI evidence&rdquo; means no page the crawl reached carries them: the
             crawl follows links, so a page that opens only from a button or a form is not among them. Open a row to see the
@@ -725,7 +725,7 @@ export const RequirementCoveragePage: React.FC = () => {
               only those with no case
             </label>
             <div className="relative ml-auto">
-              <Search className="w-3.5 h-3.5 text-slate-500 absolute left-2 top-1/2 -translate-y-1/2" />
+              <Search className="w-3.5 h-3.5 text-content-muted absolute left-2 top-1/2 -translate-y-1/2" />
               <input
                 id="gap-search"
                 type="search"
@@ -739,7 +739,7 @@ export const RequirementCoveragePage: React.FC = () => {
           </div>
 
           {visible.length === 0 ? (
-            <p id="gap-no-rows" className="text-xs text-slate-500 italic py-4 text-center">
+            <p id="gap-no-rows" className="text-xs text-content-muted italic py-4 text-center">
               No requirement matches this filter.
             </p>
           ) : (
@@ -779,7 +779,7 @@ export const RequirementCoveragePage: React.FC = () => {
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-mono text-[11px] text-slate-100 break-all">{pathOf(p.url)}</span>
                       {p.title && <span className="text-[11px] text-slate-400">{p.title}</span>}
-                      <span className="text-[10px] text-slate-500">
+                      <span className="text-[10px] text-content-muted">
                         {p.element_count.toLocaleString()} {plural(p.element_count, 'element', 'elements')}
                         {p.roles.length > 0 ? ` · reached by ${p.roles.join(', ')}` : ''}
                       </span>

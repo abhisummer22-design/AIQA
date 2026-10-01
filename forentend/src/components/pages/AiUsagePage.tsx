@@ -149,7 +149,7 @@ export const AiUsagePage: React.FC = () => {
             <RefreshCw className={`w-3.5 h-3.5 ${usage.refreshing ? 'animate-spin' : ''}`} /> Refresh
           </button>
           {usage.updatedAt && (
-            <span id="ai-usage-updated" className="text-[10px] text-slate-500 font-mono">
+            <span id="ai-usage-updated" className="text-[10px] text-content-muted font-mono">
               read {formatTimestamp(usage.updatedAt)}
             </span>
           )}

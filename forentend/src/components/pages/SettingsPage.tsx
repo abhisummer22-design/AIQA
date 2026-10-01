@@ -468,7 +468,7 @@ const AiIntelligencePanel: React.FC = () => {
             value={newProviderName}
             onChange={(e) => setNewProviderName(e.target.value)}
             placeholder="Name (e.g. My Provider)"
-            className="px-2.5 py-1.5 rounded bg-surface-card border border-slate-700 text-xs font-mono text-content-primary placeholder:text-slate-600 focus:outline-none focus:border-violet-500"
+            className="px-2.5 py-1.5 rounded bg-surface-card border border-slate-700 text-xs font-mono text-content-primary placeholder:text-content-muted focus:outline-none focus:border-violet-500"
           />
           <input
             type="text"
@@ -476,7 +476,7 @@ const AiIntelligencePanel: React.FC = () => {
             value={newProviderBaseUrl}
             onChange={(e) => setNewProviderBaseUrl(e.target.value)}
             placeholder="Base URL (https://...)"
-            className="px-2.5 py-1.5 rounded bg-surface-card border border-slate-700 text-xs font-mono text-content-primary placeholder:text-slate-600 focus:outline-none focus:border-violet-500"
+            className="px-2.5 py-1.5 rounded bg-surface-card border border-slate-700 text-xs font-mono text-content-primary placeholder:text-content-muted focus:outline-none focus:border-violet-500"
           />
           <input
             type="password"
@@ -484,7 +484,7 @@ const AiIntelligencePanel: React.FC = () => {
             value={newProviderApiKey}
             onChange={(e) => setNewProviderApiKey(e.target.value)}
             placeholder="API key, or env:NAME"
-            className="px-2.5 py-1.5 rounded bg-surface-card border border-slate-700 text-xs font-mono text-content-primary placeholder:text-slate-600 focus:outline-none focus:border-violet-500"
+            className="px-2.5 py-1.5 rounded bg-surface-card border border-slate-700 text-xs font-mono text-content-primary placeholder:text-content-muted focus:outline-none focus:border-violet-500"
           />
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -496,7 +496,7 @@ const AiIntelligencePanel: React.FC = () => {
             value={newProviderInputPrice}
             onChange={(e) => setNewProviderInputPrice(e.target.value)}
             placeholder="Input price, $ per 1K tokens (optional)"
-            className="px-2.5 py-1.5 rounded bg-surface-card border border-slate-700 text-xs font-mono text-content-primary placeholder:text-slate-600 focus:outline-none focus:border-violet-500"
+            className="px-2.5 py-1.5 rounded bg-surface-card border border-slate-700 text-xs font-mono text-content-primary placeholder:text-content-muted focus:outline-none focus:border-violet-500"
           />
           <input
             type="number"
@@ -506,7 +506,7 @@ const AiIntelligencePanel: React.FC = () => {
             value={newProviderOutputPrice}
             onChange={(e) => setNewProviderOutputPrice(e.target.value)}
             placeholder="Output price, $ per 1K tokens (optional)"
-            className="px-2.5 py-1.5 rounded bg-surface-card border border-slate-700 text-xs font-mono text-content-primary placeholder:text-slate-600 focus:outline-none focus:border-violet-500"
+            className="px-2.5 py-1.5 rounded bg-surface-card border border-slate-700 text-xs font-mono text-content-primary placeholder:text-content-muted focus:outline-none focus:border-violet-500"
           />
         </div>
         {priceProblem && <p className="text-[11px] font-mono text-amber-300">{priceProblem}</p>}

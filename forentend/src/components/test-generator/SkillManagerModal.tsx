@@ -129,13 +129,13 @@ export const SkillManagerModal: React.FC<SkillManagerModalProps> = ({
         <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800 bg-[#020617]">
           <div>
             <h2 className="text-sm font-bold text-slate-100 font-sans">Skill Manager</h2>
-            <p className="text-[11px] text-slate-500 font-sans">Search, select, and create generation-scope skills.</p>
+            <p className="text-[11px] text-content-muted font-sans">Search, select, and create generation-scope skills.</p>
           </div>
           <button
             type="button"
             onClick={onClose}
             aria-label="Close Skill Manager"
-            className="p-1.5 text-slate-500 hover:text-slate-300 rounded cursor-pointer"
+            className="p-1.5 text-content-muted hover:text-slate-300 rounded cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
@@ -158,7 +158,7 @@ export const SkillManagerModal: React.FC<SkillManagerModalProps> = ({
         {/* Skill list */}
         <div className="flex-1 overflow-y-auto p-3 space-y-1.5">
           {filtered.length === 0 ? (
-            <div className="py-8 text-center text-xs text-slate-500 font-mono">No matching skills found for "{search}"</div>
+            <div className="py-8 text-center text-xs text-content-muted font-mono">No matching skills found for "{search}"</div>
           ) : (
             filtered.map((skill) => {
               const selected = selectedSkillIds.includes(skill.id);
@@ -178,13 +178,13 @@ export const SkillManagerModal: React.FC<SkillManagerModalProps> = ({
                   {selected ? (
                     <CheckSquare className="w-4 h-4 text-violet-400 shrink-0 mt-0.5" />
                   ) : (
-                    <Square className="w-4 h-4 text-slate-600 shrink-0 mt-0.5" />
+                    <Square className="w-4 h-4 text-content-muted shrink-0 mt-0.5" />
                   )}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-xs font-bold text-slate-100 font-sans">{skill.name}</span>
                       {typeBadge(skill.type)}
-                      <span className="text-[9px] font-mono text-slate-500">
+                      <span className="text-[9px] font-mono text-content-muted">
                         {skill.availability === 'AVAILABLE' ? 'Available' : 'Not configured for external execution'}
                       </span>
                     </div>
@@ -244,9 +244,9 @@ export const SkillManagerModal: React.FC<SkillManagerModalProps> = ({
                   <Upload className="w-3.5 h-3.5" />
                   Attach file (.txt/.md/.json/.yaml)
                 </button>
-                {attachedFileName && <span className="text-[10px] font-mono text-slate-500 truncate">{attachedFileName}</span>}
+                {attachedFileName && <span className="text-[10px] font-mono text-content-muted truncate">{attachedFileName}</span>}
               </div>
-              <p className="text-[10px] font-mono text-slate-500 flex items-start gap-1.5">
+              <p className="text-[10px] font-mono text-content-muted flex items-start gap-1.5">
                 <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />
                 <span>
                   Saved to the real orchestrator backend — persists across reloads and is available to every project. The

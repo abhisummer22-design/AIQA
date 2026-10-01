@@ -26,11 +26,11 @@ export const CoverageMatrixSummary: React.FC<CoverageMatrixSummaryProps> = ({ ma
   return (
     <div id="coverage-matrix" className="pt-2 border-t border-slate-800/80 space-y-1.5">
       <div className="text-slate-300">
-        <span className="text-slate-500">Coverage at {DEPTH_LABEL[matrix.depth] ?? matrix.depth} depth: </span>
+        <span className="text-content-muted">Coverage at {DEPTH_LABEL[matrix.depth] ?? matrix.depth} depth: </span>
         {matrix.complete.toLocaleString()} of {testable.toLocaleString()} testable{' '}
         {plural(testable, 'requirement has', 'requirements have')} every technique that applies
       </div>
-      <div className="text-slate-500">
+      <div className="text-content-muted">
         {DEPTH_MEANING[matrix.depth] ? `This depth asks for ${DEPTH_MEANING[matrix.depth]}.` : null}
       </div>
 
@@ -42,7 +42,7 @@ export const CoverageMatrixSummary: React.FC<CoverageMatrixSummaryProps> = ({ ma
               {t.met.toLocaleString()} of {t.applicable.toLocaleString()} met
             </span>
             {t.provided_by ? (
-              <span className="text-slate-500">via {t.provided_by}</span>
+              <span className="text-content-muted">via {t.provided_by}</span>
             ) : t.short > 0 ? (
               <span className="text-amber-300">
                 not attempted — no selected skill provides it
@@ -55,7 +55,7 @@ export const CoverageMatrixSummary: React.FC<CoverageMatrixSummaryProps> = ({ ma
 
       {matrix.top_up && (
         <div className="text-slate-300">
-          <span className="text-slate-500">Top-up: </span>
+          <span className="text-content-muted">Top-up: </span>
           {matrix.top_up.rounds} {plural(matrix.top_up.rounds, 'round', 'rounds')}, {matrix.top_up.calls} extra{' '}
           {plural(matrix.top_up.calls, 'call', 'calls')}, {matrix.top_up.cases_added.toLocaleString()}{' '}
           {plural(matrix.top_up.cases_added, 'case', 'cases')} added — stopped because {matrix.top_up.stopped}.
@@ -91,7 +91,7 @@ export const CoverageMatrixSummary: React.FC<CoverageMatrixSummaryProps> = ({ ma
         </div>
       )}
       {matrix.not_applicable > 0 && (
-        <div className="text-slate-500">
+        <div className="text-content-muted">
           {matrix.not_applicable.toLocaleString()} {plural(matrix.not_applicable, 'requirement is', 'requirements are')}{' '}
           background or reference text: nothing to test.
         </div>

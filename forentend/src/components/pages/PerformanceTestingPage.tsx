@@ -297,7 +297,7 @@ export const PerformanceTestingPage: React.FC = () => {
                   disabled={isRunning}
                   className="w-24 px-2 py-1.5 rounded-md bg-[#020617] border border-slate-700 text-xs font-mono text-slate-100 disabled:opacity-60"
                 />
-                <span className="text-[10px] font-mono text-slate-500">A mismatch marks that sample FAILED, not ERROR.</span>
+                <span className="text-[10px] font-mono text-content-muted">A mismatch marks that sample FAILED, not ERROR.</span>
               </div>
             </div>
 
@@ -318,7 +318,7 @@ export const PerformanceTestingPage: React.FC = () => {
                   </button>
                 ))}
               </div>
-              <p className="text-[10px] font-mono text-slate-500">{TEST_TYPE_BLURB[testType]}</p>
+              <p className="text-[10px] font-mono text-content-muted">{TEST_TYPE_BLURB[testType]}</p>
 
               {testType === 'LOAD' && (
                 <div className="grid grid-cols-3 gap-2">
@@ -356,7 +356,7 @@ export const PerformanceTestingPage: React.FC = () => {
               <div className="flex items-center gap-1.5 text-xs font-mono text-slate-400">
                 <ListChecks className="w-3.5 h-3.5" /> Pass/Fail Thresholds (optional)
               </div>
-              <p className="text-[10px] font-mono text-slate-500">Leave all blank to get a real metrics report with no pass/fail judgement (status COMPLETED, not a false PASS).</p>
+              <p className="text-[10px] font-mono text-content-muted">Leave all blank to get a real metrics report with no pass/fail judgement (status COMPLETED, not a false PASS).</p>
               <div className="grid grid-cols-3 gap-2">
                 <NumField id="perf-threshold-p95" label="Max P95 (ms)" value={maxP95Ms} onChange={setMaxP95Ms} disabled={isRunning} />
                 <NumField id="perf-threshold-error-rate" label="Max error rate (%)" value={maxErrorRatePercent} onChange={setMaxErrorRatePercent} disabled={isRunning} />
@@ -430,7 +430,7 @@ export const PerformanceTestingPage: React.FC = () => {
                 )}
               </>
             ) : (
-              <div className="p-6 rounded-lg bg-[#0B1120] border border-slate-800 border-dashed text-center text-xs font-mono text-slate-500">Configure a workload and click Start to see real, live progress here.</div>
+              <div className="p-6 rounded-lg bg-[#0B1120] border border-slate-800 border-dashed text-center text-xs font-mono text-content-muted">Configure a workload and click Start to see real, live progress here.</div>
             )}
           </div>
 
@@ -445,7 +445,7 @@ export const PerformanceTestingPage: React.FC = () => {
 
 const NumField: React.FC<{ id: string; label: string; value: string; onChange: (v: string) => void; disabled: boolean }> = ({ id, label, value, onChange, disabled }) => (
   <div>
-    <label htmlFor={id} className="block text-[10px] font-mono text-slate-500 mb-0.5">
+    <label htmlFor={id} className="block text-[10px] font-mono text-content-muted mb-0.5">
       {label}
     </label>
     <input
@@ -488,7 +488,7 @@ const LiveMetricsPanel: React.FC<{ live: PerformanceRunStatusResponse }> = ({ li
     <div id="perf-live-metrics" className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm space-y-3">
       <div className="flex items-center justify-between pb-2 border-b border-slate-800/80">
         <span className="text-sm font-mono font-bold text-slate-200">{live.name}</span>
-        <span className="text-[10px] font-mono text-slate-500">{live.live ? 'live, real-time' : 'from persisted history'}</span>
+        <span className="text-[10px] font-mono text-content-muted">{live.live ? 'live, real-time' : 'from persisted history'}</span>
       </div>
       <div className="grid grid-cols-3 gap-3 text-xs font-mono">
         <Stat label="Elapsed" value={`${(live.elapsed_ms / 1000).toFixed(1)}s`} />
@@ -505,7 +505,7 @@ const LiveMetricsPanel: React.FC<{ live: PerformanceRunStatusResponse }> = ({ li
           <Stat label="Throughput" value={`${m.throughput_rps.toFixed(2)} req/s`} />
         </div>
       ) : (
-        <p className="text-[11px] font-mono text-slate-500">No performance data yet.</p>
+        <p className="text-[11px] font-mono text-content-muted">No performance data yet.</p>
       )}
     </div>
   );
@@ -513,7 +513,7 @@ const LiveMetricsPanel: React.FC<{ live: PerformanceRunStatusResponse }> = ({ li
 
 const Stat: React.FC<{ label: string; value: string }> = ({ label, value }) => (
   <div>
-    <div className="text-slate-500 mb-0.5">{label}</div>
+    <div className="text-content-muted mb-0.5">{label}</div>
     <div className="text-slate-200">{value}</div>
   </div>
 );
@@ -522,7 +522,7 @@ const ChartPanel: React.FC<{ chartData: { offset_s: number; duration_ms: number;
   <div id="perf-chart" className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm">
     <div className="text-xs font-mono text-slate-400 mb-2">Latency &amp; Concurrency Over Time (real samples)</div>
     {chartData.length === 0 ? (
-      <p className="text-[11px] font-mono text-slate-500 py-10 text-center">No performance data yet.</p>
+      <p className="text-[11px] font-mono text-content-muted py-10 text-center">No performance data yet.</p>
     ) : (
       <ResponsiveContainer width="100%" height={220}>
         <ComposedChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
@@ -547,7 +547,7 @@ const HistoryPanel: React.FC<{ history: PerformanceRunRow[] }> = ({ history }) =
       <History className="w-3.5 h-3.5" /> Recent Runs (persisted)
     </div>
     {history.length === 0 ? (
-      <p className="text-[11px] font-mono text-slate-500">No performance test runs yet for this project.</p>
+      <p className="text-[11px] font-mono text-content-muted">No performance test runs yet for this project.</p>
     ) : (
       <div className="space-y-1 max-h-40 overflow-y-auto">
         {history.slice(0, 10).map((r) => (

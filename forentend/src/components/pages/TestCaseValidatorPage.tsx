@@ -275,7 +275,7 @@ export const TestCaseValidatorPage: React.FC = () => {
                     <Pill label={row.status} className={statusStyles[row.status]} />
                   </div>
                   <p className="text-[11px] text-slate-400">{row.description}</p>
-                  <div className="text-[10px] font-mono text-slate-500 flex flex-wrap gap-x-3">
+                  <div className="text-[10px] font-mono text-content-muted flex flex-wrap gap-x-3">
                     <span>{row.category}</span>
                     <span>{row.priority}</span>
                     <span>
@@ -355,7 +355,7 @@ export const TestCaseValidatorPage: React.FC = () => {
         actions={
           <div className="flex items-center gap-2">
             {cases && (
-              <span className="text-[10px] font-mono text-slate-500">
+              <span className="text-[10px] font-mono text-content-muted">
                 {cases.length} case{cases.length === 1 ? '' : 's'}
                 {Object.entries(counts).map(([status, n]) => ` · ${n} ${status.toLowerCase()}`)}
               </span>
@@ -378,7 +378,7 @@ export const TestCaseValidatorPage: React.FC = () => {
           the real live stream right; stacks below `xl`. */}
       <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_400px] gap-4 items-start">
         <div className="space-y-3 min-w-0">
-          <p className="text-[10px] font-mono text-slate-500 flex items-start gap-1.5 px-1">
+          <p className="text-[10px] font-mono text-content-muted flex items-start gap-1.5 px-1">
             <Info className="w-3 h-3 shrink-0 mt-0.5" />
             <span>
               Validation is structural only — it checks that title, description, steps and expected result are

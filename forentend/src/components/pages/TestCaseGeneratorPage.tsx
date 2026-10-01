@@ -1359,23 +1359,23 @@ export const TestCaseGeneratorPage: React.FC = () => {
           {lastGenerationResult && (
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-1.5 text-slate-300">
               <div>
-                <span className="text-slate-500">Method: </span>
+                <span className="text-content-muted">Method: </span>
                 {lastGenerationResult.generation_method === 'ai' ? 'AI' : 'Fallback (no AI output)'}
               </div>
               <div>
-                <span className="text-slate-500">Provider: </span>
+                <span className="text-content-muted">Provider: </span>
                 {lastGenerationResult.provider ? providerName(lastGenerationResult.provider) : 'Not Reported'}
               </div>
               <div>
-                <span className="text-slate-500">Model: </span>
+                <span className="text-content-muted">Model: </span>
                 {lastGenerationResult.model ?? 'Not Reported'}
               </div>
               <div>
-                <span className="text-slate-500">Mode: </span>
+                <span className="text-content-muted">Mode: </span>
                 {lastRoutingMode ?? 'Not Reported'}
               </div>
               <div className="col-span-2 sm:col-span-1">
-                <span className="text-slate-500">Skills: </span>
+                <span className="text-content-muted">Skills: </span>
                 {effectiveSkillIds.length > 0
                   ? effectiveSkillIds.map((id) => skills.find((s) => s.id === id)?.name ?? id).join(', ')
                   : 'None selected'}
@@ -1390,7 +1390,7 @@ export const TestCaseGeneratorPage: React.FC = () => {
                   preferred first refused and it used another. Naming them
                   separately is the fix — neither value was wrong.
                 */}
-                <span className="text-slate-500">Method: </span>
+                <span className="text-content-muted">Method: </span>
                 {lastGenerationResult.generation_method === 'fallback'
                   ? `Fallback — ${lastGenerationResult.fallback_reason ?? 'no reason reported'}`
                   : `AI (${
@@ -1404,18 +1404,18 @@ export const TestCaseGeneratorPage: React.FC = () => {
               {lastGenerationResult.generation_method === 'ai' && (
                 <>
                   <div>
-                    <span className="text-slate-500">Tokens: </span>
+                    <span className="text-content-muted">Tokens: </span>
                     {lastGenerationResult.total_prompt_tokens !== null &&
                     lastGenerationResult.total_completion_tokens !== null
                       ? `${lastGenerationResult.total_prompt_tokens} in / ${lastGenerationResult.total_completion_tokens} out`
                       : 'Not Reported'}
                   </div>
                   <div>
-                    <span className="text-slate-500">Latency: </span>
+                    <span className="text-content-muted">Latency: </span>
                     {(lastGenerationResult.total_latency_ms / 1000).toFixed(1)}s
                   </div>
                   <div>
-                    <span className="text-slate-500">Est. Cost: </span>
+                    <span className="text-content-muted">Est. Cost: </span>
                     {lastGenerationResult.total_estimated_cost_usd !== null
                       ? lastGenerationResult.total_estimated_cost_usd === 0
                         ? 'Free (self-hosted)'

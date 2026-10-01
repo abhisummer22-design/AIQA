@@ -64,7 +64,7 @@ export const ApiTestingFlowRail: React.FC<ApiTestingFlowRailProps> = ({ method, 
           }`}
         >
           {isExecuting && <span className="absolute inset-0 rounded-full border border-yellow-400 animate-ping" />}
-          <Send className={`w-3.5 h-3.5 relative ${isExecuting ? 'text-yellow-300' : hasRun ? 'text-yellow-500' : 'text-slate-500'}`} />
+          <Send className={`w-3.5 h-3.5 relative ${isExecuting ? 'text-yellow-300' : hasRun ? 'text-yellow-500' : 'text-content-muted'}`} />
         </div>
         <h3 className="text-[10px] font-bold text-slate-100 font-mono uppercase tracking-wider">API Agent</h3>
       </div>

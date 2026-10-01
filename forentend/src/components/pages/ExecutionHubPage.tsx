@@ -690,7 +690,7 @@ export const ExecutionHubPage: React.FC = () => {
             >
               <Badge label={formatStatusLabel(r.state)} className={RUN_STATE_STYLE[r.state]} />
               <span className="font-mono text-xs font-semibold text-slate-100 truncate">{r.name}</span>
-              <span className="ml-auto shrink-0 text-[10px] font-mono text-slate-500">
+              <span className="ml-auto shrink-0 text-[10px] font-mono text-content-muted">
                 {r.passed}/{r.total} passed
               </span>
             </button>
@@ -779,47 +779,47 @@ export const ExecutionHubPage: React.FC = () => {
 
         <div id="run-detail-count-grid" className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-6 gap-2 text-[10px] font-mono">
           <div className="p-1.5 rounded bg-[#020617] border border-slate-800 text-center">
-            <div className="text-slate-500">TOTAL</div>
+            <div className="text-content-muted">TOTAL</div>
             <div className="text-slate-200 font-bold">{detail.total}</div>
           </div>
           <div className="p-1.5 rounded bg-[#020617] border border-slate-800 text-center">
-            <div className="text-slate-500">{formatStatusLabel('QUEUED')}</div>
+            <div className="text-content-muted">{formatStatusLabel('QUEUED')}</div>
             <div className="text-slate-400 font-bold">{detail.queued}</div>
           </div>
           <div className="p-1.5 rounded bg-[#020617] border border-slate-800 text-center">
-            <div className="text-slate-500">{formatStatusLabel('RUNNING')}</div>
+            <div className="text-content-muted">{formatStatusLabel('RUNNING')}</div>
             <div className="text-yellow-400 font-bold">{detail.running}</div>
           </div>
           <div className="p-1.5 rounded bg-[#020617] border border-slate-800 text-center">
-            <div className="text-slate-500">{formatStatusLabel('PASSED')}</div>
+            <div className="text-content-muted">{formatStatusLabel('PASSED')}</div>
             <div className="text-emerald-400 font-bold">{detail.passed}</div>
           </div>
           <div className="p-1.5 rounded bg-[#020617] border border-slate-800 text-center">
-            <div className="text-slate-500">{formatStatusLabel('FAILED')}</div>
+            <div className="text-content-muted">{formatStatusLabel('FAILED')}</div>
             <div className="text-rose-400 font-bold">{detail.failed}</div>
           </div>
           <div className="p-1.5 rounded bg-[#020617] border border-slate-800 text-center">
-            <div className="text-slate-500">{formatStatusLabel('BLOCKED')}</div>
+            <div className="text-content-muted">{formatStatusLabel('BLOCKED')}</div>
             <div className="text-purple-400 font-bold">{detail.blocked}</div>
           </div>
           <div className="p-1.5 rounded bg-[#020617] border border-slate-800 text-center">
-            <div className="text-slate-500">{formatStatusLabel('SKIPPED')}</div>
+            <div className="text-content-muted">{formatStatusLabel('SKIPPED')}</div>
             <div className="text-slate-400 font-bold">{detail.skipped}</div>
           </div>
           <div className="p-1.5 rounded bg-[#020617] border border-slate-800 text-center">
-            <div className="text-slate-500">{formatStatusLabel('CANCELLED')}</div>
+            <div className="text-content-muted">{formatStatusLabel('CANCELLED')}</div>
             <div className="text-slate-400 font-bold">{detail.cancelled}</div>
           </div>
           <div className="p-1.5 rounded bg-[#020617] border border-slate-800 text-center">
-            <div className="text-slate-500">{formatStatusLabel('TIMEOUT')}</div>
+            <div className="text-content-muted">{formatStatusLabel('TIMEOUT')}</div>
             <div className="text-orange-400 font-bold">{detail.timeout}</div>
           </div>
           <div className="p-1.5 rounded bg-[#020617] border border-slate-800 text-center">
-            <div className="text-slate-500">{formatStatusLabel('INFRA_ERROR')}</div>
+            <div className="text-content-muted">{formatStatusLabel('INFRA_ERROR')}</div>
             <div className="text-orange-400 font-bold">{detail.infra_error}</div>
           </div>
           <div className="p-1.5 rounded bg-[#020617] border border-slate-800 text-center">
-            <div className="text-slate-500">{formatStatusLabel('NEEDS_REVIEW')}</div>
+            <div className="text-content-muted">{formatStatusLabel('NEEDS_REVIEW')}</div>
             <div className="text-amber-400 font-bold">{detail.needs_review}</div>
           </div>
         </div>
@@ -827,7 +827,7 @@ export const ExecutionHubPage: React.FC = () => {
         <div className="rounded-lg border border-slate-800 overflow-hidden">
           <table className="w-full text-left text-xs">
             <thead>
-              <tr className="font-mono text-[10px] uppercase tracking-wider text-slate-500 bg-[#020617] border-b border-slate-800">
+              <tr className="font-mono text-[10px] uppercase tracking-wider text-content-muted bg-[#020617] border-b border-slate-800">
                 <th scope="col" className="py-2 px-2.5 font-normal">Task</th>
                 <th scope="col" className="py-2 px-2.5 font-normal">Status</th>
                 <th scope="col" className="py-2 px-2.5 font-normal">Reason</th>
@@ -840,7 +840,7 @@ export const ExecutionHubPage: React.FC = () => {
                 <tr key={t.id}>
                   <td className="py-2 px-2.5">
                     <div className="font-mono text-xs font-semibold text-slate-100">{t.name}</div>
-                    <div className="font-mono text-[10px] text-slate-500">{t.id}</div>
+                    <div className="font-mono text-[10px] text-content-muted">{t.id}</div>
                   </td>
                   <td className="py-2 px-2.5">
                     <Badge label={formatStatusLabel(t.status)} className={TASK_STATUS_STYLE[t.status]} />
@@ -883,7 +883,7 @@ export const ExecutionHubPage: React.FC = () => {
   const renderCreatePanel = () => (
     <div className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm space-y-3">
       <div>
-        <label htmlFor="exec-run-name" className="text-[10px] font-mono uppercase text-slate-500">
+        <label htmlFor="exec-run-name" className="text-[10px] font-mono uppercase text-content-muted">
           Execution name
         </label>
         <input
@@ -898,7 +898,7 @@ export const ExecutionHubPage: React.FC = () => {
 
       <div className="space-y-2">
         <div className="flex items-center justify-between">
-          <span className="text-[10px] font-mono uppercase text-slate-500">Tasks</span>
+          <span className="text-[10px] font-mono uppercase text-content-muted">Tasks</span>
           <button
             type="button"
             onClick={addDraftTask}
@@ -953,7 +953,7 @@ export const ExecutionHubPage: React.FC = () => {
               type="button"
               onClick={() => removeDraftTask(t.key)}
               disabled={draftTasks.length === 1}
-              className="p-1 rounded text-slate-500 hover:text-rose-400 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+              className="p-1 rounded text-content-muted hover:text-rose-400 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
               title="Remove task"
             >
               <Trash2 className="w-3.5 h-3.5" />
@@ -964,7 +964,7 @@ export const ExecutionHubPage: React.FC = () => {
               own candidate, so a self-dependency cannot be selected. */}
           {draftTasks.length > 1 && (
             <div id={`task-prereqs-${t.key}`} className="flex flex-wrap items-center gap-1.5 pl-1">
-              <span className="text-[10px] font-mono text-slate-500 uppercase">Depends on:</span>
+              <span className="text-[10px] font-mono text-content-muted uppercase">Depends on:</span>
               {draftTasks
                 .filter((other) => other.key !== t.key)
                 .map((other) => {
@@ -986,13 +986,13 @@ export const ExecutionHubPage: React.FC = () => {
                   );
                 })}
               {t.prerequisites.length === 0 && (
-                <span className="text-[10px] text-slate-600">none — click a task above to add a dependency</span>
+                <span className="text-[10px] text-content-muted">none — click a task above to add a dependency</span>
               )}
             </div>
           )}
           </div>
         ))}
-        <p className="text-[10px] text-slate-500">
+        <p className="text-[10px] text-content-muted">
           Prerequisites map directly to the real backend <code>TaskDef.prerequisites</code>. The backend authoritatively
           validates unique task ids, unknown prerequisite references, and dependency cycles — this form does not duplicate
           that logic.
@@ -1000,7 +1000,7 @@ export const ExecutionHubPage: React.FC = () => {
       </div>
 
       <div>
-        <label htmlFor="exec-concurrency" className="text-[10px] font-mono uppercase text-slate-500">
+        <label htmlFor="exec-concurrency" className="text-[10px] font-mono uppercase text-content-muted">
           Concurrency (optional — backend default applies if left blank)
         </label>
         <input
@@ -1048,7 +1048,7 @@ export const ExecutionHubPage: React.FC = () => {
               {realtime.connectionState === 'connected' ? (
                 <Wifi className="w-3.5 h-3.5 text-emerald-400" />
               ) : (
-                <WifiOff className="w-3.5 h-3.5 text-slate-500" />
+                <WifiOff className="w-3.5 h-3.5 text-content-muted" />
               )}
               <Badge label={REALTIME_STATE_LABEL[realtime.connectionState]} className={REALTIME_STATE_STYLE[realtime.connectionState]} />
               {realtime.connectionState === 'error' && (

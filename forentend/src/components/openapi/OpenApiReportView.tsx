@@ -28,9 +28,9 @@ const Tile: React.FC<{ id: string; label: string; value: string; tone?: Tone; no
     id={id}
     className={`p-3 rounded-lg border ${tone === 'bad' ? 'bg-rose-950/30 border-rose-800/60' : tone === 'good' ? 'bg-emerald-950/20 border-emerald-800/50' : tone === 'warn' ? 'bg-amber-950/30 border-amber-800/60' : 'bg-[#020617] border-slate-800'}`}
   >
-    <div className="text-[10px] uppercase tracking-wide text-slate-500">{label}</div>
+    <div className="text-[10px] uppercase tracking-wide text-content-muted">{label}</div>
     <div className="text-sm font-mono text-slate-100">{value}</div>
-    {note && <div className="text-[10px] text-slate-500 mt-0.5">{note}</div>}
+    {note && <div className="text-[10px] text-content-muted mt-0.5">{note}</div>}
   </div>
 );
 
@@ -40,7 +40,7 @@ const CaseRow: React.FC<{ operation: string; c: OpenApiReportCase }> = ({ operat
     <li data-case={c.id} data-outcome={c.outcome} className="p-2 rounded border border-slate-800/80 bg-[#020617] space-y-0.5">
       <div className="flex flex-wrap items-center gap-2 text-[11px]">
         <Badge verdict={c.outcome} label={OUTCOME_LABEL[c.outcome]} />
-        <span className="text-slate-500">{KIND_LABEL[c.kind].title}</span>
+        <span className="text-content-muted">{KIND_LABEL[c.kind].title}</span>
         <span className="text-slate-200">{titleWithin({ title: c.title, operation })}</span>
       </div>
       <div className="text-[11px] font-mono text-slate-400 break-all">
@@ -59,7 +59,7 @@ const CaseRow: React.FC<{ operation: string; c: OpenApiReportCase }> = ({ operat
         </div>
       )}
       {c.reason && (
-        <div data-reason className={`text-[11px] ${c.outcome === 'NOT_RUN' ? 'text-slate-500' : 'text-rose-300'}`}>
+        <div data-reason className={`text-[11px] ${c.outcome === 'NOT_RUN' ? 'text-content-muted' : 'text-rose-300'}`}>
           {c.reason}
         </div>
       )}
@@ -75,7 +75,7 @@ const OperationBlock: React.FC<{ op: OpenApiReportOperation }> = ({ op }) => {
         <Badge verdict={op.verdict} />
         <span className="font-mono text-slate-100">{op.id}</span>
         {op.summary && <span className="text-slate-400">{op.summary}</span>}
-        <span className="ml-auto text-slate-500">{op.counts ? countsLine(op.counts) : (op.why_no_cases ?? 'no cases')}</span>
+        <span className="ml-auto text-content-muted">{op.counts ? countsLine(op.counts) : (op.why_no_cases ?? 'no cases')}</span>
       </summary>
       {op.cases.length > 0 ? (
         <ul className="px-2 pb-2 space-y-1.5">
@@ -84,7 +84,7 @@ const OperationBlock: React.FC<{ op: OpenApiReportOperation }> = ({ op }) => {
           ))}
         </ul>
       ) : (
-        <p className="px-3 pb-2 text-[11px] text-slate-500">No case was made: {op.why_no_cases ?? 'none applies to it'}.</p>
+        <p className="px-3 pb-2 text-[11px] text-content-muted">No case was made: {op.why_no_cases ?? 'none applies to it'}.</p>
       )}
     </details>
   );
@@ -106,7 +106,7 @@ export const OpenApiReportView: React.FC<{
         <h2 className="text-sm font-semibold text-slate-100">
           {report.spec.title} <span className="font-normal text-slate-400">{report.spec.version}</span>
         </h2>
-        <span id="openapi-report-target" className="text-[11px] font-mono text-slate-500">
+        <span id="openapi-report-target" className="text-[11px] font-mono text-content-muted">
           {report.spec.base_url}
         </span>
         {!report.final ? (
@@ -154,7 +154,7 @@ export const OpenApiReportView: React.FC<{
       <p id="openapi-coverage" className="text-[11px] text-slate-300">
         {report.coverage.tested} of {report.coverage.operations} {plural(report.coverage.operations, 'operation', 'operations')} of the document tested.
         {report.coverage.not_tested.length > 0 && (
-          <span className="text-slate-500">
+          <span className="text-content-muted">
             {' '}
             Not tested:{' '}
             {report.coverage.not_tested.map((n, i) => (

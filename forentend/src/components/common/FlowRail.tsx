@@ -23,7 +23,7 @@ const nodeDot: Record<FlowNodeState, string> = {
 };
 
 const nodeText: Record<FlowNodeState, string> = {
-  idle: 'text-slate-500',
+  idle: 'text-content-muted',
   active: 'text-violet-300',
   done: 'text-emerald-300',
   failed: 'text-rose-300',
@@ -53,7 +53,7 @@ export const FlowNode: React.FC<{
     </div>
     <div className="min-w-0 flex-1">
       <p className={`text-[10px] font-mono font-bold uppercase tracking-wider ${nodeText[state]}`}>{label}</p>
-      <p className="text-[10px] text-slate-500 leading-snug break-words">{detail}</p>
+      <p className="text-[10px] text-content-muted leading-snug break-words">{detail}</p>
     </div>
   </div>
 );

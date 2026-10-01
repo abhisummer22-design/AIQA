@@ -51,13 +51,13 @@ const ScheduleList: React.FC<{
     </button>
     {schedules.length === 0 ? (
       loading ? (
-        <p className="text-[11px] text-slate-500">Loading…</p>
+        <p className="text-[11px] text-content-muted">Loading…</p>
       ) : error ? (
         <p id="regression-schedules-error" role="alert" className="text-[11px] text-rose-300">
           The schedules could not be read: {error}
         </p>
       ) : (
-        <p className="text-[11px] text-slate-500">No schedule yet.</p>
+        <p className="text-[11px] text-content-muted">No schedule yet.</p>
       )
     ) : (
       <ul className="space-y-1">
@@ -74,7 +74,7 @@ const ScheduleList: React.FC<{
                 <span className={`w-2 h-2 rounded-full ${dot(s)}`} aria-hidden />
                 <span className="text-xs text-slate-100 truncate">{s.name}</span>
               </div>
-              <div className="text-[10px] text-slate-500">
+              <div className="text-[10px] text-content-muted">
                 {s.enabled ? `${everyText(s.every_minutes)}, next ${formatTimestamp(s.next_run_at)}` : 'paused: runs only when asked'}
               </div>
             </button>
@@ -87,7 +87,7 @@ const ScheduleList: React.FC<{
 
 const HistoryList: React.FC<{ runs: RegressionRunAccount[]; chosen: string | null; onChoose: (id: string) => void }> = ({ runs, chosen, onChoose }) =>
   runs.length === 0 ? (
-    <p id="regression-history-empty" className="text-[11px] text-slate-500">
+    <p id="regression-history-empty" className="text-[11px] text-content-muted">
       No run yet.
     </p>
   ) : (
@@ -102,7 +102,7 @@ const HistoryList: React.FC<{ runs: RegressionRunAccount[]; chosen: string | nul
             className={`w-full flex flex-wrap items-center gap-2 text-left p-2 rounded border text-[11px] cursor-pointer ${chosen === r.id ? 'bg-[#020617] border-violet-700' : 'border-slate-800 hover:bg-slate-900'}`}
           >
             <span className="text-slate-200">{formatTimestamp(r.created_at)}</span>
-            <span className="text-slate-500">{r.trigger === 'SCHEDULE' ? 'schedule' : 'by hand'}</span>
+            <span className="text-content-muted">{r.trigger === 'SCHEDULE' ? 'schedule' : 'by hand'}</span>
             <Badge tone={verdictTone(r.verdict)}>{VERDICT_LABEL[r.verdict]}</Badge>
             <span className="ml-auto text-slate-400">
               {r.summary.passed} passed · {r.summary.failed + r.summary.error} failed · {r.summary.regressed} regressed
@@ -445,7 +445,7 @@ export const RegressionPage: React.FC = () => {
       <div className="space-y-1.5">
         <h3 className="text-xs font-semibold text-slate-100">Runs</h3>
         {history.loading && !history.value ? (
-          <p className="text-[11px] text-slate-500">Loading…</p>
+          <p className="text-[11px] text-content-muted">Loading…</p>
         ) : history.error && !history.value ? (
           <p id="regression-history-error" role="alert" className="text-[11px] text-rose-300">
             The runs could not be read: {history.error.message}

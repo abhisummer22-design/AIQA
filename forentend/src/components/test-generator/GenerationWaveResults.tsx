@@ -54,7 +54,7 @@ export const GenerationWaveResults: React.FC<GenerationWaveResultsProps> = ({ wa
 
   return (
     <div id="generation-wave-results" className="pt-2 border-t border-slate-800/80 space-y-1.5">
-      <div className="text-slate-500">
+      <div className="text-content-muted">
         Per-skill results: {waves.length - failed.length} of {waves.length} succeeded
       </div>
       {failed.length > 0 && (

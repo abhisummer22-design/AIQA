@@ -172,7 +172,7 @@ export const ApplicationSourceSection: React.FC<ApplicationSourceSectionProps> =
       default:
         return (
           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-slate-900 border border-slate-700 text-slate-400">
-            <Radio className="w-2.5 h-2.5 text-slate-500" />
+            <Radio className="w-2.5 h-2.5 text-content-muted" />
             <span>Not Connected</span>
           </span>
         );
@@ -424,7 +424,7 @@ export const ApplicationSourceSection: React.FC<ApplicationSourceSectionProps> =
                         type="button"
                         onClick={() => handleConnect(meta.type)}
                         disabled={disabled || isChecking || !projectId || !inputUrls[meta.type]?.trim()}
-                        className="px-3 py-1.5 rounded bg-violet-600 hover:bg-violet-500 disabled:bg-slate-800 text-white disabled:text-slate-500 text-xs font-mono font-medium cursor-pointer transition-colors flex items-center gap-1 shrink-0"
+                        className="px-3 py-1.5 rounded bg-violet-600 hover:bg-violet-500 disabled:bg-slate-800 text-white disabled:text-content-muted text-xs font-mono font-medium cursor-pointer transition-colors flex items-center gap-1 shrink-0"
                       >
                         {isChecking ? (
                           <>
@@ -441,7 +441,7 @@ export const ApplicationSourceSection: React.FC<ApplicationSourceSectionProps> =
                     </div>
 
                     {meta.type === 'FIGMA' && !isConnected && (
-                      <div className="text-[10px] font-mono text-slate-500">
+                      <div className="text-[10px] font-mono text-content-muted">
                         No Figma source connected
                       </div>
                     )}

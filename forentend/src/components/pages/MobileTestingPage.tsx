@@ -84,8 +84,8 @@ const ToolRow: React.FC<{ name: string; tool: MobileToolStatus }> = ({ name, too
       <div className="text-[11px] font-mono text-slate-200">{name}</div>
       {/* The backend's real detail: a version string, or the real reason
           the tool cannot be used. */}
-      <div className="text-[10px] font-mono text-slate-500 break-all">{tool.detail}</div>
-      {tool.path && <div className="text-[9px] font-mono text-slate-600 break-all">{tool.path}</div>}
+      <div className="text-[10px] font-mono text-content-muted break-all">{tool.detail}</div>
+      {tool.path && <div className="text-[9px] font-mono text-content-muted break-all">{tool.path}</div>}
     </div>
     <Pill
       label={tool.available ? 'available' : 'missing'}
@@ -256,7 +256,7 @@ export const MobileTestingPage: React.FC = () => {
                     <Usb className="w-4 h-4 text-emerald-400 shrink-0" />
                     <div className="min-w-0">
                       <h2 className="text-sm font-bold text-slate-100 tracking-tight">Connected Devices</h2>
-                      <p className="text-[11px] text-slate-500">Live from `adb devices -l` on this host</p>
+                      <p className="text-[11px] text-content-muted">Live from `adb devices -l` on this host</p>
                     </div>
                   </div>
                   <Pill label={`${readyCount} ready`} />
@@ -264,7 +264,7 @@ export const MobileTestingPage: React.FC = () => {
 
                 {fleet.devices.length === 0 ? (
                   <div className="rounded-md bg-[#020617] border border-slate-800 p-3 flex items-start gap-2">
-                    <Info className="w-3.5 h-3.5 text-slate-500 shrink-0 mt-0.5" />
+                    <Info className="w-3.5 h-3.5 text-content-muted shrink-0 mt-0.5" />
                     <p className="text-[11px] text-slate-400">
                       No device or emulator is currently connected. Plug in a handset with USB debugging enabled,
                       or boot one of the real AVDs below — this list updates as soon as adb sees it. Nothing is
@@ -284,7 +284,7 @@ export const MobileTestingPage: React.FC = () => {
                             <span className="text-xs font-mono font-bold text-slate-100 truncate">{d.serial}</span>
                             <Pill label={d.emulator ? 'emulator' : 'physical'} />
                           </div>
-                          <div className="text-[10px] font-mono text-slate-500">
+                          <div className="text-[10px] font-mono text-content-muted">
                             {d.model ?? 'model not reported by adb'}
                           </div>
                           {d.state === 'unauthorized' && (
@@ -308,7 +308,7 @@ export const MobileTestingPage: React.FC = () => {
                     <Smartphone className="w-4 h-4 text-violet-400 shrink-0" />
                     <div className="min-w-0">
                       <h2 className="text-sm font-bold text-slate-100 tracking-tight">Available Emulators</h2>
-                      <p className="text-[11px] text-slate-500">Real AVDs on this machine — booting one is real</p>
+                      <p className="text-[11px] text-content-muted">Real AVDs on this machine — booting one is real</p>
                     </div>
                   </div>
                   <Pill label={`${fleet.avds.length} avd${fleet.avds.length === 1 ? '' : 's'}`} />
@@ -376,7 +376,7 @@ export const MobileTestingPage: React.FC = () => {
                     <TabletSmartphone className="w-4 h-4 text-yellow-400 shrink-0" />
                     <div className="min-w-0">
                       <h2 className="text-sm font-bold text-slate-100 tracking-tight">iOS Devices</h2>
-                      <p className="text-[11px] text-slate-500">
+                      <p className="text-[11px] text-content-muted">
                         Real Simulators (`xcrun simctl`) and attached hardware (libimobiledevice)
                       </p>
                     </div>
@@ -394,13 +394,13 @@ export const MobileTestingPage: React.FC = () => {
                         simulator could simply be created. */}
                     {!fleet.simctl.available && (
                       <p className="text-[11px] text-slate-400 flex items-start gap-2">
-                        <Info className="w-3.5 h-3.5 text-slate-500 shrink-0 mt-0.5" />
+                        <Info className="w-3.5 h-3.5 text-content-muted shrink-0 mt-0.5" />
                         <span>{fleet.simctl.detail}</span>
                       </p>
                     )}
                     {!fleet.libimobiledevice.available && (
                       <p className="text-[11px] text-slate-400 flex items-start gap-2">
-                        <Info className="w-3.5 h-3.5 text-slate-500 shrink-0 mt-0.5" />
+                        <Info className="w-3.5 h-3.5 text-content-muted shrink-0 mt-0.5" />
                         <span>
                           {fleet.libimobiledevice.detail} A physical iPhone/iPad can be used from this{' '}
                           <span className="font-mono text-slate-300">{fleet.host_os}</span> host once it is
@@ -428,7 +428,7 @@ export const MobileTestingPage: React.FC = () => {
                             <span className="text-xs font-mono font-bold text-slate-100 truncate">{d.name}</span>
                             <Pill label={d.simulator ? 'simulator' : 'physical'} />
                           </div>
-                          <div className="text-[10px] font-mono text-slate-500 truncate">
+                          <div className="text-[10px] font-mono text-content-muted truncate">
                             {d.runtime ?? 'runtime not reported'} · {d.udid}
                           </div>
                         </div>
@@ -470,7 +470,7 @@ export const MobileTestingPage: React.FC = () => {
                   <TerminalSquare className="w-4 h-4 text-yellow-400 shrink-0" />
                   <div className="min-w-0">
                     <h2 className="text-sm font-bold text-slate-100 tracking-tight">Host Toolchain</h2>
-                    <p className="text-[11px] text-slate-500">Real binaries this host resolved, with real versions</p>
+                    <p className="text-[11px] text-content-muted">Real binaries this host resolved, with real versions</p>
                   </div>
                 </div>
                 <div className="space-y-1">

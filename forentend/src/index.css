@@ -22,7 +22,15 @@
   --color-surface-card: #0b1120;
   --color-content-primary: #f1f5f9;
   --color-content-secondary: #94a3b8;
-  --color-content-muted: #64748b;
+  /* Was #64748b in both themes. That single mid-tone cannot pass on both
+     surfaces: computed against the real values it is 4.24:1 on the dark page
+     (#020617) and 3.96:1 on the dark card (#0b1120), both under the 4.5:1 WCAG
+     AA floor for normal text -- and this token backs de-emphasised body copy,
+     timestamps and metadata, i.e. a lot of small text. Lightened to #7d8ea3,
+     which measures 6.02:1 on the dark page and 5.62:1 on the dark card. The
+     light theme overrides it separately below, because the value that passes on
+     a near-black surface is not the value that passes on a near-white one. */
+  --color-content-muted: #7d8ea3;
   --color-border-default: #1e293b;
 }
 
@@ -41,7 +49,7 @@
   --color-surface-card: #ffffff;
   --color-content-primary: #0f172a;
   --color-content-secondary: #475569;
-  --color-content-muted: #64748b;
+  --color-content-muted: #5c6b80;
   --color-border-default: #e2e8f0;
 }
 

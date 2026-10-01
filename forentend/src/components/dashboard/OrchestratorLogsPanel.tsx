@@ -302,7 +302,7 @@ export const OrchestratorLogsPanel: React.FC<OrchestratorLogsPanelProps> = ({ pr
         );
       case 'DEBUG':
         return (
-          <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-slate-900 border border-slate-700 text-slate-400">
+          <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-slate-900 border border-border-default text-content-secondary">
             DEBUG
           </span>
         );
@@ -319,17 +319,17 @@ export const OrchestratorLogsPanel: React.FC<OrchestratorLogsPanelProps> = ({ pr
   return (
     <div
       id="aiqa-orchestrator-logs-panel"
-      className={`rounded-lg bg-[#0B1120] border border-slate-800/90 shadow-lg flex flex-col h-[640px] overflow-hidden ${className}`}
+      className={`rounded-lg bg-surface-card border border-border-default/90 shadow-lg flex flex-col h-[640px] overflow-hidden ${className}`}
     >
       {/* 1. Header with Title and Connection Status */}
-      <div className="px-3.5 py-2.5 border-b border-slate-800 bg-[#020617] flex items-center justify-between gap-2 shrink-0">
+      <div className="px-3.5 py-2.5 border-b border-border-default bg-surface-card flex items-center justify-between gap-2 shrink-0">
         <div className="flex items-center gap-2">
           <div className="p-1 rounded bg-violet-950/80 border border-violet-700/60 text-violet-400">
             <Terminal className="w-3.5 h-3.5" />
           </div>
           <div>
-            <h2 className="text-xs font-bold text-slate-100 font-mono uppercase tracking-wider">AIQA ORCHESTRATOR</h2>
-            <div className="flex items-center gap-1.5 text-[9px] font-mono text-slate-400">
+            <h2 className="text-xs font-bold text-content-primary font-mono uppercase tracking-wider">AIQA ORCHESTRATOR</h2>
+            <div className="flex items-center gap-1.5 text-[9px] font-mono text-content-secondary">
               <span>LIVE ACTIVITY</span>
               {projectId && (
                 <>
@@ -373,9 +373,9 @@ export const OrchestratorLogsPanel: React.FC<OrchestratorLogsPanelProps> = ({ pr
               id="orchestrator-log-status-offline"
               onClick={connectWs}
               title="Click to reconnect stream"
-              className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-slate-900 hover:bg-slate-800 border border-slate-700 text-[10px] font-mono font-bold text-slate-400 hover:text-slate-200 cursor-pointer transition-colors"
+              className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-slate-900 hover:bg-slate-800 border border-border-default text-[10px] font-mono font-bold text-content-secondary hover:text-content-primary cursor-pointer transition-colors"
             >
-              <WifiOff className="w-2.5 h-2.5 text-slate-500" />
+              <WifiOff className="w-2.5 h-2.5 text-content-muted" />
               <span>OFFLINE</span>
             </button>
           )}
@@ -386,7 +386,7 @@ export const OrchestratorLogsPanel: React.FC<OrchestratorLogsPanelProps> = ({ pr
               connectWs();
             }}
             title="Refresh logs & stream"
-            className="p-1 text-slate-400 hover:text-slate-200 rounded hover:bg-slate-800 cursor-pointer transition-colors"
+            className="p-1 text-content-secondary hover:text-content-primary rounded hover:bg-slate-800 cursor-pointer transition-colors"
           >
             <RefreshCw className={`w-3 h-3 ${loadingInitial ? 'animate-spin' : ''}`} />
           </button>
@@ -394,7 +394,7 @@ export const OrchestratorLogsPanel: React.FC<OrchestratorLogsPanelProps> = ({ pr
       </div>
 
       {/* 2. Subheader Controls: Level Filter & Search */}
-      <div className="px-3 py-1.5 border-b border-slate-800/80 bg-[#070D19] flex items-center justify-between gap-2 shrink-0 text-xs">
+      <div className="px-3 py-1.5 border-b border-border-default/80 bg-[#070D19] flex items-center justify-between gap-2 shrink-0 text-xs">
         <div className="flex items-center gap-1 overflow-x-auto no-scrollbar py-0.5">
           {(['ALL', 'INFO', 'WARN', 'ERROR', 'SUCCESS'] as LogLevelFilter[]).map((lvl) => (
             <button
@@ -403,7 +403,7 @@ export const OrchestratorLogsPanel: React.FC<OrchestratorLogsPanelProps> = ({ pr
               className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold transition-colors cursor-pointer ${
                 levelFilter === lvl
                   ? 'bg-violet-600 text-white shadow-sm'
-                  : 'bg-slate-900/80 text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+                  : 'bg-slate-900/80 text-content-secondary hover:text-content-primary hover:bg-slate-800'
               }`}
             >
               {lvl}
@@ -416,7 +416,7 @@ export const OrchestratorLogsPanel: React.FC<OrchestratorLogsPanelProps> = ({ pr
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           placeholder="Filter logs…"
-          className="w-28 sm:w-36 px-2 py-0.5 rounded bg-[#020617] border border-slate-800 text-[11px] font-mono text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-violet-600"
+          className="w-28 sm:w-36 px-2 py-0.5 rounded bg-surface-card border border-border-default text-[11px] font-mono text-content-primary placeholder:text-content-muted focus:outline-none focus:border-violet-600"
         />
       </div>
 
@@ -425,10 +425,10 @@ export const OrchestratorLogsPanel: React.FC<OrchestratorLogsPanelProps> = ({ pr
         id="orchestrator-logs-scroll-container"
         ref={containerRef}
         onScroll={handleScroll}
-        className="flex-1 p-2.5 overflow-y-auto font-mono text-[11px] leading-relaxed space-y-1.5 bg-[#020617]/95 relative select-text"
+        className="flex-1 p-2.5 overflow-y-auto font-mono text-[11px] leading-relaxed space-y-1.5 bg-surface-card/95 relative select-text"
       >
         {loadingInitial && logs.length === 0 && (
-          <div className="h-full flex flex-col items-center justify-center text-slate-500 gap-2">
+          <div className="h-full flex flex-col items-center justify-center text-content-muted gap-2">
             <Loader2 className="w-5 h-5 animate-spin text-violet-400" />
             <span className="text-xs">Connecting to orchestrator stream…</span>
           </div>
@@ -438,7 +438,7 @@ export const OrchestratorLogsPanel: React.FC<OrchestratorLogsPanelProps> = ({ pr
           <div className="h-full flex flex-col items-center justify-center text-center p-4 gap-2">
             <AlertCircle className="w-6 h-6 text-rose-400" />
             <span className="text-xs font-semibold text-rose-300">Orchestrator stream unavailable</span>
-            <p className="text-[10px] text-slate-400 max-w-xs">{errorMessage}</p>
+            <p className="text-[10px] text-content-secondary max-w-xs">{errorMessage}</p>
             <button
               onClick={() => {
                 void fetchRecentLogs();
@@ -452,10 +452,10 @@ export const OrchestratorLogsPanel: React.FC<OrchestratorLogsPanelProps> = ({ pr
         )}
 
         {!loadingInitial && !errorMessage && logs.length === 0 && (
-          <div className="h-full flex flex-col items-center justify-center text-center p-4 text-slate-500 gap-1.5">
-            <Terminal className="w-6 h-6 text-slate-600" />
-            <span className="text-xs font-semibold text-slate-300">No orchestrator activity yet</span>
-            <p className="text-[10px] text-slate-500 max-w-xs leading-normal">
+          <div className="h-full flex flex-col items-center justify-center text-center p-4 text-content-muted gap-1.5">
+            <Terminal className="w-6 h-6 text-content-muted" />
+            <span className="text-xs font-semibold text-content-secondary">No orchestrator activity yet</span>
+            <p className="text-[10px] text-content-muted max-w-xs leading-normal">
               Logs will appear here when AIQA processes generation, validation, routing, or execution activity.
             </p>
           </div>
@@ -466,14 +466,14 @@ export const OrchestratorLogsPanel: React.FC<OrchestratorLogsPanelProps> = ({ pr
             key={log.id}
             className="flex items-start gap-1.5 py-0.5 hover:bg-slate-900/60 px-1 rounded transition-colors group"
           >
-            <span className="text-slate-500 text-[10px] shrink-0 select-none">
+            <span className="text-content-muted text-[10px] shrink-0 select-none">
               {formatTimeOnly(log.timestamp)}
             </span>
             <div className="shrink-0">{levelBadge(log.level)}</div>
-            <span className="text-slate-400 font-semibold text-[10px] shrink-0">
+            <span className="text-content-secondary font-semibold text-[10px] shrink-0">
               [{log.source}]
             </span>
-            <span className="text-slate-200 text-[11px] break-words flex-1 leading-snug">
+            <span className="text-content-primary text-[11px] break-words flex-1 leading-snug">
               {log.message}
             </span>
             {log.run_id && (
@@ -489,11 +489,11 @@ export const OrchestratorLogsPanel: React.FC<OrchestratorLogsPanelProps> = ({ pr
       </div>
 
       {/* 4. Bottom Footer with auto-scroll helper */}
-      <div className="px-3 py-1.5 border-t border-slate-800/80 bg-[#020617] flex items-center justify-between text-[10px] font-mono text-slate-500 shrink-0">
+      <div className="px-3 py-1.5 border-t border-border-default/80 bg-surface-card flex items-center justify-between text-[10px] font-mono text-content-muted shrink-0">
         <div className="flex items-center gap-2">
           <span>{filteredLogs.length} events</span>
           {logs.length > filteredLogs.length && (
-            <span className="text-slate-600">(filtered from {logs.length})</span>
+            <span className="text-content-muted">(filtered from {logs.length})</span>
           )}
         </div>
 
@@ -507,7 +507,7 @@ export const OrchestratorLogsPanel: React.FC<OrchestratorLogsPanelProps> = ({ pr
           </button>
         )}
 
-        <div className="flex items-center gap-2 text-slate-500">
+        <div className="flex items-center gap-2 text-content-muted">
           <span>Auto-scroll</span>
           <span
             className={`h-1.5 w-1.5 rounded-full ${

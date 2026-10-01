@@ -18,9 +18,9 @@ import {
 
 const Tile: React.FC<{ id: string; label: string; value: string; note?: string; tone?: 'plain' | 'amber' }> = ({ id, label, value, note, tone = 'plain' }) => (
   <div id={id} className={`p-3 rounded-lg border ${tone === 'amber' ? 'bg-amber-950/30 border-amber-800/60' : 'bg-[#020617] border-slate-800'}`}>
-    <div className="text-[10px] uppercase tracking-wide text-slate-500">{label}</div>
+    <div className="text-[10px] uppercase tracking-wide text-content-muted">{label}</div>
     <div className={`text-sm font-mono ${tone === 'amber' ? 'text-amber-200' : 'text-slate-100'}`}>{value}</div>
-    {note && <div className="text-[10px] text-slate-500 mt-0.5">{note}</div>}
+    {note && <div className="text-[10px] text-content-muted mt-0.5">{note}</div>}
   </div>
 );
 
@@ -59,7 +59,7 @@ export const EstimatePanel: React.FC<{ estimate: AutopilotEstimate }> = ({ estim
 
       <div className="overflow-x-auto">
         <table id="estimate-steps" className="w-full text-[11px] text-left">
-          <thead className="text-slate-500">
+          <thead className="text-content-muted">
             <tr>
               <th className="py-1 pr-3 font-normal">Step</th>
               <th className="py-1 pr-3 font-normal">AI calls</th>
@@ -73,7 +73,7 @@ export const EstimatePanel: React.FC<{ estimate: AutopilotEstimate }> = ({ estim
                 <td className="py-1 pr-3 text-slate-200">{STEP_LABEL[s.step]?.title ?? s.step}</td>
                 <td className="py-1 pr-3 font-mono text-slate-300">{s.ai_calls.max === 0 ? '—' : formatRange(s.ai_calls)}</td>
                 <td className="py-1 pr-3 font-mono text-slate-300">{s.seconds.max === 0 ? '—' : formatDurationRange(s.seconds)}</td>
-                <td className="py-1 text-slate-500">{s.note ?? ''}</td>
+                <td className="py-1 text-content-muted">{s.note ?? ''}</td>
               </tr>
             ))}
           </tbody>
@@ -92,7 +92,7 @@ export const EstimatePanel: React.FC<{ estimate: AutopilotEstimate }> = ({ estim
                 {t.provider ? (
                   <span className="font-mono text-violet-300">
                     {t.provider.name}/{t.provider.model}
-                    <span className="text-slate-500"> · {t.provider.kind.toLowerCase()} · {t.provider.pricing.kind === 'UNMETERED' ? 'free' : 'charges'}</span>
+                    <span className="text-content-muted"> · {t.provider.kind.toLowerCase()} · {t.provider.pricing.kind === 'UNMETERED' ? 'free' : 'charges'}</span>
                   </span>
                 ) : (
                   <span className="font-mono text-rose-300">no provider can serve this</span>
@@ -102,7 +102,7 @@ export const EstimatePanel: React.FC<{ estimate: AutopilotEstimate }> = ({ estim
                 {formatRange(t.calls)} {plural(t.calls.max, 'call', 'calls')} · {formatTokens(t.prompt_tokens.max)} tokens in, {formatTokens(t.completion_tokens.max)} out at most ·{' '}
                 {formatDurationRange(t.seconds)} · {formatCost(t.cost_usd)}
               </div>
-              <div className="text-[10px] text-slate-500">{latencyLabel(t.latency)}</div>
+              <div className="text-[10px] text-content-muted">{latencyLabel(t.latency)}</div>
             </div>
           ))}
         </div>

@@ -218,7 +218,7 @@ export const AIEngineOrb: React.FC<AIEngineOrbProps> = ({ model, routingScore, p
           sits in the canvas's bottom margin, and a label laid over that margin covered it. */}
       <div
         className={`mt-1 text-center text-[10px] font-mono font-bold tracking-wide truncate px-2 ${
-          live ? 'text-yellow-300' : 'text-slate-500'
+          live ? 'text-yellow-300' : 'text-content-muted'
         }`}
       >
         {label}

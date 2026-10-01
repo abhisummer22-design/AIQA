@@ -316,19 +316,19 @@ export const DocumentUploadSection: React.FC<DocumentUploadSectionProps> = ({
           <span className="px-2 py-0.5 rounded bg-fuchsia-950/80 border border-fuchsia-800 text-fuchsia-300 font-bold">
             BRD
           </span>
-          <ArrowDown className="w-3 h-3 text-slate-500 rotate-[-90deg] shrink-0" />
+          <ArrowDown className="w-3 h-3 text-content-muted rotate-[-90deg] shrink-0" />
           <span className="px-2 py-0.5 rounded bg-yellow-950/80 border border-yellow-800 text-yellow-300 font-bold">
             PRD
           </span>
-          <ArrowDown className="w-3 h-3 text-slate-500 rotate-[-90deg] shrink-0" />
+          <ArrowDown className="w-3 h-3 text-content-muted rotate-[-90deg] shrink-0" />
           <span className="px-2 py-0.5 rounded bg-violet-950/80 border border-violet-800 text-violet-300 font-bold">
             FRD
           </span>
-          <ArrowDown className="w-3 h-3 text-slate-500 rotate-[-90deg] shrink-0" />
+          <ArrowDown className="w-3 h-3 text-content-muted rotate-[-90deg] shrink-0" />
           <span className="px-2 py-0.5 rounded bg-purple-950/80 border border-purple-800 text-purple-300 font-bold">
             SRD
           </span>
-          <ArrowDown className="w-3 h-3 text-slate-500 rotate-[-90deg] shrink-0" />
+          <ArrowDown className="w-3 h-3 text-content-muted rotate-[-90deg] shrink-0" />
           <span className="px-2 py-0.5 rounded bg-amber-950/80 border border-amber-800 text-amber-300 font-bold">
             Additional Context
           </span>
@@ -390,7 +390,7 @@ export const DocumentUploadSection: React.FC<DocumentUploadSectionProps> = ({
                       <span>Ready</span>
                     </span>
                   ) : (
-                    <span className="text-[10px] font-mono text-slate-500">Slot Open</span>
+                    <span className="text-[10px] font-mono text-content-muted">Slot Open</span>
                   )}
                 </div>
 
@@ -514,7 +514,7 @@ export const DocumentUploadSection: React.FC<DocumentUploadSectionProps> = ({
                     onClick={() => triggerBrowse(slot.id)}
                     className="p-3 rounded border border-dashed border-slate-700/80 hover:border-violet-500/80 bg-[#020617]/50 hover:bg-[#020617] transition-all cursor-pointer text-center flex flex-col items-center justify-center space-y-1.5"
                   >
-                    <UploadCloud className="w-5 h-5 text-slate-500 group-hover:text-violet-400" />
+                    <UploadCloud className="w-5 h-5 text-content-muted group-hover:text-violet-400" />
                     <div className="text-[11px] font-mono font-semibold text-slate-300">
                       Drag & drop or <span className="text-violet-400 underline">browse</span>
                     </div>

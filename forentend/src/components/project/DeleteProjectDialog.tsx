@@ -87,7 +87,7 @@ export const DeleteProjectDialog: React.FC<DeleteProjectDialogProps> = ({
             onClick={onClose}
             disabled={submitting}
             aria-label="Close Delete Project dialog"
-            className="p-1.5 text-slate-500 hover:text-slate-300 rounded cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+            className="p-1.5 text-content-muted hover:text-slate-300 rounded cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
           >
             <X className="w-4 h-4" />
           </button>

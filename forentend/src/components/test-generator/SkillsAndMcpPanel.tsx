@@ -164,7 +164,7 @@ export const SkillsAndMcpPanel: React.FC<SkillsAndMcpPanelProps> = ({
                     {selected ? (
                       <CheckSquare className={`w-3.5 h-3.5 shrink-0 ${isActiveNow ? 'text-yellow-300' : 'text-violet-400'}`} />
                     ) : (
-                      <Square className="w-3.5 h-3.5 text-slate-600 shrink-0" />
+                      <Square className="w-3.5 h-3.5 text-content-muted shrink-0" />
                     )}
                     <span className={`text-xs font-sans truncate flex-1 ${isActiveNow ? 'text-yellow-100 font-semibold' : 'text-slate-200'}`}>
                       {skill.name}
@@ -207,7 +207,7 @@ export const SkillsAndMcpPanel: React.FC<SkillsAndMcpPanelProps> = ({
                     aria-label={`View what ${skill.name} instructs`}
                     title="View this skill's real instruction"
                     onClick={() => setDetailSkill(skill)}
-                    className="p-1.5 mr-1 rounded text-slate-500 hover:text-violet-300 hover:bg-slate-800/60 cursor-pointer shrink-0"
+                    className="p-1.5 mr-1 rounded text-content-muted hover:text-violet-300 hover:bg-slate-800/60 cursor-pointer shrink-0"
                   >
                     <Eye className="w-3.5 h-3.5" />
                   </button>
@@ -218,13 +218,13 @@ export const SkillsAndMcpPanel: React.FC<SkillsAndMcpPanelProps> = ({
         </ul>
       </div>
 
-      <p className="text-[10px] font-mono text-slate-500 flex items-start gap-1.5">
+      <p className="text-[10px] font-mono text-content-muted flex items-start gap-1.5">
         <Info className="w-3 h-3 shrink-0 mt-0.5" />
         <span>Skill selection is real, applied configuration state — external skill/MCP execution is not yet implemented.</span>
       </p>
 
       {fileSkillsDirectory && (
-        <p className="text-[10px] font-mono text-slate-500 flex items-start gap-1.5">
+        <p className="text-[10px] font-mono text-content-muted flex items-start gap-1.5">
           <FolderOpen className="w-3 h-3 shrink-0 mt-0.5 text-amber-500" />
           <span>
             Drop real SKILL.md files into <span className="text-slate-400 break-all">{fileSkillsDirectory}</span> to add

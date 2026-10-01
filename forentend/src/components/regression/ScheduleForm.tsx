@@ -10,7 +10,7 @@ import { CUSTOM_EVERY, EVERY_CHOICES, MAX_CONCURRENCY, MAX_EVERY_MINUTES, MIN_EV
 export type ScopeState = { status: 'loading' } | { status: 'ready'; scope: RegressionScope } | { status: 'failed'; message: string };
 
 const INPUT =
-  'w-full px-2 py-1.5 rounded-md bg-[#020617] border border-slate-700 text-xs text-slate-100 placeholder:text-slate-600 focus:outline-none focus:border-violet-500 disabled:opacity-50';
+  'w-full px-2 py-1.5 rounded-md bg-[#020617] border border-slate-700 text-xs text-slate-100 placeholder:text-content-muted focus:outline-none focus:border-violet-500 disabled:opacity-50';
 
 export const ScheduleForm: React.FC<{
   form: ScheduleFormState;
@@ -62,7 +62,7 @@ export const ScheduleForm: React.FC<{
               <span id="regression-scope-text">{scopeText(scope.scope)}</span>
               {scope.scope.skipped.length > 0 && (
                 <details id="regression-scope-skipped" className="mt-1">
-                  <summary className="cursor-pointer text-slate-500">Why some cannot</summary>
+                  <summary className="cursor-pointer text-content-muted">Why some cannot</summary>
                   <ul className="mt-1 space-y-0.5">
                     {scope.scope.skipped.map((s) => (
                       <li key={s.case_id}>
@@ -106,7 +106,7 @@ export const ScheduleForm: React.FC<{
         <label className="block space-y-1">
           <span className="text-xs font-semibold text-slate-100">First run at (optional)</span>
           <input id="regression-start" type="datetime-local" value={form.startAt} onChange={(e) => set({ startAt: e.target.value })} className={INPUT} />
-          <span className="block text-[10px] text-slate-500">Your clock. Empty: one interval from now. Later runs keep this hour.</span>
+          <span className="block text-[10px] text-content-muted">Your clock. Empty: one interval from now. Later runs keep this hour.</span>
         </label>
       </div>
 
@@ -127,7 +127,7 @@ export const ScheduleForm: React.FC<{
           <input id="regression-enabled" type="checkbox" checked={form.enabled} onChange={(e) => set({ enabled: e.target.checked })} className="mt-0.5 accent-violet-500" />
           <span>
             Start it by itself
-            <span className="block text-slate-500">Untick to run it only when asked (a CI job runs it that way).</span>
+            <span className="block text-content-muted">Untick to run it only when asked (a CI job runs it that way).</span>
           </span>
         </label>
       </div>

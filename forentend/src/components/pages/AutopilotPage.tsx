@@ -50,7 +50,7 @@ const RunList: React.FC<{ runs: AutopilotRun[]; chosen: string | null; onChoose:
       <Plus className="w-3.5 h-3.5" /> New run
     </button>
     {runs.length === 0 ? (
-      <p className="text-[11px] text-slate-500">No run yet.</p>
+      <p className="text-[11px] text-content-muted">No run yet.</p>
     ) : (
       <ul className="space-y-1">
         {runs.map((r) => (
@@ -66,7 +66,7 @@ const RunList: React.FC<{ runs: AutopilotRun[]; chosen: string | null; onChoose:
                 <span className={`w-2 h-2 rounded-full ${STATE_DOT[r.state] ?? 'bg-slate-500'}`} aria-hidden />
                 <span className="text-xs text-slate-100 truncate">{r.name}</span>
               </div>
-              <div className="text-[10px] text-slate-500">
+              <div className="text-[10px] text-content-muted">
                 {RUN_STATE_LABEL[r.state]} · {formatTimestamp(r.created_at)}
               </div>
             </button>

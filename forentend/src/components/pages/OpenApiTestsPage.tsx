@@ -56,13 +56,13 @@ const RunList: React.FC<{
     </button>
     {runs.length === 0 ? (
       loading ? (
-        <p className="text-[11px] text-slate-500">Loading…</p>
+        <p className="text-[11px] text-content-muted">Loading…</p>
       ) : error ? (
         <p id="openapi-runs-error" role="alert" className="text-[11px] text-rose-300">
           The runs could not be read: {error}
         </p>
       ) : (
-        <p className="text-[11px] text-slate-500">No run yet.</p>
+        <p className="text-[11px] text-content-muted">No run yet.</p>
       )
     ) : (
       <ul className="space-y-1">
@@ -81,7 +81,7 @@ const RunList: React.FC<{
                   {r.title} {r.version}
                 </span>
               </div>
-              <div className="text-[10px] text-slate-500">
+              <div className="text-[10px] text-content-muted">
                 {r.cases_run} of {r.cases} cases · {formatTimestamp(r.created_at)}
               </div>
             </button>

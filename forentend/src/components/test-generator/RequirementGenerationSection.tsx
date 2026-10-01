@@ -180,7 +180,7 @@ export const RequirementGenerationSection: React.FC<RequirementGenerationSection
         </p>
       </div>
 
-      <label className={`flex items-center gap-1.5 text-[11px] font-mono ${nothingToUse ? 'text-slate-500' : 'text-slate-300 cursor-pointer'}`}>
+      <label className={`flex items-center gap-1.5 text-[11px] font-mono ${nothingToUse ? 'text-content-muted' : 'text-slate-300 cursor-pointer'}`}>
         <input
           type="checkbox"
           id="requirement-mode-toggle"
@@ -196,7 +196,7 @@ export const RequirementGenerationSection: React.FC<RequirementGenerationSection
       </label>
 
       {documents.length === 0 && (
-        <p className="text-[11px] text-slate-500 font-sans flex items-start gap-1">
+        <p className="text-[11px] text-content-muted font-sans flex items-start gap-1">
           <Info className="w-3 h-3 shrink-0 mt-0.5" />
           <span>Upload a document first — its requirements are read when it is uploaded.</span>
         </p>
@@ -240,7 +240,7 @@ export const RequirementGenerationSection: React.FC<RequirementGenerationSection
             />
             <span>Fill coverage gaps with extra calls</span>
           </label>
-          <p className="text-[11px] text-slate-500 font-sans">
+          <p className="text-[11px] text-content-muted font-sans">
             After the first pass, a requirement that is short of the depth's targets (say, it has no negative or edge
             case) is asked about again, one technique at a time, until every target is met, a round adds nothing, or the
             call limit is reached.
@@ -275,7 +275,7 @@ export const RequirementGenerationSection: React.FC<RequirementGenerationSection
                   {plan.skills.map((s) => (
                     <li key={`${s.wave}-${s.skill_name}`} className="flex flex-wrap items-baseline gap-x-2">
                       <span className="text-slate-100">{s.skill_name}</span>
-                      <span className="text-slate-500">{s.wave}</span>
+                      <span className="text-content-muted">{s.wave}</span>
                       <span>
                         {s.requirements.toLocaleString()} {plural(s.requirements, 'requirement', 'requirements')} ·{' '}
                         {s.batches.toLocaleString()} {plural(s.batches, 'batch', 'batches')}
@@ -295,13 +295,13 @@ export const RequirementGenerationSection: React.FC<RequirementGenerationSection
               </div>
 
               {plan.prompt_window_tokens !== null && plan.prompt_window_tokens <= 4096 && (
-                <div className="text-slate-500">
+                <div className="text-content-muted">
                   This model's window is small, so requirements go out in many small calls. A larger window (for a local
                   model, its context size — OLLAMA_NUM_CTX) needs fewer.
                 </div>
               )}
 
-              <div className="text-slate-500">
+              <div className="text-content-muted">
                 Rough size: about {plan.estimated_prompt_tokens.toLocaleString()} tokens in and{' '}
                 {plan.estimated_completion_tokens.toLocaleString()} out across all calls
                 {topUp ? ' of the first pass (a top-up adds to it)' : ''}.
@@ -311,7 +311,7 @@ export const RequirementGenerationSection: React.FC<RequirementGenerationSection
                 <div id="coverage-plan" className="pt-1.5 border-t border-slate-800/80 space-y-1">
                   <div className="text-slate-100">
                     Coverage at {DEPTH_LABEL[plan.coverage.depth] ?? plan.coverage.depth} depth
-                    <span className="text-slate-500">
+                    <span className="text-content-muted">
                       {DEPTH_MEANING[plan.coverage.depth] ? ` — ${DEPTH_MEANING[plan.coverage.depth]}` : ''}. Change it under
                       Exploration Depth.
                     </span>
@@ -325,7 +325,7 @@ export const RequirementGenerationSection: React.FC<RequirementGenerationSection
                           {t.per_requirement}
                         </span>
                         {t.provided_by ? (
-                          <span className="text-slate-500">via {t.provided_by}</span>
+                          <span className="text-content-muted">via {t.provided_by}</span>
                         ) : (
                           <span className="text-amber-300">
                             no selected skill provides it
@@ -406,14 +406,14 @@ export const RequirementGenerationSection: React.FC<RequirementGenerationSection
                         <div className="flex flex-wrap items-baseline gap-x-2 font-mono">
                           <span className="font-bold text-slate-100">{r.key}</span>
                           <span className="text-violet-300">{r.kind}</span>
-                          {usable.length > 1 && <span className="text-slate-500">{slotOfDocument(r.document_id)}</span>}
-                          {r.section && <span className="text-slate-500 truncate">{r.section}</span>}
+                          {usable.length > 1 && <span className="text-content-muted">{slotOfDocument(r.document_id)}</span>}
+                          {r.section && <span className="text-content-muted truncate">{r.section}</span>}
                         </div>
                         <div className="break-words">{r.text}</div>
                       </li>
                     ))}
                   </ul>
-                  <div className="text-[10px] font-mono text-slate-500">
+                  <div className="text-[10px] font-mono text-content-muted">
                     {matching.length > LIST_LIMIT
                       ? `Showing the first ${LIST_LIMIT} of ${matching.length.toLocaleString()} matching requirements — search to narrow them.`
                       : `${matching.length.toLocaleString()} ${plural(matching.length, 'requirement', 'requirements')}${

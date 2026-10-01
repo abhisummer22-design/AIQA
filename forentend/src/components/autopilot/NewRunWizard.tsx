@@ -37,7 +37,7 @@ const Card: React.FC<{ id: string; title: string; hint?: string; children: React
   <section id={id} className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm space-y-2.5">
     <div>
       <h2 className="text-xs font-semibold text-slate-100">{title}</h2>
-      {hint && <p className="text-[11px] text-slate-500">{hint}</p>}
+      {hint && <p className="text-[11px] text-content-muted">{hint}</p>}
     </div>
     {children}
   </section>
@@ -195,8 +195,8 @@ export const NewRunWizard: React.FC<Props> = ({ projectId, projectName, onCreate
                   <label className="inline-flex items-center gap-2 text-xs text-slate-200 cursor-pointer">
                     <input type="checkbox" id={`wizard-doc-${doc.id}`} checked={draft.documentIds.includes(doc.id)} onChange={() => toggleDocument(doc.id)} className="accent-violet-500" />
                     <span>{doc.file_name}</span>
-                    {doc.doc_type && <span className="font-mono text-[10px] text-slate-500">{doc.doc_type}</span>}
-                    <span className="text-[10px] text-slate-500">
+                    {doc.doc_type && <span className="font-mono text-[10px] text-content-muted">{doc.doc_type}</span>}
+                    <span className="text-[10px] text-content-muted">
                       {doc.requirements_count} {plural(doc.requirements_count, 'requirement', 'requirements')}
                     </span>
                   </label>
@@ -391,7 +391,7 @@ export const NewRunWizard: React.FC<Props> = ({ projectId, projectName, onCreate
             {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Rocket className="w-4 h-4" />}
             Make the run
           </button>
-          <p className="text-[10px] text-slate-500">Making a run stores it with this estimate and starts nothing: you accept the cost on the next page.</p>
+          <p className="text-[10px] text-content-muted">Making a run stores it with this estimate and starts nothing: you accept the cost on the next page.</p>
         </div>
       </aside>
     </div>

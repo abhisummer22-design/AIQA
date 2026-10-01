@@ -104,7 +104,7 @@ const PanelCard: React.FC<{
         <Icon className={`w-4 h-4 shrink-0 ${iconClassName}`} />
         <div className="min-w-0">
           <h2 className="text-sm font-bold text-slate-100 tracking-tight">{title}</h2>
-          <p className="text-[11px] text-slate-500">{subtitle}</p>
+          <p className="text-[11px] text-content-muted">{subtitle}</p>
         </div>
       </div>
       {headerRight}
@@ -364,13 +364,13 @@ export const RBACTestingPage: React.FC = () => {
                 {/* The real ordering the backend enforces, served by the
                     backend — not a second copy of the taxonomy. */}
                 <div>
-                  <p className="text-[10px] font-mono uppercase tracking-wider text-slate-500 mb-1.5">
+                  <p className="text-[10px] font-mono uppercase tracking-wider text-content-muted mb-1.5">
                     Real role hierarchy (least → most privileged)
                   </p>
                   <div className="flex items-center gap-1.5 flex-wrap">
                     {me.role_hierarchy.map((role: Role, i: number) => (
                       <React.Fragment key={role}>
-                        {i > 0 && <span className="text-slate-600 text-[10px] font-mono">&lt;</span>}
+                        {i > 0 && <span className="text-content-muted text-[10px] font-mono">&lt;</span>}
                         <Pill
                           label={role}
                           className={`${roleStyles[role]} ${role === me.role ? 'ring-1 ring-emerald-500/70' : 'opacity-70'}`}
@@ -378,7 +378,7 @@ export const RBACTestingPage: React.FC = () => {
                       </React.Fragment>
                     ))}
                   </div>
-                  <p className="text-[10px] font-mono text-slate-500 mt-1.5">
+                  <p className="text-[10px] font-mono text-content-muted mt-1.5">
                     A route requiring a given role accepts that role and every role above it
                     (<span className="font-mono">Role::at_least</span>).
                   </p>
@@ -444,7 +444,7 @@ export const RBACTestingPage: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setJustCreated(null)}
-                  className="text-[10px] font-mono text-slate-500 hover:text-slate-300 cursor-pointer"
+                  className="text-[10px] font-mono text-content-muted hover:text-slate-300 cursor-pointer"
                 >
                   Dismiss
                 </button>
@@ -454,7 +454,7 @@ export const RBACTestingPage: React.FC = () => {
             {showCreateForm && (
               <div className="rounded-md bg-[#020617] border border-slate-800 p-3 space-y-2.5">
                 <div>
-                  <label className="block text-[10px] font-mono uppercase tracking-wider text-slate-500 mb-1">
+                  <label className="block text-[10px] font-mono uppercase tracking-wider text-content-muted mb-1">
                     Name (whose key this is — shown in the audit log)
                   </label>
                   <input
@@ -467,7 +467,7 @@ export const RBACTestingPage: React.FC = () => {
                 </div>
                 <div className="flex gap-2">
                   <div className="flex-1">
-                    <label className="block text-[10px] font-mono uppercase tracking-wider text-slate-500 mb-1">
+                    <label className="block text-[10px] font-mono uppercase tracking-wider text-content-muted mb-1">
                       Role
                     </label>
                     <select
@@ -481,7 +481,7 @@ export const RBACTestingPage: React.FC = () => {
                     </select>
                   </div>
                   <div className="flex-1">
-                    <label className="block text-[10px] font-mono uppercase tracking-wider text-slate-500 mb-1">
+                    <label className="block text-[10px] font-mono uppercase tracking-wider text-content-muted mb-1">
                       Project scope
                     </label>
                     <select
@@ -565,7 +565,7 @@ export const RBACTestingPage: React.FC = () => {
                         <span className="text-xs font-mono text-slate-200 truncate">{k.name}</span>
                         {k.revoked_at && <Pill label="revoked" className="text-rose-300 bg-rose-950/70 border-rose-800" />}
                       </div>
-                      <div className="text-[10px] font-mono text-slate-500">
+                      <div className="text-[10px] font-mono text-content-muted">
                         {k.project_id ? `scoped: ${k.project_id.slice(0, 8)}…` : 'global scope'}
                       </div>
                     </div>
@@ -601,7 +601,7 @@ export const RBACTestingPage: React.FC = () => {
                             type="button"
                             onClick={() => setConfirmRevokeId(k.id)}
                             title={`Revoke ${k.name}`}
-                            className="p-1 rounded bg-[#0B1120] border border-slate-700 hover:border-rose-700 text-slate-500 hover:text-rose-400 cursor-pointer transition-colors"
+                            className="p-1 rounded bg-[#0B1120] border border-slate-700 hover:border-rose-700 text-content-muted hover:text-rose-400 cursor-pointer transition-colors"
                           >
                             <Trash2 className="w-3 h-3" />
                           </button>
@@ -611,7 +611,7 @@ export const RBACTestingPage: React.FC = () => {
                 ))}
               </ul>
             )}
-            <p className="text-[10px] font-mono text-slate-500 flex items-start gap-1.5">
+            <p className="text-[10px] font-mono text-content-muted flex items-start gap-1.5">
               <Info className="w-3 h-3 shrink-0 mt-0.5" />
               <span>
                 Only key metadata is ever returned — the key itself is shown once at creation and only its
@@ -656,7 +656,7 @@ export const RBACTestingPage: React.FC = () => {
                     className="px-2.5 py-1.5 rounded-md bg-[#020617] border border-slate-800"
                   >
                     <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-[10px] font-mono text-slate-500">{formatTime(d.occurred_at)}</span>
+                      <span className="text-[10px] font-mono text-content-muted">{formatTime(d.occurred_at)}</span>
                       <Pill label={d.action} className="text-amber-300 bg-amber-950/60 border-amber-800" />
                       {d.role && <Pill label={d.role} className={roleStyles[d.role]} />}
                       {d.actor && <span className="text-[10px] font-mono text-slate-400">{d.actor}</span>}

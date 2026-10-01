@@ -25,13 +25,13 @@ export const ProjectExecutionGraph: React.FC<ProjectExecutionGraphProps> = ({
   return (
     <div
       id="project-execution-graph-panel"
-      className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 flex flex-col justify-between h-full min-h-[310px]"
+      className="p-4 rounded-lg bg-surface-card border border-border-default flex flex-col justify-between h-full min-h-[310px]"
     >
       {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-800/80">
+      <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-border-default/80">
         <div className="flex items-center gap-2">
           <Activity className="w-3.5 h-3.5 text-yellow-400" />
-          <h3 className="text-xs font-bold text-slate-100 font-mono uppercase tracking-wider">
+          <h3 className="text-xs font-bold text-content-primary font-mono uppercase tracking-wider">
             Execution Activity
           </h3>
         </div>
@@ -101,9 +101,9 @@ export const ProjectExecutionGraph: React.FC<ProjectExecutionGraphProps> = ({
                     if (active && payload && payload.length) {
                       const data = payload[0].payload as ProjectExecutionPoint;
                       return (
-                        <div className="p-2.5 rounded bg-[#020617] border border-slate-700 shadow-2xl text-xs font-mono space-y-1">
-                          <div className="text-[10px] text-slate-400 pb-1 border-b border-slate-800">
-                            Time Window: <strong className="text-slate-200">{label}</strong>
+                        <div className="p-2.5 rounded bg-surface-card border border-border-default shadow-2xl text-xs font-mono space-y-1">
+                          <div className="text-[10px] text-content-secondary pb-1 border-b border-border-default">
+                            Time Window: <strong className="text-content-primary">{label}</strong>
                           </div>
                           <div className="flex justify-between gap-4 text-yellow-300">
                             <span>Executed:</span>
@@ -163,10 +163,10 @@ export const ProjectExecutionGraph: React.FC<ProjectExecutionGraphProps> = ({
           </div>
         ) : (
           <div className="flex flex-col items-center justify-center text-center p-6 space-y-2">
-            <div className="w-16 h-16 rounded-full border-2 border-dashed border-slate-800 flex items-center justify-center text-slate-600">
-              <Clock className="w-6 h-6 text-slate-600" />
+            <div className="w-16 h-16 rounded-full border-2 border-dashed border-border-default flex items-center justify-center text-content-muted">
+              <Clock className="w-6 h-6 text-content-muted" />
             </div>
-            <div className="text-xs font-bold text-slate-400 font-mono">
+            <div className="text-xs font-bold text-content-secondary font-mono">
               No execution timeline available
             </div>
             {/* Previously: "Execution runs on X will populate this real-time
@@ -175,7 +175,7 @@ export const ProjectExecutionGraph: React.FC<ProjectExecutionGraphProps> = ({
                 is always empty and no run, ever, would have populated it.
                 Promising data that cannot arrive is worse than saying the
                 capability is missing. */}
-            <p className="text-[10px] text-slate-500 max-w-[260px]">
+            <p className="text-[10px] text-content-muted max-w-[260px]">
               The orchestrator has no time-series execution-history endpoint, so there is no real timeline to
               plot. Per-run history is real and available in the Execution Hub.
             </p>
@@ -186,7 +186,7 @@ export const ProjectExecutionGraph: React.FC<ProjectExecutionGraphProps> = ({
       {/* Axis captions describe a chart that only exists when there is a
           real series to draw. */}
       {hasData && (
-        <div className="flex items-center justify-between pt-2 border-t border-slate-800/80 text-[10px] font-mono text-slate-500">
+        <div className="flex items-center justify-between pt-2 border-t border-border-default/80 text-[10px] font-mono text-content-muted">
           <span>X-Axis: Time Window</span>
           <span>Y-Axis: Test Throughput</span>
         </div>

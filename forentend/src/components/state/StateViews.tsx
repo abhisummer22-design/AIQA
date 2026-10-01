@@ -335,7 +335,7 @@ const GenericErrorState: React.FC<{
       </>
     }
   >
-    {requestId && <p className="text-[10px] font-mono text-slate-500">request_id: {requestId}</p>}
+    {requestId && <p className="text-[10px] font-mono text-content-muted">request_id: {requestId}</p>}
   </StateCard>
 );
 
@@ -466,7 +466,7 @@ export interface ResourceErrorCopy {
 }
 
 export function renderResourceErrorState(error: ApiError, onRetry: () => void, copy: ResourceErrorCopy): React.ReactNode {
-  const requestIdNode = error.requestId ? <p className="text-[10px] font-mono text-slate-500">request_id: {error.requestId}</p> : null;
+  const requestIdNode = error.requestId ? <p className="text-[10px] font-mono text-content-muted">request_id: {error.requestId}</p> : null;
 
   switch (error.kind) {
     case 'unauthorized':

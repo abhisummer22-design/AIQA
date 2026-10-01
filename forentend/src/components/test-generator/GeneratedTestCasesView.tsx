@@ -525,7 +525,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
       {/* AUD-005: once real, persisted cases exist, this page is showing
           and actioning them for real — the FE-16 local-only disclosure
           only applies to a still-unsaved draft. */}
-      <p className="px-1 text-[11px] font-mono text-slate-500">
+      <p className="px-1 text-[11px] font-mono text-content-muted">
         {hasPersisted
           ? 'These test cases are saved to the project. Validate and approve a case, then hand it off to the real Execution Hub below.'
           : 'Generated cases stay local to this page — opening the Execution Hub does not send them to the backend or create a run.'}
@@ -538,7 +538,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
             <Layers className="w-3.5 h-3.5 text-yellow-400" />
             <span>Filter by Test Category</span>
           </div>
-          <span className="text-[11px] text-slate-500 font-normal">
+          <span className="text-[11px] text-content-muted font-normal">
             Showing {filteredCases.length} of {testCases.length} cases
           </span>
         </div>
@@ -590,7 +590,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                       ? 'bg-violet-900 text-violet-100'
                       : count > 0
                       ? 'bg-violet-950/80 text-violet-300 border border-violet-800/80'
-                      : 'bg-slate-900 text-slate-600'
+                      : 'bg-slate-900 text-content-muted'
                   }`}
                 >
                   {count}
@@ -642,7 +642,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
           {/* Search Bar & Dropdown Filters */}
           <div className="space-y-2.5 pb-2.5 border-b border-slate-800">
             <div className="relative">
-              <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+              <Search className="w-4 h-4 text-content-muted absolute left-3 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
                 placeholder="Search by ID, title, objective..."
@@ -687,7 +687,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
           {/* Test Case Cards List */}
           <div className="space-y-2 max-h-[700px] overflow-y-auto pr-1">
             {filteredCases.length === 0 ? (
-              <div className="p-8 text-center text-xs font-mono text-slate-500 bg-[#020617] rounded border border-slate-800/80">
+              <div className="p-8 text-center text-xs font-mono text-content-muted bg-[#020617] rounded border border-slate-800/80">
                 No matching test cases found.
               </div>
             ) : (
@@ -822,7 +822,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-xs font-mono">
                   <div className="p-3 rounded bg-[#020617] border border-slate-800/90">
-                    <span className="text-[10px] text-slate-500 uppercase tracking-wider block mb-0.5 font-semibold">
+                    <span className="text-[10px] text-content-muted uppercase tracking-wider block mb-0.5 font-semibold">
                       Source Document
                     </span>
                     <span className="text-violet-300 font-semibold text-xs">
@@ -831,7 +831,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                   </div>
 
                   <div className="p-3 rounded bg-[#020617] border border-slate-800/90">
-                    <span className="text-[10px] text-slate-500 uppercase tracking-wider block mb-0.5 font-semibold">
+                    <span className="text-[10px] text-content-muted uppercase tracking-wider block mb-0.5 font-semibold">
                       Requirement Reference
                     </span>
                     <span className="text-yellow-300 font-semibold text-xs">
@@ -901,7 +901,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                       ))}
                     </ul>
                   ) : (
-                    <p className="text-xs text-slate-500 font-sans italic">
+                    <p className="text-xs text-content-muted font-sans italic">
                       No special preconditions required for this test scenario.
                     </p>
                   )}
@@ -943,7 +943,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                         <span className="px-2.5 py-0.5 rounded bg-violet-950 border border-violet-700 text-xs font-mono font-bold text-violet-300">
                           Step #{step.stepNumber}
                         </span>
-                        <span className="text-[10px] font-mono text-slate-500">
+                        <span className="text-[10px] font-mono text-content-muted">
                           USER ACTION & ASSERTION
                         </span>
                       </div>
@@ -977,7 +977,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                       Technical Target Interface
                     </span>
                   </div>
-                  <span className="text-[10px] font-mono text-slate-500">
+                  <span className="text-[10px] font-mono text-content-muted">
                     Surface
                   </span>
                 </div>
@@ -1029,7 +1029,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs font-mono">
                   <div className="p-2.5 rounded bg-[#040817] border border-slate-800">
-                    <span className="text-[10px] text-slate-500 block mb-0.5">Status</span>
+                    <span className="text-[10px] text-content-muted block mb-0.5">Status</span>
                     <span className="text-slate-200 font-semibold">
                       {activeTestCase.status === 'EXPORTED_TO_EXECUTION'
                         ? 'Dispatched to Runner'
@@ -1040,7 +1040,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                   </div>
 
                   <div className="p-2.5 rounded bg-[#040817] border border-slate-800">
-                    <span className="text-[10px] text-slate-500 block mb-0.5">Runner Pool</span>
+                    <span className="text-[10px] text-content-muted block mb-0.5">Runner Pool</span>
                     <span className="text-slate-300 font-semibold truncate block">
                       {activeTestCase.traceability?.executionTarget || 'k8s-runner-pool-us'}
                     </span>
@@ -1074,13 +1074,13 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
 
                 {/* Honest Evidence Empty State */}
                 <div className="p-5 rounded-lg bg-[#040817] border border-slate-800/80 text-center space-y-2">
-                  <div className="w-9 h-9 rounded-full bg-slate-900 border border-slate-800 text-slate-500 flex items-center justify-center mx-auto">
+                  <div className="w-9 h-9 rounded-full bg-slate-900 border border-slate-800 text-content-muted flex items-center justify-center mx-auto">
                     <Camera className="w-4 h-4" />
                   </div>
                   <div className="text-xs font-mono font-bold text-slate-300">
                     No evidence captured yet
                   </div>
-                  <p className="text-[11px] text-slate-500 font-sans max-w-md mx-auto leading-relaxed">
+                  <p className="text-[11px] text-content-muted font-sans max-w-md mx-auto leading-relaxed">
                     Execution artifacts (HAR network recordings, Playwright DOM traces, console logs, and step failure screenshots) are captured automatically upon test execution.
                   </p>
                 </div>
@@ -1324,7 +1324,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                                   )}
                                 </div>
                               ) : (
-                                <p className="text-[10px] font-mono text-slate-500">
+                                <p className="text-[10px] font-mono text-content-muted">
                                   Crawl the application (Crawl for Real UI Grounding) to compile against its real selectors and
                                   log in first.
                                 </p>
@@ -1401,7 +1401,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
               </div>
 
               {hasPersisted && (activeTestCase.status === 'APPROVED' || activeTestCase.status === 'EXECUTED') && (
-                <p className="xl:col-span-12 text-[11px] font-mono text-slate-500 -mt-2">
+                <p className="xl:col-span-12 text-[11px] font-mono text-content-muted -mt-2">
                   Real-executor handoffs run that tool's own default reference check, not a bespoke script for this case's specific steps; "Compile &amp; Execute" instead compiles this case's own actual steps/expected result into a real plan and runs that; simulated handoffs report an explicit, disclosed placeholder result. Either way, the real outcome is shown on the Execution Hub page you're taken to next.
                 </p>
               )}
@@ -1412,7 +1412,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
 
             </div>
           ) : (
-            <div className="p-12 text-center text-xs font-mono text-slate-500">
+            <div className="p-12 text-center text-xs font-mono text-content-muted">
               Select a test case from the list on the left to inspect its requirement traceability and execution steps.
             </div>
           )}

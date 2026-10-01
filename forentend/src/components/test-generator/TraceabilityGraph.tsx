@@ -250,7 +250,7 @@ export const TraceabilityGraph: React.FC<TraceabilityGraphProps> = ({
               </div>
 
               {idx < steps.length - 1 && (
-                <div className="hidden xl:flex absolute -right-2 top-1/2 -translate-y-1/2 z-10 w-4 h-4 rounded-full bg-[#0B1120] border border-slate-700 items-center justify-center pointer-events-none text-slate-500">
+                <div className="hidden xl:flex absolute -right-2 top-1/2 -translate-y-1/2 z-10 w-4 h-4 rounded-full bg-[#0B1120] border border-slate-700 items-center justify-center pointer-events-none text-content-muted">
                   <ArrowRight className="w-2.5 h-2.5" />
                 </div>
               )}

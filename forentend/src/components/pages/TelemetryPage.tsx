@@ -122,7 +122,7 @@ function seriesCard(title: string, series: Array<{ label: string; value: number 
   const max = series.reduce((m, s) => Math.max(m, s.value), 0);
   return (
     <div className="p-3.5 rounded-lg bg-[#0B1120] border border-slate-800 space-y-2.5">
-      <span className="text-[10px] font-mono uppercase tracking-wider text-slate-500 font-semibold">{title}</span>
+      <span className="text-[10px] font-mono uppercase tracking-wider text-content-muted font-semibold">{title}</span>
       <div className="space-y-1.5">{series.map((s) => barRow(s.label, s.value, max))}</div>
     </div>
   );
@@ -131,7 +131,7 @@ function seriesCard(title: string, series: Array<{ label: string; value: number 
 function scalarTile(label: string, value: number | null): React.ReactElement {
   return (
     <div className="p-3.5 rounded-lg bg-[#0B1120] border border-slate-800 space-y-1">
-      <span className="text-[10px] font-mono uppercase tracking-wider text-slate-500 font-semibold">{label}</span>
+      <span className="text-[10px] font-mono uppercase tracking-wider text-content-muted font-semibold">{label}</span>
       <div className="text-xl font-bold font-mono text-slate-100">{value ?? '—'}</div>
     </div>
   );
@@ -245,7 +245,7 @@ export const TelemetryPage: React.FC = () => {
             content is unchanged and just as explicit; only the severity
             signal was wrong. */}
         <div id="telemetry-disclosure" className="p-3 rounded-lg bg-[#0B1120] border border-slate-800 text-[11px] font-mono text-slate-400 flex items-start gap-2">
-          <Info className="w-3.5 h-3.5 shrink-0 mt-0.5 text-slate-500" />
+          <Info className="w-3.5 h-3.5 shrink-0 mt-0.5 text-content-muted" />
           <span>
             <strong className="text-slate-300">What this does not show:</strong> latency, response time, p95, or p99 — the real{' '}
             <code>/metrics</code> endpoint has no timing data of any kind today, only state/status counts. Real
@@ -271,7 +271,7 @@ export const TelemetryPage: React.FC = () => {
                 previous copy said "the real TIMEOUT series above"
                 unconditionally, so whenever no task had actually timed out —
                 the normal case — it pointed at a row that was not on screen. */}
-            <p className="mt-1.5 text-[10px] font-mono text-slate-500 px-1">
+            <p className="mt-1.5 text-[10px] font-mono text-content-muted px-1">
               {presentStatuses.length > 0 ? (
                 <>
                   Closest real signal to ACC-013&apos;s &quot;timeouts&quot;/&quot;errors&quot; — the{' '}

@@ -34,11 +34,11 @@ const Tile: React.FC<{ id: string; label: string; value: string; title?: string;
   tone = 'plain',
 }) => (
   <div id={id} className={`p-3 rounded-lg border ${tone === 'amber' ? 'bg-amber-950/30 border-amber-800/60' : 'bg-[#020617] border-slate-800'}`}>
-    <div className="text-[10px] uppercase tracking-wide text-slate-500">{label}</div>
+    <div className="text-[10px] uppercase tracking-wide text-content-muted">{label}</div>
     <div className={`text-sm font-mono ${tone === 'amber' ? 'text-amber-200' : 'text-slate-100'}`} title={title}>
       {value}
     </div>
-    {note && <div className="text-[10px] text-slate-500 mt-0.5">{note}</div>}
+    {note && <div className="text-[10px] text-content-muted mt-0.5">{note}</div>}
   </div>
 );
 
@@ -63,7 +63,7 @@ const TallyTable: React.FC<{ id: string; title: string; nameHeading: string; row
     </h3>
     <div className="overflow-x-auto">
       <table aria-labelledby={`${id}-title`} className="w-full text-[11px] text-left">
-        <thead className="text-slate-500">
+        <thead className="text-content-muted">
           <tr>
             <th className="py-1 pr-3 font-normal">{nameHeading}</th>
             <th className="py-1 pr-3 font-normal text-right">Calls</th>
@@ -81,7 +81,7 @@ const TallyTable: React.FC<{ id: string; title: string; nameHeading: string; row
               <tr key={rowId} data-row={rowId} className="border-t border-slate-800/70">
                 <td className="py-1 pr-3 text-slate-200">{name}</td>
                 <td className="py-1 pr-3 font-mono text-slate-300 text-right">{exactCount(tally.calls)}</td>
-                <td className={`py-1 pr-3 font-mono text-right ${tally.failed > 0 ? 'text-amber-300' : 'text-slate-500'}`}>{tally.failed}</td>
+                <td className={`py-1 pr-3 font-mono text-right ${tally.failed > 0 ? 'text-amber-300' : 'text-content-muted'}`}>{tally.failed}</td>
                 <td className="py-1 pr-3 font-mono text-slate-300 text-right" title={exactCount(tally.prompt_tokens)}>
                   {formatCount(tally.prompt_tokens)}
                 </td>
@@ -143,7 +143,7 @@ const DailyBars: React.FC<{ days: AiUsageReport['by_day'] }> = ({ days }) => {
         })}
       </ol>
       {first && last && (
-        <div id="usage-days-axis" className="flex justify-between text-[10px] text-slate-500 font-mono">
+        <div id="usage-days-axis" className="flex justify-between text-[10px] text-content-muted font-mono">
           <span>{formatDay(first.day)}</span>
           <span>{formatDay(last.day)}</span>
         </div>
@@ -233,7 +233,7 @@ export const UsageReportView: React.FC<{
           rows={report.by_project.map((p) => ({ id: p.project_id ?? 'none', name: projectName(p.project_id), tally: p }))}
         />
       )}
-      <p id="usage-legend" className="text-[10px] text-slate-500">
+      <p id="usage-legend" className="text-[10px] text-content-muted">
         — no cost counted for the row (no price set, or no token counts) · * some calls of the row are left out of its cost
       </p>
     </div>

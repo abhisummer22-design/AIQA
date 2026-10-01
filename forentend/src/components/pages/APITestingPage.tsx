@@ -255,7 +255,7 @@ export const APITestingPage: React.FC = () => {
 
               <KVListEditor label="Query Parameters" rows={queryParams} setRows={setQueryParams} disabled={isExecuting} keyPlaceholder="param" valuePlaceholder="value" idPrefix="query" />
               <KVListEditor label="Headers" rows={headers} setRows={setHeaders} disabled={isExecuting} keyPlaceholder="Header-Name" valuePlaceholder="value" idPrefix="header" />
-              <p className="text-[10px] font-mono text-slate-500 -mt-2">
+              <p className="text-[10px] font-mono text-content-muted -mt-2">
                 Authentication: add an <span className="text-slate-300">Authorization</span> header directly above (e.g. <span className="text-slate-300">Bearer &lt;token&gt;</span>) — there is no
                 separate credential-storage feature; the header value is sent exactly once, redacted from any response data this page displays.
               </p>
@@ -304,7 +304,7 @@ export const APITestingPage: React.FC = () => {
               </div>
             </div>
             {saveMessage && <p id="api-testing-save-message" className="text-[11px] font-mono text-slate-400">{saveMessage}</p>}
-            <p className="text-[10px] font-mono text-slate-500">
+            <p className="text-[10px] font-mono text-content-muted">
               "Execute" runs this exact request for real, right now, and is not saved anywhere by itself. "Save as Test Case" persists it via the existing test case pipeline — review, approve, and
               hand it off to real execution from the Test Case Generator page, exactly like any other generated case.
             </p>
@@ -341,13 +341,13 @@ export const APITestingPage: React.FC = () => {
 
                 <div className="grid grid-cols-2 gap-3 text-xs font-mono">
                   <div>
-                    <div className="flex items-center gap-1 text-slate-500 mb-0.5">
+                    <div className="flex items-center gap-1 text-content-muted mb-0.5">
                       <Clock className="w-3 h-3" /> Network Request Latency
                     </div>
                     <div className="text-slate-200">{result.result.request_duration_ms} ms (real, measured request/response time)</div>
                   </div>
                   <div>
-                    <div className="flex items-center gap-1 text-slate-500 mb-0.5">
+                    <div className="flex items-center gap-1 text-content-muted mb-0.5">
                       <Clock className="w-3 h-3" /> End-to-End Task Duration
                     </div>
                     <div className="text-slate-200">
@@ -362,7 +362,7 @@ export const APITestingPage: React.FC = () => {
                   <div className="bg-[#020617] border border-slate-800 rounded p-2 max-h-32 overflow-y-auto text-[11px] font-mono text-slate-300 space-y-0.5">
                     {result.result.response_headers.map(([k, v]) => (
                       <div key={k}>
-                        <span className="text-slate-500">{k}:</span> {v}
+                        <span className="text-content-muted">{k}:</span> {v}
                       </div>
                     ))}
                   </div>
@@ -380,7 +380,7 @@ export const APITestingPage: React.FC = () => {
                     <ListChecks className="w-3.5 h-3.5" /> Assertions (real, evaluated results)
                   </div>
                   <div className="space-y-1">
-                    {result.result.assertions.length === 0 && <p className="text-[11px] font-mono text-slate-500">No assertions were configured for this request.</p>}
+                    {result.result.assertions.length === 0 && <p className="text-[11px] font-mono text-content-muted">No assertions were configured for this request.</p>}
                     {result.result.assertions.map((a, i) => (
                       <div key={i} className={`flex items-center justify-between px-2 py-1.5 rounded text-[11px] font-mono border ${a.passed ? 'bg-emerald-950/40 border-emerald-800 text-emerald-300' : 'bg-rose-950/40 border-rose-800 text-rose-300'}`}>
                         <span>{a.description}</span>
@@ -396,7 +396,7 @@ export const APITestingPage: React.FC = () => {
             )}
 
             {!result && status === 'IDLE' && (
-              <div className="p-6 rounded-lg bg-[#0B1120] border border-slate-800 border-dashed text-center text-xs font-mono text-slate-500">
+              <div className="p-6 rounded-lg bg-[#0B1120] border border-slate-800 border-dashed text-center text-xs font-mono text-content-muted">
                 Build a request and click Execute to see the real response here.
               </div>
             )}
@@ -512,7 +512,7 @@ const KVListEditor: React.FC<{ label: string; rows: KVRow[]; setRows: (r: KVRow[
             disabled={disabled}
             className="flex-1 min-w-0 px-2 py-1 rounded bg-[#020617] border border-slate-700 text-[11px] font-mono text-slate-100 placeholder-slate-600 disabled:opacity-60"
           />
-          <button type="button" onClick={() => setRows(rows.filter((_, j) => j !== i))} disabled={disabled} className="text-slate-500 hover:text-rose-400 cursor-pointer disabled:opacity-50">
+          <button type="button" onClick={() => setRows(rows.filter((_, j) => j !== i))} disabled={disabled} className="text-content-muted hover:text-rose-400 cursor-pointer disabled:opacity-50">
             <Trash2 className="w-3.5 h-3.5" />
           </button>
         </div>
@@ -539,13 +539,13 @@ const AssertionsEditor: React.FC<{ assertions: AssertionRow[]; setAssertions: (a
         </button>
       </div>
     </div>
-    {assertions.length === 0 && <p className="text-[11px] font-mono text-slate-500">No assertions configured — execution will still run for real, with no pass/fail evaluation.</p>}
+    {assertions.length === 0 && <p className="text-[11px] font-mono text-content-muted">No assertions configured — execution will still run for real, with no pass/fail evaluation.</p>}
     <div className="space-y-1.5">
       {assertions.map((a, i) => (
         <div key={i} className="flex items-center gap-1.5">
           {a.kind === 'STATUS' && (
             <>
-              <span className="text-[11px] font-mono text-slate-500 w-24 shrink-0">Status equals</span>
+              <span className="text-[11px] font-mono text-content-muted w-24 shrink-0">Status equals</span>
               <input
                 type="text"
                 value={a.status}
@@ -562,7 +562,7 @@ const AssertionsEditor: React.FC<{ assertions: AssertionRow[]; setAssertions: (a
           )}
           {a.kind === 'HEADER' && (
             <>
-              <span className="text-[11px] font-mono text-slate-500 w-24 shrink-0">Header</span>
+              <span className="text-[11px] font-mono text-content-muted w-24 shrink-0">Header</span>
               <input
                 type="text"
                 value={a.name}
@@ -575,7 +575,7 @@ const AssertionsEditor: React.FC<{ assertions: AssertionRow[]; setAssertions: (a
                 disabled={disabled}
                 className="flex-1 min-w-0 px-2 py-1 rounded bg-[#020617] border border-slate-700 text-[11px] font-mono text-slate-100 disabled:opacity-60"
               />
-              <span className="text-[11px] font-mono text-slate-500">=</span>
+              <span className="text-[11px] font-mono text-content-muted">=</span>
               <input
                 type="text"
                 value={a.value}
@@ -592,7 +592,7 @@ const AssertionsEditor: React.FC<{ assertions: AssertionRow[]; setAssertions: (a
           )}
           {a.kind === 'BODY_FIELD' && (
             <>
-              <span className="text-[11px] font-mono text-slate-500 w-24 shrink-0">Body field</span>
+              <span className="text-[11px] font-mono text-content-muted w-24 shrink-0">Body field</span>
               <input
                 type="text"
                 value={a.path}
@@ -605,7 +605,7 @@ const AssertionsEditor: React.FC<{ assertions: AssertionRow[]; setAssertions: (a
                 disabled={disabled}
                 className="flex-1 min-w-0 px-2 py-1 rounded bg-[#020617] border border-slate-700 text-[11px] font-mono text-slate-100 disabled:opacity-60"
               />
-              <span className="text-[11px] font-mono text-slate-500">=</span>
+              <span className="text-[11px] font-mono text-content-muted">=</span>
               <input
                 type="text"
                 value={a.equals}
@@ -620,7 +620,7 @@ const AssertionsEditor: React.FC<{ assertions: AssertionRow[]; setAssertions: (a
               />
             </>
           )}
-          <button type="button" onClick={() => setAssertions(assertions.filter((_, j) => j !== i))} disabled={disabled} className="text-slate-500 hover:text-rose-400 cursor-pointer disabled:opacity-50">
+          <button type="button" onClick={() => setAssertions(assertions.filter((_, j) => j !== i))} disabled={disabled} className="text-content-muted hover:text-rose-400 cursor-pointer disabled:opacity-50">
             <Trash2 className="w-3.5 h-3.5" />
           </button>
         </div>

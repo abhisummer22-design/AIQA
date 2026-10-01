@@ -116,7 +116,7 @@ export const EditTestCaseModal: React.FC<EditTestCaseModalProps> = ({ testCase, 
             <Pencil className="w-4 h-4 text-violet-400" />
             <div>
               <h2 className="text-sm font-bold text-slate-100 font-sans">Edit Test Case</h2>
-              <p className="text-[11px] text-slate-500 font-sans">
+              <p className="text-[11px] text-content-muted font-sans">
                 Fix a specific field without discarding and regenerating the whole case.
               </p>
             </div>
@@ -126,7 +126,7 @@ export const EditTestCaseModal: React.FC<EditTestCaseModalProps> = ({ testCase, 
             onClick={onClose}
             aria-label="Close Edit Test Case"
             disabled={saving}
-            className="p-1.5 text-slate-500 hover:text-slate-300 rounded cursor-pointer disabled:opacity-50"
+            className="p-1.5 text-content-muted hover:text-slate-300 rounded cursor-pointer disabled:opacity-50"
           >
             <X className="w-4 h-4" />
           </button>
@@ -196,7 +196,7 @@ export const EditTestCaseModal: React.FC<EditTestCaseModalProps> = ({ testCase, 
               </button>
             </div>
             {preconditions.length === 0 ? (
-              <p className="text-[11px] text-slate-500 font-sans italic">None.</p>
+              <p className="text-[11px] text-content-muted font-sans italic">None.</p>
             ) : (
               <div className="space-y-1.5">
                 {preconditions.map((p, idx) => (
@@ -213,7 +213,7 @@ export const EditTestCaseModal: React.FC<EditTestCaseModalProps> = ({ testCase, 
                       title="Remove precondition"
                       onClick={() => removePrecondition(idx)}
                       disabled={saving}
-                      className="p-1 rounded text-slate-500 hover:text-rose-400 disabled:opacity-50 cursor-pointer shrink-0"
+                      className="p-1 rounded text-content-muted hover:text-rose-400 disabled:opacity-50 cursor-pointer shrink-0"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
@@ -242,13 +242,13 @@ export const EditTestCaseModal: React.FC<EditTestCaseModalProps> = ({ testCase, 
               {steps.map((step, idx) => (
                 <div key={idx} id={`edit-step-${idx}`} className="p-2.5 rounded bg-[#020617] border border-slate-800 space-y-1.5">
                   <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-mono text-slate-500">Step #{idx + 1}</span>
+                    <span className="text-[10px] font-mono text-content-muted">Step #{idx + 1}</span>
                     <button
                       type="button"
                       title="Remove step"
                       onClick={() => removeStep(idx)}
                       disabled={saving}
-                      className="p-1 rounded text-slate-500 hover:text-rose-400 disabled:opacity-50 cursor-pointer"
+                      className="p-1 rounded text-content-muted hover:text-rose-400 disabled:opacity-50 cursor-pointer"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>

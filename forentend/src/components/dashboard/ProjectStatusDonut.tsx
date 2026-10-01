@@ -34,17 +34,17 @@ export const ProjectStatusDonut: React.FC<ProjectStatusDonutProps> = ({ metrics,
   return (
     <div
       id="project-status-donut-panel"
-      className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 flex flex-col justify-between h-full min-h-[310px]"
+      className="p-4 rounded-lg bg-surface-card border border-border-default flex flex-col justify-between h-full min-h-[310px]"
     >
       {/* Header */}
-      <div className="flex items-center justify-between pb-2 border-b border-slate-800/80">
+      <div className="flex items-center justify-between pb-2 border-b border-border-default/80">
         <div className="flex items-center gap-2">
           <Layers className="w-3.5 h-3.5 text-violet-400" />
-          <h3 className="text-xs font-bold text-slate-100 font-mono uppercase tracking-wider">
+          <h3 className="text-xs font-bold text-content-primary font-mono uppercase tracking-wider">
             Test Status Distribution
           </h3>
         </div>
-        <span className="text-[10px] font-mono text-slate-400">
+        <span className="text-[10px] font-mono text-content-secondary">
           {projectName}
         </span>
       </div>
@@ -61,15 +61,15 @@ export const ProjectStatusDonut: React.FC<ProjectStatusDonutProps> = ({ metrics,
                       const data = payload[0].payload as ChartDataItem;
                       const pct = ((data.value / total) * 100).toFixed(1);
                       return (
-                        <div className="p-2 rounded bg-[#020617] border border-slate-700 shadow-xl text-xs font-mono">
+                        <div className="p-2 rounded bg-surface-card border border-border-default shadow-xl text-xs font-mono">
                           <div className="flex items-center gap-2">
                             <span
                               className="w-2 h-2 rounded-full"
                               style={{ backgroundColor: data.color }}
                             />
-                            <span className="text-slate-200 font-bold">{data.name}:</span>
+                            <span className="text-content-primary font-bold">{data.name}:</span>
                             <span className="text-white font-bold">{data.value.toLocaleString()}</span>
-                            <span className="text-slate-400">({pct}%)</span>
+                            <span className="text-content-secondary">({pct}%)</span>
                           </div>
                         </div>
                       );
@@ -97,14 +97,14 @@ export const ProjectStatusDonut: React.FC<ProjectStatusDonutProps> = ({ metrics,
 
             {/* Centered Total and Project Label */}
             <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none text-center">
-              <span className="text-lg font-black font-mono text-slate-100 leading-tight">
+              <span className="text-lg font-black font-mono text-content-primary leading-tight">
                 {total.toLocaleString()}
               </span>
               {/* This total is the sum of real task statuses from execution
                   runs (`dashboard.task_counts`), not a count of saved test
                   cases — see the "Executed Tests" KPI card's own comment in
                   `DashboardPage.tsx` for why that distinction matters. */}
-              <span className="text-[9px] uppercase font-mono font-semibold text-slate-400 tracking-wider">
+              <span className="text-[9px] uppercase font-mono font-semibold text-content-secondary tracking-wider">
                 Executed Tasks
               </span>
               <span className="text-[8px] font-sans text-violet-400 font-medium truncate max-w-[90px]">
@@ -114,13 +114,13 @@ export const ProjectStatusDonut: React.FC<ProjectStatusDonutProps> = ({ metrics,
           </div>
         ) : (
           <div className="flex flex-col items-center justify-center text-center p-6 space-y-2">
-            <div className="w-16 h-16 rounded-full border-2 border-dashed border-slate-800 flex items-center justify-center text-slate-600">
-              <AlertCircle className="w-6 h-6 text-slate-600" />
+            <div className="w-16 h-16 rounded-full border-2 border-dashed border-border-default flex items-center justify-center text-content-muted">
+              <AlertCircle className="w-6 h-6 text-content-muted" />
             </div>
-            <div className="text-xs font-bold text-slate-400 font-mono">
+            <div className="text-xs font-bold text-content-secondary font-mono">
               No test execution data available
             </div>
-            <p className="text-[10px] text-slate-500 max-w-[200px]">
+            <p className="text-[10px] text-content-muted max-w-[200px]">
               No active test cases or execution telemetry logged for this project yet.
             </p>
           </div>
@@ -129,20 +129,20 @@ export const ProjectStatusDonut: React.FC<ProjectStatusDonutProps> = ({ metrics,
 
       {/* Legend Grid */}
       {hasData && (
-        <div className="grid grid-cols-3 gap-1.5 pt-2 border-t border-slate-800/80 text-[10px] font-mono">
+        <div className="grid grid-cols-3 gap-1.5 pt-2 border-t border-border-default/80 text-[10px] font-mono">
           {rawData.map((item) => (
             <div
               key={item.name}
-              className="flex items-center justify-between p-1 rounded bg-[#020617]/60 border border-slate-800/60"
+              className="flex items-center justify-between p-1 rounded bg-surface-card/60 border border-border-default/60"
             >
               <div className="flex items-center gap-1.5 truncate">
                 <span
                   className="w-1.5 h-1.5 rounded-full shrink-0"
                   style={{ backgroundColor: item.color }}
                 />
-                <span className="text-slate-400 truncate">{item.name}</span>
+                <span className="text-content-secondary truncate">{item.name}</span>
               </div>
-              <span className="font-bold text-slate-200 ml-1">
+              <span className="font-bold text-content-primary ml-1">
                 {item.value.toLocaleString()}
               </span>
             </div>

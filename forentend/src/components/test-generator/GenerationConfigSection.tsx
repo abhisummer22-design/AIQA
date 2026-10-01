@@ -246,7 +246,7 @@ export const GenerationConfigSection: React.FC<GenerationConfigSectionProps> = (
                 {isSelected ? (
                   <CheckSquare className="w-3.5 h-3.5 text-violet-400" />
                 ) : (
-                  <Square className="w-3.5 h-3.5 text-slate-600" />
+                  <Square className="w-3.5 h-3.5 text-content-muted" />
                 )}
               </div>
 

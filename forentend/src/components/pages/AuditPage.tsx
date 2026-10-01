@@ -310,7 +310,7 @@ export const AuditPage: React.FC = () => {
 
     if (rows && visibleRows.length === 0) {
       return (
-        <div className="py-8 text-center text-xs text-slate-500 font-mono">
+        <div className="py-8 text-center text-xs text-content-muted font-mono">
           No entries match &ldquo;{search}&rdquo;. ({rows.length} total loaded.)
         </div>
       );
@@ -320,7 +320,7 @@ export const AuditPage: React.FC = () => {
       <div className="overflow-x-auto">
         <table className="w-full min-w-[860px] text-left text-xs">
           <thead>
-            <tr className="font-mono text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800/80">
+            <tr className="font-mono text-[10px] uppercase tracking-wider text-content-muted border-b border-slate-800/80">
               <th scope="col" className="pb-2.5 pr-3 font-normal">Timestamp</th>
               <th scope="col" className="pb-2.5 pr-3 font-normal">Actor</th>
               <th scope="col" className="pb-2.5 pr-3 font-normal">Role</th>
@@ -414,7 +414,7 @@ export const AuditPage: React.FC = () => {
       {selectedProjectId && rows && rows.length > 0 && (
         <div className="flex items-center gap-2 p-2.5 rounded-lg border border-slate-800 bg-[#0B1120]">
           <div className="relative w-full max-w-sm">
-            <Search className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
+            <Search className="w-3.5 h-3.5 text-content-muted absolute left-2.5 top-1/2 -translate-y-1/2" />
             <label htmlFor="audit-search-input" className="sr-only">
               Search audit entries
             </label>
@@ -430,7 +430,7 @@ export const AuditPage: React.FC = () => {
           {/* Real, disclosed scope limit — the backend has no server-side
               search, so this only ever filters the current real page's own
               already-fetched rows, never every page at once. */}
-          <span className="hidden sm:inline text-[10px] font-mono text-slate-500 shrink-0">
+          <span className="hidden sm:inline text-[10px] font-mono text-content-muted shrink-0">
             (this page only)
           </span>
         </div>

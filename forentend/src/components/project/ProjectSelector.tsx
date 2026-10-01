@@ -125,10 +125,10 @@ export const ProjectSelector: React.FC = () => {
   if (auth.status !== 'authenticated' && projects.length === 0) {
     return (
       <div
-        className="hidden lg:flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#020617] border border-slate-800/80 text-xs text-slate-500 select-none"
+        className="hidden lg:flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#020617] border border-slate-800/80 text-xs text-content-muted select-none"
         title="Configure and verify an orchestrator API key to load projects"
       >
-        <FolderOpen className="w-3.5 h-3.5 text-slate-600" />
+        <FolderOpen className="w-3.5 h-3.5 text-content-muted" />
         <span>No project scope</span>
       </div>
     );
@@ -162,7 +162,7 @@ export const ProjectSelector: React.FC = () => {
           <FolderOpen className="w-3.5 h-3.5 text-slate-400 shrink-0" />
         )}
         <span className="font-medium truncate">{triggerLabel}</span>
-        <ChevronDown className="w-3 h-3 text-slate-500 ml-0.5 shrink-0" />
+        <ChevronDown className="w-3 h-3 text-content-muted ml-0.5 shrink-0" />
       </button>
 
       {isOpen && (
@@ -218,14 +218,14 @@ export const ProjectSelector: React.FC = () => {
                   }}
                   disabled={createSubmitting}
                   placeholder="Project name"
-                  className="w-full px-2 py-1.5 rounded-md bg-[#020617] border border-slate-700 text-slate-200 text-xs placeholder:text-slate-600 focus:outline-none focus:border-violet-600 disabled:opacity-60"
+                  className="w-full px-2 py-1.5 rounded-md bg-[#020617] border border-slate-700 text-slate-200 text-xs placeholder:text-content-muted focus:outline-none focus:border-violet-600 disabled:opacity-60"
                 />
                 {createNameError && <p className="mt-1 text-[11px] text-rose-400">{createNameError}</p>}
               </div>
 
               <div>
                 <label htmlFor="create-project-description" className="block text-[10px] text-slate-400 mb-1">
-                  Description <span className="text-slate-600">(optional)</span>
+                  Description <span className="text-content-muted">(optional)</span>
                 </label>
                 <textarea
                   id="create-project-description"
@@ -234,7 +234,7 @@ export const ProjectSelector: React.FC = () => {
                   disabled={createSubmitting}
                   rows={2}
                   placeholder="What is this project for?"
-                  className="w-full px-2 py-1.5 rounded-md bg-[#020617] border border-slate-700 text-slate-200 text-xs placeholder:text-slate-600 resize-none focus:outline-none focus:border-violet-600 disabled:opacity-60"
+                  className="w-full px-2 py-1.5 rounded-md bg-[#020617] border border-slate-700 text-slate-200 text-xs placeholder:text-content-muted resize-none focus:outline-none focus:border-violet-600 disabled:opacity-60"
                 />
               </div>
 
@@ -297,7 +297,7 @@ export const ProjectSelector: React.FC = () => {
 
           {!isCreating && !error && !loading && projects.length === 0 && (
             <div className="px-2.5 py-4 flex flex-col items-center text-center gap-1.5 text-slate-400">
-              <FolderX className="w-5 h-5 text-slate-600" />
+              <FolderX className="w-5 h-5 text-content-muted" />
               <span className="font-medium text-slate-300">No accessible projects</span>
               <span className="text-[11px] max-w-[200px]">
                 This API key has no projects assigned to it on the orchestrator.
@@ -347,7 +347,7 @@ export const ProjectSelector: React.FC = () => {
                         e.stopPropagation();
                         setProjectToDelete(p);
                       }}
-                      className="p-1 rounded text-slate-500 hover:text-rose-400 hover:bg-rose-950/40 opacity-70 group-hover:opacity-100 focus:opacity-100 transition-all cursor-pointer shrink-0"
+                      className="p-1 rounded text-content-muted hover:text-rose-400 hover:bg-rose-950/40 opacity-70 group-hover:opacity-100 focus:opacity-100 transition-all cursor-pointer shrink-0"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>

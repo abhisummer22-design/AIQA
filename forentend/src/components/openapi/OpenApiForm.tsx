@@ -15,7 +15,7 @@ import {
 import type { OpenApiCaseKind } from '../../types/contract';
 
 const INPUT =
-  'w-full px-2 py-1.5 rounded-md bg-[#020617] border border-slate-700 text-xs text-slate-100 placeholder:text-slate-600 focus:outline-none focus:border-violet-500 disabled:opacity-50';
+  'w-full px-2 py-1.5 rounded-md bg-[#020617] border border-slate-700 text-xs text-slate-100 placeholder:text-content-muted focus:outline-none focus:border-violet-500 disabled:opacity-50';
 const SEGMENT = (on: boolean) => `px-2.5 py-1 text-xs cursor-pointer ${on ? 'bg-violet-950/70 text-violet-200' : 'text-slate-400 hover:bg-slate-800'}`;
 
 let nextCredentialId = 1;
@@ -97,7 +97,7 @@ export const OpenApiForm: React.FC<{
             <input id={`openapi-kind-${kind}`} type="checkbox" checked={form.kinds.includes(kind)} onChange={() => toggleKind(kind)} className="mt-0.5 accent-violet-500" />
             <span>
               <span className="text-slate-100">{KIND_LABEL[kind].title}</span>
-              <span className="text-slate-500"> — {KIND_LABEL[kind].hint}</span>
+              <span className="text-content-muted"> — {KIND_LABEL[kind].hint}</span>
             </span>
           </label>
         ))}
@@ -117,7 +117,7 @@ export const OpenApiForm: React.FC<{
 
       <fieldset disabled={disabled} className="space-y-2">
         <legend className="text-xs font-semibold text-slate-100">Credentials</legend>
-        <p className="text-[11px] text-slate-500">
+        <p className="text-[11px] text-content-muted">
           A header that carries a credential is given as the name of a variable in the orchestrator’s environment (it must start with AIQA_SECRET_ or
           AIQA_LOGIN_). The value is read when a request is made and is never stored, shown or sent anywhere else.
         </p>

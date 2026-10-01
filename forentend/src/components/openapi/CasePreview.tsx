@@ -10,9 +10,9 @@ import { KIND_LABEL, expectText, pathOf } from './openApiModel';
 
 const Tile: React.FC<{ id: string; label: string; value: string; note?: string; amber?: boolean }> = ({ id, label, value, note, amber = false }) => (
   <div id={id} className={`p-3 rounded-lg border ${amber ? 'bg-amber-950/30 border-amber-800/60' : 'bg-[#020617] border-slate-800'}`}>
-    <div className="text-[10px] uppercase tracking-wide text-slate-500">{label}</div>
+    <div className="text-[10px] uppercase tracking-wide text-content-muted">{label}</div>
     <div className={`text-sm font-mono ${amber ? 'text-amber-200' : 'text-slate-100'}`}>{value}</div>
-    {note && <div className="text-[10px] text-slate-500 mt-0.5">{note}</div>}
+    {note && <div className="text-[10px] text-content-muted mt-0.5">{note}</div>}
   </div>
 );
 
@@ -96,22 +96,22 @@ export const CasePreview: React.FC<{
                 <span className="font-mono text-slate-100">{op.id}</span>
                 {op.summary && <span className="text-slate-400">{op.summary}</span>}
                 {op.requires_auth && (
-                  <span title="the document says this operation needs a credential" className="inline-flex items-center gap-0.5 text-slate-500">
+                  <span title="the document says this operation needs a credential" className="inline-flex items-center gap-0.5 text-content-muted">
                     <Lock className="w-3 h-3" /> credential
                   </span>
                 )}
                 {op.deprecated && <span className="px-1 rounded border border-slate-700 text-[10px] text-slate-400">deprecated</span>}
-                <span className="ml-auto text-slate-500">
+                <span className="ml-auto text-content-muted">
                   {cases.length} {plural(cases.length, 'case', 'cases')}
                 </span>
               </summary>
               {cases.length === 0 ? (
-                <p className="px-3 pb-2 text-[11px] text-slate-500">No case: {why ?? 'none of the asked-for kinds applies to it'}.</p>
+                <p className="px-3 pb-2 text-[11px] text-content-muted">No case: {why ?? 'none of the asked-for kinds applies to it'}.</p>
               ) : (
                 <div className="px-3 pb-2 overflow-x-auto">
                   <table className="w-full text-[11px] text-left">
                     <caption className="sr-only">Cases for {op.id}</caption>
-                    <thead className="text-slate-500">
+                    <thead className="text-content-muted">
                       <tr>
                         <th className="py-1 pr-3 font-normal">Kind</th>
                         <th className="py-1 pr-3 font-normal">Case</th>
@@ -158,7 +158,7 @@ export const CasePreview: React.FC<{
           {running ? 'Starting…' : `Run ${toRun} ${plural(toRun, 'case', 'cases')}`}
         </button>
         {blockedReason && (
-          <span id="openapi-run-blocked" className="text-[11px] text-slate-500">
+          <span id="openapi-run-blocked" className="text-[11px] text-content-muted">
             {blockedReason}
           </span>
         )}

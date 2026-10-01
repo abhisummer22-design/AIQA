@@ -229,7 +229,7 @@ export const CustomTestingPage: React.FC = () => {
 
               <div>
                 <label htmlFor="custom-testing-scope" className="block text-xs font-mono text-slate-400 mb-1">
-                  Module / Scope <span className="text-slate-600">(user-provided — this project has no module metadata)</span>
+                  Module / Scope <span className="text-content-muted">(user-provided — this project has no module metadata)</span>
                 </label>
                 <input
                   id="custom-testing-scope"
@@ -350,14 +350,14 @@ export const CustomTestingPage: React.FC = () => {
                     <div key={i} className="p-2.5 rounded bg-[#020617] border border-slate-800 flex items-center justify-between gap-3">
                       <div className="min-w-0">
                         <p className="text-xs font-mono text-slate-200 truncate">{tc.title}</p>
-                        <p className="text-[10px] font-mono text-slate-500">
+                        <p className="text-[10px] font-mono text-content-muted">
                           {tc.category} • {tc.priority} • {tc.severity} • {tc.evidence}
                         </p>
                       </div>
                     </div>
                   ))}
                 </div>
-                <p className="text-[10px] font-mono text-slate-500">
+                <p className="text-[10px] font-mono text-content-muted">
                   Review, save, validate, approve, and hand off to real execution on the Test Case Generator page — the exact same pipeline every other generated test case already uses.
                 </p>
               </div>

@@ -44,7 +44,7 @@ const VERDICT_STYLE: Record<AutopilotVerdict, string> = {
 const Tile: React.FC<{ id: string; label: string; value: string }> = ({ id, label, value }) => (
   <div id={id} className="p-2.5 rounded-md bg-[#020617] border border-slate-800">
     <div className="text-sm font-mono font-semibold text-slate-100">{value}</div>
-    <div className="text-[10px] text-slate-500 leading-tight">{label}</div>
+    <div className="text-[10px] text-content-muted leading-tight">{label}</div>
   </div>
 );
 
@@ -65,7 +65,7 @@ const CaseList: React.FC<{ id: string; title: string; cases: AutopilotReportCase
             </div>
             {c.reason && <p className="text-[11px] text-slate-400 break-words">{c.reason}</p>}
             {c.attempts.length > 1 && (
-              <ul className="text-[10px] text-slate-500 list-disc pl-5">
+              <ul className="text-[10px] text-content-muted list-disc pl-5">
                 {c.attempts.map((a) => (
                   <li key={a.run_id}>
                     {outcomeLabel(a.outcome)}
@@ -265,11 +265,11 @@ export const ReportView: React.FC<Props> = ({ projectId, runId, autoLoad, versio
           })}
         </div>
         {rows.length === 0 ? (
-          <p className="text-[11px] text-slate-500">No requirement to show.</p>
+          <p className="text-[11px] text-content-muted">No requirement to show.</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-[11px] text-left">
-              <thead className="text-slate-500">
+              <thead className="text-content-muted">
                 <tr>
                   <th className="py-1 pr-3 font-normal">Requirement</th>
                   <th className="py-1 pr-3 font-normal">Cases</th>
@@ -283,7 +283,7 @@ export const ReportView: React.FC<Props> = ({ projectId, runId, autoLoad, versio
                 {rows.map((r) => (
                   <tr key={r.key} id={`report-req-${r.key}`} className="border-t border-slate-800/70 align-top">
                     <td className="py-1 pr-3">
-                      <span className="font-mono text-slate-200">{r.key}</span> <span className="text-slate-500">{r.kind}</span>
+                      <span className="font-mono text-slate-200">{r.key}</span> <span className="text-content-muted">{r.kind}</span>
                       <div className="text-slate-400">{r.text}</div>
                     </td>
                     <td className="py-1 pr-3 font-mono text-slate-300">{r.cases}</td>

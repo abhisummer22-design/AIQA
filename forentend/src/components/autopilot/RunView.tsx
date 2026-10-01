@@ -54,7 +54,7 @@ const StepIcon: React.FC<{ state: AutopilotStepState }> = ({ state }) => {
     case 'FAILED':
       return <XCircle className="w-4 h-4 text-rose-400" aria-hidden />;
     case 'SKIPPED':
-      return <Circle className="w-4 h-4 text-slate-600" aria-hidden />;
+      return <Circle className="w-4 h-4 text-content-muted" aria-hidden />;
     default:
       return <Circle className="w-4 h-4 text-slate-700" aria-hidden />;
   }
@@ -81,12 +81,12 @@ const StepList: React.FC<{ steps: AutopilotStep[] }> = ({ steps }) => {
             <div className="min-w-0 space-y-0.5">
               <div className="flex flex-wrap items-baseline gap-x-2">
                 <span className="text-xs text-slate-100">{STEP_LABEL[s.name]?.title ?? s.name}</span>
-                <span className="font-mono text-[10px] text-slate-500">{s.state.toLowerCase()}</span>
+                <span className="font-mono text-[10px] text-content-muted">{s.state.toLowerCase()}</span>
                 {s.attempts > 1 && <span className="font-mono text-[10px] text-amber-400">attempt {s.attempts}</span>}
-                {seconds !== null && <span className="font-mono text-[10px] text-slate-500">{formatSeconds(seconds)}</span>}
+                {seconds !== null && <span className="font-mono text-[10px] text-content-muted">{formatSeconds(seconds)}</span>}
               </div>
               {summary && <div className="text-[11px] text-slate-400">{summary}</div>}
-              {!summary && s.state === 'PENDING' && <div className="text-[11px] text-slate-600">{STEP_LABEL[s.name]?.what}</div>}
+              {!summary && s.state === 'PENDING' && <div className="text-[11px] text-content-muted">{STEP_LABEL[s.name]?.what}</div>}
               {s.error && <div className="text-[11px] text-rose-300 break-words">{s.error}</div>}
             </div>
           </li>
@@ -115,14 +115,14 @@ const Timeline: React.FC<{ events: AutopilotEvent[]; providerName: (id: string) 
         )}
       </div>
       {events.length === 0 ? (
-        <p className="text-[11px] text-slate-500">Nothing has happened yet.</p>
+        <p className="text-[11px] text-content-muted">Nothing has happened yet.</p>
       ) : (
         <ul className="space-y-0.5 max-h-72 overflow-y-auto pr-1">
           {shown.map((e) => (
             <li key={e.id} id={`event-${e.id}`} className="flex gap-2 text-[11px]">
-              <span className="font-mono text-slate-600 shrink-0">{formatTimestamp(e.at).slice(11)}</span>
+              <span className="font-mono text-content-muted shrink-0">{formatTimestamp(e.at).slice(11)}</span>
               <span className={`${TONE_TEXT[eventTone(e.kind)]} break-words`}>
-                {e.step && <span className="font-mono text-slate-500">{STEP_LABEL[e.step]?.title ?? e.step}: </span>}
+                {e.step && <span className="font-mono text-content-muted">{STEP_LABEL[e.step]?.title ?? e.step}: </span>}
                 {withProviderNames(e.message, providerName)}
               </span>
             </li>
@@ -213,7 +213,7 @@ export const RunView: React.FC<Props> = ({ projectId, detail, events, onDetail }
           {took !== null ? ` · took ${formatSeconds(took)}` : ''}
         </p>
         {run.approved_at && (
-          <p id="run-accepted" className="text-[10px] text-slate-500">
+          <p id="run-accepted" className="text-[10px] text-content-muted">
             The estimate was accepted {formatTimestamp(run.approved_at)}
             {run.approved_paid ? ', including its cost.' : '.'}
           </p>
@@ -271,7 +271,7 @@ export const RunView: React.FC<Props> = ({ projectId, detail, events, onDetail }
               Discard this run
             </button>
             {acceptance.missing && (
-              <span id="run-missing" className="text-[11px] text-slate-500">
+              <span id="run-missing" className="text-[11px] text-content-muted">
                 {acceptance.missing}
               </span>
             )}

@@ -206,7 +206,7 @@ const QuickLoginFields: React.FC<QuickLoginFieldsProps> = ({ role, updateStep, o
   return (
     <div className="space-y-2 pl-2 border-l border-slate-800">
       <div className="space-y-1">
-        <label className="text-[10px] font-mono text-slate-500 uppercase tracking-wide">Login page URL</label>
+        <label className="text-[10px] font-mono text-content-muted uppercase tracking-wide">Login page URL</label>
         <input
           type="text"
           placeholder="https://your-app.example.com/login"
@@ -217,7 +217,7 @@ const QuickLoginFields: React.FC<QuickLoginFieldsProps> = ({ role, updateStep, o
         />
       </div>
       <div className="space-y-1">
-        <label className="text-[10px] font-mono text-slate-500 uppercase tracking-wide">Username / email</label>
+        <label className="text-[10px] font-mono text-content-muted uppercase tracking-wide">Username / email</label>
         <input
           type="text"
           placeholder="you@example.com"
@@ -228,7 +228,7 @@ const QuickLoginFields: React.FC<QuickLoginFieldsProps> = ({ role, updateStep, o
         />
       </div>
       <div className="space-y-1">
-        <label className="text-[10px] font-mono text-slate-500 uppercase tracking-wide">Password</label>
+        <label className="text-[10px] font-mono text-content-muted uppercase tracking-wide">Password</label>
         <div className="flex items-center gap-1">
           <input
             type={passwordStep.isSecret ? 'password' : 'text'}
@@ -242,7 +242,7 @@ const QuickLoginFields: React.FC<QuickLoginFieldsProps> = ({ role, updateStep, o
             type="button"
             onClick={() => updateStep(role.localId, passwordStep.localId, { isSecret: !passwordStep.isSecret })}
             title={passwordStep.isSecret ? 'Value hidden — click to reveal while typing' : 'Click to mask this value'}
-            className="p-1 rounded text-slate-500 hover:text-slate-300 shrink-0 cursor-pointer"
+            className="p-1 rounded text-content-muted hover:text-slate-300 shrink-0 cursor-pointer"
           >
             {passwordStep.isSecret ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
           </button>
@@ -558,7 +558,7 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
           id="btn-start-crawl"
           onClick={handleCrawl}
           disabled={disabled || isBusy || !projectId || !targetUrl.trim()}
-          className="px-3 py-1.5 rounded bg-teal-700 hover:bg-teal-600 disabled:bg-slate-800 text-white disabled:text-slate-500 text-xs font-mono font-medium cursor-pointer transition-colors flex items-center gap-1 shrink-0"
+          className="px-3 py-1.5 rounded bg-teal-700 hover:bg-teal-600 disabled:bg-slate-800 text-white disabled:text-content-muted text-xs font-mono font-medium cursor-pointer transition-colors flex items-center gap-1 shrink-0"
         >
           {isBusy ? (
             <>
@@ -581,7 +581,7 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
           className="accent-teal-500"
         />
         <span>Visit the pages the requirements mention first</span>
-        <span className="text-[10px] text-slate-500">
+        <span className="text-[10px] text-content-muted">
           Needs an uploaded requirements document. On a large application the crawl&apos;s page limit is spent on those pages first.
         </span>
       </label>
@@ -647,7 +647,7 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
                         </div>
                       )}
                     <div className="flex items-center gap-1.5">
-                      <span className="text-[10px] font-mono text-slate-500 w-4 text-right shrink-0">{idx + 1}.</span>
+                      <span className="text-[10px] font-mono text-content-muted w-4 text-right shrink-0">{idx + 1}.</span>
                       <select
                         value={step.type}
                         onChange={(e) =>
@@ -697,7 +697,7 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
                             type="button"
                             onClick={() => updateStep(role.localId, step.localId, { isSecret: !step.isSecret })}
                             title={step.isSecret ? 'Value hidden — click to reveal while typing' : 'Click to mask this value (e.g. a password)'}
-                            className="p-1 rounded text-slate-500 hover:text-slate-300 shrink-0 cursor-pointer"
+                            className="p-1 rounded text-content-muted hover:text-slate-300 shrink-0 cursor-pointer"
                           >
                             {step.isSecret ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
                           </button>
@@ -709,7 +709,7 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
                         onClick={() => removeStep(role.localId, step.localId)}
                         disabled={disabled || isBusy}
                         title="Remove this step"
-                        className="p-1 rounded text-slate-500 hover:text-rose-400 disabled:opacity-50 shrink-0 cursor-pointer"
+                        className="p-1 rounded text-content-muted hover:text-rose-400 disabled:opacity-50 shrink-0 cursor-pointer"
                       >
                         <Trash2 className="w-3 h-3" />
                       </button>
@@ -732,7 +732,7 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
                         type="button"
                         onClick={() => setRoleMode(role.localId, 'quick')}
                         disabled={disabled || isBusy}
-                        className="text-[10px] font-mono text-slate-500 hover:text-slate-300 disabled:opacity-50 cursor-pointer"
+                        className="text-[10px] font-mono text-content-muted hover:text-slate-300 disabled:opacity-50 cursor-pointer"
                       >
                         ← Back to Quick
                       </button>
@@ -754,7 +754,7 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
               <span>Add another role</span>
             </button>
 
-            <p className="text-[10px] text-slate-500 font-sans flex items-start gap-1">
+            <p className="text-[10px] text-content-muted font-sans flex items-start gap-1">
               <Info className="w-3 h-3 shrink-0 mt-0.5" />
               <span>
                 Login values (including any password) are sent as plain JSON and embedded in plaintext in the
@@ -762,7 +762,7 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
                 (that directory is gitignored, but not further encrypted).
               </span>
             </p>
-            <p id="crawl-env-hint" className="text-[10px] text-slate-500 font-sans flex items-start gap-1">
+            <p id="crawl-env-hint" className="text-[10px] text-content-muted font-sans flex items-start gap-1">
               <KeyRound className="w-3 h-3 shrink-0 mt-0.5" />
               <span>
                 To log in without a password being stored, write a value as <code>env:AIQA_LOGIN_ADMIN_PASSWORD</code>: it
