@@ -2996,7 +2996,32 @@ impl AiInfrastructure {
                     routing_score: score,
                     reason: format!("Task chain: first available model for {task:?}"),
                 }),
-            None => Self::route_among(providers, task, settings, None, None).ok(),
+            // Same inputs real generation uses, not just the same scoring
+            // function. `generate` resolves its soft model preference as
+            // `task_overrides[task].model` falling back to
+            // `settings.preferred_model` (see `soft_model`), and `score_model`
+            // awards a large bonus for a match — so passing `None, None` here
+            // made the preview rank the models without that preference and
+            // report a different winner than the one that will actually serve
+            // the call. Observed live: with `preferred_model` set to
+            // `openai/gpt-oss-120b`, this preview still reported
+            // `qwen/qwen3.8-27b` at 330 while a real generation ran on
+            // `openai/gpt-oss-120b`.
+            //
+            // The per-request preference is deliberately still `None`: a
+            // preview is computed outside any request, so there is no
+            // per-request hard filter to honour — and `settings.preferred_provider`
+            // is likewise not a filter here, matching `generate`, where only
+            // the *model* half of the persisted preference participates
+            // (a dead provider must degrade to the next best, not hard-fail).
+            None => {
+                let settings_model = settings
+                    .task_overrides
+                    .get(&task)
+                    .and_then(|o| o.model.clone())
+                    .or_else(|| settings.preferred_model.clone());
+                Self::route_among(providers, task, settings, None, settings_model.as_deref()).ok()
+            }
         }
     }
 
@@ -7056,6 +7081,58 @@ mod tests {
             automatic.model_id, "paid-model",
             "no chain: the best-scoring model, as before"
         );
+    }
+
+    /// Regression for the live mismatch: the AI Engine panel reported
+    /// `qwen/qwen3.8-27b` (330) while a real generation ran on
+    /// `openai/gpt-oss-120b`, because `preview_route` passed `None` for the
+    /// soft model preference that `generate` applies. The preview must rank
+    /// candidates exactly as the call that follows it will.
+    #[tokio::test]
+    async fn preview_route_honours_the_persisted_preferred_model_exactly_as_a_real_call_does() {
+        let mut executors = HashMap::new();
+        // `b` scores higher on capability alone, so only the preference bonus
+        // can make `weak` win — which is exactly the case that diverged.
+        let (b, _) = chain_provider(&mut executors, "b", CapabilityLevel::Strong, vec![]);
+        let (weak, _) = chain_provider(&mut executors, "weak", CapabilityLevel::Basic, vec![]);
+        let infra = AiInfrastructure::new(vec![b, weak], executors);
+        let providers = infra.discover_all().await;
+
+        let settings = AiSettings {
+            mode: RoutingMode::Auto,
+            preferred_provider: None,
+            preferred_model: Some("weak-model".to_string()),
+            fallback_enabled: true,
+            task_overrides: HashMap::new(),
+        };
+
+        let preview = AiInfrastructure::preview_route(
+            &providers,
+            AiTask::TestCaseGeneration,
+            &settings,
+        )
+        .expect("something is usable");
+        assert_eq!(
+            preview.model_id, "weak-model",
+            "the preview must apply the persisted preferred-model bonus, not rank without it"
+        );
+
+        // The same decision a real generation makes for the same task, with the
+        // same soft-model input `generate` resolves.
+        let real = AiInfrastructure::route_among(
+            &providers,
+            AiTask::TestCaseGeneration,
+            &settings,
+            None,
+            settings.preferred_model.as_deref(),
+        )
+        .expect("something is usable");
+        assert_eq!(
+            (preview.provider_id.as_str(), preview.model_id.as_str()),
+            (real.provider_id.as_str(), real.model_id.as_str()),
+            "the panel and the call that follows it must not name different models"
+        );
+        assert_eq!(preview.routing_score, real.routing_score);
     }
 
     #[test]

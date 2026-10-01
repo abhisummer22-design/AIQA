@@ -21,27 +21,38 @@ pub struct OrchestratorLogEntry {
     pub task_id: Option<String>,
 }
 
+/// The three sanitisation patterns, compiled once.
+///
+/// These were previously `Regex::new(...)` calls *inside*
+/// `sanitize_log_message`, i.e. recompiled on every single log line. Regex
+/// compilation is one of the more expensive operations in Rust, and
+/// `LogBus::emit` calls this function once per emitted entry — so a run
+/// emitting thousands of log lines paid three compiles per line for patterns
+/// that can never change at runtime. `LazyLock` (stable since Rust 1.80) compiles
+/// each one on first use and reuses it after that, with identical behaviour.
+static AIQA_KEY_PATTERN: std::sync::LazyLock<Regex> =
+    std::sync::LazyLock::new(|| Regex::new(r"aiqa_[a-zA-Z0-9_-]{12,}").expect("static pattern"));
+static BEARER_PATTERN: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(r"(?i)bearer\s+[a-zA-Z0-9_\-\.]{12,}").expect("static pattern")
+});
+static SECRET_PARAM_PATTERN: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(r"(?i)(password|secret|api_key|token|auth_token)=([^&\s]+)")
+        .expect("static pattern")
+});
+
 /// Sanitizes log messages to ensure sensitive tokens, API keys, and credentials
 /// are never exposed to the frontend log stream.
+///
+/// Compiled patterns live in the three `LazyLock` statics above; this function
+/// is called once per log entry, so pattern compilation must not happen here.
 pub fn sanitize_log_message(msg: &str) -> String {
-    let mut cleaned = msg.to_string();
-
     // 1. Mask AIQA bearer / API keys (e.g. aiqa_0123456789abcdef...)
-    if let Ok(re) = Regex::new(r"aiqa_[a-zA-Z0-9_-]{12,}") {
-        cleaned = re.replace_all(&cleaned, "aiqa_***").to_string();
-    }
-
+    let cleaned = AIQA_KEY_PATTERN.replace_all(msg, "aiqa_***");
     // 2. Mask Authorization Bearer tokens
-    if let Ok(re) = Regex::new(r"(?i)bearer\s+[a-zA-Z0-9_\-\.]{12,}") {
-        cleaned = re.replace_all(&cleaned, "Bearer ***").to_string();
-    }
-
+    let cleaned = BEARER_PATTERN.replace_all(&cleaned, "Bearer ***");
     // 3. Mask parameters with passwords, keys, or secrets
-    if let Ok(re) = Regex::new(r"(?i)(password|secret|api_key|token|auth_token)=([^&\s]+)") {
-        cleaned = re.replace_all(&cleaned, "$1=***").to_string();
-    }
-
-    cleaned
+    let cleaned = SECRET_PARAM_PATTERN.replace_all(&cleaned, "$1=***");
+    cleaned.into_owned()
 }
 
 pub struct LogBus {

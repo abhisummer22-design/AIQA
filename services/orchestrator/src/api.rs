@@ -56,7 +56,52 @@ pub fn router(state: AppState) -> Router {
             get(project_logs_ws_handler),
         )
         .merge(protected)
+        // Without these, an unknown path or a wrong verb on a real path is
+        // answered by Axum's default handlers: the correct status code, but
+        // `content-length: 0` and no body at all. That bypasses the
+        // `{error:{code,message,details,request_id}}` envelope every real
+        // handler and every extractor rejection already returns, so a client
+        // that reads the documented envelope unconditionally throws a parse
+        // exception instead of seeing an error it can act on.
+        //
+        // Live-verified before this: `GET /api/v1/nope-not-here` -> `404` with
+        // an empty body and no content-type, and `PUT /health` /
+        // `DELETE /api/v1/projects` / `POST /metrics` -> `405` likewise.
+        //
+        // Two separate hooks, because axum 0.7 does NOT route a wrong-verb-on-
+        // a-matched-path through `fallback` — only `method_not_allowed_fallback`
+        // catches that, which is why both are registered here. A `405` keeps
+        // Axum's own `Allow` header (verified live: `PUT /health` -> `405` with
+        // `Allow: GET,HEAD` AND the JSON envelope, because axum sets the header
+        // after the fallback runs). The WebSocket routes are unaffected — a
+        // pre-upgrade rejection is intentionally plain text (see `errors.rs`'s
+        // G-WS note).
+        .fallback(unmatched_path)
+        .method_not_allowed_fallback(method_not_allowed)
         .with_state(state)
+}
+
+/// The `404` handler behind `router`'s `.fallback(...)`.
+async fn unmatched_path(request: axum::extract::Request) -> axum::response::Response {
+    let method = request.method().clone();
+    let path = request.uri().path().to_string();
+    // The method is named only in the log line; it is not echoed into the body,
+    // so this cannot become a reflection surface.
+    tracing::debug!("unmatched request: {method} {path}");
+    ApiError::not_found(format!("no route matches {path}")).into_response()
+}
+
+/// The `405` handler behind `router`'s `.method_not_allowed_fallback(...)`.
+async fn method_not_allowed(request: axum::extract::Request) -> axum::response::Response {
+    let method = request.method().clone();
+    let path = request.uri().path().to_string();
+    tracing::debug!("method not allowed: {method} {path}");
+    ApiError::new(
+        StatusCode::METHOD_NOT_ALLOWED,
+        "METHOD_NOT_ALLOWED",
+        format!("{method} is not supported on {path}"),
+    )
+    .into_response()
 }
 
 /// The same routes as `router`'s protected part, with no authentication layer on them, for the autopilot
@@ -765,6 +810,17 @@ async fn audit_in_project(
 /// matching this file's own established convention elsewhere (`get_run`,
 /// `get_project_handler`): a project that doesn't exist can't be "yours"
 /// either way, so 404 is the more informative answer than 403.
+/// Existence is checked **before** the caller's scope is, and that order is
+/// deliberate — do not "optimize" it into an authorization-first check.
+///
+/// `auth::require_project_access` answers only "is this project yours?", so a
+/// project-scoped key asking about an id that does not exist at all would get
+/// `403 resource belongs to a different project` — which tells it the id is a
+/// real, different project rather than no project at all. Probing existence
+/// first means an unknown id is `404 project not found` for everyone, scoped or
+/// not, so a key cannot enumerate which project ids exist. The DB round trip on
+/// every project-scoped request is the price of not leaking that, and it is
+/// priced correctly.
 pub(crate) async fn require_scoped_project(
     state: &AppState,
     ctx: &AuthContext,
@@ -7555,7 +7611,26 @@ async fn revoke_api_key_handler(
     ApiPath(id): ApiPath<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     auth::require_role(&ctx, Role::Admin)?;
-    state.store.revoke_api_key(id).await.map_err(to_500)?;
+    // The row count decides both the status code and whether an audit row is
+    // written. Previously the count was discarded, so revoking a key that did
+    // not exist (or was already revoked) answered `204 No Content` and recorded
+    // `apikey.revoke` / `"ok"` — an audit trail asserting a revocation that
+    // never happened. Sibling deletes already 404 honestly
+    // (`DELETE /api/v1/skills/:id` -> `RESOURCE_NOT_FOUND`); this now matches
+    // them, and a no-op revoke is audited as `denied`, not as a success.
+    let revoked = state.store.revoke_api_key(id).await.map_err(to_500)?;
+    if !revoked {
+        audit(
+            &state,
+            &ctx,
+            "apikey.revoke",
+            Some(&id.to_string()),
+            Some("no active API key with that id: it does not exist, or it was already revoked"),
+            "denied",
+        )
+        .await;
+        return Err(ApiError::not_found("API key not found"));
+    }
     audit(
         &state,
         &ctx,

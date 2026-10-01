@@ -1,9 +1,10 @@
 //! Comprehensive Unit and Integration Tests for Phase 6: Adaptive QA Intelligence & Observability.
 
 use crate::adaptive_intelligence::*;
-use crate::domain::{TaskState, TaskStatus};
+use crate::domain::{TaskDef, TaskState, TaskStatus};
 use crate::store::Store;
 use chrono::Utc;
+use std::sync::Arc;
 use tempfile::TempDir;
 use uuid::Uuid;
 
@@ -582,44 +583,191 @@ fn test_31_intelligence_cannot_bypass_policy() {
     assert_eq!(rec.recommended_strategy, "selector_update");
 }
 
-#[test]
-fn test_32_intelligence_cannot_bypass_rbac() {
-    // Structural proof
-}
+// The eight tests below used to have empty bodies whose only content was the
+// comment `// Structural proof`, while their names asserted hard security
+// properties — "no arbitrary code execution", "no autonomous healing loop",
+// "intelligence cannot bypass RBAC". An empty body proves nothing about any of
+// them: `test_33_intelligence_cannot_directly_execute() { /* nothing */ }`
+// passes identically if the property it names is false. Worse, `test_32` sat
+// next to `test_31_intelligence_cannot_bypass_policy`, which *does* assert,
+// which made the gap invisible.
+//
+// They are replaced here by tests that actually assert something, or deleted
+// where this module cannot honestly assert the claim. Where a property is
+// genuinely enforced elsewhere, that is named rather than re-asserted weakly.
+//
+// `test_34_no_autonomous_healing_loop`, `test_33_intelligence_cannot_directly_execute`
+// and `test_38_no_second_ai_router` are DELETED, not rewritten: each needs a
+// live `AgentExecutionDispatcher` / `AiInfrastructure` and an approval row to be
+// worth testing, which belongs to `agent_execution_tests.rs` and
+// `governed_healing_tests.rs`. Asserting something weaker here to keep the
+// names would have recreated the original problem. Their real coverage is
+// `agent_execution_tests.rs::test_27_cross_project_approval_rejected`,
+// `api_tests.rs::aud005_approve_without_validate_first_is_rejected_with_409`,
+// and `api_tests.rs::phase2_1_handoff_with_an_unregistered_executor_name_is_a_real_honest_infra_error_not_a_silent_simulate`.
 
-#[test]
-fn test_33_intelligence_cannot_directly_execute() {
-    // Structural proof
-}
+#[tokio::test]
+async fn test_32_intelligence_cannot_bypass_rbac() {
+    // The property this name claims is really "telemetry is scoped, and the
+    // intelligence layer cannot be addressed by another project's identifier".
+    // What is assertable here, without a live `AuthContext`, is the scoping
+    // half: every telemetry record carries the project it was ingested for, and
+    // reading back is scoped to that project rather than returning everything.
+    let (store, _dir) = setup_test_store().await;
+    let service = AdaptiveIntelligenceService::new(store.clone());
 
-#[test]
-fn test_34_no_autonomous_healing_loop() {
-    // Structural proof
+    let make = |project: &str, run: Uuid, task_name: &str| {
+        let mut task = TaskState::new(task_name, "Login Test");
+        task.started_at = Some(Utc::now());
+        task.finished_at = Some(Utc::now());
+        task.status = TaskStatus::Failed;
+        task.reason = Some("Element not found: #submit-button".to_string());
+        ExecutionTelemetry::from_task_state(
+            project,
+            run,
+            &task,
+            "playwright",
+            "staging",
+            None,
+            vec!["ev-1".to_string()],
+            Some("#submit-button".to_string()),
+            None,
+            None,
+        )
+    };
+
+    let mine = make("proj-mine", Uuid::new_v4(), "task-a");
+    let theirs = make("proj-theirs", Uuid::new_v4(), "task-b");
+    assert_eq!(mine.project_id, "proj-mine");
+
+    service.record_execution_telemetry(mine).await.unwrap();
+    service.record_execution_telemetry(theirs).await.unwrap();
+
+    let mine_rows = store.list_execution_telemetry("proj-mine", 100).await.unwrap();
+    assert_eq!(mine_rows.len(), 1, "one record was written for proj-mine");
+    assert_eq!(
+        mine_rows[0].project_id, "proj-mine",
+        "reading one project's telemetry must never return another project's rows"
+    );
 }
 
 #[test]
 fn test_35_no_source_file_mutation() {
-    // Structural proof
+    // A source-level invariant, asserted for real: this module computes
+    // fingerprints, clusters and trends. It must not contain a filesystem write
+    // or a process spawn, because it runs on the ingest path of every completed
+    // run. Reading its own source is the honest way to assert that here.
+    let source = include_str!("adaptive_intelligence.rs");
+    for forbidden in [
+        "std::fs::write",
+        "fs::write",
+        "File::create",
+        "std::fs::remove",
+        "OpenOptions",
+    ] {
+        assert!(
+            !source.contains(forbidden),
+            "adaptive_intelligence.rs must not write to the filesystem ({forbidden} found)"
+        );
+    }
 }
 
 #[test]
 fn test_36_no_arbitrary_code_execution() {
-    // Structural proof
+    // The real, enforceable version of "no arbitrary code execution": the closed
+    // Action AST has no variant that can carry a shell command, and an action
+    // name outside that vocabulary is a deserialization failure rather than
+    // something executed or coerced. An AI response naming `EXEC_SHELL` is
+    // rejected by serde, so no downstream component ever sees a shell verb.
+    let hostile = serde_json::json!({
+        "type": "EXEC_SHELL",
+        "command": "rm -rf /"
+    });
+    let parsed: Result<crate::execution_plan::Action, _> = serde_json::from_value(hostile);
+    assert!(
+        parsed.is_err(),
+        "an action outside the closed vocabulary must fail to deserialize, not be executed or coerced"
+    );
+
+    // And the vocabulary itself has no code-execution verb in it at all.
+    let source = include_str!("execution_plan.rs");
+    for verb in ["Shell", "Exec", "Eval", "Script", "Python"] {
+        assert!(
+            !source.contains(&format!("{verb} {{")),
+            "the closed Action AST must not gain a `{verb}` variant (execution_plan.rs)"
+        );
+    }
 }
 
 #[test]
 fn test_37_no_executor_bypass() {
-    // Structural proof
-}
+    // A caller-supplied executor name can only ever reach one of these. An
+    // unrecognised name is a real error, never a silent substitution — which is
+    // what stops a request naming a "tool" that does not exist from quietly
+    // running something else.
+    let registry = crate::executor::ExecutorRegistry::new(Arc::new(
+        crate::executor::SimulatedExecutor,
+    ))
+    .register("playwright", Arc::new(NoopExecutor))
+    .register("compiled-api", Arc::new(NoopExecutor));
+    assert_eq!(
+        registry.registered_kinds(),
+        vec!["compiled-api".to_string(), "playwright".to_string()],
+        "only the kinds actually registered may be routable"
+    );
 
-#[test]
-fn test_38_no_second_ai_router() {
-    // Structural proof
+    let task = TaskDef {
+        id: "t".into(),
+        name: "t".into(),
+        executor: Some("not-a-real-executor".into()),
+        ..Default::default()
+    };
+    assert!(
+        registry.resolve(&task).is_err(),
+        "an unregistered executor name must be an error, never a silent fallback"
+    );
+
+    // A task naming no executor at all is still the pre-existing, disclosed
+    // default — the boundary the above rule must not break.
+    let unnamed = TaskDef {
+        id: "t".into(),
+        name: "t".into(),
+        executor: None,
+        ..Default::default()
+    };
+    assert!(registry.resolve(&unnamed).is_ok());
 }
 
 #[test]
 fn test_39_no_python_openjarvis() {
-    // Structural proof
+    // Asserted as the source invariant it actually is: this crate's dependency
+    // set contains no Python interpreter bridge and no OpenJarvis dependency, so
+    // the AIQA runtime cannot shell out to one. Reading `Cargo.toml` is the
+    // honest form of this claim — an empty test body is not.
+    let manifest = include_str!("../Cargo.toml");
+    for forbidden in ["pyo3", "openjarvis", "pyo3-async-runtimes", "python"] {
+        assert!(
+            !manifest.to_lowercase().contains(forbidden),
+            "Cargo.toml must not declare a Python/OpenJarvis dependency ({forbidden})"
+        );
+    }
+}
+
+/// A no-op `Executor` used only to populate the registry `test_37` inspects.
+struct NoopExecutor;
+
+#[async_trait::async_trait]
+impl crate::executor::Executor for NoopExecutor {
+    async fn execute(
+        &self,
+        _task: &crate::domain::TaskDef,
+    ) -> crate::executor::ExecutionOutcome {
+        crate::executor::ExecutionOutcome {
+            status: TaskStatus::Passed,
+            reason: None,
+            evidence: None,
+        }
+    }
 }
 
 #[tokio::test]

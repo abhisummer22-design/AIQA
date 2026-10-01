@@ -2540,13 +2540,31 @@ impl Store {
             .collect())
     }
 
-    pub async fn revoke_api_key(&self, id: Uuid) -> Result<()> {
-        sqlx::query("UPDATE api_keys SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL")
-            .bind(now_rfc3339())
-            .bind(id.to_string())
-            .execute(&self.pool)
-            .await?;
-        Ok(())
+    /// Revokes `id`, reporting whether a key was actually changed.
+    ///
+    /// The `bool` is the number of rows the `UPDATE` matched, and callers must
+    /// act on it. This used to return `Result<()>` and discard the row count,
+    /// which made `DELETE /admin/api-keys/:id` answer `204 No Content` — and
+    /// write an `apikey.revoke` / `status: "ok"` audit row — for a key that
+    /// never existed or was already revoked. Live-verified before the fix:
+    /// `DELETE /admin/api-keys/00000000-...-0000` returned `204` and the audit
+    /// trail then asserted the key had been revoked when nothing had happened.
+    /// On an audit log used for compliance, that is a trail-integrity defect,
+    /// not just a sloppy status code.
+    ///
+    /// `false` therefore means "no active key with that id" — either it is not
+    /// in the table at all, or it was already revoked. Revoking twice is
+    /// genuinely a no-op, so the second revoke is still reported honestly rather
+    /// than as a success that changed state.
+    pub async fn revoke_api_key(&self, id: Uuid) -> Result<bool> {
+        let updated = sqlx::query(
+            "UPDATE api_keys SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
+        )
+        .bind(now_rfc3339())
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(updated.rows_affected() > 0)
     }
 
     // ------------------------------------------------------ quality graph

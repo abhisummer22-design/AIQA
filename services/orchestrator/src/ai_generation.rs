@@ -1408,12 +1408,70 @@ pub(crate) fn enforce_traceability(
     cases
 }
 
+/// Titles shorter than this are not treated as echoes. A short title that
+/// happens to equal a document heading ("Offer Booking Screen") is a
+/// legitimate case name; only a long title can be a whole requirement line
+/// copied back verbatim.
+const ECHO_TITLE_MIN_CHARS: usize = 40;
+
+/// Drops cases whose title is a **verbatim copy of the requirement text**
+/// itself — the model echoing an input line back instead of writing a test
+/// case.
+///
+/// `validate_and_clean` above only checks that a title is *non-empty*, so a
+/// case whose `steps` the model filled in (possibly fabricated) while copying
+/// a document line straight into `title` passes every structural gate and is
+/// then saved and shown as a real test case. This was observed live: a
+/// `qwen3:14b` (Ollama) run returned `Sample step is displayed as the last
+/// Offer step with correct grouping and no redundant UI` — the document's
+/// own line — as a case title, with `category: "Sample Step Display"`
+/// (a fragment of that same line, not one of the 14 canonical categories).
+/// Every one of those cases is unreachable from any category filter, because
+/// `resolveCategoryId` has no category to map it to.
+///
+/// The test is deliberately narrow: the *normalized* title must appear
+/// **verbatim** as a substring of the *normalized* requirement text and be
+/// at least `ECHO_TITLE_MIN_CHARS` long. A genuine generated title rewords
+/// the requirement into an imperative ("Display Sample step as last Offer
+/// step..."), so it does not match and is kept — this function rejects
+/// copying, not paraphrase. It is a guard, not a substitute for routing
+/// generation to a provider with real structured-output enforcement
+/// (`ai_router.rs`'s Groq arm sends `response_format`); with that in place a
+/// model that returns prose fails loudly instead of producing echoes at all.
+///
+/// Each drop is logged rather than dropped silently, so a provider that
+/// starts echoing is visible in the log instead of quietly yielding fewer
+/// cases.
+pub(crate) fn reject_echoed_titles(
+    cases: Vec<GeneratedTestCaseDraft>,
+    requirement_text: &str,
+) -> Vec<GeneratedTestCaseDraft> {
+    let haystack = normalize_title(requirement_text);
+    let mut dropped = 0usize;
+    let kept: Vec<GeneratedTestCaseDraft> = cases
+        .into_iter()
+        .filter(|c| {
+            let title = normalize_title(&c.title);
+            let echoed = title.len() >= ECHO_TITLE_MIN_CHARS && haystack.contains(&title);
+            if echoed {
+                dropped += 1;
+            }
+            !echoed
+        })
+        .collect();
+    if dropped > 0 {
+        tracing::warn!(
+            "generate_test_cases: dropped {dropped} case(s) whose title was a verbatim copy of the requirement text — the model echoed an input line instead of writing a test case"
+        );
+    }
+    kept
+}
+
 /// Deduplication (brief §NINTH). Real, deterministic, and simple by
-/// design: two cases are the same coverage if their normalized titles
-/// match exactly, or one title's normalized words are a superset of the
-/// other's core words — enough to catch a model repeating the same
-/// scenario under near-identical titles across skills without requiring
-/// an embedding model this codebase has no infrastructure for.
+/// design: two cases are the same coverage if their normalized titles match
+/// exactly — enough to catch a model repeating the same scenario under
+/// identical titles across skills without requiring an embedding model this
+/// codebase has no infrastructure for.
 pub(crate) fn normalize_title(title: &str) -> String {
     title
         .to_lowercase()
@@ -2001,7 +2059,18 @@ fn validate_structured_output(
 ) -> Result<GenerationOutcome, String> {
     let cleaned = parse_and_clean(result)?;
     let traced = enforce_traceability(cleaned, requirement_text);
-    let deduped = deduplicate(traced);
+    // Before dedup, so a run of echoed titles is not first collapsed into one
+    // bogus "case" that then survives as if it were real coverage.
+    let unechoed = reject_echoed_titles(traced, requirement_text);
+    let deduped = deduplicate(unechoed);
+
+    if deduped.is_empty() {
+        return Err(
+            "AI response contained no usable test cases — every draft was either structurally invalid \
+             or a verbatim copy of the requirement text"
+                .to_string(),
+        );
+    }
 
     Ok(GenerationOutcome::Ai {
         cases: deduped,
@@ -3132,6 +3201,83 @@ mod tests {
     }
 
     // ----------------------------------------------------------- validation
+
+    /// The real requirement text from the live run that produced the echoed
+    /// "test cases" (a `qwen3:14b` Ollama generation, 7 of 9 skills reported
+    /// success), and the exact title/category that run produced for its first
+    /// case. Both are quoted verbatim from that run so this test cannot drift
+    /// into asserting something the real output never did.
+    const ECHOED_REQUIREMENT: &str = "Offer Booking Screen\n\
+         Sample step is displayed as the last Offer step with correct grouping and no redundant UI\n\
+         User can see each Offer as a card with title, price and validity window\n\
+         Only one Offer step is displayed when multiple Offers are selected";
+
+    #[test]
+    fn a_title_that_is_a_verbatim_requirement_line_is_dropped_not_saved_as_a_test_case() {
+        let mut echoed = valid_draft(
+            "Sample step is displayed as the last Offer step with correct grouping and no redundant UI",
+        );
+        // The real run put a fragment of that same line in `category`, which is
+        // why those cases were unreachable from every category filter.
+        echoed.category = "Sample Step Display".to_string();
+
+        let kept = reject_echoed_titles(vec![echoed], ECHOED_REQUIREMENT);
+        assert!(
+            kept.is_empty(),
+            "a verbatim copy of a requirement line is not a test case: {:?}",
+            kept.iter().map(|c| &c.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_real_generated_title_that_rewords_the_requirement_is_kept() {
+        // The title Groq actually produced for the same requirement, verbatim.
+        // It rewords the line into an imperative rather than copying it, so the
+        // echo guard must not touch it — this is the case the guard exists to
+        // avoid breaking.
+        let kept = reject_echoed_titles(
+            vec![valid_draft(
+                "Display Sample step as last Offer step with correct grouping and no redundant UI (single Offer)",
+            )],
+            ECHOED_REQUIREMENT,
+        );
+        assert_eq!(kept.len(), 1, "a reworded title is real coverage");
+    }
+
+    #[test]
+    fn a_short_title_matching_a_document_heading_is_kept() {
+        // "Offer Booking Screen" is line 1 of the requirement, so it matches
+        // verbatim — but a short title that equals a screen name is a
+        // legitimate case name, not a copied requirement.
+        let kept = reject_echoed_titles(
+            vec![valid_draft("Offer Booking Screen")],
+            ECHOED_REQUIREMENT,
+        );
+        assert_eq!(kept.len(), 1, "a short heading-length title is not an echo");
+    }
+
+    #[test]
+    fn an_echo_is_dropped_even_when_every_other_field_looks_valid() {
+        // The failure mode this guards: the model fabricated plausible steps and
+        // an `evidenced` claim, so `validate_and_clean` and
+        // `enforce_traceability` both pass it, and only the title betrayed it.
+        let mut echoed = valid_draft(
+            "Only one Offer step is displayed when multiple Offers are selected",
+        );
+        echoed.steps = vec![DraftStep {
+            action: "Select Offer A then Offer B".to_string(),
+            expected_result: "Exactly one Offer step row is rendered".to_string(),
+        }];
+        echoed.source_reference =
+            Some("Only one Offer step is displayed when multiple Offers are selected".to_string());
+
+        let cleaned = validate_and_clean(vec![echoed]);
+        assert_eq!(cleaned.len(), 1, "structural validation accepts it...");
+        let traced = enforce_traceability(cleaned, ECHOED_REQUIREMENT);
+        assert_eq!(traced.len(), 1, "...and traceability accepts it too...");
+        let kept = reject_echoed_titles(traced, ECHOED_REQUIREMENT);
+        assert!(kept.is_empty(), "...so only the echo guard catches it");
+    }
 
     fn valid_draft(title: &str) -> GeneratedTestCaseDraft {
         GeneratedTestCaseDraft {
