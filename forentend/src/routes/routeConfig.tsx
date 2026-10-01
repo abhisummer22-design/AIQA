@@ -110,9 +110,12 @@ export interface RouteDef {
    *  (FE-11 — rebuilt onto the real Findings/FailureCluster backend),
    *  `CustomTestingPage` (Phase 3 — real `custom_testing.rs` backend),
    *  `APITestingPage` (Phase 4 — real `api_testing.rs` backend; both moved
-   *  out of `unsupported-not-implemented` below), and
+   *  out of `unsupported-not-implemented` below),
    *  `PerformanceTestingPage` (Phase 6 — real `performance_testing.rs`
-   *  backend; had no route/page/backend at all before this phase).
+   *  backend; had no route/page/backend at all before this phase), and
+   *  `AIQAOrchestratorPage` / `TestCaseValidatorPage` / `RBACTestingPage`
+   *  / `MobileTestingPage` (all four re-verified and moved out of
+   *  `unsupported-not-implemented` — see each one's own comment below).
    *
    *  `unsupported-not-implemented` (introduced FE-11, brief §26): a page
    *  whose previous Google-Studio-generated content was fully fabricated
@@ -122,9 +125,22 @@ export interface RouteDef {
    *  migrated to real data, because there is no real capability to migrate
    *  it onto. Distinct from `google-studio-not-final` (still-fake content
    *  that *could* eventually become real) — this bucket has no real
-   *  backend counterpart to build toward. Currently `orchestrator`,
-   *  `validator`, `rbac`, `mobile-testing`, and `feature-map` — see each
-   *  page's own module doc comment for the specific backend gap. */
+   *  backend counterpart to build toward.
+   *
+   *  **Re-verified against the real route table, 1 October 2026**: this
+   *  bucket originally listed five pages — `orchestrator`, `validator`,
+   *  `rbac`, `mobile-testing` and `feature-map`. Four of those five were
+   *  wrong: a backend route *does* exist for each, and was simply missed
+   *  when the bucket was written. They have been moved to
+   *  `new-follows-approved-language` above, each with its own comment
+   *  below naming the real route or module that backs it. **`feature-map`
+   *  is the only page still genuinely in this bucket**, and its reason is
+   *  specific and unchanged: there is no service-topology entity, no
+   *  dependency-graph model and no call-flow-tracing endpoint anywhere in
+   *  the backend, and `FeatureMapFlowPage.tsx` (64 lines, zero `aiqaApi`
+   *  calls) says so in its own module doc comment. A page named "Feature
+   *  Map" is not evidence such a capability exists. It is in practice
+   *  gated on Context Ingestion, which does not exist yet either. */
   designStatus:
     | 'product-owner-approved'
     | 'google-studio-not-final'
@@ -203,8 +219,14 @@ export const routeDefs: RouteDef[] = [
     // FE-11: the 'PLAN' badge was removed — it described the previous
     // fabricated orchestration-planning capability, which no longer exists
     // on this page (see AIQAOrchestratorPage.tsx's own doc comment).
+    // Re-verified 1 October 2026: this route is NOT unimplemented. The real
+    // coordination surface is mounted — `GET /api/v1/orchestrator/state`
+    // (api.rs) plus `GET /api/v1/ai/status` — and AIQAOrchestratorPage.tsx
+    // documents and reads real content. `unsupported-not-implemented` was
+    // wrong for this route; built following the Dashboard/Test Generator
+    // visual language, same bucket as Audit/Evidence/ExecutionHub/Reports.
     Component: AIQAOrchestratorPage,
-    designStatus: 'unsupported-not-implemented',
+    designStatus: 'new-follows-approved-language',
     protectedRoute: true,
   },
   {
@@ -214,8 +236,12 @@ export const routeDefs: RouteDef[] = [
     icon: CheckCheck,
     // FE-11: the 'GATE' badge was removed — see AIQAOrchestratorPage's
     // note above; same reasoning, TestCaseValidatorPage.tsx.
+    // Re-verified 1 October 2026: this route is NOT unimplemented. The real
+    // per-case validation routes are mounted —
+    // `POST .../test-cases/:id/validate`, `/approve` and `/reject` — which is
+    // what this page drives.
     Component: TestCaseValidatorPage,
-    designStatus: 'unsupported-not-implemented',
+    designStatus: 'new-follows-approved-language',
     protectedRoute: true,
   },
   {
@@ -239,8 +265,12 @@ export const routeDefs: RouteDef[] = [
     path: '/rbac',
     label: 'RBAC Testing',
     icon: ShieldCheck,
+    // Re-verified 1 October 2026: this route is NOT unimplemented. The real
+    // identity and key-provisioning routes are mounted —
+    // `GET /api/v1/auth/whoami`, `GET`/`POST /admin/api-keys` and
+    // `DELETE /admin/api-keys/:id` — which is what this page drives.
     Component: RBACTestingPage,
-    designStatus: 'unsupported-not-implemented',
+    designStatus: 'new-follows-approved-language',
     protectedRoute: true,
   },
   {
@@ -289,11 +319,10 @@ export const routeDefs: RouteDef[] = [
     label: 'Performance Testing',
     icon: Gauge,
     // Phase 6: was entirely absent from this file (no page, no route, no
-    // backend at all — unlike rbac/mobile-testing/feature-map below, which
-    // at least have an `unsupported-not-implemented` placeholder). Now real
-    // (`performance_testing.rs`, `POST/GET .../performance-testing/*`),
-    // built following the Dashboard/Test Generator visual language, same
-    // bucket as CustomTestingPage/APITestingPage/AuditPage/EvidencePage.
+    // backend at all). Now real (`performance_testing.rs`,
+    // `POST/GET .../performance-testing/*`), built following the Dashboard/Test
+    // Generator visual language, same bucket as
+    // CustomTestingPage/APITestingPage/AuditPage/EvidencePage.
     Component: PerformanceTestingPage,
     designStatus: 'new-follows-approved-language',
     protectedRoute: true,
@@ -303,8 +332,13 @@ export const routeDefs: RouteDef[] = [
     path: '/mobile-testing',
     label: 'Mobile Testing',
     icon: Smartphone,
+    // Re-verified 1 October 2026: this route is NOT unimplemented. `mobile.rs`
+    // (859 lines, 13 tests) is a real backend module and its routes are
+    // mounted — `GET /api/v1/mobile/fleet`, `POST .../mobile/emulators/boot`,
+    // `POST .../mobile/simulators/boot`. MobileTestingPage.tsx (533 lines)
+    // really calls `aiqaApi.mobile.*` and has a 471-line test file.
     Component: MobileTestingPage,
-    designStatus: 'unsupported-not-implemented',
+    designStatus: 'new-follows-approved-language',
     protectedRoute: true,
   },
   {

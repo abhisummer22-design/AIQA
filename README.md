@@ -12,21 +12,21 @@ Unlike conventional test-generation tools that generate brittle test scripts in 
 - **Authoritative Central Orchestration**: All scheduling, execution dispatch, policy enforcement, evidence collection, and state transitions are managed deterministically by the Rust orchestrator.
 - **Closed Action AST Invariant**: AI agents and self-healing algorithms operate exclusively on structured, immutable Action Abstract Syntax Trees (`execution_plan::Action`). Arbitrary code execution, source file mutations, and unmonitored shell executions are architecturally impossible.
 - **Human-in-the-Loop Governance**: Healing proposals, production runs, and gated executors enforce policy gates requiring human operator review and approval prior to execution.
-- **Multi-Tenant & Multi-Project Isolation**: Every query, execution run, telemetry record, and agent interaction is strictly scoped by project and tenant identifiers.
+- **Multi-Project Isolation**: Every query, execution run, telemetry record, and agent interaction is strictly scoped by project identifiers. `auth.rs` carries a single scope field, `project_id: Option<String>`; there is no separate tenant axis anywhere in the schema.
 - **Empirical Closed-Loop Intelligence**: Execution telemetry is normalized in real-time, clustered using cryptographic SHA-256 fingerprinting with dynamic token masking, and integrated into a dynamic Quality Graph that recalibrates planning agents and healing confidence.
 
 ---
 
 ## 2. Key Capabilities
 
-* **Grounded AI Test Generation**: Extracts actual text from product specifications (`.docx`, `.txt`, `.md`, `.json`, `.yaml`) and OpenAPI schemas, generating grounded, requirement-traceable test cases across 17+ domain modules.
+* **Grounded AI Test Generation**: Extracts actual text from product specifications (`.docx`, `.pdf`, `.txt`, `.md`, `.json`, `.yaml`) and OpenAPI schemas, generating grounded, requirement-traceable test cases across 14 built-in generation skills.
 * **Deterministic DAG Scheduler**: Asynchronous dependency-graph execution engine implementing Kahn's topological cycle detection, concurrency budgeting, and timeout enforcement.
 * **OS-Level Process Sandboxing**: Windows Job Object process-tree containment ensuring child process isolation and 100% clean termination of runaway test runners.
 * **Multi-Executor Architecture**: Pluggable registry supporting browser automation (`Playwright`), API collection execution (`Newman`), mobile testing (`Maestro`), Python unit/contract testing (`Pytest`), and OpenAPI property-based fuzzing (`Schemathesis`), alongside high-performance in-process HTTP test execution (`CompiledApiExecutor`).
 * **Safe Diagnostic Probing**: In-process diagnostic tools (`schema_inspector`, `dom_prober`, `requirement_lookup`, `security`) allowing multi-turn specialized agents to reason without mutating target applications or executing live suites.
 * **Governed Self-Healing**: Deterministic failure diagnosis, AST diff calculation, risk classification, approval gating, and strictly bounded single-attempt verification loops.
 * **Adaptive QA Intelligence**: Automatic failure clustering, statistical flakiness tracking with state-flip scoring, healing strategy reliability benchmarking, and directional quality trend analysis.
-* **Full Observability & Auditability**: Prometheus exposition endpoint (`/metrics`), live WebSocket event streams (`/events`), structured tamper-evident audit logs, and PDF / Excel compliance report generation.
+* **Full Observability & Auditability**: Prometheus exposition endpoint (`/metrics`), live WebSocket event streams (`/events`), structured append-only audit logs, and PDF / Excel compliance report generation.
 
 ---
 
@@ -126,9 +126,9 @@ Every call the router makes to a provider is counted when it ends: the ones that
 ## 5. Test Generation Workflow
 
 ```
-Specification Doc (.docx / .txt / .md / .json / .yaml)
+Specification Doc (.docx / .pdf / .txt / .md / .json / .yaml)
                        ↓
-       POST /documents/extract-text (docx paragraph & run parser)
+       POST /documents/extract-text (docx paragraph & run parser; pdf-extract for text-based PDFs)
                        ↓
        Diagnostic Schema Probing (schema_inspector)
                        ↓
@@ -145,7 +145,9 @@ Specification Doc (.docx / .txt / .md / .json / .yaml)
 
 1. **Document Text Extraction (`doc_extract.rs`)**:
    - Parses `.docx` files natively by reading `word/document.xml` within the Zip archive, extracting structured paragraph text while ignoring XML table formatting attributes.
+   - Reads text-based `.pdf` files for real, page by page, with `pdf-extract` (`Cargo.toml`, `pdf-extract = "0.7"`). A malformed PDF can make that parser panic, so the read is wrapped in `catch_unwind` and a panic is reported the same way an unreadable file is, rather than taking the request down. A scanned or image-only PDF has no text layer and is refused with its own specific message — *"this PDF has no extractable text content — it may be a scan (an image of a page); scanned PDFs are not read, export it with selectable text or save it as .docx."*
    - Reads `.txt`, `.md`, `.json`, and `.yaml` specifications directly.
+   - Legacy `.doc` (pre-2007 binary Word) remains the one genuinely unsupported format, refused with a specific "save it as .docx and re-upload" message rather than guessed at.
    - Enforces safe text extraction ceilings (capped at 20,000 characters per document) with explicit truncation notices.
 2. **Deterministic Pre-Validation**: Validates target endpoints against SSRF policies and verifies schema parameters before sending prompts to the LLM.
 3. **Draft Separation Invariant**: AI generation produces non-persisted drafts. An operator must review and explicitly commit cases through `POST /api/v1/projects/:project_id/test-cases`.
@@ -289,7 +291,7 @@ The AIQA self-healing subsystem (`services/orchestrator/src/governed_healing.rs`
 
 ### Core Invariants of Self-Healing
 1. **Closed Action AST**: Modifications are restricted strictly to browser and API actions (`Navigate`, `Click`, `Fill`, `AssertVisible`, `Request`). Arbitrary code, shell scripting, or source file modifications are structurally rejected.
-2. **Immutable Security Boundaries**: Proposals cannot alter target URLs, test environments, executor types, credentials, or tenant boundaries.
+2. **Immutable Security Boundaries**: Proposals cannot alter target URLs, test environments, executor types, credentials, or project scope boundaries.
 3. **Hard Bounded Single Attempt**: Exactly **one** healing attempt is permitted per failed task. Recursive healing cascades and runaway loops are rejected by database unique constraints.
 4. **Human Operator Sign-Off**: Proposals involving high risk, confidence below `0.80`, gated executors (`maestro`), or production environments remain in `PENDING_APPROVAL` until approved via `POST .../approve`.
 5. **Quality Feedback Integration**: Verification outcomes update strategy confidence via Bayesian smoothing and inject fragile selector warnings directly into the `TestPlanningAgent`.
@@ -361,10 +363,10 @@ aiqa_healing_strategy_successes_total{strategy="SelectorSynonymReplacement"} 12
    - **`Admin`**: Full platform authority, API key provisioning, policy configuration, audit log inspection.
    - **`Operator`**: Project creation, test authoring, test execution, healing proposal approval/rejection.
    - **`Viewer`**: Strictly read-only access to dashboards, test cases, execution telemetry, and reports.
-2. **Tenant & Project Isolation**: All data queries, task definitions, and state transitions enforce mandatory `project_id` and tenant scoping. Cross-project data leaks are structurally prevented at the database layer.
+2. **Project Scoping**: All data queries, task definitions, and state transitions enforce mandatory `project_id` scoping. `auth.rs` carries exactly one scope field, `project_id: Option<String>` (`NULL` = an unscoped `Admin` key that can reach every project), and no `tenant` column exists in any of the 26 SQLite migrations. Cross-project data leaks are structurally prevented at the database layer.
 3. **SSRF Boundary Enforcement**: Target URLs and outgoing webhook destinations reject RFC1918 private subnets (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), localhost (`127.0.0.1`), link-local, and cloud metadata endpoints (`169.254.169.254`).
-4. **Credential & Secret Redaction**: Tokens, bearer headers, and API keys matching `aiqa_*`, `bearer *`, or `token=*` are automatically masked (`••••••••`) before persistence and UI rendering.
-5. **Tamper-Evident Audit Logging**: Administrative and operator actions (approvals, rejections, API key creation, run dispatches) are permanently recorded in the `audit_logs` store.
+4. **Credential & Secret Redaction**: `adaptive_intelligence.rs::sanitize_telemetry_text` masks three things in telemetry text with the literal `[REDACTED]`: a `Bearer <token>` value; a key/value pair whose key is `authorization`, `cookie`, `set-cookie`, `api[_-]?key`, `password`, `secret`, `token`, `access_token` or `client_secret`; and a cookie pair named `session`, `sessionid`, `auth_token`, `token` or `jwt`. This is telemetry-log sanitisation, not a universal pre-persistence or pre-rendering gate — it is not applied to every table, and there is no `aiqa_*` prefix pattern in it (a stored key's hash is never logged, but the mask function does not itself look for the `aiqa_` key format).
+5. **Append-Only Audit Logging**: Administrative and operator actions (approvals, rejections, API key creation, run dispatches) are recorded in the `audit_log` table (migration `0003`). It is append-only by convention — the only write path is a plain `INSERT` — and carries **no tamper-evidence**: there is no hash column, no `prev_hash`/`entry_hash` chain and no signature, so a row edited or deleted in place is indistinguishable from an original one. Do not treat this store as tamper-evident.
 
 ---
 
@@ -406,7 +408,7 @@ AIQA/
 │       ├── components/             # Reusable UI components
 │       │   ├── intelligence/       # Adaptive QA Intelligence & Observability views
 │       │   ├── layout/             # Navigation, TopBar, and Sidebar
-│       │   └── pages/              # 17+ Full-featured application pages
+│       │   └── pages/              # 22 full-featured application page components
 │       ├── context/                # ProjectContext, AuthContext
 │       ├── routes/                 # App routing configuration
 │       ├── services/               # Typed API client layer (aiqaApi.ts)
@@ -414,11 +416,11 @@ AIQA/
 ├── infra/                          # Infrastructure & persistence data
 │   ├── data/                       # SQLite database & local evidence storage
 │   ├── docker-compose.yml          # Optional containerized persistence services
-│   └── migrations/                 # Postgres migrations
+│   └── migrations/                 # Postgres target schema — a forward design, NOT applied by the running service (see store.rs)
 └── services/
     └── orchestrator/               # Core Rust Orchestrator Service
         ├── Cargo.toml
-        ├── migrations/             # 16 SQLite database migrations
+        ├── migrations/             # 26 SQLite database migrations (the only set sqlx applies)
         └── src/
             ├── main.rs             # Service bootstrap, configuration & runner registration
             ├── lib.rs              # Library exports & test module bindings
@@ -431,7 +433,7 @@ AIQA/
             ├── app_source.rs       # SSRF-guarded application connectivity verification
             ├── auth.rs             # API key authentication & RBAC middleware
             ├── ci.rs               # For a CI job: wait for a run to end (`?wait=`) & say how it came out in headers
-            ├── doc_extract.rs      # Native document text extractor (.docx, .txt, .md)
+            ├── doc_extract.rs      # Native document text extractor (.docx, .pdf, .txt, .md)
             ├── domain.rs           # Core domain entities, RunPlan & TaskDef
             ├── engine.rs           # Run lifecycle manager & unclean run recovery
             ├── evidence.rs         # Artifact persistence & evidence store
@@ -456,6 +458,8 @@ AIQA/
             ├── store.rs            # SQLite persistence layer with connection pooling
             └── tools/              # Safe diagnostic tools (schema, dom, requirement, security)
 ```
+
+> **The two `migrations/` directories are not duplicates of each other.** `services/orchestrator/migrations/` (0001–0026, SQLite dialect) is the only set the service applies, via `sqlx::migrate!("./migrations")` in `store.rs`. `infra/migrations/` (001–020) is the Postgres target schema — it uses Postgres-only constructs such as `CREATE TYPE ... AS ENUM`, `SERIAL`, `JSONB` and `TIMESTAMPTZ`, it is never applied by the running service, and `infra/docker-compose.yml`'s own header describes it as "not yet wired into the orchestrator". The two sets have diverged; the Postgres one is a forward design, not a parallel copy.
 
 ---
 
@@ -644,7 +648,7 @@ The codebase enforces strict test verification across both backend and frontend 
 ```cmd
 cd services\orchestrator
 
-# Run full test suite (698 tests passing)
+# Run full test suite (1,611 tests passing, 2 ignored)
 cargo test -p aiqa-orchestrator
 
 # Verify compilation and lint integrity
@@ -659,7 +663,7 @@ cargo fmt --check
 ```cmd
 cd forentend
 
-# Run full test suite (565 tests passing across 33 test files)
+# Run full test suite (~1,485 tests across 70 test files)
 npm test
 
 # Type-check TypeScript sources
@@ -679,7 +683,7 @@ All protected endpoints require an `Authorization: Bearer <api_key>` header unle
 | Method | Endpoint | Description | Auth Required |
 | :--- | :--- | :--- | :--- |
 | `GET` | `/health` | Healthcheck returning `"ok"` | No |
-| `GET` | `/metrics` | Prometheus metrics exposition format | No |
+| `GET` | `/metrics` | Prometheus metrics exposition format | Yes |
 | `GET` | `/api/v1/auth/whoami` | Retrieve caller identity, role, and permissions | Yes |
 | `POST` | `/admin/api-keys` | Provision a new API key (`Admin` role) | Yes |
 | `GET` | `/admin/api-keys` | List active API keys (`Admin` role) | Yes |
@@ -779,13 +783,122 @@ All protected endpoints require an `Authorization: Bearer <api_key>` header unle
 | `WS` | `/api/v1/logs/ws?key=<key>` | System-wide orchestrator log stream | Query Param `?key=` |
 | `WS` | `/api/v1/projects/:project_id/logs/ws?key=<key>`| Project-scoped log stream | Query Param `?key=` |
 
+### Additional registered endpoints
+
+The tables above are **not** a complete API reference: they documented only **76 of the 144** method-endpoints the service registers. The remaining endpoints are listed below, grouped by what they act on. A handful of entries that duplicate rows already given above (`POST .../healing/proposals`, `GET .../test-cases`, `GET .../executions`, `GET .../openapi/runs`, `GET .../regression/schedules`, `GET .../regression/schedules/:id/runs`) are not repeated here.
+
+Every one of these is registered inside `protected_routes()` and requires `Authorization: Bearer <api_key>`, so the **Auth Required** column is `Yes` throughout unless a row says otherwise.
+
+#### AI Providers, Settings & Skills (state-mutating)
+| Method | Endpoint | Description | Auth Required |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/v1/ai/providers/custom` | Register a custom OpenAI-compatible AI provider | Yes |
+| `DELETE` | `/api/v1/ai/providers/custom/:id` | Remove a custom AI provider | Yes |
+| `POST` | `/api/v1/ai/refresh` | Force provider rediscovery / health re-check | Yes |
+| `PUT` | `/api/v1/ai/settings` | Update AI routing & per-task overrides | Yes |
+| `PUT` | `/api/v1/execution-settings` | Update execution display settings | Yes |
+| `POST` | `/api/v1/skills` | Create a persisted custom generation skill | Yes |
+| `DELETE` | `/api/v1/skills/:id` | Remove a custom generation skill | Yes |
+| `POST` | `/api/v1/skills/resolve` | Resolve the real instruction each named skill expands to | Yes |
+
+#### AI Providers, Settings & Skills (read-only)
+| Method | Endpoint | Description | Auth Required |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/v1/ai/status` | Live discovery snapshot, active providers and settings | Yes |
+| `GET` | `/api/v1/ai/settings` | Current AI routing settings and per-task overrides | Yes |
+| `GET` | `/api/v1/execution-settings` | Current execution display settings | Yes |
+| `GET` | `/api/v1/skills/files` | `SKILL.md` files found on disk, re-read on every call | Yes |
+
+#### Mobile Fleet (state-mutating)
+| Method | Endpoint | Description | Auth Required |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/v1/mobile/emulators/boot` | Boot an Android emulator (AVD) on the real fleet | Yes |
+| `POST` | `/api/v1/mobile/simulators/boot` | Boot an iOS simulator on the real fleet | Yes |
+
+#### Mobile Fleet (read-only)
+| Method | Endpoint | Description | Auth Required |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/v1/mobile/fleet` | Real adb devices, AVDs and Maestro CLI availability | Yes |
+
+#### Project Analysis, Crawl & Generation Tools (state-mutating)
+| Method | Endpoint | Description | Auth Required |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/v1/projects/:project_id/api-testing/execute` | Execute an API collection / request test | Yes |
+| `POST` | `/api/v1/projects/:project_id/crawl` | Crawl the running application as one or more roles | Yes |
+| `POST` | `/api/v1/projects/:project_id/custom-testing/generate` | Generate cases from a custom testing configuration | Yes |
+| `POST` | `/api/v1/projects/:project_id/documents/extract-text` | Extract real text from an uploaded `.docx` / `.pdf` / text document | Yes |
+| `POST` | `/api/v1/projects/:project_id/verify-application-source` | SSRF-guarded connectivity check against the application | Yes |
+| `POST` | `/api/v1/projects/:project_id/planning/test-plan` | Build a test plan against schema files or inline schema | Yes |
+| `POST` | `/api/v1/projects/:project_id/test-cases/generate-ai/plan` | Show the AI generation plan (calls, tokens, time, cost) without generating | Yes |
+
+#### Test Cases, Plans & Suites (state-mutating)
+| Method | Endpoint | Description | Auth Required |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/v1/projects/:project_id/test-cases/:id/compile` | Compile a browser case against a named crawl (grounding) | Yes |
+| `POST` | `/api/v1/projects/:project_id/test-cases/:id/reject` | Reject a case at the review gate | Yes |
+| `PUT` | `/api/v1/projects/:project_id/test-cases/:id/suite` | Move a case to another suite | Yes |
+| `PATCH` | `/api/v1/projects/:project_id/test-cases/:id` | Update a case's definition or metadata | Yes |
+| `DELETE` | `/api/v1/projects/:project_id/test-cases/:id` | Delete a test case | Yes |
+| `PATCH` | `/api/v1/projects/:project_id/test-plans/:id` | Update a test plan | Yes |
+| `DELETE` | `/api/v1/projects/:project_id/test-plans/:id` | Delete a test plan | Yes |
+| `PATCH` | `/api/v1/projects/:project_id/test-suites/:id` | Update a test suite | Yes |
+| `DELETE` | `/api/v1/projects/:project_id/test-suites/:id` | Delete a test suite | Yes |
+| `PUT` | `/api/v1/projects/:project_id/test-suites/:id/plan` | Attach or detach a suite's parent plan | Yes |
+
+#### Findings (state-mutating)
+| Method | Endpoint | Description | Auth Required |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/v1/projects/:project_id/findings/:finding_id/analysis` | On-demand failure analysis for a finding | Yes |
+| `POST` | `/api/v1/projects/:project_id/findings/:finding_id/ai-hypothesis` | On-demand AI root-cause hypothesis for a finding | Yes |
+| `POST` | `/api/v1/projects/:project_id/findings/:finding_id/review` | Record a human review decision on a finding (see §19 on promotion) | Yes |
+
+#### Performance Testing (state-mutating & read-only)
+| Method | Endpoint | Description | Auth Required |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/v1/projects/:project_id/performance-testing/start` | Start a Load / Stress / Spike / Volume run | Yes |
+| `POST` | `/api/v1/projects/:project_id/performance-testing/:run_id/cancel` | Cancel an active performance run | Yes |
+| `GET` | `/api/v1/projects/:project_id/performance-testing` | List the project's performance runs | Yes |
+| `GET` | `/api/v1/projects/:project_id/performance-testing/:run_id/status` | A performance run's live status | Yes |
+
+#### Intelligence Retention — read `dry-run` and DESTRUCTIVE `prune`
+| Method | Endpoint | Description | Auth Required |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/v1/projects/:project_id/intelligence/retention/dry-run` | Report what a retention prune *would* delete. Safe to call; changes nothing | Yes |
+| `POST` | `/api/v1/projects/:project_id/intelligence/retention/prune` | **DESTRUCTIVE — permanently deletes telemetry and intelligence records past the retention window. There is no undo, no soft-delete and no recycle bin. `Admin` role only; do not call it from a UI action that is easy to click by accident** | Yes (`Admin` only) |
+
+#### Execution, Evidence & Audit Read Models
+| Method | Endpoint | Description | Auth Required |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/v1/projects/:project_id/executions/:run_id/events` | A run's recorded events, from an event id | Yes |
+| `GET` | `/api/v1/projects/:project_id/executions/:run_id/evidence` | The evidence list for one run | Yes |
+| `GET` | `/api/v1/projects/:project_id/evidence/:evidence_id` | One evidence record's metadata | Yes |
+| `GET` | `/api/v1/projects/:project_id/evidence/:evidence_id/content` | One evidence record's file content | Yes |
+| `GET` | `/api/v1/projects/:project_id/audit` | The project's audit log (`audit_log`) | Yes |
+| `GET` | `/api/v1/projects/:project_id/requirements` | Requirements read out of the uploaded documents | Yes |
+| `GET` | `/api/v1/projects/:project_id/requirement-impact` | Which requirements a change would affect | Yes |
+| `GET` | `/api/v1/projects/:project_id/crawl/:run_id/result` | A finished crawl's recorded result | Yes |
+
+#### Pipeline, Orchestrator, Logs & Risk
+| Method | Endpoint | Description | Auth Required |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/v1/projects/:project_id/pipeline` | Stage-by-stage pipeline state, with honestly-reported unavailable stages | Yes |
+| `GET` | `/api/v1/orchestrator/state` | Executor capability routing, policy gates and the live DAG | Yes |
+| `GET` | `/api/v1/logs` | System-wide orchestrator log records | Yes |
+| `GET` | `/api/v1/projects/:project_id/logs` | Project-scoped log records | Yes |
+| `GET` | `/api/v1/projects/:project_id/intelligence/risk` | Risk classification for the project's tests | Yes |
+| `GET` | `/api/v1/projects/:project_id/intelligence/tests` | The tests the intelligence layer knows about | Yes |
+| `GET` | `/api/v1/projects/:project_id/intelligence/investigations` | Recorded failure investigations | Yes |
+| `GET` | `/api/v1/projects/:project_id/intelligence/failures/:cluster_id/investigation` | One cluster's investigation | Yes |
+| `GET` | `/api/v1/projects/:project_id/intelligence/failures/:cluster_id/environments` | One cluster's environment breakdown | Yes |
+| `GET` | `/api/v1/projects/:project_id/intelligence/failures/:cluster_id/timeline` | One cluster's failure timeline | Yes |
+
 ---
 
 ## 19. Reports & Evidence
 
 * **Evidence Persistence (`evidence.rs`)**: Subprocess outputs, execution logs, screenshots, and error dumps are saved to disk under `infra/data/evidence/`.
 * **Traceable Findings (`findings`)**: When a test fails or introduces an unexpected outcome, the engine generates an auditable `finding` record.
-* **Finding Promotion**: Operators can review findings, invoke on-demand AI hypothesis analysis (`/findings/:id/ai-hypothesis`), and promote verified bugs to tracking tickets.
+* **Finding Promotion**: Operators can review findings and invoke on-demand AI hypothesis analysis (`/findings/:id/ai-hypothesis`). Promotion happens **inside AIQA's own store**: `bug_drafts` records `promoted_at` / `promoted_by` and a `review_state`, changed through `POST /api/v1/projects/:project_id/findings/:finding_id/review`. There is **no external tracking-system integration** — no Jira, Linear or GitHub Issues connector, no external ticket id column and no ticket route. A promoted bug is marked in AIQA; it is not filed anywhere else.
 * **Export Formats**: The Reports view (`ReportsPage.tsx`) provides one-click export to **PDF** (via jsPDF and AutoTable) and **Excel / CSV** (via XLSX) for audit compliance.
 
 ---
@@ -801,9 +914,9 @@ All protected endpoints require an `Authorization: Bearer <api_key>` header unle
 | **Phase 4** | Governed Execution Integration & Plan Validator | **VERIFIED** | 33 policy & sandbox tests |
 | **Phase 5** | Governed Self-Healing Service & Closed Action AST Diffing | **VERIFIED** | 42 governance tests |
 | **Phase 6** | Adaptive QA Intelligence & Production Observability Backend | **VERIFIED** | 40 intelligence tests |
-| **Phase 7** | QA Intelligence Dashboard & Observability UI (`forentend`) | **VERIFIED** | 19 UI tests (565 total frontend) |
-| **Total Backend** | Complete Rust Orchestrator Suite (`services/orchestrator`) | **VERIFIED** | **698 passed, 0 failed, 2 ignored** |
-| **Total Frontend**| Complete Web Control Plane Suite (`forentend`) | **VERIFIED** | **565 passed across 33 test files** |
+| **Phase 7** | QA Intelligence Dashboard & Observability UI (`forentend`) | **VERIFIED** | 19 UI tests (~1,485 total frontend) |
+| **Total Backend** | Complete Rust Orchestrator Suite (`services/orchestrator`) | **VERIFIED** | **1,611 passed, 0 failed, 2 ignored** |
+| **Total Frontend**| Complete Web Control Plane Suite (`forentend`) | **VERIFIED** | **~1,485 tests across 70 test files** |
 
 ---
 
