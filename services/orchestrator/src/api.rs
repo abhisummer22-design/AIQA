@@ -5180,6 +5180,12 @@ pub(crate) async fn create_run_core(
     );
     state.runs.write().await.insert(run_id, record.clone());
 
+    // Bound the in-memory run map. It otherwise only ever grew: four insert
+    // sites, no eviction anywhere, for the life of the process. Cheap, and it
+    // never touches a run that is still live or awaiting approval. See
+    // `AppState::prune_finished_runs`.
+    state.prune_finished_runs().await;
+
     audit(
         state,
         ctx,
@@ -5281,6 +5287,10 @@ async fn rehydrate_run_record(
         Some(state.log_bus.clone()),
     );
     state.runs.write().await.insert(run_id, record.clone());
+    // Same bounding as `create_run_core` above -- this is the second of the two
+    // `AppState::runs` insert sites, and the rehydration path is exactly where an
+    // old record would otherwise be resurrected and then kept forever.
+    state.prune_finished_runs().await;
     Ok(Some(record))
 }
 

@@ -172,6 +172,14 @@ impl std::fmt::Display for AgentExecutionError {
 
 impl std::error::Error for AgentExecutionError {}
 
+/// How many idempotency entries one dispatcher keeps before evicting.
+///
+/// Sized well above what any realistic caller uses in one deployment's recent
+/// window, and small enough that the map's footprint is predictable rather than
+/// a function of all keys ever seen. See the eviction note where entries are
+/// inserted.
+pub const IDEMPOTENCY_CACHE_MAX: usize = 1024;
+
 /// Authoritative dispatcher for Agent execution plans.
 #[derive(Clone)]
 pub struct AgentExecutionDispatcher {
@@ -181,7 +189,10 @@ pub struct AgentExecutionDispatcher {
     pub evidence: Arc<LocalEvidenceStore>,
     pub budget: AgentExecutionBudget,
     pub runs: Arc<RwLock<HashMap<Uuid, Arc<RunRecord>>>>,
-    idempotency_cache: Arc<RwLock<HashMap<String, (Uuid, AgentExecutionResponse)>>>,
+    /// `pub(crate)` rather than private: the eviction test needs to fill this to
+    /// over its cap and then observe the bound, and there is no accessor for the
+    /// size. Still crate-internal, so nothing outside the crate can reach it.
+    pub(crate) idempotency_cache: Arc<RwLock<HashMap<String, (Uuid, AgentExecutionResponse)>>>,
 }
 
 impl AgentExecutionDispatcher {
@@ -422,13 +433,69 @@ impl AgentExecutionDispatcher {
         // 10. Cache for Idempotency
         if let Some(ref ikey) = request.idempotency_key {
             let cache_key = format!("{project_id}:{ikey}");
-            self.idempotency_cache
-                .write()
-                .await
-                .insert(cache_key, (run_id, response.clone()));
+            self.cache_idempotent(cache_key, run_id, response.clone())
+                .await;
         }
 
         Ok(response)
+    }
+
+    /// Records an idempotency entry and keeps the map within `IDEMPOTENCY_CACHE_MAX`.
+    ///
+    /// A cache with no eviction is a memory leak with a very long fuse: one entry
+    /// per distinct key ever used, held for the life of the process. Evicting
+    /// past the cap preserves what the cache exists for -- a repeat of a
+    /// *recent* key returns its first response instead of dispatching the plan
+    /// twice -- while making the footprint predictable.
+    ///
+    /// `HashMap` has no ordering, so "oldest" is not meaningful here and none is
+    /// claimed: the cap simply drops arbitrary entries, which is correct for this
+    /// purpose because an evicted key behaves exactly as if it had never been
+    /// cached.
+    pub(crate) async fn cache_idempotent(
+        &self,
+        cache_key: String,
+        run_id: Uuid,
+        response: AgentExecutionResponse,
+    ) {
+        let mut cache = self.idempotency_cache.write().await;
+        cache.insert(cache_key, (run_id, response));
+        if cache.len() > IDEMPOTENCY_CACHE_MAX {
+            let excess = cache.len() - IDEMPOTENCY_CACHE_MAX;
+            let doomed: Vec<String> = cache.keys().take(excess).cloned().collect();
+            for key in doomed {
+                cache.remove(&key);
+            }
+        }
+    }
+
+    /// Evicts finished runs from this dispatcher's in-memory map.
+    ///
+    /// Returns how many were removed. Same reasoning, and the same source of
+    /// truth, as `AppState::prune_finished_runs`: the store holds the durable
+    /// record of every run, so a terminal in-memory record is a cache entry and
+    /// dropping it loses nothing that cannot be read back.
+    ///
+    /// Non-terminal runs are never removed -- a run still executing, or one held
+    /// in `PENDING_APPROVAL` waiting for a human, must stay addressable, or
+    /// `approve`/`cancel` would have nothing to act on.
+    pub async fn prune_finished_runs(&self) -> usize {
+        let mut runs = self.runs.write().await;
+        let doomed: Vec<Uuid> = runs
+            .iter()
+            .filter_map(|(id, record)| {
+                // `try_read` rather than `read`: a run being finalised right now
+                // holds the write lock, and this sweep must never block or fail
+                // a dispatch. A record we cannot inspect is left alone and picked
+                // up by the next sweep.
+                let terminal = record.state.try_read().map(|s| s.is_terminal()).unwrap_or(false);
+                terminal.then_some(*id)
+            })
+            .collect();
+        for id in &doomed {
+            runs.remove(id);
+        }
+        doomed.len()
     }
 
     /// Releases a run held in `PENDING_APPROVAL` after human authorization.

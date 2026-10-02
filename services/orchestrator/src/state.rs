@@ -108,4 +108,70 @@ impl AppState {
             .or_insert_with(|| Arc::new(ProjectStream::default()))
             .clone()
     }
+
+    /// Evicts terminal runs from the in-memory map, returning how many went.
+    ///
+    /// This map had no eviction at all: four `.insert()` sites, zero
+    /// `.remove()`/`retain()`, so it grew for the lifetime of the process. Each
+    /// entry is an `Arc<RunRecord>` holding the whole `RunPlan`, a
+    /// `RunEngine`, and a `Vec<RunEvent>` that is itself never trimmed -- so this
+    /// is not a fixed cost per run, it grows with the work each run did. Two
+    /// polled endpoints (`get_orchestrator_state`, `get_neural_pipeline`) then
+    /// iterate the whole map, so their cost grew with total lifetime runs rather
+    /// than with concurrent ones.
+    ///
+    /// Evicting is safe by the map's own documented contract above: the store is
+    /// the source of truth for anything not in memory, so a terminal in-memory
+    /// record is a cache entry and nothing durable is lost. This map is the
+    /// *live* view; the project-scoped execution endpoints are where a finished
+    /// run's history lives.
+    ///
+    /// Two rules keep this from changing observable behaviour:
+    ///
+    /// - **Non-terminal runs are never removed.** A run still executing, or one
+    ///   held in `PENDING_APPROVAL` awaiting a human, must stay addressable or
+    ///   `approve`/`reject`/`cancel` would have nothing to act on.
+    /// - **A finished run stays visible for `FINISHED_RUN_RETENTION_SECS`.**
+    ///   Dropping a record the instant it reaches a terminal state would make a
+    ///   run vanish from the two in-process views before the UI showing it has
+    ///   had a chance to poll again. The grace window is what prevents that.
+    ///
+    /// `try_read` is used rather than `read` so a sweep can never block or fail
+    /// a dispatch that is mid-finalisation; a record that cannot be inspected is
+    /// left for the next sweep.
+    pub async fn prune_finished_runs(&self) -> usize {
+        let cutoff =
+            chrono::Utc::now() - chrono::Duration::seconds(FINISHED_RUN_RETENTION_SECS);
+        let mut runs = self.runs.write().await;
+        let doomed: Vec<RunId> = runs
+            .iter()
+            .filter_map(|(id, record)| {
+                let Ok(state) = record.state.try_read() else {
+                    return None;
+                };
+                if !state.is_terminal() {
+                    return None;
+                }
+                // Inside the grace window, or with no recorded finish time, keep
+                // it -- a record that never recorded a finish cannot be shown to
+                // have aged out.
+                let finished = record.finished_at.try_read().ok().and_then(|g| *g);
+                match finished {
+                    Some(at) if at > cutoff => None,
+                    Some(_) => Some(*id),
+                    None => None,
+                }
+            })
+            .collect();
+        for id in &doomed {
+            runs.remove(id);
+        }
+        doomed.len()
+    }
 }
+
+/// How long a finished run stays in `AppState::runs` after reaching a terminal
+/// state, in seconds. Long enough that the orchestrator and neural-pipeline views
+/// keep showing a run that has just completed across an ordinary poll interval,
+/// short enough that the map's footprint is bounded in practice.
+pub const FINISHED_RUN_RETENTION_SECS: i64 = 600;
