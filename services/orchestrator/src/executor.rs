@@ -1099,8 +1099,35 @@ impl CompiledApiExecutor {
         let timeout = Duration::from_secs(timeout_secs);
         let client = reqwest::Client::builder()
             .timeout(timeout)
+            // Redirects are never followed.
+            //
+            // `validate_target_url` is called exactly once, at plan-validation
+            // time (`plan_validator.rs`), and neither this executor nor
+            // `run_validated_plan` re-checks anything. Without an explicit
+            // policy, reqwest follows up to ten hops, so a URL that passed the
+            // guard could answer `302` and send this client to an address that
+            // was never validated -- a link-local metadata endpoint being the
+            // obvious one. Proven before this line existed, hermetically, by
+            // `a_redirect_to_an_unvalidated_address_is_not_followed_when_running_a_compiled_plan`.
+            //
+            // The same reasoning `app_source.rs` and `tools/security.rs` already
+            // document and already apply; this path had neither.
+            //
+            // A legitimate API that redirects (an http->https upgrade, a vanity
+            // host, a trailing-slash canonicalisation) is now reported as the
+            // redirect it is instead of being followed silently -- the plan can
+            // name the final URL directly, which is then validated as usual.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+            // The fallback must keep the policy: `Client::new()` would otherwise
+            // silently reintroduce the default "follow" behaviour this line
+            // exists to remove, and only on the build-failure path.
+            .unwrap_or_else(|_| {
+                reqwest::Client::builder()
+                    .redirect(reqwest::redirect::Policy::none())
+                    .build()
+                    .unwrap_or_default()
+            });
         Self { timeout, client }
     }
 }
@@ -2285,6 +2312,88 @@ AIQA_HEALING_EVENT {"event":"heal","actionIndex":1,"actionKind":"CLICK","primary
             provider: None,
             model: None,
         }
+    }
+
+    /// Phase E — the redirect gap, demonstrated hermetically.
+    ///
+    /// `validate_target_url` runs ONCE, at plan-validation time
+    /// (`plan_validator.rs`). Neither `execute_plan_once` nor
+    /// `run_validated_plan` calls it -- both were checked, zero occurrences. So
+    /// the request that actually goes out is issued by a `reqwest::Client`
+    /// built in `CompiledApiExecutor::from_env` with no `.redirect(...)` call,
+    /// which means reqwest's default: follow up to ten hops. A URL that passed
+    /// the SSRF guard can therefore answer `302` and send the client somewhere
+    /// that was never checked -- a link-local metadata endpoint being the
+    /// obvious one.
+    ///
+    /// `app_source.rs` and `tools/security.rs` both already say this out loud and
+    /// both already set `redirect::Policy::none()`. This path does neither.
+    ///
+    /// The test needs no external network and proves the follow rather than
+    /// asserting it: server A answers `302 Location: <server B>`, and server B
+    /// records whether it was ever contacted. B standing on a loopback port
+    /// stands in for any address the guard would have refused to be sent to --
+    /// what is under test is *whether a redirect is followed at all*, not which
+    /// address it lands on.
+    #[tokio::test]
+    #[cfg(windows)]
+    async fn a_redirect_to_an_unvalidated_address_is_not_followed_when_running_a_compiled_plan() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        // Server B: the "internal" destination. Records being contacted.
+        let followed = Arc::new(AtomicBool::new(false));
+        let hit = followed.clone();
+        let listener_b = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr_b = listener_b.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener_b.accept().await {
+                hit.store(true, Ordering::SeqCst);
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = vec![0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                let body = "INTERNAL-SECRET";
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(resp.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+
+        // Server A: the validated target, which redirects to B.
+        let listener_a = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr_a = listener_a.local_addr().unwrap();
+        let location = format!("http://{addr_b}/latest/meta-data/");
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener_a.accept().await {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = vec![0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                let resp = format!(
+                    "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                let _ = socket.write_all(resp.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+
+        // The REAL production client -- not a locally built one. Asserting against a
+        // client this test constructs would only prove that the policy I chose
+        // here is the policy I chose here; the thing that has to hold is that
+        // the client every compiled HTTP test case actually goes out through
+        // does not follow redirects.
+        let executor = crate::executor::CompiledApiExecutor::from_env();
+        let plan = get_plan(&format!("http://{addr_a}/start"), &[], vec![]);
+        let _ = execute_plan_once(&executor.client, &plan).await;
+
+        assert!(
+            !followed.load(Ordering::SeqCst),
+            "a 302 from a validated target was followed to {addr_b}, an address the \
+             SSRF guard never checked; execute_plan_once issues the request with no \
+             redirect policy, so the guard's one-time check at plan validation is \
+             the only thing standing between a caller and an internal address"
+        );
     }
 
     #[tokio::test]

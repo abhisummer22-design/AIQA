@@ -4407,6 +4407,13 @@ async fn start_performance_test_scoped(
     let timeout = crate::executor::CompiledApiExecutor::from_env().timeout;
     let client = reqwest::Client::builder()
         .timeout(timeout)
+        // Same reason as `CompiledApiExecutor::from_env`: the target here is a
+        // caller-supplied URL and this workload issues many requests to it, so
+        // without this a `302` would be followed to an address no SSRF check
+        // ever saw. Deliberately kept in step with that executor -- the two
+        // clients serve different call sites but reach the same kind of
+        // caller-controlled destination.
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(to_500)?;
     let plan = Arc::new(plan);
