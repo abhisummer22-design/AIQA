@@ -3,7 +3,7 @@
 - **Date**: 2026-09-13
 - **Status**: Phase 5 Complete & Verified
 - **Baseline**: Branch `Demo`, Phases 1, 2, 3 & 4 Complete
-- **Test Suite Verification**: **658 passed, 0 failed, 2 ignored** (521 baseline + 20 Phase 1 + 32 Phase 2 + 10 Phase 3 + 33 Phase 4 + 42 Phase 5)
+- **Test Suite Verification**: **658 passed, 0 failed, 2 ignored** (521 baseline + 20 Phase 1 + 32 Phase 2 + 10 Phase 3 + 33 Phase 4 + 42 Phase 5) — this is the count *as of Phase 5* and is kept as the phase's record. The suite has since grown to **1,631 passing, 2 ignored**; the verbatim output blocks further down this document are likewise Phase 5's, not the current state.
 - **Compiler Health**: `cargo check --tests -p aiqa-orchestrator` passed with 0 errors
 - **Code Format**: **NOT clean.** `cargo fmt --check` reports formatting differences in ~19 files of the orchestrator crate (verified this session). An earlier revision of this document claimed it "passed cleanly across entire workspace"; that claim was wrong. Files touched since are formatted, but the crate as a whole does not currently pass.
 
@@ -15,7 +15,7 @@ Phase 5 establishes the authoritative, governed self-healing and closed-loop qua
 
 Building directly upon the foundation of Phase 4 (Governed Execution Dispatcher, Plan Validator, Policy Gates), Phase 5 transforms diagnostic failure observations into structured, auditable, safe healing proposals without violating platform boundaries:
 - **No OpenJarvis, No Python Runtime**: Strictly zero OpenJarvis dependencies, zero Python runtimes, zero PyO3, and zero shell/subprocess wrappers.
-- **Closed Action AST Invariant**: Self-healing operates strictly on the immutable, structured [`execution_plan::Action`](file:///G:/AIQA/services/orchestrator/src/execution_plan.rs) AST. Arbitrary code, shell execution, source file mutations, or runtime dynamic evaluation are strictly prohibited and structurally impossible.
+- **Closed Action AST Invariant**: Self-healing operates strictly on the immutable, structured [`execution_plan::Action`](../services/orchestrator/src/execution_plan.rs) AST. Arbitrary code, shell execution, source file mutations, or runtime dynamic evaluation are strictly prohibited and structurally impossible.
 - **Strictly Bounded Healing Loop**: Exactly one healing attempt is permitted per failed task/run. Infinite retry cascades and autonomous rerun loops are physically bounded and enforced in the persistence layer.
 - **Bounded Verification**: Verification executes only the single proposed fix through the authoritative dispatcher, evaluating outcomes into explicit states: `VERIFIED`, `NOT_VERIFIED`, or `REGRESSION_INTRODUCED`.
 - **Closed-Loop Quality Graph Calibration**: Verified outcomes dynamically update strategy win-rates, selector reliability scores, and test case flakiness indices in the Quality Graph without human guesswork.
@@ -27,50 +27,50 @@ Building directly upon the foundation of Phase 4 (Governed Execution Dispatcher,
 
 | Architectural Rule | Implementation Mechanism | Verification Status |
 | :--- | :--- | :--- |
-| **Zero OpenJarvis Dependency** | Verified no OpenJarvis crate, import, or network call in workspace. | **VERIFIED** ([`test_40`](file:///G:/AIQA/services/orchestrator/src/governed_healing_tests.rs#L880)) |
-| **Zero Python Runtime** | Verified zero PyO3 bindings, zero python/pip subprocess calls, zero python scripts. | **VERIFIED** ([`test_41`](file:///G:/AIQA/services/orchestrator/src/governed_healing_tests.rs#L886)) |
-| **Single Authoritative Engine** | All healing executions dispatch exclusively through existing [`AgentExecutionDispatcher`](file:///G:/AIQA/services/orchestrator/src/agent_execution.rs) and [`engine::spawn_run`](file:///G:/AIQA/services/orchestrator/src/engine.rs). Zero duplicate engines. | **VERIFIED** ([`test_37`](file:///G:/AIQA/services/orchestrator/src/governed_healing_tests.rs#L855)) |
-| **Closed Action AST** | Modifications strictly restricted to browser/API actions (`Navigate`, `Click`, `Fill`, `Assert*`, `Request`). No file write, no eval, no exec. | **VERIFIED** ([`test_06`](file:///G:/AIQA/services/orchestrator/src/governed_healing_tests.rs#L282), [`test_35`](file:///G:/AIQA/services/orchestrator/src/governed_healing_tests.rs#L838)) |
-| **Immutable Security Boundaries** | Target URLs, environments, executors, credentials, and tenant IDs cannot be altered by a healing proposal. | **VERIFIED** ([`test_12`](file:///G:/AIQA/services/orchestrator/src/governed_healing_tests.rs#L376)-[`test_15`](file:///G:/AIQA/services/orchestrator/src/governed_healing_tests.rs#L407)) |
-| **Bounded Healing Attempt (Max 1)** | Database and service reject any second healing proposal for the same failed task. Max retries set to 0. | **VERIFIED** ([`test_25`](file:///G:/AIQA/services/orchestrator/src/governed_healing_tests.rs#L571), [`test_26`](file:///G:/AIQA/services/orchestrator/src/governed_healing_tests.rs#L588)) |
-| **Deterministic Human Approval Gate** | High-risk changes, low confidence (<0.80), gated executors (`maestro`), and all production runs require human operator/admin approval. | **VERIFIED** ([`test_16`](file:///G:/AIQA/services/orchestrator/src/governed_healing_tests.rs#L427)-[`test_21`](file:///G:/AIQA/services/orchestrator/src/governed_healing_tests.rs#L508)) |
-| **Privacy & Zero CoT Leaks** | Only concise, operational rationale is retained; raw chain-of-thought and private prompts are rejected and never stored. | **VERIFIED** ([`test_02`](file:///G:/AIQA/services/orchestrator/src/governed_healing_tests.rs#L209)) |
+| **Zero OpenJarvis Dependency** | Verified no OpenJarvis crate, import, or network call in workspace. | **VERIFIED** ([`test_40`](../services/orchestrator/src/governed_healing_tests.rs#L880)) |
+| **Zero Python Runtime** | Verified zero PyO3 bindings, zero python/pip subprocess calls, zero python scripts. | **VERIFIED** ([`test_41`](../services/orchestrator/src/governed_healing_tests.rs#L886)) |
+| **Single Authoritative Engine** | All healing executions dispatch exclusively through existing [`AgentExecutionDispatcher`](../services/orchestrator/src/agent_execution.rs) and [`engine::spawn_run`](../services/orchestrator/src/engine.rs). Zero duplicate engines. | **VERIFIED** ([`test_37`](../services/orchestrator/src/governed_healing_tests.rs#L855)) |
+| **Closed Action AST** | Modifications strictly restricted to browser/API actions (`Navigate`, `Click`, `Fill`, `Assert*`, `Request`). No file write, no eval, no exec. | **VERIFIED** ([`test_06`](../services/orchestrator/src/governed_healing_tests.rs#L282), [`test_35`](../services/orchestrator/src/governed_healing_tests.rs#L838)) |
+| **Immutable Security Boundaries** | Target URLs, environments, executors, credentials, and tenant IDs cannot be altered by a healing proposal. | **VERIFIED** ([`test_12`](../services/orchestrator/src/governed_healing_tests.rs#L376)-[`test_15`](../services/orchestrator/src/governed_healing_tests.rs#L407)) |
+| **Bounded Healing Attempt (Max 1)** | Database and service reject any second healing proposal for the same failed task. Max retries set to 0. | **VERIFIED** ([`test_25`](../services/orchestrator/src/governed_healing_tests.rs#L571), [`test_26`](../services/orchestrator/src/governed_healing_tests.rs#L588)) |
+| **Deterministic Human Approval Gate** | High-risk changes, low confidence (<0.80), gated executors (`maestro`), and all production runs require human operator/admin approval. | **VERIFIED** ([`test_16`](../services/orchestrator/src/governed_healing_tests.rs#L427)-[`test_21`](../services/orchestrator/src/governed_healing_tests.rs#L508)) |
+| **Privacy & Zero CoT Leaks** | Only concise, operational rationale is retained; raw chain-of-thought and private prompts are rejected and never stored. | **VERIFIED** ([`test_02`](../services/orchestrator/src/governed_healing_tests.rs#L209)) |
 
 ---
 
 ## 3. Files Created & Modified
 
 ### Files Created
-1. [`services/orchestrator/migrations/0015_governed_healing.sql`](file:///G:/AIQA/services/orchestrator/migrations/0015_governed_healing.sql)
+1. [`services/orchestrator/migrations/0015_governed_healing.sql`](../services/orchestrator/migrations/0015_governed_healing.sql)
    - Schema migration introducing `healing_proposals` and `healing_strategy_metrics` tables with indexes and unique constraints.
-2. [`services/orchestrator/src/governed_healing.rs`](file:///G:/AIQA/services/orchestrator/src/governed_healing.rs) (1,750 lines)
+2. [`services/orchestrator/src/governed_healing.rs`](../services/orchestrator/src/governed_healing.rs) (1,750 lines)
    - Core domain models: `HealingRiskLevel`, `HealingState`, `VerificationOutcome`, `ActionChangeKind`, `ActionDiff`, `AstDiff`.
    - Security verification: `verify_immutable_security_boundaries`, `validate_safe_selector`, `validate_safe_input_value`.
    - Core service: `GovernedHealingService` managing proposal creation, diff calculation, approval/rejection, verification dispatch, and quality feedback.
-3. [`services/orchestrator/src/governed_healing_tests.rs`](file:///G:/AIQA/services/orchestrator/src/governed_healing_tests.rs) (940 lines)
+3. [`services/orchestrator/src/governed_healing_tests.rs`](../services/orchestrator/src/governed_healing_tests.rs) (940 lines)
    - 42 mandatory security, governance, authorization, verification, and regression tests.
-4. [`docs/AIQA_PHASE_5_GOVERNED_SELF_HEALING_REPORT.md`](file:///G:/AIQA/docs/AIQA_PHASE_5_GOVERNED_SELF_HEALING_REPORT.md)
+4. [`docs/AIQA_PHASE_5_GOVERNED_SELF_HEALING_REPORT.md`](../docs/AIQA_PHASE_5_GOVERNED_SELF_HEALING_REPORT.md)
    - Comprehensive architectural and verification report.
-5. [`Report/AIQA_PHASE_5_GOVERNED_SELF_HEALING_REPORT.md`](file:///G:/AIQA/Report/AIQA_PHASE_5_GOVERNED_SELF_HEALING_REPORT.md)
+5. [`Report/AIQA_PHASE_5_GOVERNED_SELF_HEALING_REPORT.md`](../Report/AIQA_PHASE_5_GOVERNED_SELF_HEALING_REPORT.md)
    - Canonical project report copy.
 
 ### Files Modified
-1. [`services/orchestrator/src/store.rs`](file:///G:/AIQA/services/orchestrator/src/store.rs)
+1. [`services/orchestrator/src/store.rs`](../services/orchestrator/src/store.rs)
    - Added `HealingProposalRow`, `HealingStrategyMetricsRow`.
    - Implemented persistence methods: `insert_healing_proposal`, `get_healing_proposal`, `get_healing_proposal_by_idempotency`, `list_healing_proposals`, `count_healing_attempts`, `update_healing_proposal_state`, `record_healing_verification_metric`, `get_healing_strategy_metrics`, `list_healing_strategy_metrics`.
-2. [`services/orchestrator/src/execution_plan.rs`](file:///G:/AIQA/services/orchestrator/src/execution_plan.rs)
+2. [`services/orchestrator/src/execution_plan.rs`](../services/orchestrator/src/execution_plan.rs)
    - Derived `PartialEq` on `Action` to support deterministic AST diffing.
-3. [`services/orchestrator/src/agents/planning.rs`](file:///G:/AIQA/services/orchestrator/src/agents/planning.rs)
+3. [`services/orchestrator/src/agents/planning.rs`](../services/orchestrator/src/agents/planning.rs)
    - Added `healing_feedback` field to `PlanningRequest`.
    - Added `healing_insights` field to `TestPlanOutput`.
    - Updated `synthesize_test_plan` to inject historical healing metrics directly into plan assumptions and insights.
-4. [`services/orchestrator/src/agents/tests.rs`](file:///G:/AIQA/services/orchestrator/src/agents/tests.rs)
+4. [`services/orchestrator/src/agents/tests.rs`](../services/orchestrator/src/agents/tests.rs)
    - Updated test literals to support `healing_feedback`.
-5. [`services/orchestrator/src/agent_execution_tests.rs`](file:///G:/AIQA/services/orchestrator/src/agent_execution_tests.rs)
+5. [`services/orchestrator/src/agent_execution_tests.rs`](../services/orchestrator/src/agent_execution_tests.rs)
    - Updated test literals to support `healing_insights`.
-6. [`services/orchestrator/src/api.rs`](file:///G:/AIQA/services/orchestrator/src/api.rs)
+6. [`services/orchestrator/src/api.rs`](../services/orchestrator/src/api.rs)
    - Mounted 8 governed healing REST endpoints under `/api/v1/projects/:project_id/healing/*`.
-7. [`services/orchestrator/src/lib.rs`](file:///G:/AIQA/services/orchestrator/src/lib.rs)
+7. [`services/orchestrator/src/lib.rs`](../services/orchestrator/src/lib.rs)
    - Registered `pub mod governed_healing;` and `#[cfg(test)] mod governed_healing_tests;`.
 
 ---
@@ -115,7 +115,7 @@ flowchart TD
 
 ## 5. Closed Action AST & Diff Engine
 
-The diff engine ([`AstDiff`](file:///G:/AIQA/services/orchestrator/src/governed_healing.rs#L208)) computes fine-grained, structured diffs between original actions and proposed actions:
+The diff engine ([`AstDiff`](../services/orchestrator/src/governed_healing.rs#L208)) computes fine-grained, structured diffs between original actions and proposed actions:
 - **Change Kinds**:
   - `Unchanged`: Action identical in type and content.
   - `Modified`: Action mutated (e.g. selector updated from `#btn-old` to `[data-testid="submit-btn"]`).
@@ -131,7 +131,7 @@ The diff engine ([`AstDiff`](file:///G:/AIQA/services/orchestrator/src/governed_
 
 ## 6. Proposal Lifecycle & State Machine
 
-Every proposal transitions through a deterministic finite state machine ([`HealingState`](file:///G:/AIQA/services/orchestrator/src/governed_healing.rs#L68)):
+Every proposal transitions through a deterministic finite state machine ([`HealingState`](../services/orchestrator/src/governed_healing.rs#L68)):
 
 ```text
     PROPOSED
@@ -181,7 +181,7 @@ To guarantee platform stability and prevent cascading execution costs:
 
 ## 9. Verification Loop & Regression Detection
 
-Verification executes only the single proposed task through the existing [`AgentExecutionDispatcher`](file:///G:/AIQA/services/orchestrator/src/agent_execution.rs):
+Verification executes only the single proposed task through the existing [`AgentExecutionDispatcher`](../services/orchestrator/src/agent_execution.rs):
 - **`VerificationOutcome::Verified`**: The healed task passes completely, timing is within budget, and assertion requirements are met.
 - **`VerificationOutcome::NotVerified`**: The healed task fails with the same or an unresolved error.
 - **`VerificationOutcome::RegressionIntroduced`**: The healed task causes unexpected side effects, timeouts, or secondary assertion failures.
@@ -218,7 +218,7 @@ All healing endpoints enforce strict tenant boundaries:
 
 ## 13. SSRF & Command Injection Prevention
 
-- **SSRF Guard**: Target URLs and navigation endpoints in proposals are verified via [`crate::executor::validate_target_url`](file:///G:/AIQA/services/orchestrator/src/executor.rs#L268), blocking cloud metadata (`169.254.169.254`), localhost/loopback, RFC1918 private subnets, and non-HTTP schemes.
+- **SSRF Guard**: Target URLs and navigation endpoints in proposals are verified via [`crate::executor::validate_target_url`](../services/orchestrator/src/executor.rs#L268), blocking cloud metadata (`169.254.169.254`), localhost/loopback, RFC1918 private subnets, and non-HTTP schemes.
 - **Selector Injection Guard**: Selectors containing `<script>`, `javascript:`, `eval(`, or DOM event handlers (`onclick=`, `onload=`) are rejected.
 - **Input Command Injection Guard**: Value inputs containing shell sequences (`; rm`, `rm -rf`, `cat /etc/passwd`, `| nc`, `&&`, `powershell`, `/bin/sh`) are rejected with `GovernedHealingError::SecurityViolation`.
 
@@ -293,7 +293,7 @@ All 8 endpoints mounted under `/api/v1/projects/:project_id/healing/*`:
 
 ## 16. Comprehensive Test Suite Verification (42 Security & Governance Tests)
 
-All 42 tests in [`services/orchestrator/src/governed_healing_tests.rs`](file:///G:/AIQA/services/orchestrator/src/governed_healing_tests.rs) pass cleanly:
+All 42 tests in [`services/orchestrator/src/governed_healing_tests.rs`](../services/orchestrator/src/governed_healing_tests.rs) pass cleanly:
 
 | # | Test Name | Invariant Verified | Status |
 | :- | :--- | :--- | :--- |

@@ -154,10 +154,10 @@ Prometheus exposition at `GET /metrics`:
 
 ## 18. Testing & Verification Results
 
-* **Total Unit/Integration Tests**: 698 passing tests
+* **Total Unit/Integration Tests**: 1,631 passing, 0 failed, 2 ignored (orchestrator crate, as of this session — the figure was previously stated here as 698, which was true when written and is now long out of date; the suite has grown substantially since)
 * **Phase 6 Mandatory Tests**: 40/40 passed (`adaptive_intelligence_tests.rs`)
 * **Cargo Check**: Clean, 0 errors
-* **Cargo Format**: Clean (`cargo fmt --check` passed)
+* **Cargo Format**: **NOT clean.** `cargo fmt --check` reports formatting differences in ~19 files of this crate (verified this session). An earlier revision of this document claimed it was clean; that claim was wrong. Every file touched since is formatted, but the crate as a whole does not currently pass `fmt --check`.
 
 ## 19. Performance Considerations
 

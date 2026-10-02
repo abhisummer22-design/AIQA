@@ -30,18 +30,18 @@ AIQA is a **production-quality AI test case generation and execution platform** 
 
 | ID | Severity | Finding |
 |---|---|---|
-| F-001 | **P0** | Firebase API key committed in [firebase-applet-config.json](file:///G:/AIQA/apps/web/firebase-applet-config.json) |
+| F-001 | **P0** | Firebase API key committed in [firebase-applet-config.json](../apps/web/firebase-applet-config.json) |
 | F-002 | **P1** | No CI/CD pipeline (no `.github/workflows` directory) |
-| F-003 | **P1** | [apps/web/](file:///G:/AIQA/apps/web) is a complete duplicate/legacy frontend (43 files) |
-| F-004 | **P2** | [AIQAContext.tsx](file:///G:/AIQA/forentend/src/context/AIQAContext.tsx) contains fabricated `activeGenerationSession` data (lines 154-212) |
-| F-005 | **P2** | [AIQAContext.tsx](file:///G:/AIQA/forentend/src/context/AIQAContext.tsx) has dead `activities` state (line 223) — zero consumers |
+| F-003 | **P1** | [apps/web/](../apps/web) is a complete duplicate/legacy frontend (43 files) |
+| F-004 | **P2** | [AIQAContext.tsx](../forentend/src/context/AIQAContext.tsx) contains fabricated `activeGenerationSession` data (lines 154-212) |
+| F-005 | **P2** | [AIQAContext.tsx](../forentend/src/context/AIQAContext.tsx) has dead `activities` state (line 223) — zero consumers |
 | F-006 | **P2** | 5 deferred pages (Orchestrator, Validator, RBAC, Mobile, FeatureMap) — no backend |
 | F-007 | **P2** | All 3 Python executor adapters are `NotImplementedError` stubs |
 | F-008 | **P2** | Legacy flat routes (`/runs`, `/admin/*`, `/intelligence/*`) exist alongside new scoped routes |
 | F-009 | **P2** | `localStorage` used for API key storage — XSS risk |
 | F-010 | **P2** | MCP architecture entirely unbuilt — placeholder only |
-| F-011 | **P3** | [docker-compose.yml](file:///G:/AIQA/infra/docker-compose.yml) defines Postgres/Redis/MinIO but orchestrator uses SQLite |
-| F-012 | **P3** | `express` dependency in frontend [package.json](file:///G:/AIQA/forentend/package.json) — questionable |
+| F-011 | **P3** | [docker-compose.yml](../infra/docker-compose.yml) defines Postgres/Redis/MinIO but orchestrator uses SQLite |
+| F-012 | **P3** | `express` dependency in frontend [package.json](../forentend/package.json) — questionable |
 | F-013 | **P3** | Skills are prompt-injection configuration labels, not independent execution engines |
 
 ---
@@ -89,7 +89,7 @@ AIQA is a **production-quality AI test case generation and execution platform** 
 main.tsx → App.tsx → BrowserRouter → AppShell → Providers → Routes
 ```
 
-### Provider Hierarchy ([App.tsx](file:///G:/AIQA/forentend/src/App.tsx) lines 35-62)
+### Provider Hierarchy ([App.tsx](../forentend/src/App.tsx) lines 35-62)
 
 | Order | Provider | Purpose | Status |
 |---|---|---|---|
@@ -99,7 +99,7 @@ main.tsx → App.tsx → BrowserRouter → AppShell → Providers → Routes
 | 4 | `AIQAProvider` | UI state, settings, generation session | ⚠️ PARTIAL — has dead state |
 
 > [!WARNING]
-> **F-004**: [AIQAContext.tsx](file:///G:/AIQA/forentend/src/context/AIQAContext.tsx) lines 154-212 preload 3 fabricated test cases (`tc-gen-1`, `tc-gen-2`, `tc-gen-3`) into `activeGenerationSession`. Only consumed by `TestCaseGeneratorPage`.
+> **F-004**: [AIQAContext.tsx](../forentend/src/context/AIQAContext.tsx) lines 154-212 preload 3 fabricated test cases (`tc-gen-1`, `tc-gen-2`, `tc-gen-3`) into `activeGenerationSession`. Only consumed by `TestCaseGeneratorPage`.
 >
 > **F-005**: `activities` state at line 223 has **zero consumers** — completely dead.
 
@@ -218,33 +218,33 @@ main.tsx → App.tsx → BrowserRouter → AppShell → Providers → Routes
 
 | File | Size | Classification |
 |---|---|---|
-| [api.rs](file:///G:/AIQA/services/orchestrator/src/api.rs) | 144KB | **ACTIVE** — Main Axum router |
-| [store.rs](file:///G:/AIQA/services/orchestrator/src/store.rs) | 87KB | **ACTIVE** — SQLite persistence |
-| [executor.rs](file:///G:/AIQA/services/orchestrator/src/executor.rs) | 69KB | **ACTIVE** — Subprocess execution (Job Objects) |
-| [performance_testing.rs](file:///G:/AIQA/services/orchestrator/src/performance_testing.rs) | 62KB | **ACTIVE** — Real load testing |
-| [ai_router.rs](file:///G:/AIQA/services/orchestrator/src/ai_router.rs) | 54KB | **ACTIVE** — Dynamic AI provider routing |
-| [engine.rs](file:///G:/AIQA/services/orchestrator/src/engine.rs) | 38KB | **ACTIVE** — Execution lifecycle |
-| [intelligence.rs](file:///G:/AIQA/services/orchestrator/src/intelligence.rs) | 35KB | **ACTIVE** — AI failure analysis |
-| [ai_generation.rs](file:///G:/AIQA/services/orchestrator/src/ai_generation.rs) | 33KB | **ACTIVE** — AI test generation |
-| [execution_plan.rs](file:///G:/AIQA/services/orchestrator/src/execution_plan.rs) | 32KB | **ACTIVE** — Plan compilation |
-| [custom_testing.rs](file:///G:/AIQA/services/orchestrator/src/custom_testing.rs) | 19KB | **ACTIVE** — Custom requirement analysis |
-| [domain.rs](file:///G:/AIQA/services/orchestrator/src/domain.rs) | 17KB | **ACTIVE** — Core types |
-| [app_source.rs](file:///G:/AIQA/services/orchestrator/src/app_source.rs) | 15KB | **ACTIVE** — App source verification |
-| [api_testing.rs](file:///G:/AIQA/services/orchestrator/src/api_testing.rs) | 15KB | **ACTIVE** — Ad-hoc API execution |
-| [scheduler.rs](file:///G:/AIQA/services/orchestrator/src/scheduler.rs) | 12KB | **ACTIVE** — Task scheduling |
-| [errors.rs](file:///G:/AIQA/services/orchestrator/src/errors.rs) | 8KB | **ACTIVE** — Error types |
-| [main.rs](file:///G:/AIQA/services/orchestrator/src/main.rs) | 6KB | **ACTIVE** — Server bootstrap |
-| [auth.rs](file:///G:/AIQA/services/orchestrator/src/auth.rs) | 6KB | **ACTIVE** — Bearer token auth |
-| [policy.rs](file:///G:/AIQA/services/orchestrator/src/policy.rs) | 5KB | **ACTIVE** — Approval policies |
-| [state.rs](file:///G:/AIQA/services/orchestrator/src/state.rs) | 3KB | **ACTIVE** — Shared state |
-| [evidence.rs](file:///G:/AIQA/services/orchestrator/src/evidence.rs) | 3KB | **ACTIVE** — Evidence storage |
-| [metrics.rs](file:///G:/AIQA/services/orchestrator/src/metrics.rs) | 2KB | **ACTIVE** — System metrics |
-| [webhook.rs](file:///G:/AIQA/services/orchestrator/src/webhook.rs) | 2KB | **ACTIVE** — Webhook dispatch |
-| [lib.rs](file:///G:/AIQA/services/orchestrator/src/lib.rs) | 539B | **ACTIVE** — Module declarations |
-| [api_tests.rs](file:///G:/AIQA/services/orchestrator/src/api_tests.rs) | 220KB | **TEST-ONLY** — 155 test functions |
-| [engine_tests.rs](file:///G:/AIQA/services/orchestrator/src/engine_tests.rs) | 65KB | **TEST-ONLY** |
-| [ws_tests.rs](file:///G:/AIQA/services/orchestrator/src/ws_tests.rs) | 18KB | **TEST-ONLY** |
-| [store_tests.rs](file:///G:/AIQA/services/orchestrator/src/store_tests.rs) | 16KB | **TEST-ONLY** |
+| [api.rs](../services/orchestrator/src/api.rs) | 144KB | **ACTIVE** — Main Axum router |
+| [store.rs](../services/orchestrator/src/store.rs) | 87KB | **ACTIVE** — SQLite persistence |
+| [executor.rs](../services/orchestrator/src/executor.rs) | 69KB | **ACTIVE** — Subprocess execution (Job Objects) |
+| [performance_testing.rs](../services/orchestrator/src/performance_testing.rs) | 62KB | **ACTIVE** — Real load testing |
+| [ai_router.rs](../services/orchestrator/src/ai_router.rs) | 54KB | **ACTIVE** — Dynamic AI provider routing |
+| [engine.rs](../services/orchestrator/src/engine.rs) | 38KB | **ACTIVE** — Execution lifecycle |
+| [intelligence.rs](../services/orchestrator/src/intelligence.rs) | 35KB | **ACTIVE** — AI failure analysis |
+| [ai_generation.rs](../services/orchestrator/src/ai_generation.rs) | 33KB | **ACTIVE** — AI test generation |
+| [execution_plan.rs](../services/orchestrator/src/execution_plan.rs) | 32KB | **ACTIVE** — Plan compilation |
+| [custom_testing.rs](../services/orchestrator/src/custom_testing.rs) | 19KB | **ACTIVE** — Custom requirement analysis |
+| [domain.rs](../services/orchestrator/src/domain.rs) | 17KB | **ACTIVE** — Core types |
+| [app_source.rs](../services/orchestrator/src/app_source.rs) | 15KB | **ACTIVE** — App source verification |
+| [api_testing.rs](../services/orchestrator/src/api_testing.rs) | 15KB | **ACTIVE** — Ad-hoc API execution |
+| [scheduler.rs](../services/orchestrator/src/scheduler.rs) | 12KB | **ACTIVE** — Task scheduling |
+| [errors.rs](../services/orchestrator/src/errors.rs) | 8KB | **ACTIVE** — Error types |
+| [main.rs](../services/orchestrator/src/main.rs) | 6KB | **ACTIVE** — Server bootstrap |
+| [auth.rs](../services/orchestrator/src/auth.rs) | 6KB | **ACTIVE** — Bearer token auth |
+| [policy.rs](../services/orchestrator/src/policy.rs) | 5KB | **ACTIVE** — Approval policies |
+| [state.rs](../services/orchestrator/src/state.rs) | 3KB | **ACTIVE** — Shared state |
+| [evidence.rs](../services/orchestrator/src/evidence.rs) | 3KB | **ACTIVE** — Evidence storage |
+| [metrics.rs](../services/orchestrator/src/metrics.rs) | 2KB | **ACTIVE** — System metrics |
+| [webhook.rs](../services/orchestrator/src/webhook.rs) | 2KB | **ACTIVE** — Webhook dispatch |
+| [lib.rs](../services/orchestrator/src/lib.rs) | 539B | **ACTIVE** — Module declarations |
+| [api_tests.rs](../services/orchestrator/src/api_tests.rs) | 220KB | **TEST-ONLY** — 155 test functions |
+| [engine_tests.rs](../services/orchestrator/src/engine_tests.rs) | 65KB | **TEST-ONLY** |
+| [ws_tests.rs](../services/orchestrator/src/ws_tests.rs) | 18KB | **TEST-ONLY** |
+| [store_tests.rs](../services/orchestrator/src/store_tests.rs) | 16KB | **TEST-ONLY** |
 
 ---
 
@@ -272,7 +272,7 @@ main.tsx → App.tsx → BrowserRouter → AppShell → Providers → Routes
 
 | Finding | Severity | Details |
 |---|---|---|
-| Firebase API key in repo | **P0** | [firebase-applet-config.json](file:///G:/AIQA/apps/web/firebase-applet-config.json) line 4 |
+| Firebase API key in repo | **P0** | [firebase-applet-config.json](../apps/web/firebase-applet-config.json) line 4 |
 | localStorage for API key | **P2** | `apiClient.ts` stores Bearer token in `localStorage` — XSS accessible |
 | CORS | ✅ Safe | `tower-http` CORS middleware, not permissive |
 | Command injection | ✅ Safe | `Command::new` uses vector args, no shell concatenation |
@@ -332,16 +332,16 @@ main.tsx → App.tsx → BrowserRouter → AppShell → Providers → Routes
 
 | File/Directory | Evidence | Safe to Delete |
 |---|---|---|
-| [apps/web/](file:///G:/AIQA/apps/web) (43 files) | Duplicate frontend. `start.bat` launches `forentend/`, not `apps/web/` | REQUIRES HUMAN REVIEW |
-| [infra/docker-compose.yml](file:///G:/AIQA/infra/docker-compose.yml) | Postgres/Redis/MinIO not used by orchestrator | REQUIRES HUMAN REVIEW |
-| [services/workers/adapters/*.py](file:///G:/AIQA/services/workers/adapters) | All 3 raise `NotImplementedError` | REQUIRES HUMAN REVIEW |
+| [apps/web/](../apps/web) (43 files) | Duplicate frontend. `start.bat` launches `forentend/`, not `apps/web/` | REQUIRES HUMAN REVIEW |
+| [infra/docker-compose.yml](../infra/docker-compose.yml) | Postgres/Redis/MinIO not used by orchestrator | REQUIRES HUMAN REVIEW |
+| [services/workers/adapters/*.py](../services/workers/adapters) | All 3 raise `NotImplementedError` | REQUIRES HUMAN REVIEW |
 
 ### Dead State
 
 | Item | Location | Evidence |
 |---|---|---|
-| `activities` state | [AIQAContext.tsx:223](file:///G:/AIQA/forentend/src/context/AIQAContext.tsx#L223) | Zero consumers in entire codebase |
-| `addActivity` function | [AIQAContext.tsx](file:///G:/AIQA/forentend/src/context/AIQAContext.tsx) | Only exported, never called |
+| `activities` state | [AIQAContext.tsx:223](../forentend/src/context/AIQAContext.tsx#L223) | Zero consumers in entire codebase |
+| `addActivity` function | [AIQAContext.tsx](../forentend/src/context/AIQAContext.tsx) | Only exported, never called |
 
 ### Dead/Legacy Routes
 
@@ -357,7 +357,7 @@ main.tsx → App.tsx → BrowserRouter → AppShell → Providers → Routes
 
 | Item | Location | Evidence |
 |---|---|---|
-| `activeGenerationSession` | [AIQAContext.tsx:154-212](file:///G:/AIQA/forentend/src/context/AIQAContext.tsx#L154-L212) | 3 fake test cases preloaded |
+| `activeGenerationSession` | [AIQAContext.tsx:154-212](../forentend/src/context/AIQAContext.tsx#L154-L212) | 3 fake test cases preloaded |
 
 ---
 
@@ -401,10 +401,10 @@ main.tsx → App.tsx → BrowserRouter → AppShell → Providers → Routes
 
 ### Phase A — Immediate (No code deletion)
 
-1. **REVOKE** Firebase API key in [firebase-applet-config.json](file:///G:/AIQA/apps/web/firebase-applet-config.json)
+1. **REVOKE** Firebase API key in [firebase-applet-config.json](../apps/web/firebase-applet-config.json)
 2. **SET UP** GitHub Actions CI/CD pipeline
-3. **REMOVE** fabricated `activeGenerationSession` from [AIQAContext.tsx](file:///G:/AIQA/forentend/src/context/AIQAContext.tsx)
-4. **REMOVE** dead `activities`/`addActivity` state from [AIQAContext.tsx](file:///G:/AIQA/forentend/src/context/AIQAContext.tsx)
+3. **REMOVE** fabricated `activeGenerationSession` from [AIQAContext.tsx](../forentend/src/context/AIQAContext.tsx)
+4. **REMOVE** dead `activities`/`addActivity` state from [AIQAContext.tsx](../forentend/src/context/AIQAContext.tsx)
 
 ### Phase B — Requires Human Review
 

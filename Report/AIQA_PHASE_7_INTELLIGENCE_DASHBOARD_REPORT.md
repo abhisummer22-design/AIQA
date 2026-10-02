@@ -78,7 +78,7 @@ Added typed, project-scoped endpoints under `aiqaApi.intelligence`:
 ## 3. Verification & Test Results
 
 ### A. Frontend Test Suite (`forentend`)
-* **565 passed across 33 test files** (`npm test`).
+* **1,501 passed across 71 test files** (`npm test`), as of this session. The figure previously stated here — 565 across 33 files — was accurate when written and is now stale.
 * **`QaIntelligenceDashboardPage.test.tsx` (19 passed, 0 failed)**:
   * Select project empty state verification.
   * Error state handling (401, 403, 500, offline).
@@ -95,9 +95,9 @@ Added typed, project-scoped endpoints under `aiqaApi.intelligence`:
   * Refresh button refetching.
 
 ### B. Backend Verification (`services/orchestrator`)
-* **698 tests passed**, 0 failed, 2 ignored (`cargo test`).
+* **1,631 tests passed**, 0 failed, 2 ignored (`cargo test`), as of this session. Previously stated here as 698; that was accurate when written and is now stale.
 * **`cargo check`**: Clean (0 errors).
-* **`cargo fmt --check`**: Clean (0 formatting discrepancies).
+* **`cargo fmt --check`**: **NOT clean** — it reports formatting differences in ~19 files of this crate (verified this session). An earlier revision of this document claimed 0 discrepancies; that claim was wrong. Files touched since are formatted, but the crate as a whole does not currently pass.
 
 ---
 

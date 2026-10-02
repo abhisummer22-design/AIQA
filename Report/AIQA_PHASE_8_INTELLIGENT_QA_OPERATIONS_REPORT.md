@@ -136,10 +136,11 @@ Exported via `services/orchestrator/src/metrics.rs` under `/metrics`:
   * `phase8_failure_investigation_and_environment_matrix_endpoints`: Verifies HTTP 200, schema correctness, and project scoping.
   * `phase8_retention_dry_run_and_prune_rbac`: Verifies RBAC 403 rejection without admin authorization, and 200 OK with admin authorization.
 * **`cargo check`**: Clean (0 errors).
-* **`cargo fmt --check`**: Clean (0 formatting discrepancies).
+* **`cargo fmt --check`**: **NOT clean** — it reports formatting differences in ~19 files of this crate (verified this session). An earlier revision of this document claimed 0 discrepancies; that claim was wrong.
+* **582 tests passed across 35 test files** was the frontend figure when written; the suite is now 1,501 across 71 files.
 
 ### B. Frontend Verification (`forentend`)
-* **582 tests passed across 35 test files** (`npm test -- --run`).
+* **1,501 tests passed across 71 test files** (`npm test -- --run`) as of this session; the figure previously stated here was 582 across 35 files.
 * **15 Dedicated Unit Tests**:
   * `FailureInvestigationWorkspaceModal.test.tsx` (8 tests):
     * Modal rendering, header badges, and hypothesis.

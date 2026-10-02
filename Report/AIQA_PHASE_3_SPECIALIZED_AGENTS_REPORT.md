@@ -12,8 +12,8 @@
 
 Phase 3 implements the first production-quality specialized QA agents on top of the Phase 1 `Agent` / `AgentTool` foundation and Phase 2 Safe Diagnostic Tools:
 
-1. **Test Planning Agent** ([`planning.rs`](file:///G:/AIQA/services/orchestrator/src/agents/planning.rs)): Inspects schemas and requirements through diagnostic tools to synthesize structured, prioritized test suites (P0–P3) and identify coverage gaps without executing test runners.
-2. **Self-Healing Agent** ([`healing.rs`](file:///G:/AIQA/services/orchestrator/src/agents/healing.rs)): Performs multi-turn diagnosis on test failure evidence, probing DOM snapshots to classify root causes (renamed selectors, role-gated visibility differentials, selector ambiguity, or assertion/timing mismatches) and recommending verified fixes with confidence scoring.
+1. **Test Planning Agent** ([`planning.rs`](../services/orchestrator/src/agents/planning.rs)): Inspects schemas and requirements through diagnostic tools to synthesize structured, prioritized test suites (P0–P3) and identify coverage gaps without executing test runners.
+2. **Self-Healing Agent** ([`healing.rs`](../services/orchestrator/src/agents/healing.rs)): Performs multi-turn diagnosis on test failure evidence, probing DOM snapshots to classify root causes (renamed selectors, role-gated visibility differentials, selector ambiguity, or assertion/timing mismatches) and recommending verified fixes with confidence scoring.
 
 ### Boundary & Safety Guarantees
 - **Zero OpenJarvis Code or Dependencies**: Strictly written in idiomatic, safe Rust with zero Python runtimes, PyO3, or LiteLLM dependencies.
@@ -27,27 +27,27 @@ Phase 3 implements the first production-quality specialized QA agents on top of 
 ## 2. Files Created & Modified
 
 ### Files Created
-1. [`services/orchestrator/src/agents/mod.rs`](file:///G:/AIQA/services/orchestrator/src/agents/mod.rs) (28 lines)
+1. [`services/orchestrator/src/agents/mod.rs`](../services/orchestrator/src/agents/mod.rs) (28 lines)
    - Specialized agents module definition and public exports.
-2. [`services/orchestrator/src/agents/planning.rs`](file:///G:/AIQA/services/orchestrator/src/agents/planning.rs) (486 lines)
+2. [`services/orchestrator/src/agents/planning.rs`](../services/orchestrator/src/agents/planning.rs) (486 lines)
    - `TestPlanningAgent` implementing `Agent`.
    - Multi-turn requirement lookup and OpenAPI schema inspection.
    - Risk-driven test suite prioritization (P0 Authentication, P1 Contract, P2 Validation, P3 Resiliency).
    - Coverage gap detection against orphan requirements in the Quality Graph.
-3. [`services/orchestrator/src/agents/healing.rs`](file:///G:/AIQA/services/orchestrator/src/agents/healing.rs) (506 lines)
+3. [`services/orchestrator/src/agents/healing.rs`](../services/orchestrator/src/agents/healing.rs) (506 lines)
    - `SelfHealingAgent` implementing `Agent`.
    - Multi-turn selector probing and candidate element correlation.
    - Deterministic failure classification: `SelectorRenamedOrRelocated`, `RoleGatedVisibilityDifferential`, `AmbiguousSelector`, `TimingOrAssertionMismatch`, and `SelectorNotFound`.
    - Confidence scoring algorithm with tag synonyms, label extraction, and intent overlap.
-4. [`services/orchestrator/src/agents/tests.rs`](file:///G:/AIQA/services/orchestrator/src/agents/tests.rs) (525 lines)
+4. [`services/orchestrator/src/agents/tests.rs`](../services/orchestrator/src/agents/tests.rs) (525 lines)
    - 10 deterministic integration and boundary tests verifying multi-turn loops, RBAC enforcement, budget limits, coverage gaps, failure classifications, and zero test execution invariants.
-5. [`docs/AIQA_PHASE_3_SPECIALIZED_AGENTS_REPORT.md`](file:///G:/AIQA/docs/AIQA_PHASE_3_SPECIALIZED_AGENTS_REPORT.md)
+5. [`docs/AIQA_PHASE_3_SPECIALIZED_AGENTS_REPORT.md`](../docs/AIQA_PHASE_3_SPECIALIZED_AGENTS_REPORT.md)
    - Technical specification and verification report.
-6. [`Report/AIQA_PHASE_3_SPECIALIZED_AGENTS_REPORT.md`](file:///G:/AIQA/Report/AIQA_PHASE_3_SPECIALIZED_AGENTS_REPORT.md)
+6. [`Report/AIQA_PHASE_3_SPECIALIZED_AGENTS_REPORT.md`](../Report/AIQA_PHASE_3_SPECIALIZED_AGENTS_REPORT.md)
    - Canonical project report copy.
 
 ### Files Modified
-1. [`services/orchestrator/src/lib.rs`](file:///G:/AIQA/services/orchestrator/src/lib.rs)
+1. [`services/orchestrator/src/lib.rs`](../services/orchestrator/src/lib.rs)
    - Registered `pub mod agents;`.
 
 ---
@@ -101,16 +101,16 @@ All 10 Phase 3 agent tests pass cleanly:
 
 | Test Name | File | Description | Status |
 | :--- | :--- | :--- | :--- |
-| `test_01_planning_agent_synthesizes_plan_with_schema` | [`tests.rs`](file:///G:/AIQA/services/orchestrator/src/agents/tests.rs#L143) | Multi-turn planning with schema & requirement lookup; validates P0/P1 prioritization | **PASSED** |
-| `test_02_planning_agent_rejects_cross_project_access` | [`tests.rs`](file:///G:/AIQA/services/orchestrator/src/agents/tests.rs#L212) | Context isolation; blocks unauthorized project planning | **PASSED** |
-| `test_03_planning_agent_detects_coverage_gaps_with_store` | [`tests.rs`](file:///G:/AIQA/services/orchestrator/src/agents/tests.rs#L238) | Detects orphaned requirements with zero test cases in SQLite Store | **PASSED** |
-| `test_04_planning_agent_enforces_budget_limits` | [`tests.rs`](file:///G:/AIQA/services/orchestrator/src/agents/tests.rs#L278) | Caps synthesized test count to configured maximum budget | **PASSED** |
-| `test_05_self_healing_diagnoses_renamed_selector_with_high_confidence` | [`tests.rs`](file:///G:/AIQA/services/orchestrator/src/agents/tests.rs#L310) | Multi-turn DOM probing identifies renamed button with >= 80% confidence | **PASSED** |
-| `test_06_self_healing_detects_role_visibility_differential` | [`tests.rs`](file:///G:/AIQA/services/orchestrator/src/agents/tests.rs#L355) | Accurately identifies role-gated visibility failure (viewer vs admin) | **PASSED** |
-| `test_07_self_healing_diagnoses_timing_mismatch_when_element_exists` | [`tests.rs`](file:///G:/AIQA/services/orchestrator/src/agents/tests.rs#L390) | Element exists in DOM; classifies failure as assertion/timing issue | **PASSED** |
-| `test_08_self_healing_diagnoses_not_found_when_no_candidates_exist` | [`tests.rs`](file:///G:/AIQA/services/orchestrator/src/agents/tests.rs#L425) | Selector absent and no candidates exist; classifies `SelectorNotFound` | **PASSED** |
-| `test_09_self_healing_rejects_cross_project_access` | [`tests.rs`](file:///G:/AIQA/services/orchestrator/src/agents/tests.rs#L457) | Multi-tenant RBAC rejection on self-healing request | **PASSED** |
-| `test_10_boundary_zero_production_test_execution_during_agent_reasoning` | [`tests.rs`](file:///G:/AIQA/services/orchestrator/src/agents/tests.rs#L487) | Strict boundary test verifying zero test runners or executors invoked | **PASSED** |
+| `test_01_planning_agent_synthesizes_plan_with_schema` | [`tests.rs`](../services/orchestrator/src/agents/tests.rs#L143) | Multi-turn planning with schema & requirement lookup; validates P0/P1 prioritization | **PASSED** |
+| `test_02_planning_agent_rejects_cross_project_access` | [`tests.rs`](../services/orchestrator/src/agents/tests.rs#L212) | Context isolation; blocks unauthorized project planning | **PASSED** |
+| `test_03_planning_agent_detects_coverage_gaps_with_store` | [`tests.rs`](../services/orchestrator/src/agents/tests.rs#L238) | Detects orphaned requirements with zero test cases in SQLite Store | **PASSED** |
+| `test_04_planning_agent_enforces_budget_limits` | [`tests.rs`](../services/orchestrator/src/agents/tests.rs#L278) | Caps synthesized test count to configured maximum budget | **PASSED** |
+| `test_05_self_healing_diagnoses_renamed_selector_with_high_confidence` | [`tests.rs`](../services/orchestrator/src/agents/tests.rs#L310) | Multi-turn DOM probing identifies renamed button with >= 80% confidence | **PASSED** |
+| `test_06_self_healing_detects_role_visibility_differential` | [`tests.rs`](../services/orchestrator/src/agents/tests.rs#L355) | Accurately identifies role-gated visibility failure (viewer vs admin) | **PASSED** |
+| `test_07_self_healing_diagnoses_timing_mismatch_when_element_exists` | [`tests.rs`](../services/orchestrator/src/agents/tests.rs#L390) | Element exists in DOM; classifies failure as assertion/timing issue | **PASSED** |
+| `test_08_self_healing_diagnoses_not_found_when_no_candidates_exist` | [`tests.rs`](../services/orchestrator/src/agents/tests.rs#L425) | Selector absent and no candidates exist; classifies `SelectorNotFound` | **PASSED** |
+| `test_09_self_healing_rejects_cross_project_access` | [`tests.rs`](../services/orchestrator/src/agents/tests.rs#L457) | Multi-tenant RBAC rejection on self-healing request | **PASSED** |
+| `test_10_boundary_zero_production_test_execution_during_agent_reasoning` | [`tests.rs`](../services/orchestrator/src/agents/tests.rs#L487) | Strict boundary test verifying zero test runners or executors invoked | **PASSED** |
 
 ### Complete Test Suite Summary
 ```text

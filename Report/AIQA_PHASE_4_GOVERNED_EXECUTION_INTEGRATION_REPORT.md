@@ -16,8 +16,8 @@ Phase 4 establishes the authoritative, governed connection between Agent-generat
 In strict accordance with the Core Architectural Rule:
 - **AIQA Remains Authoritative**: Existing systems (`engine.rs`, `scheduler.rs`, `executor.rs`, `evidence.rs`, `policy.rs`, `auth.rs`, `store.rs`, `intelligence.rs`) remain the sole authoritative execution, scheduling, policy, and persistence mechanisms.
 - **Zero Second Execution Engine**: Agents cannot directly invoke executors, launch subprocesses, evaluate arbitrary code, or spawn unmonitored threads.
-- **Controlled Boundary**: Agent plans pass through a deterministic validation boundary ([`plan_validator.rs`](file:///G:/AIQA/services/orchestrator/src/plan_validator.rs)), multi-tenant authorization, existing policy evaluation, human approval gating when required, explicit resource budgets, and existing executor dispatch ([`agent_execution.rs`](file:///G:/AIQA/services/orchestrator/src/agent_execution.rs)).
-- **Advisory Self-Healing Invariant**: [`SelfHealingAgent`](file:///G:/AIQA/services/orchestrator/src/agents/healing.rs) remains strictly advisory and diagnostic; zero automatic file mutations, zero test rewrites, zero runaway rerun loops.
+- **Controlled Boundary**: Agent plans pass through a deterministic validation boundary ([`plan_validator.rs`](../services/orchestrator/src/plan_validator.rs)), multi-tenant authorization, existing policy evaluation, human approval gating when required, explicit resource budgets, and existing executor dispatch ([`agent_execution.rs`](../services/orchestrator/src/agent_execution.rs)).
+- **Advisory Self-Healing Invariant**: [`SelfHealingAgent`](../services/orchestrator/src/agents/healing.rs) remains strictly advisory and diagnostic; zero automatic file mutations, zero test rewrites, zero runaway rerun loops.
 - **Zero OpenJarvis / Python Dependencies**: Built entirely in safe, idiomatic Rust with zero Python runtimes, PyO3 bindings, or LiteLLM wrappers.
 
 ---
@@ -25,14 +25,14 @@ In strict accordance with the Core Architectural Rule:
 ## 2. Files Created & Modified
 
 ### Files Created
-1. [`services/orchestrator/src/plan_validator.rs`](file:///G:/AIQA/services/orchestrator/src/plan_validator.rs) (435 lines)
+1. [`services/orchestrator/src/plan_validator.rs`](../services/orchestrator/src/plan_validator.rs) (435 lines)
    - Plan validation boundary separating Agent proposals from execution.
    - Closed Action AST enforcement (`execution_plan::Action`).
    - Allowed executor vocabulary check (`compiled-api`, `playwright`, `simulated`, `pytest`, `newman`, `maestro`, `schemathesis`).
    - Kahn's algorithm DAG cycle detection and prerequisite resolution.
    - SSRF target validation via `executor::validate_target_url`.
    - Conversion bridge from Phase 3 `TestPlanOutput` to `AgentExecutionPlan`.
-2. [`services/orchestrator/src/agent_execution.rs`](file:///G:/AIQA/services/orchestrator/src/agent_execution.rs) (495 lines)
+2. [`services/orchestrator/src/agent_execution.rs`](../services/orchestrator/src/agent_execution.rs) (495 lines)
    - `AgentExecutionDispatcher` orchestration service.
    - Execution lifecycle management: `PLANNED -> VALIDATED -> POLICY_CHECK -> PENDING_APPROVAL -> APPROVED -> EXECUTING -> COMPLETED/FAILED/REJECTED/CANCELLED`.
    - Multi-tenant RBAC enforcement (`require_role(Operator)`, `require_project_access`).
@@ -41,15 +41,15 @@ In strict accordance with the Core Architectural Rule:
    - Quality Graph traceability linking requirements (`quality_nodes`), test cases, and `validates` edges (`quality_relations`).
    - Sanitized observation builder redacting credentials via `sanitize_secrets`.
    - Idempotency key cache preventing accidental duplicate runs.
-3. [`services/orchestrator/src/agent_execution_tests.rs`](file:///G:/AIQA/services/orchestrator/src/agent_execution_tests.rs) (635 lines)
+3. [`services/orchestrator/src/agent_execution_tests.rs`](../services/orchestrator/src/agent_execution_tests.rs) (635 lines)
    - 33 comprehensive unit, integration, boundary, and security tests.
-4. [`docs/AIQA_PHASE_4_GOVERNED_EXECUTION_INTEGRATION_REPORT.md`](file:///G:/AIQA/docs/AIQA_PHASE_4_GOVERNED_EXECUTION_INTEGRATION_REPORT.md)
+4. [`docs/AIQA_PHASE_4_GOVERNED_EXECUTION_INTEGRATION_REPORT.md`](../docs/AIQA_PHASE_4_GOVERNED_EXECUTION_INTEGRATION_REPORT.md)
    - Technical specification and verification report.
-5. [`Report/AIQA_PHASE_4_GOVERNED_EXECUTION_INTEGRATION_REPORT.md`](file:///G:/AIQA/Report/AIQA_PHASE_4_GOVERNED_EXECUTION_INTEGRATION_REPORT.md)
+5. [`Report/AIQA_PHASE_4_GOVERNED_EXECUTION_INTEGRATION_REPORT.md`](../Report/AIQA_PHASE_4_GOVERNED_EXECUTION_INTEGRATION_REPORT.md)
    - Canonical project report copy.
 
 ### Files Modified
-1. [`services/orchestrator/src/lib.rs`](file:///G:/AIQA/services/orchestrator/src/lib.rs)
+1. [`services/orchestrator/src/lib.rs`](../services/orchestrator/src/lib.rs)
    - Registered `pub mod plan_validator;`, `pub mod agent_execution;`, and `#[cfg(test)] mod agent_execution_tests;`.
 
 ---
@@ -88,29 +88,29 @@ flowchart TD
 
 ## 4. Key Subsystem Designs
 
-### 4.1 Plan Validation Design ([`plan_validator.rs`](file:///G:/AIQA/services/orchestrator/src/plan_validator.rs))
-- **Closed Action AST**: Accepts only variants from [`execution_plan::Action`](file:///G:/AIQA/services/orchestrator/src/execution_plan.rs#L74) (`Navigate`, `Click`, `Fill`, `AssertVisible`, `AssertText`, `AssertUrl`, `Request`, `AssertStatus`, `AssertHeader`, `AssertBodyField`).
+### 4.1 Plan Validation Design ([`plan_validator.rs`](../services/orchestrator/src/plan_validator.rs))
+- **Closed Action AST**: Accepts only variants from [`execution_plan::Action`](../services/orchestrator/src/execution_plan.rs#L74) (`Navigate`, `Click`, `Fill`, `AssertVisible`, `AssertText`, `AssertUrl`, `Request`, `AssertStatus`, `AssertHeader`, `AssertBodyField`).
 - **Closed Executor Vocabulary**: Allows only `"compiled-api"`, `"playwright"`, `"simulated"`, `"pytest"`, `"newman"`, `"maestro"`, `"schemathesis"`. Arbitrary engines (`bash`, `sh`, `python`, `cmd`, `eval`, `powershell`) are strictly rejected.
 - **DAG Integrity**: Applies Kahn's topological sort to guarantee dependency acyclicity and verify all prerequisite references exist within the plan.
-- **SSRF Target Validation**: Reuses [`crate::executor::validate_target_url`](file:///G:/AIQA/services/orchestrator/src/executor.rs#L268) on all target URLs and action endpoints, blocking loopback, cloud metadata (169.254.169.254), RFC1918 private ranges, and non-HTTP schemes.
+- **SSRF Target Validation**: Reuses [`crate::executor::validate_target_url`](../services/orchestrator/src/executor.rs#L268) on all target URLs and action endpoints, blocking loopback, cloud metadata (169.254.169.254), RFC1918 private ranges, and non-HTTP schemes.
 - **Injection Guards**: Inspects selectors and input values to reject `<script>`, `eval(`, `javascript:`, and command injection patterns.
 
-### 4.2 Execution Dispatcher Design ([`agent_execution.rs`](file:///G:/AIQA/services/orchestrator/src/agent_execution.rs))
-- **Authoritative Dispatch**: Materializes validated tasks into [`TaskDef`](file:///G:/AIQA/services/orchestrator/src/domain.rs#L171) and [`RunPlan`](file:///G:/AIQA/services/orchestrator/src/domain.rs#L185).
-- **Zero Direct Subprocess Execution**: Dispatcher delegates execution exclusively to [`engine::spawn_run`](file:///G:/AIQA/services/orchestrator/src/engine.rs#L607) and [`engine::approve_and_spawn`](file:///G:/AIQA/services/orchestrator/src/engine.rs#L409).
+### 4.2 Execution Dispatcher Design ([`agent_execution.rs`](../services/orchestrator/src/agent_execution.rs))
+- **Authoritative Dispatch**: Materializes validated tasks into [`TaskDef`](../services/orchestrator/src/domain.rs#L171) and [`RunPlan`](../services/orchestrator/src/domain.rs#L185).
+- **Zero Direct Subprocess Execution**: Dispatcher delegates execution exclusively to [`engine::spawn_run`](../services/orchestrator/src/engine.rs#L607) and [`engine::approve_and_spawn`](../services/orchestrator/src/engine.rs#L409).
 - **Execution Lifecycle**:
   - `PLANNED` -> `VALIDATED` -> `POLICY_CHECK` -> `PENDING_APPROVAL` -> `APPROVED` -> `EXECUTING` -> `COMPLETED`/`FAILED`/`REJECTED`/`CANCELLED`.
 
 ### 4.3 Policy & Approval Integration
-- Reuses existing [`policy::evaluate(&PolicyConfig, &RunPlan)`](file:///G:/AIQA/services/orchestrator/src/policy.rs#L65).
+- Reuses existing [`policy::evaluate(&PolicyConfig, &RunPlan)`](../services/orchestrator/src/policy.rs#L65).
 - Blocked executors trigger `PolicyDecision::Deny`.
 - Gated executors (e.g. `maestro`) trigger `PolicyDecision::RequireApproval`.
 - **Production Guard**: Any agent execution specifying environment `production` or `prod` is held in `PENDING_APPROVAL` regardless of executor type.
 - **Human Approval Only**: Only users with at least `Role::Operator` or `Role::Admin` can approve or reject held executions. The Agent cannot approve its own executions.
 
 ### 4.4 Multi-Tenancy & RBAC
-- Enforces [`auth::require_role(ctx, Role::Operator)`](file:///G:/AIQA/services/orchestrator/src/auth.rs#L242).
-- Enforces [`auth::require_project_access(ctx, Some(project_id))`](file:///G:/AIQA/services/orchestrator/src/auth.rs#L257).
+- Enforces [`auth::require_role(ctx, Role::Operator)`](../services/orchestrator/src/auth.rs#L242).
+- Enforces [`auth::require_project_access(ctx, Some(project_id))`](../services/orchestrator/src/auth.rs#L257).
 - Cross-project execution and cross-project approvals are rejected with `CrossProjectForbidden`.
 
 ### 4.5 Execution Budgets
@@ -125,8 +125,8 @@ flowchart TD
   - `quality_nodes` (`node_type = "requirement"`, `external_ref = req_ref`)
   - `quality_nodes` (`node_type = "test_case"`, `external_ref = task_name`)
   - `quality_relations` (`relation_type = "validates"`)
-- Execution evidence: Stdout and stderr logs are persisted to [`LocalEvidenceStore`](file:///G:/AIQA/services/orchestrator/src/evidence.rs) and indexed in SQLite `evidence` table.
-- Task completions automatically feed [`intelligence.rs`](file:///G:/AIQA/services/orchestrator/src/intelligence.rs) for failure clustering and risk scoring.
+- Execution evidence: Stdout and stderr logs are persisted to [`LocalEvidenceStore`](../services/orchestrator/src/evidence.rs) and indexed in SQLite `evidence` table.
+- Task completions automatically feed [`intelligence.rs`](../services/orchestrator/src/intelligence.rs) for failure clustering and risk scoring.
 
 ### 4.7 Sanitized Observations
 - `AgentExecutionObservation` contains `run_id`, `status`, `tasks_total`, `tasks_passed`, `tasks_failed`, `tasks_blocked`, `duration_ms`, `findings`, and `evidence_refs`.
