@@ -7595,6 +7595,32 @@ struct CreateApiKeyResponse {
 /// POST /admin/api-keys — Admin-only. The plaintext key is returned exactly
 /// once, at creation time (same convention as GitHub/Stripe tokens); only
 /// its hash is ever persisted (`auth::hash_key`).
+///
+/// **Scope containment.** The guard is on *role*, and role alone was not enough:
+/// this endpoint also issues keys, so a key it mints is an escalation path out
+/// of the caller's own boundaries unless the scope it can grant is bounded too.
+/// It previously was not. `project_id` went from the request body straight into
+/// `insert_api_key`, which persists it verbatim, and `auth::require_project_access`
+/// returns `Ok(())` for a key whose `project_id` is `None`. So a key of shape
+/// `role=admin, project_id=Some(P)` — a *tenant* admin, and exactly what this
+/// endpoint hands out — could POST `{"role":"admin","project_id":null}` and get
+/// back a plaintext **global** admin key: one request, and the tenant boundary
+/// was gone.
+///
+/// The rule now enforced is the one that actually matters, and it is about scope
+/// rather than role: **a caller can never mint a key with broader scope than its
+/// own.** A global admin is unaffected and keeps full reach; a scoped admin may
+/// mint freely inside its own project, and any attempt to name a different
+/// project or to end up unscoped is refused and written to the audit trail.
+///
+/// Naming a *different* project is rejected outright rather than silently
+/// rewritten, and is audited as `denied` — it is a request aimed at another
+/// tenant, and answering it with a quietly-rescoped key would hide an escalation
+/// attempt behind a success. Asking for no project at all, or naming its own, both
+/// mean the same thing to a scoped caller and are normalised onto its own project
+/// rather than refused: neither is an escalation once the scope is derived from
+/// the caller, and refusing them would break any client that simply has no project
+/// selector to offer.
 async fn create_api_key(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -7605,6 +7631,45 @@ async fn create_api_key(
         "admin" | "operator" | "viewer" => body.role.as_str(),
         other => return Err(ApiError::validation(format!("unknown role '{other}'"))),
     };
+
+    // The scope the new key will actually be persisted with. Resolved here, from
+    // the caller's own scope, rather than trusted from the request.
+    let effective_project_id: Option<String> = match ctx.project_id.as_deref() {
+        // Global caller: may mint global, project-scoped, or either.
+        None => body.project_id.clone(),
+        // Scoped caller: its own project is the ceiling. Naming nothing, or
+        // naming its own project, both land there -- the two mean the same thing
+        // to a tenant admin and neither is an escalation.
+        Some(own) => match body.project_id.as_deref() {
+            None | Some("") => Some(own.to_string()),
+            Some(requested) if requested == own => Some(own.to_string()),
+            Some(requested) => {
+                let detail = format!(
+                    "this key is scoped to project {own} and cannot mint a key for project {requested}"
+                );
+                audit(
+                    &state,
+                    &ctx,
+                    "apikey.create",
+                    None,
+                    Some(&format!(
+                        "name={} role={role} requested_project={requested}",
+                        body.name
+                    )),
+                    "denied",
+                )
+                .await;
+                return Err(ApiError::forbidden(detail));
+            }
+        },
+    };
+    // Belt and braces: the invariant is about what can reach the database, so it
+    // is asserted there too rather than trusted to the branch above.
+    debug_assert!(
+        ctx.project_id.is_none() || effective_project_id.as_deref() == ctx.project_id.as_deref(),
+        "a scoped caller must never produce a key with a different scope"
+    );
+
     let id = Uuid::new_v4();
     let raw = auth::generate_key();
     state
@@ -7614,7 +7679,7 @@ async fn create_api_key(
             &body.name,
             &auth::hash_key(&raw),
             role,
-            body.project_id.as_deref(),
+            effective_project_id.as_deref(),
         )
         .await
         .map_err(to_500)?;
@@ -7623,7 +7688,11 @@ async fn create_api_key(
         &ctx,
         "apikey.create",
         Some(&id.to_string()),
-        Some(&format!("name={} role={role}", body.name)),
+        Some(&format!(
+            "name={} role={role} project={}",
+            body.name,
+            effective_project_id.as_deref().unwrap_or("global")
+        )),
         "ok",
     )
     .await;
