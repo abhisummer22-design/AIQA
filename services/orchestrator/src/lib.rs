@@ -86,6 +86,8 @@ mod process_lifetime_maps_tests;
 #[cfg(test)]
 mod retention_and_metrics_tests;
 #[cfg(test)]
+mod rbac_matrix_tests;
+#[cfg(test)]
 mod run_map_retention_tests;
 #[cfg(test)]
 mod store_tests;

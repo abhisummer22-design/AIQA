@@ -7790,15 +7790,26 @@ async fn get_audit_log(
 
 async fn get_metrics(
     State(state): State<AppState>,
-    Extension(_ctx): Extension<AuthContext>,
-) -> Response {
+    Extension(ctx): Extension<AuthContext>,
+) -> Result<Response, ApiError> {
+    // Was authenticated and nothing more, so the least-privileged key in the
+    // deployment -- a project-scoped Viewer -- could read every counter here. Those
+    // are deployment-wide, not per-project: run and task counts by state across
+    // all tenants, total audit rows, total telemetry events, active API-key count.
+    // That is operational information about an entire multi-tenant deployment
+    // handed to a key scoped to one project in it, and `GET /admin/audit-log`
+    // already sets the precedent for gating it on Admin.
+    //
+    // Prometheus scrapers are unaffected in any real deployment: they are given an
+    // Admin key, the same as every other Admin-only endpoint here.
+    auth::require_role(&ctx, Role::Admin)?;
     let body = crate::metrics::render(&state.store.pool).await;
-    (
+    Ok((
         StatusCode::OK,
         [("Content-Type", "text/plain; version=0.0.4")],
         body,
     )
-        .into_response()
+        .into_response())
 }
 
 // --------------------------------------------------------------------- ws
@@ -8329,12 +8340,42 @@ async fn get_healing_proposal_diff_scoped(
     Ok(Json(proposal.ast_diff))
 }
 
+/// Reads a proposal and proves it belongs to the project named in the URL.
+///
+/// `require_scoped_project` proves the key may act on the project in the path. It
+/// says nothing about whether the proposal being acted on is *in* that project --
+/// the proposal is a separate row that may belong to a different tenant. Both read
+/// siblings (`.../:proposal_id` and `.../diff`) checked this; none of the three
+/// mutations did, so `POST` on project A's URL could approve or reject project B's
+/// proposal and have `audit()` record the action under A.
+///
+/// **Before** the mutation, not after. Checking the returned proposal instead looks
+/// equivalent and is not: `approve_proposal` has already written the row by the time
+/// it returns, so a cross-project approve would mutate B's proposal and *then*
+/// answer 404 -- the status code right, the damage already done. A test caught
+/// exactly that, finding the proposal back in state `Approved` after a 404.
+async fn load_scoped_proposal(
+    state: &AppState,
+    ctx: &AuthContext,
+    project_id: Uuid,
+    proposal_id: Uuid,
+) -> Result<crate::governed_healing::HealingProposal, ApiError> {
+    require_scoped_project(state, ctx, project_id).await?;
+    let service = make_healing_service(state);
+    let proposal = service
+        .get_proposal(proposal_id)
+        .await
+        .map_err(healing_err_to_api_err)?;
+    require_resource_in_project(Some(&proposal.project_id), project_id)?;
+    Ok(proposal)
+}
+
 async fn approve_healing_proposal_scoped(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, proposal_id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<Json<crate::governed_healing::HealingProposal>, ApiError> {
-    require_scoped_project(&state, &ctx, project_id).await?;
+    load_scoped_proposal(&state, &ctx, project_id, proposal_id).await?;
     let service = make_healing_service(&state);
     let proposal = service
         .approve_proposal(&ctx, proposal_id)
@@ -8349,7 +8390,7 @@ async fn reject_healing_proposal_scoped(
     ApiPath((project_id, proposal_id)): ApiPath<(Uuid, Uuid)>,
     ApiJson(req): ApiJson<HealingRejectRequest>,
 ) -> Result<Json<crate::governed_healing::HealingProposal>, ApiError> {
-    require_scoped_project(&state, &ctx, project_id).await?;
+    load_scoped_proposal(&state, &ctx, project_id, proposal_id).await?;
     let service = make_healing_service(&state);
     let proposal = service
         .reject_proposal(&ctx, proposal_id, &req.reason)
@@ -8363,7 +8404,7 @@ async fn execute_healing_proposal_scoped(
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, proposal_id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<Json<crate::governed_healing::HealingProposal>, ApiError> {
-    require_scoped_project(&state, &ctx, project_id).await?;
+    load_scoped_proposal(&state, &ctx, project_id, proposal_id).await?;
     let service = make_healing_service(&state);
     let proposal = service
         .execute_approved(&ctx, proposal_id)
@@ -8371,13 +8412,16 @@ async fn execute_healing_proposal_scoped(
         .map_err(healing_err_to_api_err)?;
     Ok(Json(proposal))
 }
-
 async fn get_healing_verification_scoped(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, proposal_id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<Json<crate::governed_healing::HealingVerification>, ApiError> {
-    require_scoped_project(&state, &ctx, project_id).await?;
+    // Same ownership check as the other four routes here. This one had none at
+    // all, so a verification could be requested for another project's proposal --
+    // and `verify_healing` answers from the proposal's own state, which is
+    // exactly the kind of thing that should not cross a tenant boundary.
+    load_scoped_proposal(&state, &ctx, project_id, proposal_id).await?;
     let service = make_healing_service(&state);
     let verification = service
         .verify_healing(&ctx, proposal_id)
