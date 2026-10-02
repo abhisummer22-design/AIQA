@@ -29,6 +29,7 @@ import {
   Database,
   Info,
 } from 'lucide-react';
+import { Modal } from '../common/Modal';
 import type { RetentionReport, Role } from '../../types/contract';
 import { aiqaApi, ApiError } from '../../services/aiqaApi';
 
@@ -125,11 +126,25 @@ export const TelemetryRetentionModal: React.FC<TelemetryRetentionModalProps> = (
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm overflow-y-auto"
-      data-testid="telemetry-retention-modal"
+    // Migrated to the shared `Modal` primitive. This dialog had no
+    // `role="dialog"`, no `aria-modal`, no Escape handler, no focus trap and no
+    // focus restore, and its only close control was an icon-only button with no
+    // accessible name at all -- not even a `title`.
+    //
+    // `dismissable={!loading}` because this dialog executes a destructive,
+    // irreversible prune (`POST .../intelligence/retention/prune`, Admin-gated).
+    // While that call is in flight the dialog must not be dismissable by Escape
+    // or a stray backdrop click, or the user loses the outcome of an
+    // irreversible action they cannot see.
+    <Modal
+      id="telemetry-retention-modal"
+      ariaLabel="Telemetry Retention Maintenance"
+      onClose={onClose}
+      dismissable={!loading}
+      panelClassName="max-w-lg"
+      overlayClassName="items-center"
     >
-      <div className="bg-slate-900 border border-border-default rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden my-auto">
+      <div data-testid="telemetry-retention-modal" className="overflow-hidden">
         {/* Header */}
         <div className="p-5 border-b border-border-default flex items-center justify-between bg-slate-950/40">
           <div className="flex items-center gap-2.5">
@@ -140,7 +155,9 @@ export const TelemetryRetentionModal: React.FC<TelemetryRetentionModalProps> = (
             </div>
           </div>
           <button
+            type="button"
             onClick={onClose}
+            aria-label="Close telemetry retention"
             className="p-1 rounded text-content-secondary hover:text-content-primary hover:bg-slate-800 transition-colors"
             data-testid="close-retention-modal"
           >
@@ -272,6 +289,6 @@ export const TelemetryRetentionModal: React.FC<TelemetryRetentionModalProps> = (
           </div>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 };

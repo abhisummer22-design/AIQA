@@ -7,17 +7,28 @@
  * path list, and navigation goes through the real router (`useNavigate`).
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Search, Plus, X, ArrowRight, Layers } from 'lucide-react';
 import { useAIQA } from '../../context/AIQAContext';
 import { routeDefs } from '../../routes/routeConfig';
+import { Modal } from '../common/Modal';
+
+/** Whether to advertise the Mac glyph or the Windows/Linux one. `AIQAContext`
+ *  binds the shortcut to the Mac meta key only on Apple platforms, so showing
+ *  `⌘K` to a Windows user named a shortcut that does not open this palette. */
+const IS_APPLE =
+  typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/.test(navigator.platform);
 
 export const CommandPalette: React.FC = () => {
   const { isCommandPaletteOpen, setCommandPaletteOpen, setCurrentEnvironment } = useAIQA();
   const navigate = useNavigate();
 
   const [search, setSearch] = useState('');
+  // `Modal` moves focus here on open, replacing the `autoFocus` attribute the
+  // search field used to carry -- autoFocus alone does not survive being applied
+  // to an element that mounts later in the tree.
+  const searchRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (isCommandPaletteOpen) {
@@ -86,25 +97,43 @@ export const CommandPalette: React.FC = () => {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center pt-20 bg-slate-950/80 backdrop-blur-sm p-4 animate-in fade-in duration-100">
-      <div
-        className="w-full max-w-xl rounded-lg bg-[#0B1120] border border-slate-700/80 shadow-2xl overflow-hidden flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-      >
+    // Migrated to the shared `Modal` primitive.
+    //
+    // This had no `role="dialog"`, no `aria-modal`, no `aria-label`, and --
+    // the part that made its own UI a lie -- NO keydown handler of any kind,
+    // while its own footer read "Press ESC to close". The backdrop had no
+    // onClick either, so the only ways out were the (unnamed) X button or
+    // activating a result. There was no focus restore either: on close focus fell
+    // to <body> and the palette re-opened with nothing focused.
+    <Modal
+      id="command-palette"
+      ariaLabel="Command palette"
+      onClose={() => setCommandPaletteOpen(false)}
+      initialFocusRef={searchRef}
+      panelClassName="max-w-xl"
+      overlayClassName="items-start justify-center pt-20"
+    >
+      <div className="flex flex-col overflow-hidden">
         {/* Search Input Bar */}
-        <div className="flex items-center gap-3 px-4 py-2.5 border-b border-slate-800 bg-[#020617]">
+        <div className="flex items-center gap-3 px-4 py-2.5 border-b border-border-default bg-surface-page">
           <Search className="w-4 h-4 text-violet-400 shrink-0" />
+          <label htmlFor="command-palette-search" className="sr-only">
+            Search commands and workspaces
+          </label>
           <input
-            autoFocus
+            id="command-palette-search"
+            ref={searchRef}
             type="text"
             placeholder="Type a command or search workspace..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="flex-1 bg-transparent border-none outline-none text-xs text-slate-100 placeholder-slate-500 font-sans"
+            className="flex-1 bg-transparent border-none outline-none text-xs text-content-primary placeholder-content-muted font-sans"
           />
           <button
+            type="button"
             onClick={() => setCommandPaletteOpen(false)}
-            className="p-1 text-content-muted hover:text-slate-300 rounded cursor-pointer"
+            aria-label="Close command palette"
+            className="p-1 text-content-muted hover:text-content-secondary rounded cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
@@ -127,11 +156,12 @@ export const CommandPalette: React.FC = () => {
                   return (
                     <button
                       key={item.id}
+                      type="button"
                       onClick={() => handleSelect(item.action)}
-                      className="w-full flex items-center justify-between px-3 py-1.5 rounded-md text-xs text-slate-300 hover:text-white hover:bg-violet-600 transition-colors group cursor-pointer"
+                      className="w-full flex items-center justify-between px-3 py-1.5 rounded-md text-xs text-content-secondary hover:text-white hover:bg-violet-600 transition-colors group cursor-pointer"
                     >
                       <div className="flex items-center gap-2.5">
-                        <Icon className="w-3.5 h-3.5 text-slate-400 group-hover:text-white" />
+                        <Icon className="w-3.5 h-3.5 text-content-muted group-hover:text-white" />
                         <span>{item.label}</span>
                       </div>
                       <ArrowRight className="w-3.5 h-3.5 text-content-muted group-hover:text-white opacity-0 group-hover:opacity-100 transition-opacity" />
@@ -143,12 +173,15 @@ export const CommandPalette: React.FC = () => {
           )}
         </div>
 
-        {/* Footer shortcuts */}
-        <div className="px-4 py-2 bg-[#020617] border-t border-slate-800 text-[10px] font-mono text-content-muted flex justify-between">
+        {/* Footer shortcuts. `AIQAContext` binds ⌘K on the Mac meta key and Ctrl+K
+            elsewhere, and this app ships for Windows first -- so the glyph is
+            resolved from the platform rather than hardcoded to the Mac one it
+            previously advertised on every machine. */}
+        <div className="px-4 py-2 bg-surface-page border-t border-border-default text-[10px] font-mono text-content-muted flex justify-between">
           <span>Press ESC to close</span>
-          <span>Use ⌘K anytime to open</span>
+          <span>Use {IS_APPLE ? '⌘' : 'Ctrl+'}K anytime to open</span>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 };

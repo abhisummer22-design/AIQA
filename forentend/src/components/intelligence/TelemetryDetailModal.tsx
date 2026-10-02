@@ -5,6 +5,7 @@
 
 import React from 'react';
 import { X, ShieldCheck, Clock, Terminal, AlertOctagon, CheckCircle2, Hash, Layers } from 'lucide-react';
+import { Modal } from '../common/Modal';
 import type { ExecutionTelemetryRow } from '../../types/contract';
 
 interface TelemetryDetailModalProps {
@@ -25,11 +26,18 @@ export const TelemetryDetailModal: React.FC<TelemetryDetailModalProps> = ({ tele
   const isFailed = ['FAILED', 'TIMEOUT', 'INFRA_ERROR'].includes(telemetry.status);
 
   return (
-    <div
-      className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4"
-      data-testid="telemetry-detail-modal"
+    // Migrated to the shared `Modal` primitive: this had no `role="dialog"`, no
+    // `aria-modal`, no Escape handler, no focus trap and no focus restore, and
+    // the only way out was an icon-only button whose accessible name came from
+    // `title`. `data-testid` is kept -- existing tests query it.
+    <Modal
+      id="telemetry-detail-modal"
+      ariaLabel={`Telemetry for ${telemetry.task_name}`}
+      onClose={onClose}
+      panelClassName="max-w-2xl max-h-[90vh]"
+      overlayClassName="items-center"
     >
-      <div className="bg-surface-card border border-border-default rounded-xl shadow-2xl max-w-2xl w-full max-h-[90vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+      <div data-testid="telemetry-detail-modal" className="flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
         {/* Header */}
         <div className="p-4 border-b border-border-default flex items-center justify-between bg-slate-900/40">
           <div className="flex items-center gap-2.5">
@@ -46,9 +54,10 @@ export const TelemetryDetailModal: React.FC<TelemetryDetailModalProps> = ({ tele
             </div>
           </div>
           <button
+            type="button"
             onClick={onClose}
+            aria-label="Close telemetry detail"
             className="p-1 rounded-md text-content-secondary hover:text-content-primary hover:bg-slate-800 transition-colors"
-            title="Close"
           >
             <X className="w-5 h-5" />
           </button>
@@ -162,6 +171,6 @@ export const TelemetryDetailModal: React.FC<TelemetryDetailModalProps> = ({ tele
           </div>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 };

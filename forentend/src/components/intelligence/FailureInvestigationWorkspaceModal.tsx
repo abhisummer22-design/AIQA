@@ -34,6 +34,7 @@ import type {
   HealingHistoryCorrelation,
 } from '../../types/contract';
 import { aiqaApi } from '../../services/aiqaApi';
+import { Modal } from '../common/Modal';
 
 interface FailureInvestigationWorkspaceModalProps {
   projectId: string;
@@ -86,11 +87,18 @@ export const FailureInvestigationWorkspaceModal: React.FC<FailureInvestigationWo
   if (!isOpen) return null;
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm overflow-y-auto"
-      data-testid="failure-investigation-workspace-modal"
+    // Migrated to the shared `Modal` primitive: this had no `role="dialog"`, no
+    // `aria-modal`, no Escape handler, no focus trap and no focus restore, and
+    // its only close control was an icon-only button with no accessible name at
+    // all. `data-testid` kept -- eight existing tests query it.
+    <Modal
+      id="failure-investigation-workspace-modal"
+      ariaLabel="Operational Failure Investigation"
+      onClose={onClose}
+      panelClassName="max-w-5xl max-h-[90vh]"
+      overlayClassName="items-center"
     >
-      <div className="bg-slate-900 border border-border-default rounded-2xl w-full max-w-5xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden my-auto">
+      <div data-testid="failure-investigation-workspace-modal" className="flex flex-col overflow-hidden">
         {/* Header */}
         <div className="p-6 border-b border-border-default/80 flex items-start justify-between bg-slate-950/40">
           <div>
@@ -135,7 +143,9 @@ export const FailureInvestigationWorkspaceModal: React.FC<FailureInvestigationWo
             )}
           </div>
           <button
+            type="button"
             onClick={onClose}
+            aria-label="Close failure investigation"
             className="p-1.5 rounded-lg text-content-secondary hover:text-content-primary hover:bg-slate-800 transition-colors"
             data-testid="close-investigation-modal"
           >
@@ -587,6 +597,6 @@ export const FailureInvestigationWorkspaceModal: React.FC<FailureInvestigationWo
           </button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 };

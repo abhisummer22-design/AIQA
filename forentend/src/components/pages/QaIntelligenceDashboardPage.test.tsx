@@ -420,8 +420,14 @@ describe('QaIntelligenceDashboardPage & Subcomponents (Phase 7)', () => {
     expect(errorText.textContent).toContain('••••••••');
     expect(errorText.textContent).not.toContain('aiqa_secret_key_to_redact');
 
-    // Close modal
-    fireEvent.click(screen.getByTitle('Close'));
+    // Close modal, by the control's accessible name rather than by `title`.
+    //
+    // The icon-only close button carried `title="Close"` and nothing else, which
+    // is why this test could query it that way -- and also why a screen reader
+    // announced it as just "button": `title` is a weak fallback that assistive
+    // tech may ignore in browse mode. It now carries an aria-label, so this
+    // asserts through the same name a user of assistive technology would hear.
+    fireEvent.click(screen.getByRole('button', { name: 'Close telemetry detail' }));
     expect(screen.queryByTestId('telemetry-detail-modal')).toBeNull();
   });
 
