@@ -510,18 +510,27 @@ export const DocumentUploadSection: React.FC<DocumentUploadSectionProps> = ({
                   </div>
                 ) : (
                   /* Empty Dropzone State */
-                  <div
+                  // A <button>, because this was a <div onClick> with no
+                  // keyboard path at all: a keyboard user could not open the file
+                  // picker for any slot, so no document could be attached
+                  // without a mouse. The word "browse" was a plain <span>, so it
+                  // was not a control either -- it only looked like one.
+                  // Click-to-browse and drag-and-drop both still work; the
+                  // native file input this triggers is unchanged.
+                  <button
+                    type="button"
                     onClick={() => triggerBrowse(slot.id)}
-                    className="p-3 rounded border border-dashed border-slate-700/80 hover:border-violet-500/80 bg-[#020617]/50 hover:bg-[#020617] transition-all cursor-pointer text-center flex flex-col items-center justify-center space-y-1.5"
+                    aria-label={`Browse to upload a ${slot.label} document`}
+                    className="p-3 rounded border border-dashed border-slate-700/80 hover:border-violet-500/80 bg-[#020617]/50 hover:bg-[#020617] transition-all cursor-pointer text-center flex flex-col items-center justify-center space-y-1.5 w-full focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:outline-none"
                   >
                     <UploadCloud className="w-5 h-5 text-content-muted group-hover:text-violet-400" />
-                    <div className="text-[11px] font-mono font-semibold text-slate-300">
+                    <div className="text-[11px] font-mono font-semibold text-content-secondary">
                       Drag & drop or <span className="text-violet-400 underline">browse</span>
                     </div>
-                    <div className="text-[10px] font-mono text-slate-400">
+                    <div className="text-[10px] font-mono text-content-muted">
                       No document uploaded
                     </div>
-                  </div>
+                  </button>
                 )}
 
                 {/* Error Banner */}

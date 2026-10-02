@@ -231,15 +231,33 @@ export const GenerationConfigSection: React.FC<GenerationConfigSectionProps> = (
           const Icon = cat.icon;
 
           return (
-            <div
+            // A real <button>, not a <div onClick>.
+            //
+            // `tabIndex` appeared nowhere in src/ before this, so these 14 cards
+            // had no keyboard path at all: a keyboard or switch user could not
+            // choose what to generate, which hard-blocked the flagship workflow
+            // (WCAG 2.1.1 Level A). A button also gives Space/Enter activation
+            // for free, which a div never will.
+            //
+            // `aria-pressed` is what carries the selection state to assistive
+            // tech. It was previously conveyed only by a CheckSquare-vs-Square
+            // icon and a border colour, and lucide-react sets aria-hidden on its
+            // SVGs by default -- so a screen reader announced "button" 14 times
+            // with no way to tell which were selected. The visible icon is kept
+            // because it is still the sighted user's fastest signal; it is now
+            // redundant with the real semantic rather than the only source.
+            <button
+              type="button"
               key={cat.id}
               id={`cat-card-${cat.id.toLowerCase().replace(/\s+/g, '-')}`}
-              onClick={() => !isGenerating && onToggleCategory(cat.id)}
+              aria-pressed={isSelected}
+              disabled={isGenerating}
+              onClick={() => onToggleCategory(cat.id)}
               className={`p-2.5 rounded-lg border text-left cursor-pointer transition-all duration-150 flex flex-col justify-between select-none ${
                 isSelected
                   ? 'bg-gradient-to-b from-violet-950/60 to-[#0B1120] border-violet-500/80 shadow-[0_0_12px_rgba(139,92,246,0.2)]'
                   : 'bg-[#0B1120] border-slate-800/90 hover:border-slate-700 opacity-70 hover:opacity-100'
-              } ${isGenerating ? 'cursor-not-allowed opacity-50' : ''}`}
+              } ${isGenerating ? 'cursor-not-allowed opacity-50' : ''} focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:outline-none`}
             >
               <div className="flex items-center justify-between">
                 <Icon className={`w-3.5 h-3.5 ${cat.accentColor}`} />
@@ -251,14 +269,14 @@ export const GenerationConfigSection: React.FC<GenerationConfigSectionProps> = (
               </div>
 
               <div className="mt-2">
-                <div className="text-xs font-bold font-sans text-slate-100 leading-tight">
+                <div className="text-xs font-bold font-sans text-content-primary leading-tight">
                   {cat.title}
                 </div>
-                <div className="text-[10px] text-slate-400 font-sans mt-0.5 line-clamp-2 leading-tight">
+                <div className="text-[10px] text-content-secondary font-sans mt-0.5 line-clamp-2 leading-tight">
                   {cat.description}
                 </div>
               </div>
-            </div>
+            </button>
           );
         })}
       </div>

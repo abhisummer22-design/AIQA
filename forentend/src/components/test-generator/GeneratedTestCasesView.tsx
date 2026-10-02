@@ -694,11 +694,18 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
               filteredCases.map((tc) => {
                 const isSelected = activeTestCase?.id === tc.id;
                 return (
-                  <div
+                  // A <button> rather than a <div onClick>: the whole generated-case
+                  // list was mouse-only, so the results of a generation could not
+                  // be reviewed without a pointer. `aria-current` names the case
+                  // shown in the detail pane, which the visual ring alone did not
+                  // convey.
+                  <button
+                    type="button"
                     key={tc.id}
                     id={`test-case-item-${tc.id.toLowerCase()}`}
+                    aria-current={isSelected ? 'true' : undefined}
                     onClick={() => setSelectedTestCaseId(tc.id)}
-                    className={`p-3.5 rounded-lg border text-left cursor-pointer transition-all ${
+                    className={`p-3.5 rounded-lg border text-left cursor-pointer transition-all w-full focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:outline-none ${
                       isSelected
                         ? 'bg-gradient-to-r from-violet-950/70 to-[#020617] border-violet-500 shadow-md ring-1 ring-violet-500/30'
                         : 'bg-[#020617] border-slate-800/90 hover:border-slate-700 hover:bg-[#03091e]'
@@ -734,7 +741,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                       </span>
                       <div>{getStatusBadge(tc.status)}</div>
                     </div>
-                  </div>
+                  </button>
                 );
               })
             )}

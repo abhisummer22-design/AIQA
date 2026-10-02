@@ -5,6 +5,7 @@
 
 import React from 'react';
 import { X, AlertTriangle, CheckCircle2, XCircle, Layers, Activity } from 'lucide-react';
+import { Modal } from '../common/Modal';
 import type { FlakinessMetricsRow } from '../../types/contract';
 
 interface FlakyTestDetailModalProps {
@@ -40,11 +41,19 @@ export const FlakyTestDetailModal: React.FC<FlakyTestDetailModalProps> = ({ metr
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4"
-      data-testid="flaky-test-detail-modal"
+    // Migrated to the shared `Modal` primitive. This dialog previously had no
+    // `role="dialog"`, no `aria-modal`, no Escape handler, no focus trap and no
+    // focus restore, and its header close control was an icon-only button whose
+    // only accessible name came from `title` -- so a screen reader announced
+    // "button". `data-testid` is kept because existing tests query it.
+    <Modal
+      id="flaky-test-detail-modal"
+      ariaLabel={`Flakiness detail for test node ${metrics.node_id}`}
+      onClose={onClose}
+      panelClassName="max-w-lg"
+      overlayClassName="items-center"
     >
-      <div className="bg-surface-card border border-border-default rounded-xl shadow-2xl max-w-lg w-full overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+      <div data-testid="flaky-test-detail-modal">
         <div className="p-4 border-b border-border-default flex items-center justify-between bg-slate-900/40">
           <div className="flex items-center gap-2.5">
             <div className={`p-1.5 rounded-md ${isHigh ? 'bg-rose-500/10 text-rose-400' : 'bg-amber-500/10 text-amber-400'}`}>
@@ -56,15 +65,16 @@ export const FlakyTestDetailModal: React.FC<FlakyTestDetailModalProps> = ({ metr
             </div>
           </div>
           <button
+            type="button"
             onClick={onClose}
+            aria-label="Close flakiness detail"
             className="p-1 rounded-md text-content-secondary hover:text-content-primary hover:bg-slate-800 transition-colors"
-            title="Close"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        <div className="p-5 space-y-4 text-xs">
+        <div className="p-5 space-y-4 text-xs overflow-y-auto">
           {/* Status banner */}
           <div
             className={`p-3 rounded-lg border flex items-center gap-3 ${
@@ -140,6 +150,7 @@ export const FlakyTestDetailModal: React.FC<FlakyTestDetailModalProps> = ({ metr
 
         <div className="p-3 border-t border-border-default bg-slate-900/20 flex justify-end">
           <button
+            type="button"
             onClick={onClose}
             className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-content-primary rounded text-xs transition-colors"
           >
@@ -147,6 +158,6 @@ export const FlakyTestDetailModal: React.FC<FlakyTestDetailModalProps> = ({ metr
           </button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 };
