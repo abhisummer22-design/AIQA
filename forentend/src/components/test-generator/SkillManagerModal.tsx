@@ -9,6 +9,7 @@
  */
 import React, { useRef, useState } from 'react';
 import { Search, X, CheckSquare, Square, Plus, Info, Upload, Loader2, AlertTriangle } from 'lucide-react';
+import { Modal, ModalHeader } from '../common/Modal';
 import type { SkillDefinition, SkillSourceType } from '../../types/skills';
 
 interface SkillManagerModalProps {
@@ -113,35 +114,21 @@ export const SkillManagerModal: React.FC<SkillManagerModalProps> = ({
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-start justify-center pt-16 bg-slate-950/80 backdrop-blur-sm p-4 animate-in fade-in duration-100"
-      onClick={onClose}
+    <Modal
+      id="skill-manager-modal"
+      ariaLabel="Skill Manager"
+      onClose={onClose}
+      panelClassName="w-full max-w-2xl max-h-[80vh]"
+      overlayClassName="items-start justify-center pt-16"
     >
-      <div
-        id="skill-manager-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Skill Manager"
-        className="w-full max-w-2xl rounded-lg bg-[#0B1120] border border-slate-700/80 shadow-2xl overflow-hidden flex flex-col max-h-[80vh]"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800 bg-[#020617]">
-          <div>
-            <h2 className="text-sm font-bold text-slate-100 font-sans">Skill Manager</h2>
-            <p className="text-[11px] text-content-muted font-sans">Search, select, and create generation-scope skills.</p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close Skill Manager"
-            className="p-1.5 text-content-muted hover:text-slate-300 rounded cursor-pointer"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
+      <ModalHeader
+        title="Skill Manager"
+        subtitle="Search, select, and create generation-scope skills."
+        onClose={onClose}
+        closeLabel="Close Skill Manager"
+      />
 
-        {/* Search */}
+      {/* Search */}
         <div className="flex items-center gap-2.5 px-4 py-2.5 border-b border-slate-800">
           <Search className="w-4 h-4 text-violet-400 shrink-0" />
           <input
@@ -151,7 +138,7 @@ export const SkillManagerModal: React.FC<SkillManagerModalProps> = ({
             placeholder="Search skills by name or description..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="flex-1 bg-transparent border-none outline-none text-xs text-slate-100 placeholder-slate-500 font-sans"
+            className="flex-1 bg-transparent border-none outline-none text-xs text-slate-100 placeholder-slate-500 font-sans focus:ring-1 focus:ring-violet-400 focus:ring-inset"
           />
         </div>
 
@@ -298,7 +285,6 @@ export const SkillManagerModal: React.FC<SkillManagerModalProps> = ({
             </button>
           )}
         </div>
-      </div>
-    </div>
+  </Modal>
   );
 };

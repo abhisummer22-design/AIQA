@@ -168,8 +168,20 @@ export const TelemetryTableSection: React.FC<TelemetryTableSectionProps> = ({
                 return (
                   <tr
                     key={row.id}
-                    className="hover:bg-slate-800/30 transition-colors group cursor-pointer"
+                    className="hover:bg-slate-800/30 transition-colors group cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-violet-400"
                     onClick={() => onSelectTelemetry(row)}
+                    // Same as the flakiness table: this row is the only route to
+                    // the telemetry detail modal, so it must not be mouse-only.
+                    // WCAG 2.1.1 Keyboard (A).
+                    tabIndex={0}
+                    role="button"
+                    aria-label={`Show telemetry details for ${row.task_name}`}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        onSelectTelemetry(row);
+                      }
+                    }}
                     data-testid={`telemetry-row-${row.id}`}
                   >
                     <td className="py-2.5 px-3">

@@ -54,6 +54,23 @@ export const AppShell: React.FC = () => (
         <RealtimeProvider>
           <AIQAProvider>
             <div className="flex flex-col h-screen w-screen overflow-hidden bg-surface-page text-content-primary font-sans">
+              {/* WCAG 2.4.1 Bypass Blocks (A). A keyboard user opening this app
+                  lands on the header hamburger, and Tab has to walk the entire
+                  sidebar -- 12 destinations -- before reaching the page they
+                  navigated to, on every single page load. `sr-only` keeps it
+                  invisible until focused, and `focus:not-sr-only` brings it
+                  back on focus: hiding it entirely would be the same defect in
+                  the other direction, leaving nobody able to see it.
+
+                  Placed immediately before `<Header />` because that is the first
+                  focusable element in DOM order, so this has to come before it.
+                  Target `#main-content-area` already exists below. */}
+              <a
+                href="#main-content-area"
+                className="sr-only focus:not-sr-only focus:absolute focus:z-[100] focus:top-2 focus:left-2 focus:px-3 focus:py-2 focus:rounded-md focus:bg-violet-600 focus:text-white focus:text-sm focus:font-medium"
+              >
+                Skip to main content
+              </a>
               <Header />
               <div className="flex flex-1 overflow-hidden relative">
                 <Sidebar />

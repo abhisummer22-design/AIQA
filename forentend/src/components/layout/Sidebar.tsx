@@ -79,7 +79,13 @@ export const Sidebar: React.FC = () => {
       </div>
 
       {/* Navigation Links (Strictly the 8 required items) */}
-      <nav className="flex-1 py-2.5 px-2 space-y-0.5 overflow-y-auto">
+      {/* `aria-label` names the landmark. Without it a screen reader announces a bare
+          "navigation" alongside any other nav on the page, with no way to tell
+          them apart. */}
+      <nav
+        aria-label="Primary"
+        className="flex-1 py-2.5 px-2 space-y-0.5 overflow-y-auto"
+      >
         {!isSidebarCollapsed && (
           <div className="px-2 py-1 text-[10px] font-mono uppercase tracking-widest text-content-muted font-bold">
             Navigation Plane
@@ -94,7 +100,13 @@ export const Sidebar: React.FC = () => {
               key={item.id}
               id={`nav-item-${item.id}`}
               onClick={() => navigate(item.path)}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-xs font-medium transition-all group relative cursor-pointer ${
+              // These are page links, but they are rendered as `<button>` so that
+              // `aria-current="page"` is the only thing telling assistive tech
+              // which one you are on. Without it the active state was conveyed by
+              // background colour alone, which a screen reader never announces --
+              // WCAG 1.3.1 Info and Relationships (A).
+              aria-current={isActive ? 'page' : undefined}
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-xs font-medium transition-all group relative cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 ${
                 isActive
                   ? 'bg-violet-600 text-white font-semibold shadow-sm shadow-violet-950/60'
                   : 'text-content-secondary hover:text-content-primary hover:bg-slate-800/60 border border-transparent'

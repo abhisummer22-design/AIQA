@@ -23,6 +23,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, FileText, Info, Loader2, X } from 'lucide-react';
+import { Modal } from '../common/Modal';
 import { aiqaApi } from '../../services/aiqaApi';
 import type { SkillDefinition } from '../../types/skills';
 
@@ -71,14 +72,6 @@ export const SkillDetailModal: React.FC<SkillDetailModalProps> = ({ skill, onClo
     };
   }, [load]);
 
-  // Escape closes, matching the other modals in this feature.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
 
   const isCustom = skill.type === 'CUSTOM';
   const isFile = skill.type === 'FILE';
@@ -91,18 +84,18 @@ export const SkillDetailModal: React.FC<SkillDetailModalProps> = ({ skill, onClo
   const metadataEntries = Object.entries(skill.fileSource?.metadata ?? {}).filter(([, v]) => v !== null && v !== undefined);
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-start justify-center pt-16 bg-slate-950/80 backdrop-blur-sm p-4 animate-in fade-in duration-100"
-      onClick={onClose}
+    // Migrated to the shared `Modal`. This one had its own Escape listener but
+    // no focus trap, no focus move on open and no focus restore, so with the
+    // dialog up, Tab still walked the page behind it -- WCAG 2.1.2 No Keyboard
+    // Trap (A) and 2.4.3 Focus Order (A). The local Escape handler is gone: the
+    // primitive owns that now, and two owners would close this twice.
+    <Modal
+      id="skill-detail-modal"
+      ariaLabel={`Skill: ${skill.name}`}
+      onClose={onClose}
+      panelClassName="w-full max-w-lg max-h-[80vh]"
+      overlayClassName="items-start justify-center pt-16"
     >
-      <div
-        id="skill-detail-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Skill: ${skill.name}`}
-        className="w-full max-w-lg rounded-lg bg-[#0B1120] border border-slate-700/80 shadow-2xl overflow-hidden flex flex-col max-h-[80vh]"
-        onClick={(e) => e.stopPropagation()}
-      >
         <div className="flex items-start justify-between gap-3 px-4 py-3 border-b border-slate-800 bg-[#020617]">
           <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
@@ -194,7 +187,6 @@ export const SkillDetailModal: React.FC<SkillDetailModalProps> = ({ skill, onClo
             </p>
           )}
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 };

@@ -19,7 +19,8 @@
  * failure if `onSave` rejects, and never closes on a failure.
  */
 import React, { useState } from 'react';
-import { X, Plus, Trash2, Loader2, AlertTriangle, Pencil } from 'lucide-react';
+import { Plus, Trash2, Loader2, AlertTriangle, Pencil } from 'lucide-react';
+import { Modal, ModalHeader } from '../common/Modal';
 import type { GeneratedTestCase } from '../../types';
 
 export interface EditTestCaseUpdates {
@@ -98,41 +99,23 @@ export const EditTestCaseModal: React.FC<EditTestCaseModalProps> = ({ testCase, 
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-start justify-center pt-10 bg-slate-950/80 backdrop-blur-sm p-4 animate-in fade-in duration-100"
-      onClick={onClose}
+    <Modal
+      id="edit-test-case-modal"
+      ariaLabel="Edit Test Case"
+      onClose={onClose}
+      dismissable={!saving}
+      panelClassName="w-full max-w-2xl max-h-[85vh]"
+      overlayClassName="items-start justify-center pt-10"
     >
-      <div
-        id="edit-test-case-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Edit Test Case"
-        className="w-full max-w-2xl rounded-lg bg-[#0B1120] border border-slate-700/80 shadow-2xl overflow-hidden flex flex-col max-h-[85vh]"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800 bg-[#020617]">
-          <div className="flex items-center gap-2">
-            <Pencil className="w-4 h-4 text-violet-400" />
-            <div>
-              <h2 className="text-sm font-bold text-slate-100 font-sans">Edit Test Case</h2>
-              <p className="text-[11px] text-content-muted font-sans">
-                Fix a specific field without discarding and regenerating the whole case.
-              </p>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close Edit Test Case"
-            disabled={saving}
-            className="p-1.5 text-content-muted hover:text-slate-300 rounded cursor-pointer disabled:opacity-50"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
+      <ModalHeader
+        icon={<Pencil className="w-4 h-4 text-violet-400" />}
+        title="Edit Test Case"
+        subtitle="Fix a specific field without discarding and regenerating the whole case."
+        onClose={onClose}
+        closeLabel="Close Edit Test Case"
+      />
 
-        {/* Form body */}
+      {/* Form body */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           <div className="space-y-1.5">
             <label className="text-[10px] font-mono text-slate-400 uppercase tracking-wider block" htmlFor="edit-tc-title">
@@ -322,7 +305,6 @@ export const EditTestCaseModal: React.FC<EditTestCaseModalProps> = ({ testCase, 
             Cancel
           </button>
         </div>
-      </div>
-    </div>
+  </Modal>
   );
 };

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { AlertTriangle, Loader2, Trash2, X } from 'lucide-react';
+import { Modal } from '../common/Modal';
 import { ApiError } from '../../services/aiqaApi';
 import type { Project } from '../../types/contract';
 
@@ -63,19 +64,14 @@ export const DeleteProjectDialog: React.FC<DeleteProjectDialogProps> = ({
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-start justify-center pt-16 bg-slate-950/80 backdrop-blur-sm p-4 animate-in fade-in duration-100"
-      onClick={() => !submitting && onClose()}
-    >
-      <div
-        id="delete-project-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Delete Project"
-        className="w-full max-w-md rounded-lg bg-[#0B1120] border border-slate-700/80 shadow-2xl overflow-hidden flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800 bg-[#020617]">
+    <Modal
+      id="delete-project-modal"
+      ariaLabel="Delete Project"
+      onClose={onClose}
+      dismissable={!submitting}
+      panelClassName="w-full max-w-md"
+      overlayClassName="items-start justify-center pt-16 bg-slate-950/80 backdrop-blur-sm p-4 animate-in fade-in duration-100"
+    >        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800 bg-[#020617]">
           <div className="flex items-center gap-2">
             <Trash2 className="w-4 h-4 text-rose-400" />
             <h2 className="text-sm font-bold text-slate-100 font-sans">
@@ -157,7 +153,6 @@ export const DeleteProjectDialog: React.FC<DeleteProjectDialogProps> = ({
             )}
           </button>
         </div>
-      </div>
-    </div>
+  </Modal>
   );
 };

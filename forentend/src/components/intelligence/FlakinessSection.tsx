@@ -74,8 +74,22 @@ export const FlakinessSection: React.FC<FlakinessSectionProps> = ({ flakiness, l
                 return (
                   <tr
                     key={row.id}
-                    className="hover:bg-slate-800/30 transition-colors cursor-pointer"
+                    className="hover:bg-slate-800/30 transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-violet-400"
                     onClick={() => setSelectedItem(row)}
+                    // This row is the only way to open the flakiness drill-down, so
+                    // it has to be reachable without a mouse: it is focusable, and
+                    // Enter/Space activate it. Previously `onClick` on a `<tr>` was
+                    // the whole interaction, which is WCAG 2.1.1 Keyboard (A) --
+                    // a keyboard user could see the table and open nothing.
+                    tabIndex={0}
+                    role="button"
+                    aria-label={`Show flakiness details for ${row.node_id}`}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        setSelectedItem(row);
+                      }
+                    }}
                     data-testid={`flakiness-row-${row.id}`}
                   >
                     <td className="py-2.5 px-3 font-semibold text-content-primary">{row.node_id}</td>

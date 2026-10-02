@@ -213,7 +213,7 @@ const QuickLoginFields: React.FC<QuickLoginFieldsProps> = ({ role, updateStep, o
           value={navigateStep.url}
           onChange={(e) => updateStep(role.localId, navigateStep.localId, { url: e.target.value })}
           disabled={disabled}
-          className="w-full px-2 py-1 rounded bg-[#0B1120] border border-slate-700 text-[11px] font-mono text-slate-100 placeholder-slate-500 focus:outline-none"
+          className="w-full px-2 py-1 rounded bg-[#0B1120] border border-slate-700 text-[11px] font-mono text-slate-100 placeholder-slate-500 focus:outline-none focus:border-violet-400 focus:ring-1 focus:ring-violet-400/70"
         />
       </div>
       <div className="space-y-1">
@@ -224,7 +224,7 @@ const QuickLoginFields: React.FC<QuickLoginFieldsProps> = ({ role, updateStep, o
           value={usernameStep.value}
           onChange={(e) => updateStep(role.localId, usernameStep.localId, { value: e.target.value })}
           disabled={disabled}
-          className="w-full px-2 py-1 rounded bg-[#0B1120] border border-slate-700 text-[11px] font-mono text-slate-100 placeholder-slate-500 focus:outline-none"
+          className="w-full px-2 py-1 rounded bg-[#0B1120] border border-slate-700 text-[11px] font-mono text-slate-100 placeholder-slate-500 focus:outline-none focus:border-violet-400 focus:ring-1 focus:ring-violet-400/70"
         />
       </div>
       <div className="space-y-1">
@@ -236,7 +236,7 @@ const QuickLoginFields: React.FC<QuickLoginFieldsProps> = ({ role, updateStep, o
             value={passwordStep.value}
             onChange={(e) => updateStep(role.localId, passwordStep.localId, { value: e.target.value })}
             disabled={disabled}
-            className="flex-1 min-w-0 px-2 py-1 rounded bg-[#0B1120] border border-slate-700 text-[11px] font-mono text-slate-100 placeholder-slate-500 focus:outline-none"
+            className="flex-1 min-w-0 px-2 py-1 rounded bg-[#0B1120] border border-slate-700 text-[11px] font-mono text-slate-100 placeholder-slate-500 focus:outline-none focus:border-violet-400 focus:ring-1 focus:ring-violet-400/70"
           />
           <button
             type="button"
@@ -546,7 +546,7 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
           onChange={(e) => setTargetUrl(e.target.value)}
           disabled={disabled || isBusy}
           list="crawl-connected-urls"
-          className="flex-1 px-2.5 py-1.5 rounded bg-[#020617] border border-slate-700 hover:border-slate-600 focus:border-teal-500 text-xs font-mono text-slate-100 placeholder-slate-500 focus:outline-none"
+          className="flex-1 px-2.5 py-1.5 rounded bg-[#020617] border border-slate-700 hover:border-slate-600 focus:border-teal-500 text-xs font-mono text-slate-100 placeholder-slate-500 focus:outline-none focus:border-violet-400 focus:ring-1 focus:ring-violet-400/70"
         />
         <datalist id="crawl-connected-urls">
           {connectedUrls.map((s) => (
@@ -615,7 +615,7 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
                     value={role.name}
                     onChange={(e) => updateAuthRoleName(role.localId, e.target.value)}
                     disabled={disabled || isBusy}
-                    className="flex-1 px-2 py-1 rounded bg-[#0B1120] border border-slate-700 hover:border-slate-600 focus:border-amber-500 text-xs font-mono text-slate-100 placeholder-slate-500 focus:outline-none"
+                    className="flex-1 px-2 py-1 rounded bg-[#0B1120] border border-slate-700 hover:border-slate-600 focus:border-amber-500 text-xs font-mono text-slate-100 placeholder-slate-500 focus:outline-none focus:border-violet-400 focus:ring-1 focus:ring-violet-400/70"
                   />
                   <button
                     type="button"
@@ -654,7 +654,7 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
                           updateStep(role.localId, step.localId, { type: e.target.value as LoginStepType })
                         }
                         disabled={disabled || isBusy}
-                        className="px-1.5 py-1 rounded bg-[#0B1120] border border-slate-700 text-[10px] font-mono text-slate-300 focus:outline-none shrink-0 cursor-pointer"
+                        className="px-1.5 py-1 rounded bg-[#0B1120] border border-slate-700 text-[10px] font-mono text-slate-300 focus:outline-none focus:border-violet-400 focus:ring-1 focus:ring-violet-400/70 shrink-0 cursor-pointer"
                       >
                         <option value="NAVIGATE">NAVIGATE</option>
                         <option value="FILL">FILL</option>
@@ -668,7 +668,7 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
                           value={step.url}
                           onChange={(e) => updateStep(role.localId, step.localId, { url: e.target.value })}
                           disabled={disabled || isBusy}
-                          className="flex-1 px-2 py-1 rounded bg-[#0B1120] border border-slate-700 text-[11px] font-mono text-slate-100 placeholder-slate-500 focus:outline-none"
+                          className="flex-1 px-2 py-1 rounded bg-[#0B1120] border border-slate-700 text-[11px] font-mono text-slate-100 placeholder-slate-500 focus:outline-none focus:border-violet-400 focus:ring-1 focus:ring-violet-400/70"
                         />
                       )}
 
@@ -679,7 +679,7 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
                           value={step.selector}
                           onChange={(e) => updateStep(role.localId, step.localId, { selector: e.target.value })}
                           disabled={disabled || isBusy}
-                          className="w-28 px-2 py-1 rounded bg-[#0B1120] border border-slate-700 text-[11px] font-mono text-slate-100 placeholder-slate-500 focus:outline-none shrink-0"
+                          className="w-28 px-2 py-1 rounded bg-[#0B1120] border border-slate-700 text-[11px] font-mono text-slate-100 placeholder-slate-500 focus:outline-none focus:border-violet-400 focus:ring-1 focus:ring-violet-400/70 shrink-0"
                         />
                       )}
 
@@ -691,7 +691,7 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
                             value={step.value}
                             onChange={(e) => updateStep(role.localId, step.localId, { value: e.target.value })}
                             disabled={disabled || isBusy}
-                            className="flex-1 min-w-0 px-2 py-1 rounded bg-[#0B1120] border border-slate-700 text-[11px] font-mono text-slate-100 placeholder-slate-500 focus:outline-none"
+                            className="flex-1 min-w-0 px-2 py-1 rounded bg-[#0B1120] border border-slate-700 text-[11px] font-mono text-slate-100 placeholder-slate-500 focus:outline-none focus:border-violet-400 focus:ring-1 focus:ring-violet-400/70"
                           />
                           <button
                             type="button"

@@ -127,7 +127,7 @@ export const CommandPalette: React.FC = () => {
             placeholder="Type a command or search workspace..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="flex-1 bg-transparent border-none outline-none text-xs text-content-primary placeholder-content-muted font-sans"
+            className="flex-1 bg-transparent border-none outline-none text-xs text-content-primary placeholder-content-muted font-sans focus:ring-1 focus:ring-violet-400 focus:ring-inset"
           />
           <button
             type="button"

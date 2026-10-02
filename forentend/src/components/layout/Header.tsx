@@ -19,7 +19,7 @@
  * project-scoped page already takes for its own local state.
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Menu,
@@ -119,6 +119,52 @@ export const Header: React.FC = () => {
 
   const currentEnvConfig = envOptions.find((e) => e.id === currentEnvironment) || envOptions[0];
 
+  /**
+   * All three header popovers closed on `onMouseLeave` and nothing else.
+   *
+   * That is not a keyboard path at all: `mouseleave` never fires for someone who
+   * never used a mouse, so opening the environment selector, the backend-health
+   * detail or the notifications list with Enter left it stuck open with no way
+   * to shut it -- no Escape, no outside click. WCAG 2.1.1 Keyboard (A).
+   *
+   * One listener for all three rather than three, because a single
+   * `keydown`/`pointerdown` pair at the document is the only version of this
+   * that cannot drift out of sync with the next dropdown added.
+   *
+   * `pointerdown` rather than `click`, so a press that starts outside and ends
+   * inside still counts as outside, and so it runs before the click handler that
+   * would otherwise re-open the popover it is closing.
+   */
+  const anyPopoverOpen = isEnvDropdownOpen || isHealthDetailOpen || isNotificationsOpen;
+  const closeAllPopovers = useCallback(() => {
+    setIsEnvDropdownOpen(false);
+    setIsHealthDetailOpen(false);
+    setIsNotificationsOpen(false);
+  }, []);
+
+  useEffect(() => {
+    if (!anyPopoverOpen) return;
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeAllPopovers();
+    };
+    const onPointerDown = (event: Event) => {
+      const target = event.target;
+      // A press inside a popover's own positioned wrapper is not an outside
+      // click. `closest` rather than a single ref, because each popover wraps its
+      // own trigger separately.
+      if (target instanceof Element && target.closest('[data-header-popover-root]')) return;
+      closeAllPopovers();
+    };
+
+    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('pointerdown', onPointerDown);
+    };
+  }, [anyPopoverOpen, closeAllPopovers]);
+
   return (
     <header className="h-13 border-b border-border-default/90 bg-surface-card px-3 sm:px-4 flex items-center justify-between gap-3 sticky top-0 z-30 select-none">
       {/* Left: Hamburger & Brand */}
@@ -157,6 +203,8 @@ export const Header: React.FC = () => {
         <div className="relative">
           <button
             id="env-selector-button"
+            aria-expanded={isEnvDropdownOpen}
+            aria-haspopup="menu"
             onClick={() => setIsEnvDropdownOpen(!isEnvDropdownOpen)}
             className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-surface-page hover:bg-slate-900 border border-border-default text-xs text-content-primary transition-colors cursor-pointer"
           >
@@ -171,6 +219,7 @@ export const Header: React.FC = () => {
           {isEnvDropdownOpen && (
             <div
               className="absolute left-0 mt-1.5 w-60 rounded-lg bg-surface-card border border-slate-700/80 shadow-2xl p-1.5 z-50 text-xs"
+              data-header-popover-root={""}
               onMouseLeave={() => setIsEnvDropdownOpen(false)}
             >
               <div className="px-2.5 py-1 text-[10px] font-mono text-content-secondary uppercase tracking-wider font-semibold">
@@ -243,6 +292,8 @@ export const Header: React.FC = () => {
         <div className="relative">
           <button
             id="backend-health-button"
+                aria-expanded={isHealthDetailOpen}
+                aria-haspopup="true"
             onClick={() => setIsHealthDetailOpen(!isHealthDetailOpen)}
             className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-surface-page hover:bg-slate-900 border border-border-default text-xs text-content-secondary transition-colors cursor-pointer"
             title="Real orchestrator connection status"
@@ -267,6 +318,7 @@ export const Header: React.FC = () => {
           {isHealthDetailOpen && (
             <div
               className="absolute right-0 mt-1.5 w-72 rounded-lg bg-surface-card border border-slate-700/80 shadow-2xl p-3 z-50 text-xs"
+              data-header-popover-root={""}
               onMouseLeave={() => setIsHealthDetailOpen(false)}
             >
               <div className="flex items-center justify-between pb-2 border-b border-border-default mb-2">
@@ -317,6 +369,8 @@ export const Header: React.FC = () => {
         <div className="relative">
           <button
             id="notifications-button"
+                aria-expanded={isNotificationsOpen}
+                aria-haspopup="true"
             onClick={() => setIsNotificationsOpen(!isNotificationsOpen)}
             className="p-1.5 rounded-md text-content-secondary hover:text-content-primary hover:bg-slate-800/80 transition-colors relative cursor-pointer"
             title="Recent Activity"
@@ -331,6 +385,7 @@ export const Header: React.FC = () => {
             <div
               id="recent-activity-panel"
               className="absolute right-0 mt-1.5 w-80 rounded-lg bg-surface-card border border-slate-700/80 shadow-2xl p-3 z-50 text-xs"
+              data-header-popover-root={""}
               onMouseLeave={() => setIsNotificationsOpen(false)}
             >
               <div className="flex items-center justify-between pb-2 border-b border-border-default mb-2">
