@@ -1167,10 +1167,7 @@ impl GovernedHealingService {
             return Err(GovernedHealingError::Internal(format!(
                 "self-healing agent could not reach a diagnosis (status: {:?}{})",
                 outcome.status,
-                outcome
-                    .error
-                    .map(|e| format!(", {e}"))
-                    .unwrap_or_default()
+                outcome.error.map(|e| format!(", {e}")).unwrap_or_default()
             )));
         }
         let output_val = outcome.final_output.ok_or_else(|| {

@@ -4,7 +4,7 @@ use crate::engine::{ProjectStream, RunRecord};
 use crate::evidence::LocalEvidenceStore;
 use crate::executor::ExecutorRegistry;
 use crate::log_bus::LogBus;
-use crate::performance_testing::PerformanceRunHandle;
+use crate::performance_testing::{PerfRunState, PerformanceRunHandle};
 use crate::policy::PolicyConfig;
 use crate::store::Store;
 use std::collections::HashMap;
@@ -109,6 +109,90 @@ impl AppState {
             .clone()
     }
 
+    /// Drops a project's stream, returning whether there was one to drop.
+    ///
+    /// This map had exactly one mutation -- the `entry().or_insert_with()` above --
+    /// and no `.remove()` anywhere in the crate, so it grew by one
+    /// `Arc<ProjectStream>` (a `broadcast::Sender` with capacity 1024 plus its
+    /// `AtomicU64`) for every distinct project id ever mentioned, for the lifetime
+    /// of the process.
+    ///
+    /// The leak that actually mattered was not steady-state growth but deletion:
+    /// `delete_project_handler` removed the project's rows from the database and
+    /// never touched this map, so a project deleted and then recreated under the
+    /// same id -- or simply deleted -- left its broadcast channel resident
+    /// forever, holding a buffer nothing will ever read again.
+    ///
+    /// Safe to call for a project that has no entry: `project_stream` recreates it
+    /// on the next subscribe or run, so there is no window in which a live
+    /// subscriber loses its channel. Existing subscribers hold their own `Arc`, so
+    /// removing the map entry does not close the channel underneath them either --
+    /// `tokio::sync::broadcast` only reports `Closed` once the last sender is
+    /// dropped, and the last sender is the one those subscribers are holding.
+    pub async fn forget_project_stream(&self, project_id: &str) -> bool {
+        self.project_streams
+            .write()
+            .await
+            .remove(project_id)
+            .is_some()
+    }
+
+    /// Evicts finished performance-test handles from the in-memory map, returning
+    /// how many went.
+    ///
+    /// Same defect as `project_streams`, and worth spelling out because the cost
+    /// per entry is not fixed: `PerformanceRunHandle::samples` is a `Vec` that is
+    /// only ever pushed to and never trimmed. For a `VOLUME` run that is bounded
+    /// by `max_total_requests` (default 5000), but `LOAD` runs take `max_requests`
+    /// as `Option` (`performance_testing.rs`), so an unset limit means one
+    /// `RequestSample` per request, kept for the process lifetime. The two status
+    /// endpoints then `clone()` that whole `Vec` on every poll.
+    ///
+    /// Only *finished* handles are dropped, and only after a grace window, for the
+    /// same reason `prune_finished_runs` has one: a status request issued
+    /// immediately after a test finishes is a normal thing to do, and dropping the
+    /// handle out from under it would turn a completed run into a 404.
+    ///
+    /// The durable record is the `performance_runs` row either way, so nothing
+    /// observable is lost.
+    pub async fn prune_finished_performance_tests(&self) -> usize {
+        let mut map = self.performance_tests.write().await;
+        let doomed: Vec<Uuid> = map
+            .iter()
+            .filter_map(|(id, handle)| {
+                // `try_read` rather than `read`: a run finalising right now holds
+                // the write lock, and a sweep must never block or fail a start.
+                // A handle we cannot inspect is left for the next sweep.
+                let Ok(state) = handle.state.try_read() else {
+                    return None;
+                };
+                if matches!(*state, PerfRunState::Running) {
+                    return None;
+                }
+                // Terminal, but inside the grace window: a status request issued
+                // moments after a test finishes is an ordinary thing to do, and
+                // dropping the handle under it would turn a completed run into a
+                // 404. `started_at` bounds how long the handle has existed, which
+                // is the closest thing to a finish time this struct keeps --
+                // `PerformanceRunHandle` has no `finished_at`, only
+                // `finished_elapsed_ms`, and comparing that against wall-clock
+                // `now` is exactly the bug that field's own doc comment warns
+                // about.
+                let aged = (chrono::Utc::now() - handle.started_at).num_seconds()
+                    >= FINISHED_PERF_RETENTION_SECS;
+                if aged {
+                    Some(*id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for id in &doomed {
+            map.remove(id);
+        }
+        doomed.len()
+    }
+
     /// Evicts terminal runs from the in-memory map, returning how many went.
     ///
     /// This map had no eviction at all: four `.insert()` sites, zero
@@ -140,8 +224,7 @@ impl AppState {
     /// a dispatch that is mid-finalisation; a record that cannot be inspected is
     /// left for the next sweep.
     pub async fn prune_finished_runs(&self) -> usize {
-        let cutoff =
-            chrono::Utc::now() - chrono::Duration::seconds(FINISHED_RUN_RETENTION_SECS);
+        let cutoff = chrono::Utc::now() - chrono::Duration::seconds(FINISHED_RUN_RETENTION_SECS);
         let mut runs = self.runs.write().await;
         let doomed: Vec<RunId> = runs
             .iter()
@@ -175,3 +258,8 @@ impl AppState {
 /// keep showing a run that has just completed across an ordinary poll interval,
 /// short enough that the map's footprint is bounded in practice.
 pub const FINISHED_RUN_RETENTION_SECS: i64 = 600;
+
+/// Grace window before a finished performance-test handle is evicted, in seconds.
+/// Shorter than FINISHED_RUN_RETENTION_SECS because a performance test's own
+/// status endpoint is polled far more often than a run's.
+pub const FINISHED_PERF_RETENTION_SECS: i64 = 300;

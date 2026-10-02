@@ -116,8 +116,15 @@ pub fn secret_names_of(actions: &[Action]) -> Vec<String> {
     let mut names: Vec<String> = actions
         .iter()
         .flat_map(|action| match action {
-            Action::Fill { value, .. } => secret_name(value).map(str::to_string).into_iter().collect::<Vec<_>>(),
-            Action::Request { headers, .. } => headers.values().filter_map(|v| secret_name(v)).map(str::to_string).collect(),
+            Action::Fill { value, .. } => secret_name(value)
+                .map(str::to_string)
+                .into_iter()
+                .collect::<Vec<_>>(),
+            Action::Request { headers, .. } => headers
+                .values()
+                .filter_map(|v| secret_name(v))
+                .map(str::to_string)
+                .collect(),
             _ => Vec::new(),
         })
         .collect();
@@ -1248,7 +1255,10 @@ mod tests {
         let mut actions = vec![Action::Request {
             method: "GET".into(),
             url: "http://93.184.216.34/pets".into(),
-            headers: headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            headers: headers
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
             body: None,
         }];
         actions.extend(expect);
@@ -1291,43 +1301,101 @@ mod tests {
 
     #[test]
     fn only_a_header_value_that_starts_env_and_is_not_a_good_reference_is_a_problem() {
-        assert_eq!(header_reference_problem("Authorization", "Bearer abc"), None);
+        assert_eq!(
+            header_reference_problem("Authorization", "Bearer abc"),
+            None
+        );
         assert_eq!(
             header_reference_problem("Authorization", "env:AIQA_SECRET_API_TOKEN"),
             None
         );
-        let problem = header_reference_problem("Authorization", "env:GROQ_API_KEY").expect("a problem");
-        assert!(problem.contains("the header Authorization"), "problem={problem}");
-        assert!(problem.contains("AIQA_LOGIN_ or AIQA_SECRET_"), "problem={problem}");
-        assert!(!problem.contains("GROQ_API_KEY"), "the variable asked for is not repeated: {problem}");
+        let problem =
+            header_reference_problem("Authorization", "env:GROQ_API_KEY").expect("a problem");
+        assert!(
+            problem.contains("the header Authorization"),
+            "problem={problem}"
+        );
+        assert!(
+            problem.contains("AIQA_LOGIN_ or AIQA_SECRET_"),
+            "problem={problem}"
+        );
+        assert!(
+            !problem.contains("GROQ_API_KEY"),
+            "the variable asked for is not repeated: {problem}"
+        );
     }
 
     #[tokio::test]
-    async fn validate_plan_rejects_a_bad_header_reference_and_an_empty_status_list_and_accepts_the_new_assertions() {
-        assert!(validate_plan(&api_plan(&[("Authorization", "env:AIQA_SECRET_API_TOKEN")], vec![])).await.is_ok());
-        assert!(validate_plan(&api_plan(&[("X", "plain")], vec![Action::AssertStatusIn { statuses: vec![200, 201] }, Action::AssertBodySchema { schema: serde_json::json!({"type": "object"}) }]))
-            .await
-            .is_ok());
-        let reasons = validate_plan(&api_plan(&[("Authorization", "env:GEMINI_API_KEY")], vec![]))
-            .await
-            .unwrap_err();
+    async fn validate_plan_rejects_a_bad_header_reference_and_an_empty_status_list_and_accepts_the_new_assertions(
+    ) {
+        assert!(validate_plan(&api_plan(
+            &[("Authorization", "env:AIQA_SECRET_API_TOKEN")],
+            vec![]
+        ))
+        .await
+        .is_ok());
+        assert!(validate_plan(&api_plan(
+            &[("X", "plain")],
+            vec![
+                Action::AssertStatusIn {
+                    statuses: vec![200, 201]
+                },
+                Action::AssertBodySchema {
+                    schema: serde_json::json!({"type": "object"})
+                }
+            ]
+        ))
+        .await
+        .is_ok());
+        let reasons = validate_plan(&api_plan(
+            &[("Authorization", "env:GEMINI_API_KEY")],
+            vec![],
+        ))
+        .await
+        .unwrap_err();
         assert_eq!(reasons.len(), 1);
-        assert!(reasons[0].contains("the header Authorization"), "{reasons:?}");
+        assert!(
+            reasons[0].contains("the header Authorization"),
+            "{reasons:?}"
+        );
         assert!(!reasons[0].contains("GEMINI_API_KEY"), "{reasons:?}");
-        let reasons = validate_plan(&api_plan(&[], vec![Action::AssertStatusIn { statuses: vec![] }]))
-            .await
-            .unwrap_err();
-        assert_eq!(reasons, vec!["ASSERT_STATUS_IN needs at least one status".to_string()]);
+        let reasons = validate_plan(&api_plan(
+            &[],
+            vec![Action::AssertStatusIn { statuses: vec![] }],
+        ))
+        .await
+        .unwrap_err();
+        assert_eq!(
+            reasons,
+            vec!["ASSERT_STATUS_IN needs at least one status".to_string()]
+        );
     }
 
     #[test]
     fn the_new_assertions_are_written_and_read_by_their_wire_names() {
-        let in_list = serde_json::to_value(Action::AssertStatusIn { statuses: vec![200, 404] }).unwrap();
-        assert_eq!(in_list, serde_json::json!({"type": "ASSERT_STATUS_IN", "statuses": [200, 404]}));
-        let schema = serde_json::to_value(Action::AssertBodySchema { schema: serde_json::json!({"type": "object"}) }).unwrap();
-        assert_eq!(schema, serde_json::json!({"type": "ASSERT_BODY_SCHEMA", "schema": {"type": "object"}}));
+        let in_list = serde_json::to_value(Action::AssertStatusIn {
+            statuses: vec![200, 404],
+        })
+        .unwrap();
+        assert_eq!(
+            in_list,
+            serde_json::json!({"type": "ASSERT_STATUS_IN", "statuses": [200, 404]})
+        );
+        let schema = serde_json::to_value(Action::AssertBodySchema {
+            schema: serde_json::json!({"type": "object"}),
+        })
+        .unwrap();
+        assert_eq!(
+            schema,
+            serde_json::json!({"type": "ASSERT_BODY_SCHEMA", "schema": {"type": "object"}})
+        );
         let back: Action = serde_json::from_value(in_list).unwrap();
-        assert_eq!(back, Action::AssertStatusIn { statuses: vec![200, 404] });
+        assert_eq!(
+            back,
+            Action::AssertStatusIn {
+                statuses: vec![200, 404]
+            }
+        );
     }
 
     #[test]

@@ -1799,6 +1799,14 @@ async fn delete_project_handler(
     auth::require_project_access(&ctx, Some(existing.id.to_string().as_str()))?;
 
     let deleted = state.store.delete_project(id).await.map_err(to_500)?;
+
+    // The project's in-memory event channel is now unreachable through the API,
+    // but it was never released: `AppState::project_streams` had no removal path
+    // anywhere in the crate, so deleting a project left a `broadcast::Sender`
+    // with a 1024-slot buffer resident for the life of the process. Dropped here,
+    // where the project stops existing. Idempotent, and `project_stream` recreates
+    // it on the next subscribe if anything ever legitimately needs it again.
+    state.forget_project_stream(&existing.id.to_string()).await;
     if !deleted {
         return Err(ApiError::not_found("project not found"));
     }
@@ -4399,6 +4407,11 @@ async fn start_performance_test_scoped(
         .write()
         .await
         .insert(run_id, handle.clone());
+    // Bound the handle map. It had one insert site and no removal anywhere in the
+    // crate, so every performance test this process ever started stayed resident --
+    // and each handle owns a `samples` Vec that is only ever pushed to. See
+    // `AppState::prune_finished_performance_tests`.
+    state.prune_finished_performance_tests().await;
 
     state
         .log_bus
@@ -5872,15 +5885,14 @@ async fn get_events_scoped(
     let since = q.since.unwrap_or(0);
 
     if let Some(record) = state.runs.read().await.get(&run_id).cloned() {
-        let events: Vec<RunEvent> = record
-            .events
-            .read()
-            .await
-            .iter()
-            .filter(|e| e.sequence >= since)
-            .cloned()
-            .collect();
-        return Ok(Json(events));
+        // `events_after` returns `None` once the record's retained window no longer
+        // reaches back to `since` (see `engine.rs`), in which case the durable
+        // `run_events` copy is the answer. Reading the store on every large `since`
+        // is the cost of an unbounded in-memory history, and it is paid only when
+        // the record genuinely cannot answer.
+        if let Some(events) = record.events_after(since).await {
+            return Ok(Json(events));
+        }
     }
     let events = state
         .store

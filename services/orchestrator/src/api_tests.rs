@@ -3569,14 +3569,21 @@ fn project_from_path_reads_only_a_real_project_id_from_a_project_url() {
 async fn with_request_path_makes_the_urls_project_known_only_inside_the_call() {
     let id = "6f95ee30-3fc8-4bc6-9d6d-f8cb4c8ef988";
     assert_eq!(crate::auth::request_project(), None);
-    let inside = crate::auth::with_request_path(&format!("/api/v1/projects/{id}/gap-check"), async {
-        crate::auth::request_project()
-    })
-    .await;
+    let inside =
+        crate::auth::with_request_path(&format!("/api/v1/projects/{id}/gap-check"), async {
+            crate::auth::request_project()
+        })
+        .await;
     assert_eq!(inside.as_deref(), Some(id));
-    let elsewhere = crate::auth::with_request_path("/api/v1/logs", async { crate::auth::request_project() }).await;
+    let elsewhere =
+        crate::auth::with_request_path("/api/v1/logs", async { crate::auth::request_project() })
+            .await;
     assert_eq!(elsewhere, None, "a URL that names no project names none");
-    assert_eq!(crate::auth::request_project(), None, "and nothing leaks out of the call");
+    assert_eq!(
+        crate::auth::request_project(),
+        None,
+        "and nothing leaks out of the call"
+    );
 }
 
 /// Category: real pagination — `offset` genuinely moves the window rather
@@ -4897,8 +4904,13 @@ async fn phase5b_a_compile_grounded_in_a_crawl_has_the_login_first_and_reports_o
     let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(SETTINGS_PLAN_JSON))).await;
     let project = make_project(&state, "Phase5B Grounded Compile").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-    let (run_id, file) =
-        crawl_with_grounding(&state, project, &owner, Some(&grounding_json("AIQA_LOGIN_T5B_ONE"))).await;
+    let (run_id, file) = crawl_with_grounding(
+        &state,
+        project,
+        &owner,
+        Some(&grounding_json("AIQA_LOGIN_T5B_ONE")),
+    )
+    .await;
     let (_, created) = send(
         &state,
         req(
@@ -4926,9 +4938,16 @@ async fn phase5b_a_compile_grounded_in_a_crawl_has_the_login_first_and_reports_o
     }
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(body["status"], "READY", "body={body}");
-    assert_eq!(body["actions"].as_array().unwrap().len(), 8, "the login (4) and the plan (4): {body}");
+    assert_eq!(
+        body["actions"].as_array().unwrap().len(),
+        8,
+        "the login (4) and the plan (4): {body}"
+    );
     assert_eq!(body["actions"][0]["type"], "NAVIGATE");
-    assert_eq!(body["actions"][2]["value"], "env:AIQA_LOGIN_T5B_ONE_PASSWORD", "the login holds a reference: {body}");
+    assert_eq!(
+        body["actions"][2]["value"], "env:AIQA_LOGIN_T5B_ONE_PASSWORD",
+        "the login holds a reference: {body}"
+    );
     // What the compiler was given: the role, the size of what it saw, and the names — never values — of the secrets.
     assert_eq!(body["grounding"]["role"], "admin", "body={body}");
     assert_eq!(body["grounding"]["login_steps"], 4);
@@ -4943,8 +4962,13 @@ async fn phase5b_a_selector_the_crawl_never_found_is_not_executable_through_the_
     let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(INVENTED_PLAN_JSON))).await;
     let project = make_project(&state, "Phase5B Ungrounded").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-    let (run_id, file) =
-        crawl_with_grounding(&state, project, &owner, Some(&grounding_json("AIQA_LOGIN_T5B_TWO"))).await;
+    let (run_id, file) = crawl_with_grounding(
+        &state,
+        project,
+        &owner,
+        Some(&grounding_json("AIQA_LOGIN_T5B_TWO")),
+    )
+    .await;
     let (_, created) = send(
         &state,
         req(
@@ -4973,7 +4997,10 @@ async fn phase5b_a_selector_the_crawl_never_found_is_not_executable_through_the_
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(body["status"], "NOT_EXECUTABLE", "body={body}");
     let reasons = body["reasons"].to_string();
-    assert!(reasons.contains("#settings-link") && reasons.contains("step 2 (CLICK)"), "reasons={reasons}");
+    assert!(
+        reasons.contains("#settings-link") && reasons.contains("step 2 (CLICK)"),
+        "reasons={reasons}"
+    );
     assert_eq!(body["grounding"]["role"], "admin");
 }
 
@@ -5009,7 +5036,11 @@ async fn phase5b_a_compile_with_no_crawl_is_exactly_what_it_was() {
         assert_eq!(status, StatusCode::OK, "response={response}");
         assert_eq!(response["status"], "READY", "response={response}");
         assert!(response.get("grounding").is_none(), "response={response}");
-        assert_eq!(response["actions"].as_array().unwrap().len(), 3, "no login was put in front: {response}");
+        assert_eq!(
+            response["actions"].as_array().unwrap().len(),
+            3,
+            "no login was put in front: {response}"
+        );
     }
 }
 
@@ -5018,8 +5049,13 @@ async fn phase5b_the_compile_says_what_is_wrong_with_the_crawl_or_the_role() {
     let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(SETTINGS_PLAN_JSON))).await;
     let project = make_project(&state, "Phase5B Bad Crawl").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-    let (run_with, file) =
-        crawl_with_grounding(&state, project, &owner, Some(&grounding_json("AIQA_LOGIN_T5B_THREE"))).await;
+    let (run_with, file) = crawl_with_grounding(
+        &state,
+        project,
+        &owner,
+        Some(&grounding_json("AIQA_LOGIN_T5B_THREE")),
+    )
+    .await;
     let (run_without, _) = crawl_with_grounding(&state, project, &owner, None).await;
     let (_, created) = send(
         &state,
@@ -5042,9 +5078,16 @@ async fn phase5b_the_compile_says_what_is_wrong_with_the_crawl_or_the_role() {
     };
 
     // A crawl that recorded no grounding (still running, or made before grounding existed).
-    let (status, body) = send(&state, compile(serde_json::json!({"crawl_run_id": run_without}))).await;
+    let (status, body) = send(
+        &state,
+        compile(serde_json::json!({"crawl_run_id": run_without})),
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
-    assert!(body.to_string().contains("recorded no grounding"), "body={body}");
+    assert!(
+        body.to_string().contains("recorded no grounding"),
+        "body={body}"
+    );
     // A role the crawl does not have: the ones it has are named.
     let (status, body) = send(
         &state,
@@ -5075,8 +5118,13 @@ async fn phase5b_another_projects_crawl_cannot_ground_a_compile() {
     let project_b = make_project(&state, "Phase5B Crawl Borrower").await;
     let key_a = mint_key(&state, "operator", Some(&project_a.to_string())).await;
     let key_b = mint_key(&state, "operator", Some(&project_b.to_string())).await;
-    let (run_id, file) =
-        crawl_with_grounding(&state, project_a, &key_a, Some(&grounding_json("AIQA_LOGIN_T5B_FOUR"))).await;
+    let (run_id, file) = crawl_with_grounding(
+        &state,
+        project_a,
+        &key_a,
+        Some(&grounding_json("AIQA_LOGIN_T5B_FOUR")),
+    )
+    .await;
     let (_, created) = send(
         &state,
         req(
@@ -5102,7 +5150,11 @@ async fn phase5b_another_projects_crawl_cannot_ground_a_compile() {
     if let Some(file) = file {
         std::fs::remove_file(file).ok();
     }
-    assert_eq!(status, StatusCode::NOT_FOUND, "another project's crawl is not reachable: {body}");
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "another project's crawl is not reachable: {body}"
+    );
 }
 
 #[tokio::test]
@@ -5112,9 +5164,20 @@ async fn phase5b_a_handoff_whose_login_secrets_are_not_set_is_refused_before_a_r
     let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(SETTINGS_PLAN_JSON))).await;
     let project = make_project(&state, "Phase5B Handoff Missing Secret").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-    let (run_id, file) =
-        crawl_with_grounding(&state, project, &owner, Some(&grounding_json("AIQA_LOGIN_T5B_FIVE"))).await;
-    let id = approved_case(&state, project, &owner, open_settings_case_body("Admin opens Settings")).await;
+    let (run_id, file) = crawl_with_grounding(
+        &state,
+        project,
+        &owner,
+        Some(&grounding_json("AIQA_LOGIN_T5B_FIVE")),
+    )
+    .await;
+    let id = approved_case(
+        &state,
+        project,
+        &owner,
+        open_settings_case_body("Admin opens Settings"),
+    )
+    .await;
 
     let (status, body) = send(
         &state,
@@ -5131,7 +5194,8 @@ async fn phase5b_a_handoff_whose_login_secrets_are_not_set_is_refused_before_a_r
     }
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
     assert!(
-        body.to_string().contains("AIQA_LOGIN_T5B_FIVE_PASSWORD") && body.to_string().contains("not set"),
+        body.to_string().contains("AIQA_LOGIN_T5B_FIVE_PASSWORD")
+            && body.to_string().contains("not set"),
         "body={body}"
     );
 }
@@ -5145,9 +5209,20 @@ async fn phase5b_a_grounded_handoff_stores_a_spec_and_a_task_that_hold_no_creden
     let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(SETTINGS_PLAN_JSON))).await;
     let project = make_project(&state, "Phase5B Handoff Stores No Credential").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-    let (crawl_run, file) =
-        crawl_with_grounding(&state, project, &owner, Some(&grounding_json("AIQA_LOGIN_T5B_SIX"))).await;
-    let id = approved_case(&state, project, &owner, open_settings_case_body("Admin opens Settings")).await;
+    let (crawl_run, file) = crawl_with_grounding(
+        &state,
+        project,
+        &owner,
+        Some(&grounding_json("AIQA_LOGIN_T5B_SIX")),
+    )
+    .await;
+    let id = approved_case(
+        &state,
+        project,
+        &owner,
+        open_settings_case_body("Admin opens Settings"),
+    )
+    .await;
 
     let (status, body) = send(
         &state,
@@ -5163,7 +5238,10 @@ async fn phase5b_a_grounded_handoff_stores_a_spec_and_a_task_that_hold_no_creden
         std::fs::remove_file(file).ok();
     }
     assert_eq!(status, StatusCode::CREATED, "body={body}");
-    assert!(!body.to_string().contains("six-pass-value-2"), "body={body}");
+    assert!(
+        !body.to_string().contains("six-pass-value-2"),
+        "body={body}"
+    );
     let run_id: Uuid = body["run_id"].as_str().expect("run_id").parse().unwrap();
 
     let (plan, ..) = state
@@ -5191,10 +5269,22 @@ async fn phase5b_a_grounded_handoff_stores_a_spec_and_a_task_that_hold_no_creden
             .join(task.params["spec"].as_str().expect("a spec path")),
     )
     .expect("read the generated spec");
-    assert!(spec.contains("secret(\"AIQA_LOGIN_T5B_SIX_PASSWORD\")"), "{spec}");
-    assert!(spec.contains("import { secret } from \"../../helpers/secrets\";"), "{spec}");
-    assert!(!spec.contains("six-pass-value-2") && !spec.contains("six-user-value-1"), "{spec}");
-    assert!(spec.contains("AIQA_STEP"), "each step is logged as the run goes: {spec}");
+    assert!(
+        spec.contains("secret(\"AIQA_LOGIN_T5B_SIX_PASSWORD\")"),
+        "{spec}"
+    );
+    assert!(
+        spec.contains("import { secret } from \"../../helpers/secrets\";"),
+        "{spec}"
+    );
+    assert!(
+        !spec.contains("six-pass-value-2") && !spec.contains("six-user-value-1"),
+        "{spec}"
+    );
+    assert!(
+        spec.contains("AIQA_STEP"),
+        "each step is logged as the run goes: {spec}"
+    );
 }
 
 /// "playwright" has no registered executor in this test harness, so the
@@ -7781,37 +7871,70 @@ fn openapi_fixture_router() -> axum::Router {
     async fn pets(Query(q): Query<HashMap<String, String>>) -> Response {
         match q.get("limit").map(|l| l.parse::<i64>()) {
             Some(Ok(_)) => Json(json!([{"id": 1, "name": "Rex"}])).into_response(),
-            _ => (StatusCode::BAD_REQUEST, Json(json!({"error": "limit must be a whole number"}))).into_response(),
+            _ => (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "limit must be a whole number"})),
+            )
+                .into_response(),
         }
     }
     async fn new_pet(Json(body): Json<Value>) -> Response {
-        if body.get("name").and_then(Value::as_str).is_some() && body.get("age").and_then(Value::as_i64).is_some() {
-            (StatusCode::CREATED, Json(json!({"id": 2, "name": body["name"]}))).into_response()
+        if body.get("name").and_then(Value::as_str).is_some()
+            && body.get("age").and_then(Value::as_i64).is_some()
+        {
+            (
+                StatusCode::CREATED,
+                Json(json!({"id": 2, "name": body["name"]})),
+            )
+                .into_response()
         } else {
-            (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"error": "name and age are needed"}))).into_response()
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(json!({"error": "name and age are needed"})),
+            )
+                .into_response()
         }
     }
     async fn pet(Path(id): Path<String>) -> Response {
         match id.parse::<i64>() {
             Ok(1) => Json(json!({"id": 1, "name": "Rex"})).into_response(),
             Ok(_) => (StatusCode::NOT_FOUND, Json(json!({"error": "no such pet"}))).into_response(),
-            Err(_) => (StatusCode::BAD_REQUEST, Json(json!({"error": "the id must be a whole number"}))).into_response(),
+            Err(_) => (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "the id must be a whole number"})),
+            )
+                .into_response(),
         }
     }
     async fn secure(headers: HeaderMap) -> Response {
-        if headers.get("authorization").and_then(|v| v.to_str().ok()) == Some("Bearer t8b-test-token") {
+        if headers.get("authorization").and_then(|v| v.to_str().ok())
+            == Some("Bearer t8b-test-token")
+        {
             Json(json!({"ok": true})).into_response()
         } else {
-            (StatusCode::UNAUTHORIZED, Json(json!({"error": "no credential"}))).into_response()
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error": "no credential"})),
+            )
+                .into_response()
         }
     }
     // Scheduled regression's fixtures: an address that answers 200 until a test switches it off (500), and one that takes a while.
     async fn flip(Path(name): Path<String>) -> Response {
-        let up = fixture_flips().lock().unwrap().get(&name).copied().unwrap_or(true);
+        let up = fixture_flips()
+            .lock()
+            .unwrap()
+            .get(&name)
+            .copied()
+            .unwrap_or(true);
         if up {
             Json(json!({"ok": true})).into_response()
         } else {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "switched off"}))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "switched off"})),
+            )
+                .into_response()
         }
     }
     async fn slow() -> Response {
@@ -8603,12 +8726,21 @@ async fn upload_document(
 const SAMPLE_FRD: &str = "# Login\n\n## 3.2 Login\n\nFR-012: The system shall lock an account after 5 failed login attempts.\n\nFR-013: A locked account shall be unlocked automatically after 15 minutes.\n\n## 3.3 Reports\n\nThe system shall export any report as a CSV file.\n";
 
 #[tokio::test]
-async fn an_uploaded_document_is_also_read_for_its_requirements_and_the_old_response_is_unchanged() {
+async fn an_uploaded_document_is_also_read_for_its_requirements_and_the_old_response_is_unchanged()
+{
     let (state, _dir) = test_state_with_compiled_api().await;
     let project = make_project(&state, "Requirements - Upload").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
 
-    let (status, body) = upload_document(&state, &owner, project, "FRD.md", SAMPLE_FRD.as_bytes(), Some("FRD")).await;
+    let (status, body) = upload_document(
+        &state,
+        &owner,
+        project,
+        "FRD.md",
+        SAMPLE_FRD.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
 
     assert_eq!(status, StatusCode::OK, "body={body}");
     // What this endpoint has always answered.
@@ -8620,13 +8752,21 @@ async fn an_uploaded_document_is_also_read_for_its_requirements_and_the_old_resp
     assert_eq!(summary["requirements_count"], 3, "body={body}");
     assert_eq!(summary["sections_count"], 3, "body={body}");
     assert_eq!(summary["full_truncated"], false);
-    assert_eq!(summary["full_char_count"], SAMPLE_FRD.trim().chars().count());
+    assert_eq!(
+        summary["full_char_count"],
+        SAMPLE_FRD.trim().chars().count()
+    );
     assert!(summary["document_id"].as_str().is_some(), "body={body}");
     assert_eq!(summary["by_kind"]["security"], 2, "body={body}");
 
     let (status, listed) = send(
         &state,
-        req("GET", &format!("/api/v1/projects/{project}/requirements"), Some(&owner), None),
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/requirements"),
+            Some(&owner),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body={listed}");
@@ -8639,7 +8779,10 @@ async fn an_uploaded_document_is_also_read_for_its_requirements_and_the_old_resp
     assert_eq!(keys, ["FR-012", "FR-013", "FRD-3.3-01"]);
     assert_eq!(reqs[0]["section"], "3.2 Login");
     assert_eq!(reqs[0]["kind"], "security");
-    assert_eq!(reqs[2]["text"], "The system shall export any report as a CSV file.");
+    assert_eq!(
+        reqs[2]["text"],
+        "The system shall export any report as a CSV file."
+    );
     assert_eq!(reqs[0]["document_id"], summary["document_id"]);
 }
 
@@ -8659,23 +8802,50 @@ async fn nothing_past_the_old_20000_character_mark_is_lost() {
     doc.push_str("## 2 The end\n\nFR-9999: The system shall still read this last requirement.\n");
     assert!(doc.chars().count() > 40_000);
 
-    let (status, body) = upload_document(&state, &owner, project, "long.md", doc.as_bytes(), Some("FRD")).await;
+    let (status, body) = upload_document(
+        &state,
+        &owner,
+        project,
+        "long.md",
+        doc.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
 
     assert_eq!(status, StatusCode::OK, "body={body}");
     // The bounded text the single-prompt path uses is still cut, and says so.
     assert_eq!(body["truncated"], true);
     assert_eq!(body["char_count"], 20_000);
     // The whole document was read all the same.
-    assert_eq!(body["requirements_document"]["full_char_count"], doc.trim().chars().count());
-    assert_eq!(body["requirements_document"]["requirements_count"], 601, "body={body}");
+    assert_eq!(
+        body["requirements_document"]["full_char_count"],
+        doc.trim().chars().count()
+    );
+    assert_eq!(
+        body["requirements_document"]["requirements_count"], 601,
+        "body={body}"
+    );
     let (_, listed) = send(
         &state,
-        req("GET", &format!("/api/v1/projects/{project}/requirements"), Some(&owner), None),
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/requirements"),
+            Some(&owner),
+            None,
+        ),
     )
     .await;
-    let last = listed["requirements"].as_array().unwrap().last().unwrap().clone();
+    let last = listed["requirements"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
     assert_eq!(last["key"], "FR-9999");
-    assert_eq!(last["text"], "The system shall still read this last requirement.");
+    assert_eq!(
+        last["text"],
+        "The system shall still read this last requirement."
+    );
 }
 
 #[tokio::test]
@@ -8686,17 +8856,32 @@ async fn a_docx_keeps_its_headings_so_requirements_know_their_section() {
     let docx = build_styled_docx_bytes(&[
         (Some("Heading1"), "3. Authentication"),
         (Some("Heading2"), "3.2 Login"),
-        (None, "Users shall sign in with an email address and a password."),
-        (None, "A session shall expire after 30 minutes of inactivity."),
+        (
+            None,
+            "Users shall sign in with an email address and a password.",
+        ),
+        (
+            None,
+            "A session shall expire after 30 minutes of inactivity.",
+        ),
     ]);
 
-    let (status, body) = upload_document(&state, &owner, project, "BRD.docx", &docx, Some("BRD")).await;
+    let (status, body) =
+        upload_document(&state, &owner, project, "BRD.docx", &docx, Some("BRD")).await;
 
     assert_eq!(status, StatusCode::OK, "body={body}");
-    assert_eq!(body["requirements_document"]["sections_count"], 2, "body={body}");
+    assert_eq!(
+        body["requirements_document"]["sections_count"], 2,
+        "body={body}"
+    );
     let (_, listed) = send(
         &state,
-        req("GET", &format!("/api/v1/projects/{project}/requirements"), Some(&owner), None),
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/requirements"),
+            Some(&owner),
+            None,
+        ),
     )
     .await;
     let reqs = listed["requirements"].as_array().unwrap();
@@ -8721,11 +8906,18 @@ async fn a_text_pdf_is_read_and_split_into_requirements() {
         "FR-2: The system shall email a reset link.",
     ]);
 
-    let (status, body) = upload_document(&state, &owner, project, "spec.pdf", &pdf, Some("PRD")).await;
+    let (status, body) =
+        upload_document(&state, &owner, project, "spec.pdf", &pdf, Some("PRD")).await;
 
     assert_eq!(status, StatusCode::OK, "body={body}");
-    assert!(body["text"].as_str().unwrap().contains("lock an account"), "body={body}");
-    assert_eq!(body["requirements_document"]["requirements_count"], 2, "body={body}");
+    assert!(
+        body["text"].as_str().unwrap().contains("lock an account"),
+        "body={body}"
+    );
+    assert_eq!(
+        body["requirements_document"]["requirements_count"], 2,
+        "body={body}"
+    );
 }
 
 #[tokio::test]
@@ -8736,11 +8928,24 @@ async fn the_document_type_prefixes_generated_ids_and_the_file_name_does_when_it
     let text = b"The system shall show a dashboard.\n";
 
     upload_document(&state, &owner, project, "a.md", text, Some("SRD")).await;
-    upload_document(&state, &owner, project, "checkout-flow.md", b"The system shall take a payment.\n", None).await;
+    upload_document(
+        &state,
+        &owner,
+        project,
+        "checkout-flow.md",
+        b"The system shall take a payment.\n",
+        None,
+    )
+    .await;
 
     let (_, listed) = send(
         &state,
-        req("GET", &format!("/api/v1/projects/{project}/requirements"), Some(&owner), None),
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/requirements"),
+            Some(&owner),
+            None,
+        ),
     )
     .await;
     let keys: Vec<&str> = listed["requirements"]
@@ -8753,32 +8958,72 @@ async fn the_document_type_prefixes_generated_ids_and_the_file_name_does_when_it
 }
 
 #[tokio::test]
-async fn uploading_the_same_content_again_reuses_the_document_and_a_different_version_is_a_new_one() {
+async fn uploading_the_same_content_again_reuses_the_document_and_a_different_version_is_a_new_one()
+{
     let (state, _dir) = test_state_with_compiled_api().await;
     let project = make_project(&state, "Requirements - Reupload").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
 
-    let (_, first) = upload_document(&state, &owner, project, "FRD.md", SAMPLE_FRD.as_bytes(), Some("FRD")).await;
-    let (_, again) = upload_document(&state, &owner, project, "FRD-final.md", SAMPLE_FRD.as_bytes(), Some("FRD")).await;
+    let (_, first) = upload_document(
+        &state,
+        &owner,
+        project,
+        "FRD.md",
+        SAMPLE_FRD.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
+    let (_, again) = upload_document(
+        &state,
+        &owner,
+        project,
+        "FRD-final.md",
+        SAMPLE_FRD.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
     assert_eq!(
-        first["requirements_document"]["document_id"], again["requirements_document"]["document_id"],
+        first["requirements_document"]["document_id"],
+        again["requirements_document"]["document_id"],
         "same content, same document"
     );
 
     let changed = format!("{SAMPLE_FRD}\n## 3.4 Audit\n\nThe system shall record every login.\n");
-    let (_, third) = upload_document(&state, &owner, project, "FRD-v2.md", changed.as_bytes(), Some("FRD")).await;
-    assert_ne!(first["requirements_document"]["document_id"], third["requirements_document"]["document_id"]);
+    let (_, third) = upload_document(
+        &state,
+        &owner,
+        project,
+        "FRD-v2.md",
+        changed.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
+    assert_ne!(
+        first["requirements_document"]["document_id"],
+        third["requirements_document"]["document_id"]
+    );
     assert_eq!(third["requirements_document"]["requirements_count"], 4);
 
     let (_, listed) = send(
         &state,
-        req("GET", &format!("/api/v1/projects/{project}/requirements"), Some(&owner), None),
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/requirements"),
+            Some(&owner),
+            None,
+        ),
     )
     .await;
     let docs = listed["documents"].as_array().unwrap();
     assert_eq!(docs.len(), 2);
-    assert_eq!(docs[0]["file_name"], "FRD-final.md", "the name is the latest upload's");
-    assert_eq!(docs[0]["requirements_count"], 3, "not doubled by the second upload");
+    assert_eq!(
+        docs[0]["file_name"], "FRD-final.md",
+        "the name is the latest upload's"
+    );
+    assert_eq!(
+        docs[0]["requirements_count"], 3,
+        "not doubled by the second upload"
+    );
     assert_eq!(listed["requirements"].as_array().unwrap().len(), 7);
 }
 
@@ -8794,18 +9039,29 @@ async fn two_versions_that_differ_only_after_the_first_20000_characters_are_two_
     let (_, a) = upload_document(&state, &owner, project, "big.md", v1.as_bytes(), None).await;
     let (_, b) = upload_document(&state, &owner, project, "big.md", v2.as_bytes(), None).await;
 
-    assert_ne!(a["requirements_document"]["document_id"], b["requirements_document"]["document_id"]);
+    assert_ne!(
+        a["requirements_document"]["document_id"],
+        b["requirements_document"]["document_id"]
+    );
     let (_, listed) = send(
         &state,
         req(
             "GET",
-            &format!("/api/v1/projects/{project}/requirements?document_ids={}", b["requirements_document"]["document_id"].as_str().unwrap()),
+            &format!(
+                "/api/v1/projects/{project}/requirements?document_ids={}",
+                b["requirements_document"]["document_id"].as_str().unwrap()
+            ),
             Some(&owner),
             None,
         ),
     )
     .await;
-    let last = listed["requirements"].as_array().unwrap().last().unwrap().clone();
+    let last = listed["requirements"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
     assert_eq!(last["text"], "The new last requirement, edited later.");
     assert_eq!(listed["documents"].as_array().unwrap().len(), 1);
 }
@@ -8816,14 +9072,28 @@ async fn a_file_that_cannot_be_read_stores_no_requirements() {
     let project = make_project(&state, "Requirements - Unreadable").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
 
-    let (status, _) = upload_document(&state, &owner, project, "RTM.doc", b"anything", Some("FRD")).await;
+    let (status, _) =
+        upload_document(&state, &owner, project, "RTM.doc", b"anything", Some("FRD")).await;
     assert_ne!(status, StatusCode::OK);
-    let (status, _) = upload_document(&state, &owner, project, "broken.pdf", b"%PDF-1.4 not really", Some("FRD")).await;
+    let (status, _) = upload_document(
+        &state,
+        &owner,
+        project,
+        "broken.pdf",
+        b"%PDF-1.4 not really",
+        Some("FRD"),
+    )
+    .await;
     assert_ne!(status, StatusCode::OK);
 
     let (_, listed) = send(
         &state,
-        req("GET", &format!("/api/v1/projects/{project}/requirements"), Some(&owner), None),
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/requirements"),
+            Some(&owner),
+            None,
+        ),
     )
     .await;
     assert!(listed["documents"].as_array().unwrap().is_empty());
@@ -8835,13 +9105,27 @@ async fn a_failure_to_store_the_requirements_never_fails_the_upload() {
     let (state, _dir) = test_state_with_compiled_api().await;
     let project = make_project(&state, "Requirements - Fail Open").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-    sqlx::query("DROP TABLE requirements").execute(&state.store.pool).await.unwrap();
+    sqlx::query("DROP TABLE requirements")
+        .execute(&state.store.pool)
+        .await
+        .unwrap();
 
-    let (status, body) = upload_document(&state, &owner, project, "FRD.md", SAMPLE_FRD.as_bytes(), Some("FRD")).await;
+    let (status, body) = upload_document(
+        &state,
+        &owner,
+        project,
+        "FRD.md",
+        SAMPLE_FRD.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
 
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(body["text"], SAMPLE_FRD.trim());
-    assert!(body.get("requirements_document").is_none(), "nothing was stored, so nothing is claimed: {body}");
+    assert!(
+        body.get("requirements_document").is_none(),
+        "nothing was stored, so nothing is claimed: {body}"
+    );
 }
 
 #[tokio::test]
@@ -8852,13 +9136,34 @@ async fn listing_requirements_is_project_scoped_readable_by_a_viewer_and_validat
     let owner_a = mint_key(&state, "operator", Some(&project_a.to_string())).await;
     let viewer_a = mint_key(&state, "viewer", Some(&project_a.to_string())).await;
     let owner_b = mint_key(&state, "operator", Some(&project_b.to_string())).await;
-    upload_document(&state, &owner_a, project_a, "FRD.md", SAMPLE_FRD.as_bytes(), Some("FRD")).await;
-    upload_document(&state, &owner_b, project_b, "Other.md", b"The system shall do the other project's thing.\n", Some("FRD")).await;
+    upload_document(
+        &state,
+        &owner_a,
+        project_a,
+        "FRD.md",
+        SAMPLE_FRD.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
+    upload_document(
+        &state,
+        &owner_b,
+        project_b,
+        "Other.md",
+        b"The system shall do the other project's thing.\n",
+        Some("FRD"),
+    )
+    .await;
 
     // A viewer may read.
     let (status, body) = send(
         &state,
-        req("GET", &format!("/api/v1/projects/{project_a}/requirements"), Some(&viewer_a), None),
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_a}/requirements"),
+            Some(&viewer_a),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
@@ -8867,7 +9172,12 @@ async fn listing_requirements_is_project_scoped_readable_by_a_viewer_and_validat
     // Another project's key may not.
     let (status, _) = send(
         &state,
-        req("GET", &format!("/api/v1/projects/{project_a}/requirements"), Some(&owner_b), None),
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_a}/requirements"),
+            Some(&owner_b),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
@@ -8875,22 +9185,43 @@ async fn listing_requirements_is_project_scoped_readable_by_a_viewer_and_validat
     // Another project's document id contributes nothing, and a malformed id is refused.
     let (_, b_list) = send(
         &state,
-        req("GET", &format!("/api/v1/projects/{project_b}/requirements"), Some(&owner_b), None),
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_b}/requirements"),
+            Some(&owner_b),
+            None,
+        ),
     )
     .await;
     let b_doc = b_list["documents"][0]["id"].as_str().unwrap().to_string();
     let (status, body) = send(
         &state,
-        req("GET", &format!("/api/v1/projects/{project_a}/requirements?document_ids={b_doc}"), Some(&owner_a), None),
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_a}/requirements?document_ids={b_doc}"),
+            Some(&owner_a),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body["requirements"].as_array().unwrap().is_empty(), "body={body}");
-    assert!(body["documents"].as_array().unwrap().is_empty(), "body={body}");
+    assert!(
+        body["requirements"].as_array().unwrap().is_empty(),
+        "body={body}"
+    );
+    assert!(
+        body["documents"].as_array().unwrap().is_empty(),
+        "body={body}"
+    );
 
     let (status, body) = send(
         &state,
-        req("GET", &format!("/api/v1/projects/{project_a}/requirements?document_ids=not-a-uuid"), Some(&owner_a), None),
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project_a}/requirements?document_ids=not-a-uuid"),
+            Some(&owner_a),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
@@ -8901,7 +9232,15 @@ async fn deleting_a_project_removes_its_documents_and_requirements() {
     let (state, _dir) = test_state_with_compiled_api().await;
     let project = make_project(&state, "Requirements - Delete").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-    upload_document(&state, &owner, project, "FRD.md", SAMPLE_FRD.as_bytes(), Some("FRD")).await;
+    upload_document(
+        &state,
+        &owner,
+        project,
+        "FRD.md",
+        SAMPLE_FRD.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
 
     assert!(state.store.delete_project(project).await.unwrap());
 
@@ -8947,7 +9286,12 @@ fn generate_ai_body(document_ids: &[&str], skills: &[&str]) -> Value {
     })
 }
 
-async fn post_generate(state: &AppState, key: &str, project: Uuid, body: Value) -> (StatusCode, Value) {
+async fn post_generate(
+    state: &AppState,
+    key: &str,
+    project: Uuid,
+    body: Value,
+) -> (StatusCode, Value) {
     send(
         state,
         req(
@@ -8961,21 +9305,42 @@ async fn post_generate(state: &AppState, key: &str, project: Uuid, body: Value) 
 }
 
 #[tokio::test]
-async fn generating_from_a_documents_requirements_shows_the_model_them_and_ties_the_cases_to_them() {
+async fn generating_from_a_documents_requirements_shows_the_model_them_and_ties_the_cases_to_them()
+{
     let _env = REQUIREMENT_ENV.lock().await;
     let executor = Arc::new(RecordingExecutor::ok_sequence(vec![valid_ai_response()]));
     let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
     let project = make_project(&state, "ReqGen - Basic").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-    let (_, uploaded) = upload_document(&state, &owner, project, "FRD.md", PASSWORD_FRD.as_bytes(), Some("FRD")).await;
-    let doc_id = uploaded["requirements_document"]["document_id"].as_str().unwrap().to_string();
+    let (_, uploaded) = upload_document(
+        &state,
+        &owner,
+        project,
+        "FRD.md",
+        PASSWORD_FRD.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
+    let doc_id = uploaded["requirements_document"]["document_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
-    let (status, body) = post_generate(&state, &owner, project, generate_ai_body(&[&doc_id], &["Functional Testing"])).await;
+    let (status, body) = post_generate(
+        &state,
+        &owner,
+        project,
+        generate_ai_body(&[&doc_id], &["Functional Testing"]),
+    )
+    .await;
 
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(body["generation_method"], "ai", "body={body}");
     // The case quotes the password rule, so it is tied to the requirement that says it.
-    assert_eq!(body["test_cases"][0]["requirement_id"], "FRD-2-01", "body={body}");
+    assert_eq!(
+        body["test_cases"][0]["requirement_id"], "FRD-2-01",
+        "body={body}"
+    );
     assert_eq!(body["waves"][0]["batch"], "1/1");
     assert_eq!(body["waves"][0]["requirements"], 2);
     let coverage = &body["requirements"];
@@ -8988,10 +9353,19 @@ async fn generating_from_a_documents_requirements_shows_the_model_them_and_ties_
     // What the model was actually asked: numbered requirements and the settings, not the document text.
     let prompts = executor.prompts.lock().unwrap().clone();
     assert_eq!(prompts.len(), 1);
-    assert!(prompts[0].contains("[FRD-2-01] (2 Passwords · security) A password must be at least 8 characters long."), "{}", prompts[0]);
+    assert!(
+        prompts[0].contains(
+            "[FRD-2-01] (2 Passwords · security) A password must be at least 8 characters long."
+        ),
+        "{}",
+        prompts[0]
+    );
     assert!(prompts[0].contains("[FRD-2-02] "));
     assert!(prompts[0].contains("Requested generation depth: Standard."));
-    assert!(!prompts[0].contains("## 2 Passwords"), "the raw document must not be pasted in");
+    assert!(
+        !prompts[0].contains("## 2 Passwords"),
+        "the raw document must not be pasted in"
+    );
 }
 
 #[tokio::test]
@@ -9010,8 +9384,14 @@ async fn a_request_that_names_no_documents_is_generated_exactly_as_before() {
     .await;
 
     assert_eq!(status, StatusCode::OK, "body={body}");
-    assert!(body.get("requirements").is_none(), "no coverage claim for a request that named no documents: {body}");
-    assert!(body["test_cases"][0].get("requirement_id").is_none(), "body={body}");
+    assert!(
+        body.get("requirements").is_none(),
+        "no coverage claim for a request that named no documents: {body}"
+    );
+    assert!(
+        body["test_cases"][0].get("requirement_id").is_none(),
+        "body={body}"
+    );
     assert!(body["waves"][0].get("batch").is_none(), "body={body}");
 }
 
@@ -9023,33 +9403,86 @@ async fn documents_with_no_requirements_or_of_another_project_are_refused() {
     let project_b = make_project(&state, "ReqGen - Refuse B").await;
     let owner_a = mint_key(&state, "operator", Some(&project_a.to_string())).await;
     let owner_b = mint_key(&state, "operator", Some(&project_b.to_string())).await;
-    let (_, b_upload) = upload_document(&state, &owner_b, project_b, "FRD.md", PASSWORD_FRD.as_bytes(), Some("FRD")).await;
-    let b_doc = b_upload["requirements_document"]["document_id"].as_str().unwrap().to_string();
+    let (_, b_upload) = upload_document(
+        &state,
+        &owner_b,
+        project_b,
+        "FRD.md",
+        PASSWORD_FRD.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
+    let b_doc = b_upload["requirements_document"]["document_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     for doc in [Uuid::new_v4().to_string(), b_doc] {
-        let (status, body) = post_generate(&state, &owner_a, project_a, generate_ai_body(&[&doc], &["Functional Testing"])).await;
+        let (status, body) = post_generate(
+            &state,
+            &owner_a,
+            project_a,
+            generate_ai_body(&[&doc], &["Functional Testing"]),
+        )
+        .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "doc={doc} body={body}");
         assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
-        assert!(body["error"]["message"].as_str().unwrap().contains("none of the selected documents"), "body={body}");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("none of the selected documents"),
+            "body={body}"
+        );
     }
 }
 
 #[tokio::test]
-async fn when_the_model_cannot_answer_the_response_says_so_and_still_reports_what_was_not_reached() {
+async fn when_the_model_cannot_answer_the_response_says_so_and_still_reports_what_was_not_reached()
+{
     let _env = REQUIREMENT_ENV.lock().await;
-    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Err(crate::ai_router::ExecutionError::Timeout))).await;
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Err(
+        crate::ai_router::ExecutionError::Timeout,
+    )))
+    .await;
     let project = make_project(&state, "ReqGen - Failure").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-    let (_, uploaded) = upload_document(&state, &owner, project, "FRD.md", PASSWORD_FRD.as_bytes(), Some("FRD")).await;
-    let doc_id = uploaded["requirements_document"]["document_id"].as_str().unwrap().to_string();
+    let (_, uploaded) = upload_document(
+        &state,
+        &owner,
+        project,
+        "FRD.md",
+        PASSWORD_FRD.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
+    let doc_id = uploaded["requirements_document"]["document_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
-    let (status, body) = post_generate(&state, &owner, project, generate_ai_body(&[&doc_id], &["Functional Testing"])).await;
+    let (status, body) = post_generate(
+        &state,
+        &owner,
+        project,
+        generate_ai_body(&[&doc_id], &["Functional Testing"]),
+    )
+    .await;
 
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(body["generation_method"], "fallback");
-    assert!(body["fallback_reason"].as_str().unwrap().contains("TIMEOUT"), "body={body}");
+    assert!(
+        body["fallback_reason"]
+            .as_str()
+            .unwrap()
+            .contains("TIMEOUT"),
+        "body={body}"
+    );
     assert_eq!(body["requirements"]["covered"], 0);
-    assert_eq!(body["requirements"]["uncovered_keys"], serde_json::json!(["FRD-2-01", "FRD-2-02"]));
+    assert_eq!(
+        body["requirements"]["uncovered_keys"],
+        serde_json::json!(["FRD-2-01", "FRD-2-02"])
+    );
 }
 
 #[tokio::test]
@@ -9068,23 +9501,47 @@ async fn a_smaller_batch_budget_makes_more_calls_each_carrying_its_own_requireme
     let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
     let project = make_project(&state, "ReqGen - Budget").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-    let (_, uploaded) = upload_document(&state, &owner, project, "FRD.md", doc.as_bytes(), Some("FRD")).await;
-    let doc_id = uploaded["requirements_document"]["document_id"].as_str().unwrap().to_string();
+    let (_, uploaded) = upload_document(
+        &state,
+        &owner,
+        project,
+        "FRD.md",
+        doc.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
+    let doc_id = uploaded["requirements_document"]["document_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     std::env::set_var("REQUIREMENT_BATCH_CHARS", "300");
-    let (status, body) = post_generate(&state, &owner, project, generate_ai_body(&[&doc_id], &["Functional Testing"])).await;
+    let (status, body) = post_generate(
+        &state,
+        &owner,
+        project,
+        generate_ai_body(&[&doc_id], &["Functional Testing"]),
+    )
+    .await;
     std::env::remove_var("REQUIREMENT_BATCH_CHARS");
 
     assert_eq!(status, StatusCode::OK, "body={body}");
     let calls = body["requirements"]["calls"].as_u64().unwrap();
-    assert!(calls >= 3, "300 characters cannot hold six requirements: body={body}");
+    assert!(
+        calls >= 3,
+        "300 characters cannot hold six requirements: body={body}"
+    );
     assert_eq!(body["requirements"]["budget_chars"], 300);
     let prompts = executor.prompts.lock().unwrap().clone();
     assert_eq!(prompts.len() as u64, calls);
     // Each requirement appears in exactly one prompt.
     for i in 1..=6 {
         let id = format!("[FRD-1-0{i}]");
-        assert_eq!(prompts.iter().filter(|p| p.contains(&id)).count(), 1, "{id}");
+        assert_eq!(
+            prompts.iter().filter(|p| p.contains(&id)).count(),
+            1,
+            "{id}"
+        );
     }
 }
 
@@ -9095,8 +9552,19 @@ async fn a_request_that_would_make_too_many_calls_is_refused_before_any_is_made(
     let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
     let project = make_project(&state, "ReqGen - Too Many").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-    let (_, uploaded) = upload_document(&state, &owner, project, "FRD.md", PASSWORD_FRD.as_bytes(), Some("FRD")).await;
-    let doc_id = uploaded["requirements_document"]["document_id"].as_str().unwrap().to_string();
+    let (_, uploaded) = upload_document(
+        &state,
+        &owner,
+        project,
+        "FRD.md",
+        PASSWORD_FRD.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
+    let doc_id = uploaded["requirements_document"]["document_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     std::env::set_var("REQUIREMENT_MAX_CALLS", "1");
     let (status, body) = post_generate(
@@ -9109,8 +9577,17 @@ async fn a_request_that_would_make_too_many_calls_is_refused_before_any_is_made(
     std::env::remove_var("REQUIREMENT_MAX_CALLS");
 
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
-    assert!(body["error"]["message"].as_str().unwrap().contains("2 AI calls"), "body={body}");
-    assert!(executor.prompts.lock().unwrap().is_empty(), "no model may be called");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("2 AI calls"),
+        "body={body}"
+    );
+    assert!(
+        executor.prompts.lock().unwrap().is_empty(),
+        "no model may be called"
+    );
 }
 
 #[tokio::test]
@@ -9121,8 +9598,19 @@ async fn the_plan_says_what_a_generation_would_do_without_calling_a_model() {
     let project = make_project(&state, "ReqGen - Plan").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
     let frd = "## 1 Rules\n\nThe system shall let a user sign in with a password.\n\nThe dashboard shall load within two seconds for a user.\n";
-    let (_, uploaded) = upload_document(&state, &owner, project, "FRD.md", frd.as_bytes(), Some("FRD")).await;
-    let doc_id = uploaded["requirements_document"]["document_id"].as_str().unwrap().to_string();
+    let (_, uploaded) = upload_document(
+        &state,
+        &owner,
+        project,
+        "FRD.md",
+        frd.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
+    let doc_id = uploaded["requirements_document"]["document_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let (status, plan) = send(
         &state,
@@ -9130,7 +9618,14 @@ async fn the_plan_says_what_a_generation_would_do_without_calling_a_model() {
             "POST",
             &format!("/api/v1/projects/{project}/test-cases/generate-ai/plan"),
             Some(&owner),
-            Some(generate_ai_body(&[&doc_id], &["Functional Testing", "Performance Testing", "Security Testing"])),
+            Some(generate_ai_body(
+                &[&doc_id],
+                &[
+                    "Functional Testing",
+                    "Performance Testing",
+                    "Security Testing",
+                ],
+            )),
         ),
     )
     .await;
@@ -9140,7 +9635,10 @@ async fn the_plan_says_what_a_generation_would_do_without_calling_a_model() {
     assert_eq!(plan["by_kind"]["performance"], 1, "plan={plan}");
     assert_eq!(plan["by_kind"]["security"], 1, "plan={plan}");
     assert_eq!(plan["offered"], 2);
-    assert_eq!(plan["calls"], 3, "functional, performance and security each see something");
+    assert_eq!(
+        plan["calls"], 3,
+        "functional, performance and security each see something"
+    );
     assert_eq!(plan["within_limit"], true);
     assert_eq!(plan["max_calls"], 150);
     let skills = plan["skills"].as_array().unwrap();
@@ -9149,11 +9647,17 @@ async fn the_plan_says_what_a_generation_would_do_without_calling_a_model() {
     assert_eq!(skills[0]["requirements"], 1);
     assert_eq!(plan["provider_name"], "mock");
     assert_eq!(plan["model"], "mock-model");
-    assert_eq!(plan["prompt_window_tokens"], 16_384, "no window reported: the modest default");
+    assert_eq!(
+        plan["prompt_window_tokens"], 16_384,
+        "no window reported: the modest default"
+    );
     assert_eq!(plan["budget_chars"], 12_000);
     assert!(plan["estimated_prompt_tokens"].as_u64().unwrap() > 0);
     assert_eq!(plan["estimated_completion_tokens"], 6_000);
-    assert!(executor.prompts.lock().unwrap().is_empty(), "planning must never call a model");
+    assert!(
+        executor.prompts.lock().unwrap().is_empty(),
+        "planning must never call a model"
+    );
 }
 
 #[tokio::test]
@@ -9162,8 +9666,19 @@ async fn the_plan_says_when_a_request_is_over_the_call_limit() {
     let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
     let project = make_project(&state, "ReqGen - Plan Limit").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-    let (_, uploaded) = upload_document(&state, &owner, project, "FRD.md", PASSWORD_FRD.as_bytes(), Some("FRD")).await;
-    let doc_id = uploaded["requirements_document"]["document_id"].as_str().unwrap().to_string();
+    let (_, uploaded) = upload_document(
+        &state,
+        &owner,
+        project,
+        "FRD.md",
+        PASSWORD_FRD.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
+    let doc_id = uploaded["requirements_document"]["document_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let path = format!("/api/v1/projects/{project}/test-cases/generate-ai/plan");
     let body = generate_ai_body(&[&doc_id], &["Functional Testing", "Negative Testing"]);
 
@@ -9172,8 +9687,18 @@ async fn the_plan_says_when_a_request_is_over_the_call_limit() {
     let (_, over) = send(&state, req("POST", &path, Some(&owner), Some(body))).await;
     std::env::remove_var("REQUIREMENT_MAX_CALLS");
 
-    assert_eq!((within["calls"].as_u64(), within["within_limit"].as_bool()), (Some(2), Some(true)));
-    assert_eq!((over["calls"].as_u64(), over["max_calls"].as_u64(), over["within_limit"].as_bool()), (Some(2), Some(1), Some(false)));
+    assert_eq!(
+        (within["calls"].as_u64(), within["within_limit"].as_bool()),
+        (Some(2), Some(true))
+    );
+    assert_eq!(
+        (
+            over["calls"].as_u64(),
+            over["max_calls"].as_u64(),
+            over["within_limit"].as_bool()
+        ),
+        (Some(2), Some(1), Some(false))
+    );
 }
 
 #[test]
@@ -9189,15 +9714,27 @@ fn the_retrieval_query_is_the_request_text_plus_the_start_of_the_requirements() 
 
     let query = crate::api::requirement_retrieval_query("Depth: Standard.", &items);
 
-    assert!(query.starts_with("Depth: Standard.\nfirst requirement\n"), "{query}");
-    let requirement_part = query.trim_start_matches("Depth: Standard.\n").chars().count();
-    assert!(requirement_part <= 2_000 + 3, "at most about 2,000 characters of requirements: {requirement_part}");
+    assert!(
+        query.starts_with("Depth: Standard.\nfirst requirement\n"),
+        "{query}"
+    );
+    let requirement_part = query
+        .trim_start_matches("Depth: Standard.\n")
+        .chars()
+        .count();
+    assert!(
+        requirement_part <= 2_000 + 3,
+        "at most about 2,000 characters of requirements: {requirement_part}"
+    );
     assert_eq!(
         query.matches('x').count(),
         2_000 - "first requirement".len(),
         "the second requirement fits, the third is cut at the room that is left"
     );
-    assert_eq!(crate::api::requirement_retrieval_query("Only text.", &[]), "Only text.");
+    assert_eq!(
+        crate::api::requirement_retrieval_query("Only text.", &[]),
+        "Only text."
+    );
 }
 
 #[tokio::test]
@@ -9211,13 +9748,43 @@ async fn the_plan_is_operator_only_project_scoped_and_needs_documents() {
     let other_owner = mint_key(&state, "operator", Some(&other.to_string())).await;
     let path = format!("/api/v1/projects/{project}/test-cases/generate-ai/plan");
 
-    let (status, _) = send(&state, req("POST", &path, Some(&viewer), Some(generate_ai_body(&[], &[])))).await;
+    let (status, _) = send(
+        &state,
+        req(
+            "POST",
+            &path,
+            Some(&viewer),
+            Some(generate_ai_body(&[], &[])),
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
-    let (status, _) = send(&state, req("POST", &path, Some(&other_owner), Some(generate_ai_body(&[], &[])))).await;
+    let (status, _) = send(
+        &state,
+        req(
+            "POST",
+            &path,
+            Some(&other_owner),
+            Some(generate_ai_body(&[], &[])),
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
-    let (status, body) = send(&state, req("POST", &path, Some(&operator), Some(generate_ai_body(&[], &["Functional Testing"])))).await;
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &path,
+            Some(&operator),
+            Some(generate_ai_body(&[], &["Functional Testing"])),
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
-    assert!(body["error"]["message"].as_str().unwrap().contains("requirement_document_ids"));
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("requirement_document_ids"));
 }
 
 // ================================== Phase 6 ERROR-fix — run-level supervision
@@ -9852,20 +10419,55 @@ async fn ai_status_routing_preview_follows_the_test_generation_chain() {
         )
     };
 
-    let (_, body) = send(&state, req("GET", "/api/v1/ai/status", Some(&operator), None)).await;
-    assert_eq!(body["routing_preview"]["model_id"], "mock-model", "body={body}");
-    assert!(!body["routing_preview"]["reason"].as_str().unwrap().contains("Task chain"));
+    let (_, body) = send(
+        &state,
+        req("GET", "/api/v1/ai/status", Some(&operator), None),
+    )
+    .await;
+    assert_eq!(
+        body["routing_preview"]["model_id"], "mock-model",
+        "body={body}"
+    );
+    assert!(!body["routing_preview"]["reason"]
+        .as_str()
+        .unwrap()
+        .contains("Task chain"));
 
-    let (status, _) = send(&state, preview(serde_json::json!([{"provider": "mock", "model": "mock-model"}]))).await;
+    let (status, _) = send(
+        &state,
+        preview(serde_json::json!([{"provider": "mock", "model": "mock-model"}])),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
-    let (_, body) = send(&state, req("GET", "/api/v1/ai/status", Some(&operator), None)).await;
-    assert_eq!(body["routing_preview"]["model_id"], "mock-model", "body={body}");
-    assert!(body["routing_preview"]["reason"].as_str().unwrap().contains("Task chain"), "body={body}");
+    let (_, body) = send(
+        &state,
+        req("GET", "/api/v1/ai/status", Some(&operator), None),
+    )
+    .await;
+    assert_eq!(
+        body["routing_preview"]["model_id"], "mock-model",
+        "body={body}"
+    );
+    assert!(
+        body["routing_preview"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("Task chain"),
+        "body={body}"
+    );
 
     // A chain whose only entry is unavailable must not silently preview some other model.
-    let (status, _) = send(&state, preview(serde_json::json!([{"provider": "gone", "model": "nope"}]))).await;
+    let (status, _) = send(
+        &state,
+        preview(serde_json::json!([{"provider": "gone", "model": "nope"}])),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
-    let (_, body) = send(&state, req("GET", "/api/v1/ai/status", Some(&operator), None)).await;
+    let (_, body) = send(
+        &state,
+        req("GET", "/api/v1/ai/status", Some(&operator), None),
+    )
+    .await;
     assert!(body["routing_preview"].is_null(), "body={body}");
 }
 
@@ -10020,7 +10622,11 @@ async fn ai_settings_task_chain_is_persisted_read_back_and_live_in_the_router() 
     .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
 
-    let (_, refetched) = send(&state, req("GET", "/api/v1/ai/settings", Some(&operator), None)).await;
+    let (_, refetched) = send(
+        &state,
+        req("GET", "/api/v1/ai/settings", Some(&operator), None),
+    )
+    .await;
     let chain = &refetched["task_overrides"]["TEST_CASE_GENERATION"]["chain"];
     assert_eq!(chain[0]["provider"], "ollama", "body={refetched}");
     assert_eq!(chain[1]["model"], "gemini-2.5-flash", "body={refetched}");
@@ -10029,9 +10635,17 @@ async fn ai_settings_task_chain_is_persisted_read_back_and_live_in_the_router() 
     let reloaded = crate::store::Store::connect(&dir.path().join("api.sqlite3"))
         .await
         .expect("reconnect");
-    let (_, _, _, _, task_overrides) = reloaded.get_ai_settings().await.expect("query").expect("a row must exist");
-    let parsed: serde_json::Value = serde_json::from_str(&task_overrides.expect("persisted as JSON text")).unwrap();
-    assert_eq!(parsed["TEST_CASE_GENERATION"]["chain"][1]["provider"], "gemini");
+    let (_, _, _, _, task_overrides) = reloaded
+        .get_ai_settings()
+        .await
+        .expect("query")
+        .expect("a row must exist");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&task_overrides.expect("persisted as JSON text")).unwrap();
+    assert_eq!(
+        parsed["TEST_CASE_GENERATION"]["chain"][1]["provider"],
+        "gemini"
+    );
 
     let live = state.ai_infra.settings().await;
     let entry = live
@@ -10058,11 +10672,17 @@ async fn ai_settings_put_rejects_a_task_chain_that_is_malformed_or_too_long() {
         )
     };
 
-    let (status, body) = send(&state, put(serde_json::json!([{"provider": "ollama", "model": "  "}]))).await;
+    let (status, body) = send(
+        &state,
+        put(serde_json::json!([{"provider": "ollama", "model": "  "}])),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
     assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
 
-    let nine: Vec<_> = (0..9).map(|i| serde_json::json!({"provider": "p", "model": format!("m{i}")})).collect();
+    let nine: Vec<_> = (0..9)
+        .map(|i| serde_json::json!({"provider": "p", "model": format!("m{i}")}))
+        .collect();
     let (status, body) = send(&state, put(serde_json::Value::Array(nine))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
 
@@ -10404,7 +11024,10 @@ async fn custom_ai_provider_without_a_price_shows_none_and_stays_unmetered() {
 
     let providers = state.ai_infra.discover_all().await;
     let provider = providers.iter().find(|p| p.id == id).expect("discovered");
-    assert_eq!(provider.pricing, crate::ai_router::ProviderPricing::Unmetered);
+    assert_eq!(
+        provider.pricing,
+        crate::ai_router::ProviderPricing::Unmetered
+    );
 }
 
 #[tokio::test]
@@ -10537,7 +11160,9 @@ async fn custom_ai_provider_rejects_a_malformed_env_reference() {
     let (state, _dir) = test_state_with_ai_router(inert_ai_router()).await;
     let operator = mint_key(&state, "operator", None).await;
 
-    for bad in ["env:", "env:  ", "env:1ABC", "env:A B", "env:A-B", "env:A=B"] {
+    for bad in [
+        "env:", "env:  ", "env:1ABC", "env:A B", "env:A-B", "env:A=B",
+    ] {
         let (status, body) = send(
             &state,
             req(
@@ -11726,17 +12351,39 @@ fn coverage_answer(cases: &[(&str, &str, &str)]) -> String {
 async fn basket_project(state: &AppState, name: &str) -> (Uuid, String, String) {
     let project = make_project(state, name).await;
     let owner = mint_key(state, "operator", Some(&project.to_string())).await;
-    let (_, uploaded) = upload_document(state, &owner, project, "FRD.md", BASKET_FRD.as_bytes(), Some("FRD")).await;
-    let doc_id = uploaded["requirements_document"]["document_id"].as_str().unwrap().to_string();
+    let (_, uploaded) = upload_document(
+        state,
+        &owner,
+        project,
+        "FRD.md",
+        BASKET_FRD.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
+    let doc_id = uploaded["requirements_document"]["document_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     (project, owner, doc_id)
 }
 
 #[tokio::test]
 async fn naming_a_depth_adds_the_coverage_matrix_and_a_request_without_one_has_none() {
     let _env = REQUIREMENT_ENV.lock().await;
-    let functional = coverage_answer(&[("FRD-1-01", "positive", "Add an item"), ("FRD-1-02", "positive", "Remove an item")]);
-    let negative = coverage_answer(&[("FRD-1-01", "negative", "Add nothing"), ("FRD-1-02", "negative", "Remove what is not there")]);
-    let executor = Arc::new(RecordingExecutor::ok_sequence(vec![&functional, &negative, &functional, &negative]));
+    let functional = coverage_answer(&[
+        ("FRD-1-01", "positive", "Add an item"),
+        ("FRD-1-02", "positive", "Remove an item"),
+    ]);
+    let negative = coverage_answer(&[
+        ("FRD-1-01", "negative", "Add nothing"),
+        ("FRD-1-02", "negative", "Remove what is not there"),
+    ]);
+    let executor = Arc::new(RecordingExecutor::ok_sequence(vec![
+        &functional,
+        &negative,
+        &functional,
+        &negative,
+    ]));
     let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
     let (project, owner, doc_id) = basket_project(&state, "Coverage - Matrix").await;
     let skills = ["Functional Testing", "Negative Testing"];
@@ -11744,22 +12391,64 @@ async fn naming_a_depth_adds_the_coverage_matrix_and_a_request_without_one_has_n
     let mut with_depth = generate_ai_body(&[&doc_id], &skills);
     with_depth["depth"] = serde_json::json!("Standard");
     let (status, body) = post_generate(&state, &owner, project, with_depth).await;
-    let (_, without) = post_generate(&state, &owner, project, generate_ai_body(&[&doc_id], &skills)).await;
+    let (_, without) = post_generate(
+        &state,
+        &owner,
+        project,
+        generate_ai_body(&[&doc_id], &skills),
+    )
+    .await;
 
     assert_eq!(status, StatusCode::OK, "body={body}");
     let matrix = &body["requirements"]["matrix"];
     assert_eq!(matrix["depth"], "STANDARD", "body={body}");
-    let technique = |name: &str| matrix["techniques"].as_array().unwrap().iter().find(|t| t["technique"] == name).cloned();
-    assert_eq!((technique("positive").unwrap()["met"].as_u64(), technique("negative").unwrap()["met"].as_u64()), (Some(2), Some(2)));
+    let technique = |name: &str| {
+        matrix["techniques"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["technique"] == name)
+            .cloned()
+    };
+    assert_eq!(
+        (
+            technique("positive").unwrap()["met"].as_u64(),
+            technique("negative").unwrap()["met"].as_u64()
+        ),
+        (Some(2), Some(2))
+    );
     let edge = technique("edge").unwrap();
-    assert_eq!((edge["applicable"].as_u64(), edge["short"].as_u64()), (Some(2), Some(2)));
-    assert!(edge["provided_by"].is_null(), "no selected skill provides edge cases: {edge}");
-    assert_eq!(matrix["gap_total"], 0, "a gap nobody could fill is not listed: {matrix}");
-    assert!(matrix.get("top_up").is_none(), "no top-up was asked for: {matrix}");
+    assert_eq!(
+        (edge["applicable"].as_u64(), edge["short"].as_u64()),
+        (Some(2), Some(2))
+    );
+    assert!(
+        edge["provided_by"].is_null(),
+        "no selected skill provides edge cases: {edge}"
+    );
+    assert_eq!(
+        matrix["gap_total"], 0,
+        "a gap nobody could fill is not listed: {matrix}"
+    );
+    assert!(
+        matrix.get("top_up").is_none(),
+        "no top-up was asked for: {matrix}"
+    );
     // Each case says which technique it counts for.
-    let techniques: Vec<&str> = body["test_cases"].as_array().unwrap().iter().filter_map(|c| c["technique"].as_str()).collect();
-    assert!(techniques.contains(&"positive") && techniques.contains(&"negative"), "body={body}");
-    assert!(without["requirements"].get("matrix").is_none(), "no depth, no matrix: {without}");
+    let techniques: Vec<&str> = body["test_cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| c["technique"].as_str())
+        .collect();
+    assert!(
+        techniques.contains(&"positive") && techniques.contains(&"negative"),
+        "body={body}"
+    );
+    assert!(
+        without["requirements"].get("matrix").is_none(),
+        "no depth, no matrix: {without}"
+    );
 }
 
 #[tokio::test]
@@ -11778,10 +12467,25 @@ async fn an_unknown_depth_or_a_top_up_with_no_depth_is_refused_before_any_call()
     let (top_up_status, top_up_body) = post_generate(&state, &owner, project, no_depth).await;
 
     assert_eq!(deep_status, StatusCode::BAD_REQUEST, "body={deep_body}");
-    assert!(deep_body["error"]["message"].as_str().unwrap().contains("depth must be SMOKE, STANDARD, EXHAUSTIVE or CHAOS_EXPLORATORY"), "{deep_body}");
+    assert!(
+        deep_body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("depth must be SMOKE, STANDARD, EXHAUSTIVE or CHAOS_EXPLORATORY"),
+        "{deep_body}"
+    );
     assert_eq!(top_up_status, StatusCode::BAD_REQUEST, "body={top_up_body}");
-    assert!(top_up_body["error"]["message"].as_str().unwrap().contains("coverage_top_up needs a depth"), "{top_up_body}");
-    assert!(executor.prompts.lock().unwrap().is_empty(), "no model may be called");
+    assert!(
+        top_up_body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("coverage_top_up needs a depth"),
+        "{top_up_body}"
+    );
+    assert!(
+        executor.prompts.lock().unwrap().is_empty(),
+        "no model may be called"
+    );
 }
 
 #[tokio::test]
@@ -11801,32 +12505,63 @@ async fn a_depth_on_a_request_that_names_no_documents_changes_nothing() {
 
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert!(body.get("requirements").is_none(), "{body}");
-    assert!(body["test_cases"][0].get("technique").is_none(), "the original path labels nothing: {body}");
+    assert!(
+        body["test_cases"][0].get("technique").is_none(),
+        "the original path labels nothing: {body}"
+    );
 }
 
 #[tokio::test]
 async fn a_top_up_makes_the_extra_call_and_the_response_says_what_it_did() {
     let _env = REQUIREMENT_ENV.lock().await;
-    let functional = coverage_answer(&[("FRD-1-01", "positive", "Add an item"), ("FRD-1-02", "positive", "Remove an item")]);
-    let negative = coverage_answer(&[("FRD-1-01", "negative", "Add nothing"), ("FRD-1-02", "negative", "Remove what is not there")]);
+    let functional = coverage_answer(&[
+        ("FRD-1-01", "positive", "Add an item"),
+        ("FRD-1-02", "positive", "Remove an item"),
+    ]);
+    let negative = coverage_answer(&[
+        ("FRD-1-01", "negative", "Add nothing"),
+        ("FRD-1-02", "negative", "Remove what is not there"),
+    ]);
     // The edge skill only found something for the first requirement.
     let edge = coverage_answer(&[("FRD-1-01", "edge", "Add the largest quantity")]);
     let top_up = coverage_answer(&[("FRD-1-02", "edge", "Remove the last item of the basket")]);
-    let executor = Arc::new(RecordingExecutor::ok_sequence(vec![&functional, &negative, &edge, &top_up]));
+    let executor = Arc::new(RecordingExecutor::ok_sequence(vec![
+        &functional,
+        &negative,
+        &edge,
+        &top_up,
+    ]));
     let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
     let (project, owner, doc_id) = basket_project(&state, "Coverage - Top Up").await;
 
-    let mut body = generate_ai_body(&[&doc_id], &["Functional Testing", "Negative Testing", "Edge Case Analysis"]);
+    let mut body = generate_ai_body(
+        &[&doc_id],
+        &[
+            "Functional Testing",
+            "Negative Testing",
+            "Edge Case Analysis",
+        ],
+    );
     body["depth"] = serde_json::json!("STANDARD");
     body["coverage_top_up"] = serde_json::json!(true);
     let (status, response) = post_generate(&state, &owner, project, body).await;
 
     assert_eq!(status, StatusCode::OK, "body={response}");
     let prompts = executor.prompts.lock().unwrap().clone();
-    assert_eq!(prompts.len(), 4, "three first-pass calls and one top-up call");
+    assert_eq!(
+        prompts.len(),
+        4,
+        "three first-pass calls and one top-up call"
+    );
     let last = &prompts[3];
-    assert!(last.contains("COVERAGE TOP-UP") && last.contains("Generate ONLY edge test cases"), "{last}");
-    assert!(last.contains("[FRD-1-02] ") && !last.contains("[FRD-1-01] "), "only the requirement that lacks it is asked about: {last}");
+    assert!(
+        last.contains("COVERAGE TOP-UP") && last.contains("Generate ONLY edge test cases"),
+        "{last}"
+    );
+    assert!(
+        last.contains("[FRD-1-02] ") && !last.contains("[FRD-1-01] "),
+        "only the requirement that lacks it is asked about: {last}"
+    );
     let matrix = &response["requirements"]["matrix"];
     assert_eq!(matrix["complete"], 2, "body={response}");
     assert_eq!(matrix["gap_total"], 0);
@@ -11835,10 +12570,20 @@ async fn a_top_up_makes_the_extra_call_and_the_response_says_what_it_did() {
         serde_json::json!({"rounds": 1, "calls": 1, "cases_added": 1, "stopped": "every target is met"}),
         "body={response}"
     );
-    assert_eq!(response["requirements"]["calls"], 3, "the calls planned up front; the top-up is reported apart");
+    assert_eq!(
+        response["requirements"]["calls"], 3,
+        "the calls planned up front; the top-up is reported apart"
+    );
     let waves = response["waves"].as_array().unwrap();
     assert_eq!(waves.len(), 4);
-    assert_eq!((waves[3]["wave"].as_str(), waves[3]["technique"].as_str(), waves[3]["batch"].as_str()), (Some("top_up"), Some("edge"), Some("1/1")));
+    assert_eq!(
+        (
+            waves[3]["wave"].as_str(),
+            waves[3]["technique"].as_str(),
+            waves[3]["batch"].as_str()
+        ),
+        (Some("top_up"), Some("edge"), Some("1/1"))
+    );
     assert_eq!(response["test_cases"].as_array().unwrap().len(), 6);
 }
 
@@ -11854,7 +12599,16 @@ async fn the_plan_says_which_techniques_a_depth_covers_and_what_a_top_up_may_add
     with_depth["depth"] = serde_json::json!("EXHAUSTIVE");
     with_depth["coverage_top_up"] = serde_json::json!(true);
     let (status, plan) = send(&state, req("POST", &path, Some(&owner), Some(with_depth))).await;
-    let (_, without) = send(&state, req("POST", &path, Some(&owner), Some(generate_ai_body(&[&doc_id], &["Functional Testing"])))).await;
+    let (_, without) = send(
+        &state,
+        req(
+            "POST",
+            &path,
+            Some(&owner),
+            Some(generate_ai_body(&[&doc_id], &["Functional Testing"])),
+        ),
+    )
+    .await;
     let mut bad = generate_ai_body(&[&doc_id], &["Functional Testing"]);
     bad["depth"] = serde_json::json!("deep");
     let (bad_status, _) = send(&state, req("POST", &path, Some(&owner), Some(bad))).await;
@@ -11864,22 +12618,57 @@ async fn the_plan_says_which_techniques_a_depth_covers_and_what_a_top_up_may_add
     assert_eq!(coverage["depth"], "EXHAUSTIVE");
     assert_eq!(coverage["top_up"], true);
     assert_eq!(coverage["top_up_rounds"], 2);
-    assert_eq!(coverage["top_up_call_limit"], 148, "150 calls, two of them the first pass");
-    let positive = coverage["techniques"].as_array().unwrap().iter().find(|t| t["technique"] == "positive").cloned().unwrap();
-    assert_eq!((positive["requirements"].as_u64(), positive["per_requirement"].as_u64()), (Some(2), Some(2)));
+    assert_eq!(
+        coverage["top_up_call_limit"], 148,
+        "150 calls, two of them the first pass"
+    );
+    let positive = coverage["techniques"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["technique"] == "positive")
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        (
+            positive["requirements"].as_u64(),
+            positive["per_requirement"].as_u64()
+        ),
+        (Some(2), Some(2))
+    );
     assert_eq!(positive["provided_by"], "Functional Testing");
-    let edge = coverage["techniques"].as_array().unwrap().iter().find(|t| t["technique"] == "edge").cloned().unwrap();
+    let edge = coverage["techniques"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["technique"] == "edge")
+        .cloned()
+        .unwrap();
     assert!(edge["provided_by"].is_null());
-    assert!(without.get("coverage").is_none(), "no depth, no coverage plan: {without}");
+    assert!(
+        without.get("coverage").is_none(),
+        "no depth, no coverage plan: {without}"
+    );
     assert_eq!(bad_status, StatusCode::BAD_REQUEST);
-    assert!(executor.prompts.lock().unwrap().is_empty(), "planning must never call a model");
+    assert!(
+        executor.prompts.lock().unwrap().is_empty(),
+        "planning must never call a model"
+    );
 }
 
 #[tokio::test]
 async fn the_rounds_of_a_top_up_are_two_unless_set_and_never_fewer_than_one_or_more_than_five() {
     let _env = REQUIREMENT_ENV.lock().await;
     assert_eq!(crate::api::coverage_top_up_rounds(), 2);
-    for (value, expected) in [("1", 1), ("3", 3), (" 4 ", 4), ("9", 5), ("0", 1), ("many", 2), ("", 2)] {
+    for (value, expected) in [
+        ("1", 1),
+        ("3", 3),
+        (" 4 ", 4),
+        ("9", 5),
+        ("0", 1),
+        ("many", 2),
+        ("", 2),
+    ] {
         std::env::set_var("COVERAGE_TOP_UP_ROUNDS", value);
         assert_eq!(crate::api::coverage_top_up_rounds(), expected, "{value:?}");
     }
@@ -11954,7 +12743,12 @@ fn write_crawl_file(file_name: &str, json: &str) -> std::path::PathBuf {
     path
 }
 
-async fn gap_check(state: &AppState, project: Uuid, key: &str, body: Option<Value>) -> (StatusCode, Value) {
+async fn gap_check(
+    state: &AppState,
+    project: Uuid,
+    key: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
     send(
         state,
         req(
@@ -11988,17 +12782,31 @@ async fn phase6a_the_gap_check_lines_the_requirements_up_with_the_crawl_and_the_
     let (state, _dir) = test_state_with_compiled_api().await;
     let project = make_project(&state, "Phase6A Gap Check").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-    let (status, uploaded) =
-        upload_document(&state, &owner, project, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+    let (status, uploaded) = upload_document(
+        &state,
+        &owner,
+        project,
+        "FRD.md",
+        SHOP_FRD.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={uploaded}");
     let (run_id, task_id) = crawl_run_and_task(&state, project, &owner).await;
-    let file = write_crawl_file(&crate::crawler::grounding_file_name(&task_id), SHOP_GROUNDING);
+    let file = write_crawl_file(
+        &crate::crawler::grounding_file_name(&task_id),
+        SHOP_GROUNDING,
+    );
     // One case for a requirement the shop shows, one for a requirement it does not.
     approved_case(
         &state,
         project,
         &owner,
-        case_body_for("FR-002", "Add a product", serde_json::json!(["technique:positive"])),
+        case_body_for(
+            "FR-002",
+            "Add a product",
+            serde_json::json!(["technique:positive"]),
+        ),
     )
     .await;
     approved_case(
@@ -12009,7 +12817,13 @@ async fn phase6a_the_gap_check_lines_the_requirements_up_with_the_crawl_and_the_
     )
     .await;
 
-    let (status, body) = gap_check(&state, project, &owner, Some(serde_json::json!({"crawl_run_id": run_id}))).await;
+    let (status, body) = gap_check(
+        &state,
+        project,
+        &owner,
+        Some(serde_json::json!({"crawl_run_id": run_id})),
+    )
+    .await;
     std::fs::remove_file(file).ok();
     assert_eq!(status, StatusCode::OK, "body={body}");
 
@@ -12018,18 +12832,34 @@ async fn phase6a_the_gap_check_lines_the_requirements_up_with_the_crawl_and_the_
     assert_eq!(body["crawl"]["source"], "grounding");
     assert_eq!(body["crawl"]["roles"].as_array().unwrap().len(), 2);
     assert!(
-        body["notes"][0].as_str().unwrap_or_default().contains("\"admin\" could not log in"),
+        body["notes"][0]
+            .as_str()
+            .unwrap_or_default()
+            .contains("\"admin\" could not log in"),
         "notes={}",
         body["notes"]
     );
 
     // Each requirement, against the pages.
-    assert_eq!(finding_of(&body, "FR-001")["status"], "FOUND", "body={body}");
-    assert_eq!(finding_of(&body, "FR-001")["matches"][0]["url"], "https://shop.example.test/");
+    assert_eq!(
+        finding_of(&body, "FR-001")["status"],
+        "FOUND",
+        "body={body}"
+    );
+    assert_eq!(
+        finding_of(&body, "FR-001")["matches"][0]["url"],
+        "https://shop.example.test/"
+    );
     assert_eq!(finding_of(&body, "FR-002")["status"], "FOUND");
-    assert_eq!(finding_of(&body, "FR-002")["matches"][0]["url"], "https://shop.example.test/inventory.html");
+    assert_eq!(
+        finding_of(&body, "FR-002")["matches"][0]["url"],
+        "https://shop.example.test/inventory.html"
+    );
     assert_eq!(finding_of(&body, "FR-003")["status"], "FOUND");
-    assert_eq!(finding_of(&body, "FR-003")["matches"][0]["url"], "https://shop.example.test/cart.html");
+    assert_eq!(
+        finding_of(&body, "FR-003")["matches"][0]["url"],
+        "https://shop.example.test/cart.html"
+    );
     assert_eq!(finding_of(&body, "FR-004")["status"], "WEAK");
     assert_eq!(finding_of(&body, "FR-005")["status"], "MISSING");
     assert_eq!(finding_of(&body, "FR-006")["status"], "NOT_CHECKABLE");
@@ -12037,22 +12867,39 @@ async fn phase6a_the_gap_check_lines_the_requirements_up_with_the_crawl_and_the_
 
     // Cases: the two it was given, counted for their requirement, and the techniques still missing.
     let added = &finding_of(&body, "FR-002")["cases"];
-    assert_eq!((added["total"].clone(), added["approved"].clone()), (1.into(), 1.into()), "body={body}");
+    assert_eq!(
+        (added["total"].clone(), added["approved"].clone()),
+        (1.into(), 1.into()),
+        "body={body}"
+    );
     assert_eq!(added["techniques"]["positive"], 1);
-    assert_eq!(added["missing_techniques"], serde_json::json!(["negative", "edge"]));
+    assert_eq!(
+        added["missing_techniques"],
+        serde_json::json!(["negative", "edge"])
+    );
     assert_eq!(finding_of(&body, "FR-005")["cases"]["total"], 1);
     assert_eq!(finding_of(&body, "FR-003")["cases"]["total"], 0);
 
     // The page nobody wrote a requirement for, and the counts.
-    assert_eq!(body["undocumented_pages"].as_array().unwrap().len(), 1, "body={body}");
-    assert_eq!(body["undocumented_pages"][0]["url"], "https://shop.example.test/legal/terms.html");
+    assert_eq!(
+        body["undocumented_pages"].as_array().unwrap().len(),
+        1,
+        "body={body}"
+    );
+    assert_eq!(
+        body["undocumented_pages"][0]["url"],
+        "https://shop.example.test/legal/terms.html"
+    );
     let summary = &body["summary"];
     assert_eq!(summary["requirements"], 6);
     assert_eq!(summary["found"], 3);
     assert_eq!(summary["weak"], 1);
     assert_eq!(summary["missing"], 1);
     assert_eq!(summary["not_checkable"], 1);
-    assert_eq!(summary["tested_without_evidence"], 1, "FR-005 has a case and no sign in the crawl: {body}");
+    assert_eq!(
+        summary["tested_without_evidence"], 1,
+        "FR-005 has a case and no sign in the crawl: {body}"
+    );
     assert_eq!(summary["pages"], 4);
 }
 
@@ -12061,9 +12908,20 @@ async fn phase6a_a_role_can_be_chosen_and_an_unknown_one_lists_the_roles() {
     let (state, _dir) = test_state_with_compiled_api().await;
     let project = make_project(&state, "Phase6A Gap Role").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-    upload_document(&state, &owner, project, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+    upload_document(
+        &state,
+        &owner,
+        project,
+        "FRD.md",
+        SHOP_FRD.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
     let (run_id, task_id) = crawl_run_and_task(&state, project, &owner).await;
-    let file = write_crawl_file(&crate::crawler::grounding_file_name(&task_id), SHOP_GROUNDING);
+    let file = write_crawl_file(
+        &crate::crawler::grounding_file_name(&task_id),
+        SHOP_GROUNDING,
+    );
 
     let (status, only_admin) = gap_check(
         &state,
@@ -12081,24 +12939,48 @@ async fn phase6a_a_role_can_be_chosen_and_an_unknown_one_lists_the_roles() {
     .await;
     // With no crawl named, the newest one is used, and a role it lacks is the same 400 that lists the roles: not a
     // "no crawl" 404, and not a reason to look for an older crawl.
-    let (default_status, default_admin) =
-        gap_check(&state, project, &owner, Some(serde_json::json!({"role": "ADMIN"}))).await;
-    let (default_bad_status, default_unknown) =
-        gap_check(&state, project, &owner, Some(serde_json::json!({"role": "auditor"}))).await;
+    let (default_status, default_admin) = gap_check(
+        &state,
+        project,
+        &owner,
+        Some(serde_json::json!({"role": "ADMIN"})),
+    )
+    .await;
+    let (default_bad_status, default_unknown) = gap_check(
+        &state,
+        project,
+        &owner,
+        Some(serde_json::json!({"role": "auditor"})),
+    )
+    .await;
     std::fs::remove_file(file).ok();
 
     // The admin's crawl reached one page (the login page) and found nothing else.
     assert_eq!(status, StatusCode::OK, "body={only_admin}");
     assert_eq!(only_admin["crawl"]["role"], "ADMIN");
     assert_eq!(only_admin["summary"]["pages"], 1);
-    assert_eq!(finding_of(&only_admin, "FR-002")["status"], "MISSING", "body={only_admin}");
+    assert_eq!(
+        finding_of(&only_admin, "FR-002")["status"],
+        "MISSING",
+        "body={only_admin}"
+    );
     assert_eq!(bad_status, StatusCode::BAD_REQUEST, "body={unknown}");
-    assert!(unknown.to_string().contains("standard, admin"), "body={unknown}");
+    assert!(
+        unknown.to_string().contains("standard, admin"),
+        "body={unknown}"
+    );
     assert_eq!(default_status, StatusCode::OK, "body={default_admin}");
     assert_eq!(default_admin["crawl"]["run_id"], run_id);
     assert_eq!(default_admin["crawl"]["role"], "ADMIN");
-    assert_eq!(default_bad_status, StatusCode::BAD_REQUEST, "body={default_unknown}");
-    assert!(default_unknown.to_string().contains("standard, admin"), "body={default_unknown}");
+    assert_eq!(
+        default_bad_status,
+        StatusCode::BAD_REQUEST,
+        "body={default_unknown}"
+    );
+    assert!(
+        default_unknown.to_string().contains("standard, admin"),
+        "body={default_unknown}"
+    );
 }
 
 #[tokio::test]
@@ -12106,16 +12988,34 @@ async fn phase6a_an_older_crawl_with_only_a_result_is_read_and_says_so() {
     let (state, _dir) = test_state_with_compiled_api().await;
     let project = make_project(&state, "Phase6A Gap Older Crawl").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-    upload_document(&state, &owner, project, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+    upload_document(
+        &state,
+        &owner,
+        project,
+        "FRD.md",
+        SHOP_FRD.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
     let (run_id, task_id) = crawl_run_and_task(&state, project, &owner).await;
     let file = write_crawl_file(&format!("crawl-result-{task_id}.json"), SHOP_RESULT);
 
-    let (status, body) = gap_check(&state, project, &owner, Some(serde_json::json!({"crawl_run_id": run_id}))).await;
+    let (status, body) = gap_check(
+        &state,
+        project,
+        &owner,
+        Some(serde_json::json!({"crawl_run_id": run_id})),
+    )
+    .await;
     std::fs::remove_file(file).ok();
 
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(body["crawl"]["source"], "result");
-    assert!(body["notes"].to_string().contains("form fields"), "notes={}", body["notes"]);
+    assert!(
+        body["notes"].to_string().contains("form fields"),
+        "notes={}",
+        body["notes"]
+    );
     // The login button is there; the cart page was never crawled, only linked to.
     assert_eq!(finding_of(&body, "FR-001")["status"], "WEAK", "body={body}");
 }
@@ -12125,12 +13025,23 @@ async fn phase6a_with_no_crawl_named_the_latest_one_is_used_and_no_crawl_is_a_40
     let (state, _dir) = test_state_with_compiled_api().await;
     let project = make_project(&state, "Phase6A Gap Latest").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-    upload_document(&state, &owner, project, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+    upload_document(
+        &state,
+        &owner,
+        project,
+        "FRD.md",
+        SHOP_FRD.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
 
     // No crawl at all yet.
     let (status, body) = gap_check(&state, project, &owner, None).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
-    assert!(body.to_string().contains("no finished crawl"), "body={body}");
+    assert!(
+        body.to_string().contains("no finished crawl"),
+        "body={body}"
+    );
 
     let (run_id, task_id) = crawl_run_and_task(&state, project, &owner).await;
     // A crawl that left nothing to read is not used either.
@@ -12138,12 +13049,24 @@ async fn phase6a_with_no_crawl_named_the_latest_one_is_used_and_no_crawl_is_a_40
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
 
     // Once it has left its grounding, it is the crawl the check is made against — and the newest of two is the one used.
-    let file = write_crawl_file(&crate::crawler::grounding_file_name(&task_id), SHOP_GROUNDING);
+    let file = write_crawl_file(
+        &crate::crawler::grounding_file_name(&task_id),
+        SHOP_GROUNDING,
+    );
     let (newer_run, newer_task) = crawl_run_and_task(&state, project, &owner).await;
-    let newer_file = write_crawl_file(&crate::crawler::grounding_file_name(&newer_task), SHOP_GROUNDING);
+    let newer_file = write_crawl_file(
+        &crate::crawler::grounding_file_name(&newer_task),
+        SHOP_GROUNDING,
+    );
     let (status, body) = gap_check(&state, project, &owner, None).await;
     // Naming the older one uses the older one.
-    let (named_status, named) = gap_check(&state, project, &owner, Some(serde_json::json!({"crawl_run_id": run_id}))).await;
+    let (named_status, named) = gap_check(
+        &state,
+        project,
+        &owner,
+        Some(serde_json::json!({"crawl_run_id": run_id})),
+    )
+    .await;
     std::fs::remove_file(file).ok();
     std::fs::remove_file(newer_file).ok();
     assert_eq!(status, StatusCode::OK, "body={body}");
@@ -12165,7 +13088,15 @@ async fn phase6a_the_gap_check_says_what_is_missing_to_run_it() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
     assert!(body.to_string().contains("no requirements"), "body={body}");
 
-    upload_document(&state, &owner, project, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+    upload_document(
+        &state,
+        &owner,
+        project,
+        "FRD.md",
+        SHOP_FRD.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
     // Documents that are not this project's contribute no requirements.
     let (status, body) = gap_check(
         &state,
@@ -12186,9 +13117,18 @@ async fn phase6a_the_gap_check_says_what_is_missing_to_run_it() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     // A run that left no crawl behind (a plain run, or a crawl still going).
     let (run_id, _) = crawl_run_and_task(&state, project, &owner).await;
-    let (status, body) = gap_check(&state, project, &owner, Some(serde_json::json!({"crawl_run_id": run_id}))).await;
+    let (status, body) = gap_check(
+        &state,
+        project,
+        &owner,
+        Some(serde_json::json!({"crawl_run_id": run_id})),
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
-    assert!(body.to_string().contains("recorded no crawl"), "body={body}");
+    assert!(
+        body.to_string().contains("recorded no crawl"),
+        "body={body}"
+    );
 }
 
 #[tokio::test]
@@ -12196,14 +13136,28 @@ async fn phase6a_a_crawl_that_reached_no_page_is_refused_rather_than_reported_as
     let (state, _dir) = test_state_with_compiled_api().await;
     let project = make_project(&state, "Phase6A Gap Empty Crawl").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-    upload_document(&state, &owner, project, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+    upload_document(
+        &state,
+        &owner,
+        project,
+        "FRD.md",
+        SHOP_FRD.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
     let (run_id, task_id) = crawl_run_and_task(&state, project, &owner).await;
     let file = write_crawl_file(
         &crate::crawler::grounding_file_name(&task_id),
         r#"{"roles":[{"role":"admin","loginSucceeded":false,"loginActions":[],"pages":[]}]}"#,
     );
 
-    let (status, body) = gap_check(&state, project, &owner, Some(serde_json::json!({"crawl_run_id": run_id}))).await;
+    let (status, body) = gap_check(
+        &state,
+        project,
+        &owner,
+        Some(serde_json::json!({"crawl_run_id": run_id})),
+    )
+    .await;
     std::fs::remove_file(file).ok();
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
     assert!(body.to_string().contains("reached no page"), "body={body}");
@@ -12217,10 +13171,29 @@ async fn phase6a_the_check_is_project_scoped_and_a_viewer_may_read_it() {
     let owner_a = mint_key(&state, "operator", Some(&project_a.to_string())).await;
     let owner_b = mint_key(&state, "operator", Some(&project_b.to_string())).await;
     let viewer_a = mint_key(&state, "viewer", Some(&project_a.to_string())).await;
-    upload_document(&state, &owner_a, project_a, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
-    upload_document(&state, &owner_b, project_b, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+    upload_document(
+        &state,
+        &owner_a,
+        project_a,
+        "FRD.md",
+        SHOP_FRD.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
+    upload_document(
+        &state,
+        &owner_b,
+        project_b,
+        "FRD.md",
+        SHOP_FRD.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
     let (run_id, task_id) = crawl_run_and_task(&state, project_a, &owner_a).await;
-    let file = write_crawl_file(&crate::crawler::grounding_file_name(&task_id), SHOP_GROUNDING);
+    let file = write_crawl_file(
+        &crate::crawler::grounding_file_name(&task_id),
+        SHOP_GROUNDING,
+    );
 
     let (viewer_status, viewer_body) = gap_check(
         &state,
@@ -12282,8 +13255,16 @@ impl Embedder for ConceptEmbedder {
             .map(|words| words.iter().filter(|w| lower.contains(*w)).count() as f32)
             .collect();
         let hits: f32 = vector.iter().sum();
-        vector.push(if hits == 0.0 && text.starts_with('/') { 1.0 } else { 0.0 });
-        vector.push(if hits == 0.0 && !text.starts_with('/') { 1.0 } else { 0.0 });
+        vector.push(if hits == 0.0 && text.starts_with('/') {
+            1.0
+        } else {
+            0.0
+        });
+        vector.push(if hits == 0.0 && !text.starts_with('/') {
+            1.0
+        } else {
+            0.0
+        });
         Ok(vector)
     }
 }
@@ -12306,7 +13287,6 @@ const SIX_PAGE_GROUNDING: &str = r##"{"roles":[
      {"url":"https://shop.example.test/help","title":"Help","elements":[
         {"kind":"link","text":"FAQ","locator":"a"}]}]}]}"##;
 
-
 fn verdict_answer(items: &[(&str, &str, &[&str], &str)]) -> String {
     let verdicts: Vec<Value> = items
         .iter()
@@ -12320,10 +13300,21 @@ fn verdict_answer(items: &[(&str, &str, &[&str], &str)]) -> String {
 async fn shop_project(state: &AppState, name: &str) -> (Uuid, String, String, std::path::PathBuf) {
     let project = make_project(state, name).await;
     let owner = mint_key(state, "operator", Some(&project.to_string())).await;
-    let (status, uploaded) = upload_document(state, &owner, project, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+    let (status, uploaded) = upload_document(
+        state,
+        &owner,
+        project,
+        "FRD.md",
+        SHOP_FRD.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={uploaded}");
     let (run_id, task_id) = crawl_run_and_task(state, project, &owner).await;
-    let file = write_crawl_file(&crate::crawler::grounding_file_name(&task_id), SHOP_GROUNDING);
+    let file = write_crawl_file(
+        &crate::crawler::grounding_file_name(&task_id),
+        SHOP_GROUNDING,
+    );
     (project, owner, run_id, file)
 }
 
@@ -12333,14 +13324,23 @@ async fn phase6b_with_no_option_no_step_runs_and_the_response_says_so() {
     let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
     let (project, owner, run_id, file) = shop_project(&state, "Phase6B No Options").await;
 
-    let (status, body) = gap_check(&state, project, &owner, Some(serde_json::json!({"crawl_run_id": run_id}))).await;
+    let (status, body) = gap_check(
+        &state,
+        project,
+        &owner,
+        Some(serde_json::json!({"crawl_run_id": run_id})),
+    )
+    .await;
     std::fs::remove_file(file).ok();
 
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(body["method"]["embeddings"]["requested"], false);
     assert_eq!(body["method"]["verification"]["requested"], false);
     assert_eq!(body["method"]["verification"]["calls"], 0);
-    assert!(executor.prompts.lock().unwrap().is_empty(), "no provider is called for the words check");
+    assert!(
+        executor.prompts.lock().unwrap().is_empty(),
+        "no provider is called for the words check"
+    );
     assert!(finding_of(&body, "FR-004").get("verification").is_none());
     assert_eq!(finding_of(&body, "FR-004")["status"], "WEAK");
 }
@@ -12350,7 +13350,12 @@ async fn phase6b_asking_the_ai_to_check_confirms_or_rejects_and_says_who_said_so
     // FR-004 (a wishlist) is weak and FR-005 (a CSV export) missing: the AI is asked about them in that order, and shown
     // the pages with the one the words came nearest to first.
     let answer = verdict_answer(&[
-        ("R1", "CONFIRMED", &["P1"], "The product list has a heart button that adds a product to the wishlist."),
+        (
+            "R1",
+            "CONFIRMED",
+            &["P1"],
+            "The product list has a heart button that adds a product to the wishlist.",
+        ),
         ("R2", "NOT_FOUND", &[], "Nothing exports anything."),
     ]);
     let executor = Arc::new(RecordingExecutor::ok_sequence(vec![&answer]));
@@ -12369,28 +13374,63 @@ async fn phase6b_asking_the_ai_to_check_confirms_or_rejects_and_says_who_said_so
     assert_eq!(status, StatusCode::OK, "body={body}");
     let prompts = executor.prompts.lock().unwrap().clone();
     assert_eq!(prompts.len(), 1, "one call carries both requirements");
-    assert!(prompts[0].contains("(FR-004, 3 Shop, functional) Users can add products to a wishlist."), "{}", prompts[0]);
-    assert!(prompts[0].contains("(FR-005, 3 Shop, data) The system shall export any report as a CSV file."), "{}", prompts[0]);
-    assert!(prompts[0].contains("P1 — /inventory.html"), "the page the words came nearest to is listed first: {}", prompts[0]);
-    assert!(!prompts[0].contains("FR-001"), "a requirement the words found is not asked about");
+    assert!(
+        prompts[0].contains("(FR-004, 3 Shop, functional) Users can add products to a wishlist."),
+        "{}",
+        prompts[0]
+    );
+    assert!(
+        prompts[0]
+            .contains("(FR-005, 3 Shop, data) The system shall export any report as a CSV file."),
+        "{}",
+        prompts[0]
+    );
+    assert!(
+        prompts[0].contains("P1 — /inventory.html"),
+        "the page the words came nearest to is listed first: {}",
+        prompts[0]
+    );
+    assert!(
+        !prompts[0].contains("FR-001"),
+        "a requirement the words found is not asked about"
+    );
 
     let wishlist = finding_of(&body, "FR-004");
     assert_eq!(wishlist["status"], "FOUND", "body={body}");
     assert_eq!(wishlist["basis"], "ai");
-    assert_eq!(wishlist["matches"][0]["url"], "https://shop.example.test/inventory.html");
+    assert_eq!(
+        wishlist["matches"][0]["url"],
+        "https://shop.example.test/inventory.html"
+    );
     assert_eq!(wishlist["matches"][0]["basis"], "ai");
     assert_eq!(wishlist["verification"]["verdict"], "CONFIRMED");
     assert_eq!(wishlist["verification"]["by"], "mock/mock-model");
-    assert_eq!(wishlist["verification"]["reason"], "The product list has a heart button that adds a product to the wishlist.");
-    assert_eq!(wishlist["verification"]["pages"], serde_json::json!(["https://shop.example.test/inventory.html"]));
+    assert_eq!(
+        wishlist["verification"]["reason"],
+        "The product list has a heart button that adds a product to the wishlist."
+    );
+    assert_eq!(
+        wishlist["verification"]["pages"],
+        serde_json::json!(["https://shop.example.test/inventory.html"])
+    );
     let export = finding_of(&body, "FR-005");
     assert_eq!(export["status"], "MISSING");
     assert_eq!(export["basis"], "ai");
     assert_eq!(export["verification"]["verdict"], "NOT_FOUND");
 
     let v = &body["method"]["verification"];
-    assert_eq!((v["requested"].clone(), v["calls"].clone(), v["checked"].clone()), (true.into(), 1.into(), 2.into()));
-    assert_eq!((v["confirmed"].clone(), v["not_found"].clone()), (1.into(), 1.into()));
+    assert_eq!(
+        (
+            v["requested"].clone(),
+            v["calls"].clone(),
+            v["checked"].clone()
+        ),
+        (true.into(), 1.into(), 2.into())
+    );
+    assert_eq!(
+        (v["confirmed"].clone(), v["not_found"].clone()),
+        (1.into(), 1.into())
+    );
     assert_eq!(v["by"], serde_json::json!(["mock/mock-model"]));
     // The counts follow what the AI decided: the wishlist is now found, and nothing is left weak.
     assert_eq!(body["summary"]["found"], 4);
@@ -12399,8 +13439,11 @@ async fn phase6b_asking_the_ai_to_check_confirms_or_rejects_and_says_who_said_so
 }
 
 #[tokio::test]
-async fn phase6b_a_limit_on_the_questions_is_kept_and_a_provider_that_refuses_fails_the_step_not_the_request() {
-    let executor = Arc::new(RecordingExecutor::sequence(vec![Err(crate::ai_router::ExecutionError::NonSuccessStatus(503))]));
+async fn phase6b_a_limit_on_the_questions_is_kept_and_a_provider_that_refuses_fails_the_step_not_the_request(
+) {
+    let executor = Arc::new(RecordingExecutor::sequence(vec![Err(
+        crate::ai_router::ExecutionError::NonSuccessStatus(503),
+    )]));
     let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
     let (project, owner, run_id, file) = shop_project(&state, "Phase6B Refused").await;
 
@@ -12413,20 +13456,35 @@ async fn phase6b_a_limit_on_the_questions_is_kept_and_a_provider_that_refuses_fa
     .await;
     std::fs::remove_file(file).ok();
 
-    assert_eq!(status, StatusCode::OK, "the check itself is not lost when the provider is: {body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the check itself is not lost when the provider is: {body}"
+    );
     let prompts = executor.prompts.lock().unwrap().clone();
     assert_eq!(prompts.len(), 1);
-    assert_eq!(prompts[0].lines().filter(|l| l.starts_with("[R")).count(), 1, "only one requirement was asked about");
+    assert_eq!(
+        prompts[0].lines().filter(|l| l.starts_with("[R")).count(),
+        1,
+        "only one requirement was asked about"
+    );
     assert_eq!(body["method"]["verification"]["failed"], 1);
     assert_eq!(body["method"]["verification"]["checked"], 0);
     // What was asked keeps its status, and says the check failed.
     assert_eq!(finding_of(&body, "FR-004")["status"], "WEAK");
-    assert_eq!(finding_of(&body, "FR-004")["verification"]["verdict"], "FAILED");
-    assert!(finding_of(&body, "FR-005").get("verification").is_none(), "FR-005 was not asked");
+    assert_eq!(
+        finding_of(&body, "FR-004")["verification"]["verdict"],
+        "FAILED"
+    );
+    assert!(
+        finding_of(&body, "FR-005").get("verification").is_none(),
+        "FR-005 was not asked"
+    );
 }
 
 #[tokio::test]
-async fn phase6b_the_options_that_call_a_provider_need_the_operator_role_and_the_free_check_does_not() {
+async fn phase6b_the_options_that_call_a_provider_need_the_operator_role_and_the_free_check_does_not(
+) {
     let executor = Arc::new(RecordingExecutor::ok_sequence(vec![]));
     let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
     let (project, owner, run_id, file) = shop_project(&state, "Phase6B Roles").await;
@@ -12439,26 +13497,56 @@ async fn phase6b_the_options_that_call_a_provider_need_the_operator_role_and_the
         Some(body)
     };
 
-    let (verify, _) = gap_check(&state, project, &viewer, ask(serde_json::json!({"verify": true}))).await;
-    let (embed, _) = gap_check(&state, project, &viewer, ask(serde_json::json!({"use_embeddings": true}))).await;
+    let (verify, _) = gap_check(
+        &state,
+        project,
+        &viewer,
+        ask(serde_json::json!({"verify": true})),
+    )
+    .await;
+    let (embed, _) = gap_check(
+        &state,
+        project,
+        &viewer,
+        ask(serde_json::json!({"use_embeddings": true})),
+    )
+    .await;
     let (free, _) = gap_check(&state, project, &viewer, ask(serde_json::json!({}))).await;
     // An operator may.
-    let (operator, _) = gap_check(&state, project, &owner, ask(serde_json::json!({"use_embeddings": true}))).await;
+    let (operator, _) = gap_check(
+        &state,
+        project,
+        &owner,
+        ask(serde_json::json!({"use_embeddings": true})),
+    )
+    .await;
     std::fs::remove_file(file).ok();
 
     assert_eq!(verify, StatusCode::FORBIDDEN);
     assert_eq!(embed, StatusCode::FORBIDDEN);
     assert_eq!(free, StatusCode::OK);
     assert_eq!(operator, StatusCode::OK);
-    assert!(executor.prompts.lock().unwrap().is_empty(), "a refused request calls no provider");
+    assert!(
+        executor.prompts.lock().unwrap().is_empty(),
+        "a refused request calls no provider"
+    );
 }
 
 #[tokio::test]
 async fn phase6b_an_embedder_that_is_not_set_up_is_reported_and_changes_nothing() {
-    let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(Arc::new(RecordingExecutor::ok_sequence(vec![])))).await;
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(Arc::new(
+        RecordingExecutor::ok_sequence(vec![]),
+    )))
+    .await;
     let (project, owner, run_id, file) = shop_project(&state, "Phase6B No Embedder").await;
 
-    let (_, free) = gap_check(&state, project, &owner, Some(serde_json::json!({"crawl_run_id": run_id}))).await;
+    let (_, free) = gap_check(
+        &state,
+        project,
+        &owner,
+        Some(serde_json::json!({"crawl_run_id": run_id})),
+    )
+    .await;
     let (status, body) = gap_check(
         &state,
         project,
@@ -12470,26 +13558,61 @@ async fn phase6b_an_embedder_that_is_not_set_up_is_reported_and_changes_nothing(
 
     assert_eq!(status, StatusCode::OK, "body={body}");
     let e = &body["method"]["embeddings"];
-    assert_eq!((e["requested"].clone(), e["used"].clone()), (true.into(), false.into()));
-    assert!(e["note"].as_str().unwrap().contains("GEMINI_API_KEY"), "body={body}");
-    assert_eq!(body["requirements"], free["requirements"], "nothing changed");
+    assert_eq!(
+        (e["requested"].clone(), e["used"].clone()),
+        (true.into(), false.into())
+    );
+    assert!(
+        e["note"].as_str().unwrap().contains("GEMINI_API_KEY"),
+        "body={body}"
+    );
+    assert_eq!(
+        body["requirements"], free["requirements"],
+        "nothing changed"
+    );
 }
 
 #[tokio::test]
-async fn phase6b_an_embedder_names_the_page_closest_in_meaning_for_a_requirement_the_words_missed() {
+async fn phase6b_an_embedder_names_the_page_closest_in_meaning_for_a_requirement_the_words_missed()
+{
     let embedder: Arc<dyn Embedder> = Arc::new(ConceptEmbedder {
         // The legal page's meaning: what "the small print" is.
-        concepts: vec![vec!["terms", "privacy", "small print"], vec!["cart", "checkout"], vec!["username", "password"], vec!["add to cart"]],
+        concepts: vec![
+            vec!["terms", "privacy", "small print"],
+            vec!["cart", "checkout"],
+            vec!["username", "password"],
+            vec!["add to cart"],
+        ],
     });
-    let (state, _dir) =
-        test_state_with_ai_router_and_embedder(ai_infra_with_executor(Arc::new(RecordingExecutor::ok_sequence(vec![]))), embedder).await;
+    let (state, _dir) = test_state_with_ai_router_and_embedder(
+        ai_infra_with_executor(Arc::new(RecordingExecutor::ok_sequence(vec![]))),
+        embedder,
+    )
+    .await;
     let project = make_project(&state, "Phase6B Embedder").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-    upload_document(&state, &owner, project, "FRD.md", b"## 4 Legal\n\nFR-301: Users can read the small print.\n", Some("FRD")).await;
+    upload_document(
+        &state,
+        &owner,
+        project,
+        "FRD.md",
+        b"## 4 Legal\n\nFR-301: Users can read the small print.\n",
+        Some("FRD"),
+    )
+    .await;
     let (run_id, task_id) = crawl_run_and_task(&state, project, &owner).await;
-    let file = write_crawl_file(&crate::crawler::grounding_file_name(&task_id), SIX_PAGE_GROUNDING);
+    let file = write_crawl_file(
+        &crate::crawler::grounding_file_name(&task_id),
+        SIX_PAGE_GROUNDING,
+    );
 
-    let (_, words) = gap_check(&state, project, &owner, Some(serde_json::json!({"crawl_run_id": run_id}))).await;
+    let (_, words) = gap_check(
+        &state,
+        project,
+        &owner,
+        Some(serde_json::json!({"crawl_run_id": run_id})),
+    )
+    .await;
     let (status, body) = gap_check(
         &state,
         project,
@@ -12499,17 +13622,27 @@ async fn phase6b_an_embedder_names_the_page_closest_in_meaning_for_a_requirement
     .await;
     std::fs::remove_file(file).ok();
 
-    assert_eq!(finding_of(&words, "FR-301")["status"], "MISSING", "the words see nothing: {words}");
+    assert_eq!(
+        finding_of(&words, "FR-301")["status"],
+        "MISSING",
+        "the words see nothing: {words}"
+    );
     assert_eq!(status, StatusCode::OK, "body={body}");
     let small_print = finding_of(&body, "FR-301");
     // Only ever weak: how close is close enough is not something the words can confirm.
     assert_eq!(small_print["status"], "WEAK", "body={body}");
     assert_eq!(small_print["basis"], "embedding");
-    assert_eq!(small_print["matches"][0]["url"], "https://shop.example.test/legal/terms.html");
+    assert_eq!(
+        small_print["matches"][0]["url"],
+        "https://shop.example.test/legal/terms.html"
+    );
     assert_eq!(small_print["matches"][0]["basis"], "embedding");
     assert_eq!(small_print["matches"][0]["similarity"], 1.0);
     let e = &body["method"]["embeddings"];
-    assert_eq!((e["requested"].clone(), e["used"].clone()), (true.into(), true.into()));
+    assert_eq!(
+        (e["requested"].clone(), e["used"].clone()),
+        (true.into(), true.into())
+    );
     assert_eq!(e["model"], "concept-embedder");
     // Six pages and the one requirement.
     assert_eq!(e["texts"], 7);
@@ -12524,8 +13657,18 @@ async fn phase6b_asking_the_ai_to_check_is_audited_and_the_free_check_is_not() {
     let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor)).await;
     let (project, owner, run_id, file) = shop_project(&state, "Phase6B Audit").await;
 
-    let (free, _) = gap_check(&state, project, &owner, Some(serde_json::json!({"crawl_run_id": run_id}))).await;
-    let after_free = state.store.list_audit(None, 100, 0).await.expect("list_audit");
+    let (free, _) = gap_check(
+        &state,
+        project,
+        &owner,
+        Some(serde_json::json!({"crawl_run_id": run_id})),
+    )
+    .await;
+    let after_free = state
+        .store
+        .list_audit(None, 100, 0)
+        .await
+        .expect("list_audit");
     let (asked, _) = gap_check(
         &state,
         project,
@@ -12533,11 +13676,18 @@ async fn phase6b_asking_the_ai_to_check_is_audited_and_the_free_check_is_not() {
         Some(serde_json::json!({"crawl_run_id": run_id, "verify": true})),
     )
     .await;
-    let after_verify = state.store.list_audit(None, 100, 0).await.expect("list_audit");
+    let after_verify = state
+        .store
+        .list_audit(None, 100, 0)
+        .await
+        .expect("list_audit");
     std::fs::remove_file(file).ok();
 
     assert_eq!((free, asked), (StatusCode::OK, StatusCode::OK));
-    assert!(!after_free.iter().any(|a| a.action == "gap_check.verify"), "the words check calls no provider");
+    assert!(
+        !after_free.iter().any(|a| a.action == "gap_check.verify"),
+        "the words check calls no provider"
+    );
     let project_id = project.to_string();
     assert!(
         after_verify.iter().any(|a| a.action == "gap_check.verify"
@@ -12550,28 +13700,51 @@ async fn phase6b_asking_the_ai_to_check_is_audited_and_the_free_check_is_not() {
 
 // ------------------------------------------------- Phase 6C — look for the pages the requirements mention first
 
-async fn crawl_body_with(state: &AppState, project: Uuid, key: &str, extra: Value) -> (StatusCode, Value) {
+async fn crawl_body_with(
+    state: &AppState,
+    project: Uuid,
+    key: &str,
+    extra: Value,
+) -> (StatusCode, Value) {
     let mut body = valid_crawl_body();
     for (k, v) in extra.as_object().unwrap() {
         body[k] = v.clone();
     }
     send(
         state,
-        req("POST", &format!("/api/v1/projects/{project}/crawl"), Some(key), Some(body)),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/crawl"),
+            Some(key),
+            Some(body),
+        ),
     )
     .await
 }
 
 /// The spec a crawl run's one task was given (which the run itself cannot execute here).
-async fn crawl_spec_of(state: &AppState, project: Uuid, key: &str, run_id: &str) -> (String, std::path::PathBuf) {
+async fn crawl_spec_of(
+    state: &AppState,
+    project: Uuid,
+    key: &str,
+    run_id: &str,
+) -> (String, std::path::PathBuf) {
     let (_, run) = send(
         state,
-        req("GET", &format!("/api/v1/projects/{project}/executions/{run_id}"), Some(key), None),
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/executions/{run_id}"),
+            Some(key),
+            None,
+        ),
     )
     .await;
     let task_id = run["tasks"][0]["id"].as_str().unwrap().to_string();
     let path = crate::crawler::generated_dir().join(format!("crawl-{task_id}.spec.ts"));
-    (std::fs::read_to_string(&path).expect("the crawl's generated spec"), path)
+    (
+        std::fs::read_to_string(&path).expect("the crawl's generated spec"),
+        path,
+    )
 }
 
 #[tokio::test]
@@ -12579,17 +13752,37 @@ async fn phase6c_a_crawl_can_ask_to_visit_the_pages_the_requirements_mention_fir
     let (state, _dir) = test_state_with_compiled_api().await;
     let project = make_project(&state, "Phase6C Focus").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-    upload_document(&state, &owner, project, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+    upload_document(
+        &state,
+        &owner,
+        project,
+        "FRD.md",
+        SHOP_FRD.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
 
-    let (status, started) = crawl_body_with(&state, project, &owner, serde_json::json!({"focus_requirements": true})).await;
+    let (status, started) = crawl_body_with(
+        &state,
+        project,
+        &owner,
+        serde_json::json!({"focus_requirements": true}),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "body={started}");
-    let (spec, path) = crawl_spec_of(&state, project, &owner, started["run_id"].as_str().unwrap()).await;
+    let (spec, path) =
+        crawl_spec_of(&state, project, &owner, started["run_id"].as_str().unwrap()).await;
     std::fs::remove_file(path).ok();
 
     let start = spec.find("const PLAN: CrawlPlan = ").unwrap() + "const PLAN: CrawlPlan = ".len();
     let end = spec[start..].find(";\n").unwrap() + start;
     let plan: Value = serde_json::from_str(&spec[start..end]).unwrap();
-    let terms: Vec<&str> = plan["focusTerms"].as_array().expect("the plan carries the words").iter().map(|t| t.as_str().unwrap()).collect();
+    let terms: Vec<&str> = plan["focusTerms"]
+        .as_array()
+        .expect("the plan carries the words")
+        .iter()
+        .map(|t| t.as_str().unwrap())
+        .collect();
     // What the shop's requirements are about: its cart, its wishlist, its report export.
     for word in ["cart", "wishlist", "report", "product"] {
         assert!(terms.contains(&word), "{word} in {terms:?}");
@@ -12604,16 +13797,37 @@ async fn phase6c_without_the_option_a_crawl_is_exactly_what_it_was() {
     let (state, _dir) = test_state_with_compiled_api().await;
     let project = make_project(&state, "Phase6C No Focus").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-    upload_document(&state, &owner, project, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+    upload_document(
+        &state,
+        &owner,
+        project,
+        "FRD.md",
+        SHOP_FRD.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
 
     let (status, started) = crawl_body_with(&state, project, &owner, serde_json::json!({})).await;
-    let (off_status, off) = crawl_body_with(&state, project, &owner, serde_json::json!({"focus_requirements": false})).await;
-    assert_eq!((status, off_status), (StatusCode::CREATED, StatusCode::CREATED));
-    let (a, path_a) = crawl_spec_of(&state, project, &owner, started["run_id"].as_str().unwrap()).await;
+    let (off_status, off) = crawl_body_with(
+        &state,
+        project,
+        &owner,
+        serde_json::json!({"focus_requirements": false}),
+    )
+    .await;
+    assert_eq!(
+        (status, off_status),
+        (StatusCode::CREATED, StatusCode::CREATED)
+    );
+    let (a, path_a) =
+        crawl_spec_of(&state, project, &owner, started["run_id"].as_str().unwrap()).await;
     let (b, path_b) = crawl_spec_of(&state, project, &owner, off["run_id"].as_str().unwrap()).await;
     std::fs::remove_file(path_a).ok();
     std::fs::remove_file(path_b).ok();
-    assert!(!a.contains("focusTerms") && !b.contains("focusTerms"), "{a}");
+    assert!(
+        !a.contains("focusTerms") && !b.contains("focusTerms"),
+        "{a}"
+    );
 }
 
 #[tokio::test]
@@ -12622,11 +13836,30 @@ async fn phase6c_asking_for_the_focus_of_a_project_with_no_requirements_says_wha
     let project = make_project(&state, "Phase6C Nothing To Focus On").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
 
-    let (status, body) = crawl_body_with(&state, project, &owner, serde_json::json!({"focus_requirements": true})).await;
+    let (status, body) = crawl_body_with(
+        &state,
+        project,
+        &owner,
+        serde_json::json!({"focus_requirements": true}),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
-    assert!(body.to_string().contains("upload a requirements document first"), "body={body}");
+    assert!(
+        body.to_string()
+            .contains("upload a requirements document first"),
+        "body={body}"
+    );
     // Nothing was started: the project has no run.
-    let (_, runs) = send(&state, req("GET", &format!("/api/v1/projects/{project}/executions"), Some(&owner), None)).await;
+    let (_, runs) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/executions"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(runs.as_array().unwrap().len(), 0, "{runs}");
 }
 
@@ -12665,16 +13898,30 @@ const NO_LOGIN_TWO_PAGES: &str = r##"{"roles":[
    "pages":[{"url":"https://shop.example.test/about","title":"About","elements":[]},
             {"url":"https://shop.example.test/help","title":"Help","elements":[]}]}]}"##;
 
-async fn login_suggestion(state: &AppState, project: Uuid, key: &str, body: Value) -> (StatusCode, Value) {
+async fn login_suggestion(
+    state: &AppState,
+    project: Uuid,
+    key: &str,
+    body: Value,
+) -> (StatusCode, Value) {
     send(
         state,
-        req("POST", &format!("/api/v1/projects/{project}/login-suggestion"), Some(key), Some(body)),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/login-suggestion"),
+            Some(key),
+            Some(body),
+        ),
     )
     .await
 }
 
 /// A project with a crawl whose grounding is `grounding`: its operator key, the crawl's run id and the file to remove.
-async fn crawled_project(state: &AppState, name: &str, grounding: &str) -> (Uuid, String, String, std::path::PathBuf) {
+async fn crawled_project(
+    state: &AppState,
+    name: &str,
+    grounding: &str,
+) -> (Uuid, String, String, std::path::PathBuf) {
     let project = make_project(state, name).await;
     let owner = mint_key(state, "operator", Some(&project.to_string())).await;
     let (run_id, task_id) = crawl_run_and_task(state, project, &owner).await;
@@ -12685,10 +13932,16 @@ async fn crawled_project(state: &AppState, name: &str, grounding: &str) -> (Uuid
 #[tokio::test]
 async fn phase7a_a_crawl_with_a_login_page_gives_the_steps_and_the_variables_still_to_set() {
     let (state, _dir) = test_state_with_compiled_api().await;
-    let (project, owner, run_id, file) = crawled_project(&state, "Phase7A Login Steps", LOGIN_GROUNDING).await;
+    let (project, owner, run_id, file) =
+        crawled_project(&state, "Phase7A Login Steps", LOGIN_GROUNDING).await;
 
-    let (status, body) =
-        login_suggestion(&state, project, &owner, serde_json::json!({"role": "phase7a-zz", "crawl_run_id": run_id})).await;
+    let (status, body) = login_suggestion(
+        &state,
+        project,
+        &owner,
+        serde_json::json!({"role": "phase7a-zz", "crawl_run_id": run_id}),
+    )
+    .await;
     std::fs::remove_file(file).ok();
 
     assert_eq!(status, StatusCode::OK, "body={body}");
@@ -12707,11 +13960,20 @@ async fn phase7a_a_crawl_with_a_login_page_gives_the_steps_and_the_variables_sti
         ]),
         "body={body}"
     );
-    assert_eq!(s["secrets"], serde_json::json!(["AIQA_LOGIN_PHASE7A_ZZ_PASSWORD", "AIQA_LOGIN_PHASE7A_ZZ_USERNAME"]));
+    assert_eq!(
+        s["secrets"],
+        serde_json::json!([
+            "AIQA_LOGIN_PHASE7A_ZZ_PASSWORD",
+            "AIQA_LOGIN_PHASE7A_ZZ_USERNAME"
+        ])
+    );
     // Not set in this environment, so the person is told to set them (names only).
     assert_eq!(body["missing_secrets"], s["secrets"], "body={body}");
     assert_eq!(body["alternatives"], serde_json::json!([]));
-    assert_eq!(body["ai"], serde_json::json!({"requested": false, "used": false, "note": null}));
+    assert_eq!(
+        body["ai"],
+        serde_json::json!({"requested": false, "used": false, "note": null})
+    );
 }
 
 #[tokio::test]
@@ -12721,19 +13983,45 @@ async fn phase7a_with_no_crawl_named_the_newest_crawl_that_has_a_login_page_is_u
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
 
     // No crawl at all.
-    let (status, body) = login_suggestion(&state, project, &owner, serde_json::json!({"role": "admin"})).await;
+    let (status, body) = login_suggestion(
+        &state,
+        project,
+        &owner,
+        serde_json::json!({"role": "admin"}),
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
-    assert!(body.to_string().contains("no crawl with recorded fields"), "body={body}");
+    assert!(
+        body.to_string().contains("no crawl with recorded fields"),
+        "body={body}"
+    );
 
     // The older crawl has the login page; the newer one only saw an about page.
     let (older_run, older_task) = crawl_run_and_task(&state, project, &owner).await;
-    let older_file = write_crawl_file(&crate::crawler::grounding_file_name(&older_task), LOGIN_GROUNDING);
+    let older_file = write_crawl_file(
+        &crate::crawler::grounding_file_name(&older_task),
+        LOGIN_GROUNDING,
+    );
     let (newer_run, newer_task) = crawl_run_and_task(&state, project, &owner).await;
-    let newer_file = write_crawl_file(&crate::crawler::grounding_file_name(&newer_task), NO_LOGIN_GROUNDING);
-    let (status, body) = login_suggestion(&state, project, &owner, serde_json::json!({"role": "admin"})).await;
+    let newer_file = write_crawl_file(
+        &crate::crawler::grounding_file_name(&newer_task),
+        NO_LOGIN_GROUNDING,
+    );
+    let (status, body) = login_suggestion(
+        &state,
+        project,
+        &owner,
+        serde_json::json!({"role": "admin"}),
+    )
+    .await;
     // Naming the newer crawl says what is wrong with it.
-    let (named_status, named) =
-        login_suggestion(&state, project, &owner, serde_json::json!({"role": "admin", "crawl_run_id": newer_run})).await;
+    let (named_status, named) = login_suggestion(
+        &state,
+        project,
+        &owner,
+        serde_json::json!({"role": "admin", "crawl_run_id": newer_run}),
+    )
+    .await;
     std::fs::remove_file(older_file).ok();
     std::fs::remove_file(newer_file).ok();
 
@@ -12741,21 +14029,39 @@ async fn phase7a_with_no_crawl_named_the_newest_crawl_that_has_a_login_page_is_u
     assert_eq!(body["crawl_run_id"], older_run);
     assert_eq!(body["suggestion"]["confidence"], "high");
     assert_eq!(named_status, StatusCode::BAD_REQUEST, "body={named}");
-    assert!(named.to_string().contains("no page of the crawl has a password field"), "body={named}");
+    assert!(
+        named
+            .to_string()
+            .contains("no page of the crawl has a password field"),
+        "body={named}"
+    );
 }
 
 #[tokio::test]
 async fn phase7a_crawls_that_never_reached_a_login_page_say_so() {
     let (state, _dir) = test_state_with_compiled_api().await;
-    let (project, owner, _run_id, file) = crawled_project(&state, "Phase7A No Login Page", NO_LOGIN_GROUNDING).await;
+    let (project, owner, _run_id, file) =
+        crawled_project(&state, "Phase7A No Login Page", NO_LOGIN_GROUNDING).await;
 
-    let (status, body) = login_suggestion(&state, project, &owner, serde_json::json!({"role": "admin"})).await;
+    let (status, body) = login_suggestion(
+        &state,
+        project,
+        &owner,
+        serde_json::json!({"role": "admin"}),
+    )
+    .await;
     std::fs::remove_file(file).ok();
 
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
     let text = body.to_string();
-    assert!(text.contains("no page of the crawl has a password field") && text.contains("1 page seen"), "body={body}");
-    assert!(text.contains("crawl the application again as `anonymous`"), "body={body}");
+    assert!(
+        text.contains("no page of the crawl has a password field") && text.contains("1 page seen"),
+        "body={body}"
+    );
+    assert!(
+        text.contains("crawl the application again as `anonymous`"),
+        "body={body}"
+    );
 }
 
 #[tokio::test]
@@ -12764,69 +14070,140 @@ async fn phase7a_when_no_crawl_has_a_login_page_the_newest_crawls_problem_is_the
     let project = make_project(&state, "Phase7A Newest Problem").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
     let (_, older_task) = crawl_run_and_task(&state, project, &owner).await;
-    let older_file = write_crawl_file(&crate::crawler::grounding_file_name(&older_task), NO_LOGIN_TWO_PAGES);
+    let older_file = write_crawl_file(
+        &crate::crawler::grounding_file_name(&older_task),
+        NO_LOGIN_TWO_PAGES,
+    );
     let (_, newer_task) = crawl_run_and_task(&state, project, &owner).await;
-    let newer_file = write_crawl_file(&crate::crawler::grounding_file_name(&newer_task), NO_LOGIN_GROUNDING);
+    let newer_file = write_crawl_file(
+        &crate::crawler::grounding_file_name(&newer_task),
+        NO_LOGIN_GROUNDING,
+    );
 
-    let (status, body) = login_suggestion(&state, project, &owner, serde_json::json!({"role": "admin"})).await;
+    let (status, body) = login_suggestion(
+        &state,
+        project,
+        &owner,
+        serde_json::json!({"role": "admin"}),
+    )
+    .await;
     std::fs::remove_file(older_file).ok();
     std::fs::remove_file(newer_file).ok();
 
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
     // The newest crawl saw one page; the older one two. The report is about the newest.
     let text = body.to_string();
-    assert!(text.contains("(1 page seen") && !text.contains("2 pages seen"), "body={body}");
+    assert!(
+        text.contains("(1 page seen") && !text.contains("2 pages seen"),
+        "body={body}"
+    );
 }
 
 #[tokio::test]
 async fn phase7a_the_role_the_crawl_and_the_project_are_checked() {
     let (state, _dir) = test_state_with_compiled_api().await;
-    let (project, owner, run_id, file) = crawled_project(&state, "Phase7A Checks", LOGIN_GROUNDING).await;
+    let (project, owner, run_id, file) =
+        crawled_project(&state, "Phase7A Checks", LOGIN_GROUNDING).await;
     let other = make_project(&state, "Phase7A Checks Other").await;
     let other_owner = mint_key(&state, "operator", Some(&other.to_string())).await;
     // A crawl that has left no grounding (still running, or made before grounding was recorded).
     let (bare_run, _) = crawl_run_and_task(&state, project, &owner).await;
 
-    let (empty_status, empty) = login_suggestion(&state, project, &owner, serde_json::json!({"role": "  "})).await;
-    let (bad_status, bad) = login_suggestion(&state, project, &owner, serde_json::json!({"role": "!!!"})).await;
-    let (foreign_status, foreign) =
-        login_suggestion(&state, other, &other_owner, serde_json::json!({"role": "admin", "crawl_run_id": run_id})).await;
-    let (bare_status, bare) =
-        login_suggestion(&state, project, &owner, serde_json::json!({"role": "admin", "crawl_run_id": bare_run})).await;
-    let (scope_status, _) = login_suggestion(&state, project, &other_owner, serde_json::json!({"role": "admin"})).await;
+    let (empty_status, empty) =
+        login_suggestion(&state, project, &owner, serde_json::json!({"role": "  "})).await;
+    let (bad_status, bad) =
+        login_suggestion(&state, project, &owner, serde_json::json!({"role": "!!!"})).await;
+    let (foreign_status, foreign) = login_suggestion(
+        &state,
+        other,
+        &other_owner,
+        serde_json::json!({"role": "admin", "crawl_run_id": run_id}),
+    )
+    .await;
+    let (bare_status, bare) = login_suggestion(
+        &state,
+        project,
+        &owner,
+        serde_json::json!({"role": "admin", "crawl_run_id": bare_run}),
+    )
+    .await;
+    let (scope_status, _) = login_suggestion(
+        &state,
+        project,
+        &other_owner,
+        serde_json::json!({"role": "admin"}),
+    )
+    .await;
     // A role that cannot name variables is refused before any crawl is looked for.
     let uncrawled = make_project(&state, "Phase7A Checks No Crawl").await;
     let uncrawled_owner = mint_key(&state, "operator", Some(&uncrawled.to_string())).await;
-    let (early_status, early) =
-        login_suggestion(&state, uncrawled, &uncrawled_owner, serde_json::json!({"role": "!!!"})).await;
+    let (early_status, early) = login_suggestion(
+        &state,
+        uncrawled,
+        &uncrawled_owner,
+        serde_json::json!({"role": "!!!"}),
+    )
+    .await;
     let (missing_status, _) = send(
         &state,
-        req("POST", &format!("/api/v1/projects/{project}/login-suggestion"), Some(&owner), Some(serde_json::json!({}))),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/login-suggestion"),
+            Some(&owner),
+            Some(serde_json::json!({})),
+        ),
     )
     .await;
     std::fs::remove_file(file).ok();
 
     assert_eq!(empty_status, StatusCode::BAD_REQUEST, "body={empty}");
-    assert!(empty.to_string().contains("role must not be empty"), "body={empty}");
+    assert!(
+        empty.to_string().contains("role must not be empty"),
+        "body={empty}"
+    );
     assert_eq!(bad_status, StatusCode::BAD_REQUEST, "body={bad}");
     assert!(bad.to_string().contains("role needs a name"), "body={bad}");
-    assert_eq!(early_status, StatusCode::BAD_REQUEST, "the role is checked first: body={early}");
-    assert!(early.to_string().contains("role needs a name"), "body={early}");
-    assert_eq!(foreign_status, StatusCode::NOT_FOUND, "another project's crawl: body={foreign}");
+    assert_eq!(
+        early_status,
+        StatusCode::BAD_REQUEST,
+        "the role is checked first: body={early}"
+    );
+    assert!(
+        early.to_string().contains("role needs a name"),
+        "body={early}"
+    );
+    assert_eq!(
+        foreign_status,
+        StatusCode::NOT_FOUND,
+        "another project's crawl: body={foreign}"
+    );
     assert_eq!(bare_status, StatusCode::NOT_FOUND, "body={bare}");
-    assert!(bare.to_string().contains("recorded no grounding"), "body={bare}");
-    assert_eq!(scope_status, StatusCode::FORBIDDEN, "a key of another project");
+    assert!(
+        bare.to_string().contains("recorded no grounding"),
+        "body={bare}"
+    );
+    assert_eq!(
+        scope_status,
+        StatusCode::FORBIDDEN,
+        "a key of another project"
+    );
     assert!(missing_status.is_client_error(), "the role is required");
 }
 
 #[tokio::test]
 async fn phase7a_a_viewer_may_ask_for_the_rules_but_not_for_the_ai() {
     let (state, _dir) = test_state_with_compiled_api().await;
-    let (project, owner, run_id, file) = crawled_project(&state, "Phase7A Viewer", LOGIN_GROUNDING).await;
+    let (project, owner, run_id, file) =
+        crawled_project(&state, "Phase7A Viewer", LOGIN_GROUNDING).await;
     let viewer = mint_key(&state, "viewer", Some(&project.to_string())).await;
 
-    let (rules_status, rules) =
-        login_suggestion(&state, project, &viewer, serde_json::json!({"role": "admin", "crawl_run_id": run_id})).await;
+    let (rules_status, rules) = login_suggestion(
+        &state,
+        project,
+        &viewer,
+        serde_json::json!({"role": "admin", "crawl_run_id": run_id}),
+    )
+    .await;
     let (ai_status, ai) = login_suggestion(
         &state,
         project,
@@ -12850,17 +14227,27 @@ async fn phase7a_a_viewer_may_ask_for_the_rules_but_not_for_the_ai() {
 }
 
 #[tokio::test]
-async fn phase7a_the_ai_is_asked_only_when_the_rules_are_unsure_and_its_answer_is_checked_and_audited() {
+async fn phase7a_the_ai_is_asked_only_when_the_rules_are_unsure_and_its_answer_is_checked_and_audited(
+) {
     // The AI is scripted: one answer for the odd page, and none for the plain one (a call there would panic).
     let answer = r#"{"username":"E1","password":"E2","submit":"E4","reason":"Beta is the second, so the submit"}"#;
     let agreeing = r#"{"username":"E1","password":"E2","submit":"E3"}"#;
-    let executor = Arc::new(RecordingExecutor::ok_sequence(vec![answer, r#"{"password":"E9"}"#, agreeing]));
+    let executor = Arc::new(RecordingExecutor::ok_sequence(vec![
+        answer,
+        r#"{"password":"E9"}"#,
+        agreeing,
+    ]));
     let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
-    let (project, owner, odd_run, odd_file) = crawled_project(&state, "Phase7A AI", ODD_LOGIN_GROUNDING).await;
+    let (project, owner, odd_run, odd_file) =
+        crawled_project(&state, "Phase7A AI", ODD_LOGIN_GROUNDING).await;
     let (plain_run, plain_task) = crawl_run_and_task(&state, project, &owner).await;
-    let plain_file = write_crawl_file(&crate::crawler::grounding_file_name(&plain_task), LOGIN_GROUNDING);
+    let plain_file = write_crawl_file(
+        &crate::crawler::grounding_file_name(&plain_task),
+        LOGIN_GROUNDING,
+    );
 
-    let ask = |run: &str| serde_json::json!({"role": "phase7a-ai", "crawl_run_id": run, "use_ai": true});
+    let ask =
+        |run: &str| serde_json::json!({"role": "phase7a-ai", "crawl_run_id": run, "use_ai": true});
     // Sure rules: the AI is not asked.
     let (plain_status, plain) = login_suggestion(&state, project, &owner, ask(&plain_run)).await;
     assert_eq!(executor.prompts.lock().unwrap().len(), 0);
@@ -12870,64 +14257,118 @@ async fn phase7a_the_ai_is_asked_only_when_the_rules_are_unsure_and_its_answer_i
     let (bad_status, bad) = login_suggestion(&state, project, &owner, ask(&odd_run)).await;
     // An answer that is the rules' own adds nothing to list.
     let (same_status, same) = login_suggestion(&state, project, &owner, ask(&odd_run)).await;
-    let audit_rows = state.store.list_audit(None, 100, 0).await.expect("list_audit");
+    let audit_rows = state
+        .store
+        .list_audit(None, 100, 0)
+        .await
+        .expect("list_audit");
     std::fs::remove_file(odd_file).ok();
     std::fs::remove_file(plain_file).ok();
 
     assert_eq!(plain_status, StatusCode::OK, "body={plain}");
     assert_eq!(plain["ai"]["used"], false);
-    assert!(plain["ai"]["note"].as_str().unwrap().contains("rules were sure"), "body={plain}");
+    assert!(
+        plain["ai"]["note"]
+            .as_str()
+            .unwrap()
+            .contains("rules were sure"),
+        "body={plain}"
+    );
 
     assert_eq!(odd_status, StatusCode::OK, "body={odd}");
     assert_eq!(odd["ai"]["requested"], true);
     assert_eq!(odd["ai"]["used"], true);
     assert_eq!(odd["suggestion"]["by"], "mock/mock-model", "body={odd}");
     assert_eq!(odd["suggestion"]["confidence"], "medium");
-    assert_eq!(odd["suggestion"]["actions"][3], serde_json::json!({"type": "CLICK", "selector": "#beta"}));
-    assert_eq!(odd["alternatives"].as_array().unwrap().len(), 1, "body={odd}");
+    assert_eq!(
+        odd["suggestion"]["actions"][3],
+        serde_json::json!({"type": "CLICK", "selector": "#beta"})
+    );
+    assert_eq!(
+        odd["alternatives"].as_array().unwrap().len(),
+        1,
+        "body={odd}"
+    );
     assert_eq!(odd["alternatives"][0]["by"], "rules");
-    assert_eq!(odd["alternatives"][0]["actions"][3], serde_json::json!({"type": "CLICK", "selector": "#alfa"}));
+    assert_eq!(
+        odd["alternatives"][0]["actions"][3],
+        serde_json::json!({"type": "CLICK", "selector": "#alfa"})
+    );
 
     assert_eq!(bad_status, StatusCode::OK, "body={bad}");
     assert_eq!(bad["ai"]["used"], false);
-    assert!(bad["ai"]["note"].as_str().unwrap().contains("not one of the elements listed"), "body={bad}");
+    assert!(
+        bad["ai"]["note"]
+            .as_str()
+            .unwrap()
+            .contains("not one of the elements listed"),
+        "body={bad}"
+    );
     assert_eq!(bad["suggestion"]["by"], "rules");
     assert_eq!(bad["alternatives"], serde_json::json!([]));
 
     assert_eq!(same_status, StatusCode::OK, "body={same}");
     assert_eq!(same["ai"]["used"], true, "the AI was asked and answered");
     assert_eq!(same["suggestion"]["by"], "rules", "body={same}");
-    assert_eq!(same["alternatives"], serde_json::json!([]), "the same steps are listed once: body={same}");
+    assert_eq!(
+        same["alternatives"],
+        serde_json::json!([]),
+        "the same steps are listed once: body={same}"
+    );
 
     // Every answer that was used is an audited action, against the crawl run; one that was refused is not.
-    let asked: Vec<_> = audit_rows.iter().filter(|a| a.action == "login_suggestion.ai").collect();
+    let asked: Vec<_> = audit_rows
+        .iter()
+        .filter(|a| a.action == "login_suggestion.ai")
+        .collect();
     assert_eq!(asked.len(), 2, "{audit_rows:?}");
-    assert!(asked.iter().all(|a| a.target.as_deref() == Some(odd_run.as_str())));
-    assert!(asked.iter().all(|a| a.detail.as_deref() == Some("mock/mock-model")));
+    assert!(asked
+        .iter()
+        .all(|a| a.target.as_deref() == Some(odd_run.as_str())));
+    assert!(asked
+        .iter()
+        .all(|a| a.detail.as_deref() == Some("mock/mock-model")));
     assert_eq!(executor.prompts.lock().unwrap().len(), 3);
 }
 
 // ------------------------------------------------- Phase 7B — what an autopilot run would cost
 
-async fn autopilot_estimate(state: &AppState, project: Uuid, key: &str, body: Value) -> (StatusCode, Value) {
+async fn autopilot_estimate(
+    state: &AppState,
+    project: Uuid,
+    key: &str,
+    body: Value,
+) -> (StatusCode, Value) {
     send(
         state,
-        req("POST", &format!("/api/v1/projects/{project}/autopilot/estimate"), Some(key), Some(body)),
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/autopilot/estimate"),
+            Some(key),
+            Some(body),
+        ),
     )
     .await
 }
 
 /// A router whose one provider charges: hosted, $0.002 per 1,000 tokens in and $0.01 out.
 fn priced_ai_infra() -> Arc<AiInfrastructure> {
-    let mut provider = healthy_provider("paid", vec![healthy_model("big-1", "paid", CapabilityLevel::Strong)]);
+    let mut provider = healthy_provider(
+        "paid",
+        vec![healthy_model("big-1", "paid", CapabilityLevel::Strong)],
+    );
     provider.provider_type = crate::ai_router::ProviderType::Api;
     provider.pricing = crate::ai_router::ProviderPricing::Metered {
         input_usd_per_1k: 0.002,
         output_usd_per_1k: 0.01,
     };
-    let mut executors: std::collections::HashMap<&'static str, Arc<dyn AiExecutor>> = std::collections::HashMap::new();
+    let mut executors: std::collections::HashMap<&'static str, Arc<dyn AiExecutor>> =
+        std::collections::HashMap::new();
     executors.insert("paid", Arc::new(FakeExecutor::ok("{}")));
-    Arc::new(AiInfrastructure::new(vec![Arc::new(FakeDiscovery(provider))], executors))
+    Arc::new(AiInfrastructure::new(
+        vec![Arc::new(FakeDiscovery(provider))],
+        executors,
+    ))
 }
 
 fn task_of<'a>(estimate: &'a Value, name: &str) -> &'a Value {
@@ -12944,7 +14385,15 @@ async fn phase7b_the_estimate_says_calls_tokens_time_and_what_they_rest_on() {
     let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
     let project = make_project(&state, "Phase7B Estimate").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-    upload_document(&state, &owner, project, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+    upload_document(
+        &state,
+        &owner,
+        project,
+        "FRD.md",
+        SHOP_FRD.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
 
     let (status, e) = autopilot_estimate(
         &state,
@@ -12959,35 +14408,92 @@ async fn phase7b_the_estimate_says_calls_tokens_time_and_what_they_rest_on() {
     // Six short requirements fit one batch: one call in a first pass, a quarter more allowed for answers that cannot be read
     // and two top-up rounds of at most as many calls as the first pass.
     let generation = task_of(&e, "TEST_CASE_GENERATION");
-    assert_eq!(generation["calls"], serde_json::json!({"min": 1, "max": 4}), "body={e}");
+    assert_eq!(
+        generation["calls"],
+        serde_json::json!({"min": 1, "max": 4}),
+        "body={e}"
+    );
     assert_eq!(generation["provider"]["id"], "mock");
     assert_eq!(generation["provider"]["model"], "mock-model");
     assert_eq!(generation["provider"]["kind"], "LOCAL");
     assert_eq!(generation["provider"]["pricing"]["kind"], "UNMETERED");
-    assert_eq!(generation["cost_usd"], serde_json::json!({"min": 0.0, "max": 0.0}));
-    assert_eq!(generation["latency"]["basis"], "ASSUMED", "nothing measured yet");
-    assert!(generation["seconds"]["max"].as_u64().unwrap() > generation["seconds"]["min"].as_u64().unwrap());
+    assert_eq!(
+        generation["cost_usd"],
+        serde_json::json!({"min": 0.0, "max": 0.0})
+    );
+    assert_eq!(
+        generation["latency"]["basis"], "ASSUMED",
+        "nothing measured yet"
+    );
+    assert!(
+        generation["seconds"]["max"].as_u64().unwrap()
+            > generation["seconds"]["min"].as_u64().unwrap()
+    );
     // What the depth asks for is more cases than requirements; at least one each.
     assert_eq!(e["cases"]["min"], 6);
     assert!(e["cases"]["max"].as_u64().unwrap() > 6, "body={e}");
     // Every step, in the order the run takes them; the wait for an approval is not counted.
-    let steps: Vec<&str> = e["steps"].as_array().unwrap().iter().map(|s| s["step"].as_str().unwrap()).collect();
-    assert_eq!(steps, ["REQUIREMENTS", "CRAWL", "GAP_CHECK", "GENERATE", "VALIDATE", "APPROVE", "EXECUTE", "REPORT"]);
-    let crawl = e["steps"].as_array().unwrap().iter().find(|s| s["step"] == "CRAWL").unwrap();
-    assert_eq!(crawl["note"], "2 role(s), up to 30 pages each", "a focused crawl may take ten more pages");
+    let steps: Vec<&str> = e["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["step"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        steps,
+        [
+            "REQUIREMENTS",
+            "CRAWL",
+            "GAP_CHECK",
+            "GENERATE",
+            "VALIDATE",
+            "APPROVE",
+            "EXECUTE",
+            "REPORT"
+        ]
+    );
+    let crawl = e["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["step"] == "CRAWL")
+        .unwrap();
+    assert_eq!(
+        crawl["note"], "2 role(s), up to 30 pages each",
+        "a focused crawl may take ten more pages"
+    );
     assert_eq!(e["totals"]["paid"], false);
-    assert!(e["assumptions"].as_array().unwrap().iter().any(|a| a.as_str().unwrap().contains("mock/mock-model is assumed to write 20 tokens a second")), "body={e}");
+    assert!(
+        e["assumptions"].as_array().unwrap().iter().any(|a| a
+            .as_str()
+            .unwrap()
+            .contains("mock/mock-model is assumed to write 20 tokens a second")),
+        "body={e}"
+    );
     // Compiling is counted (rules first: none to one AI call a case); the gap check's AI step is not asked for.
     assert_eq!(task_of(&e, "TEST_CASE_COMPILATION")["calls"]["min"], 0);
-    assert!(e["tasks"].as_array().unwrap().iter().all(|t| t["task"] != "TRACEABILITY"));
+    assert!(e["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|t| t["task"] != "TRACEABILITY"));
 }
 
 #[tokio::test]
-async fn phase7b_a_generation_is_remembered_and_the_estimate_after_enough_of_them_uses_what_they_took() {
+async fn phase7b_a_generation_is_remembered_and_the_estimate_after_enough_of_them_uses_what_they_took(
+) {
     let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
     let project = make_project(&state, "Phase7B Measured").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-    upload_document(&state, &owner, project, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+    upload_document(
+        &state,
+        &owner,
+        project,
+        "FRD.md",
+        SHOP_FRD.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
 
     // A real generation through the endpoint records its call: one wave, one call.
     let (status, generated) = send(
@@ -13001,28 +14507,76 @@ async fn phase7b_a_generation_is_remembered_and_the_estimate_after_enough_of_the
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body={generated}");
-    let stats = state.store.ai_call_stats("TEST_CASE_GENERATION").await.unwrap();
+    let stats = state
+        .store
+        .ai_call_stats("TEST_CASE_GENERATION")
+        .await
+        .unwrap();
     assert_eq!(stats.len(), 1, "{stats:?}");
-    assert_eq!((stats[0].provider.as_str(), stats[0].model.as_str(), stats[0].calls), ("mock", "mock-model", 1));
+    assert_eq!(
+        (
+            stats[0].provider.as_str(),
+            stats[0].model.as_str(),
+            stats[0].calls
+        ),
+        ("mock", "mock-model", 1)
+    );
     // Only generation is recorded here.
-    assert!(state.store.ai_call_stats("TEST_CASE_COMPILATION").await.unwrap().is_empty());
+    assert!(state
+        .store
+        .ai_call_stats("TEST_CASE_COMPILATION")
+        .await
+        .unwrap()
+        .is_empty());
 
     // One call is not an average.
     let (_, first) = autopilot_estimate(&state, project, &owner, serde_json::json!({})).await;
-    assert_eq!(task_of(&first, "TEST_CASE_GENERATION")["latency"]["basis"], "ASSUMED", "body={first}");
+    assert_eq!(
+        task_of(&first, "TEST_CASE_GENERATION")["latency"]["basis"],
+        "ASSUMED",
+        "body={first}"
+    );
 
     // Two more, slow ones: three calls make an average, and the estimate says it is measured.
-    state.store.record_ai_call("mock", "mock-model", "TEST_CASE_GENERATION", 80_000, Some(4_000), Some(1_000)).await.unwrap();
-    state.store.record_ai_call("mock", "mock-model", "TEST_CASE_GENERATION", 80_000, Some(4_000), Some(1_000)).await.unwrap();
+    state
+        .store
+        .record_ai_call(
+            "mock",
+            "mock-model",
+            "TEST_CASE_GENERATION",
+            80_000,
+            Some(4_000),
+            Some(1_000),
+        )
+        .await
+        .unwrap();
+    state
+        .store
+        .record_ai_call(
+            "mock",
+            "mock-model",
+            "TEST_CASE_GENERATION",
+            80_000,
+            Some(4_000),
+            Some(1_000),
+        )
+        .await
+        .unwrap();
     let (_, second) = autopilot_estimate(&state, project, &owner, serde_json::json!({})).await;
     let latency = &task_of(&second, "TEST_CASE_GENERATION")["latency"];
     assert_eq!(latency["basis"], "MEASURED", "body={second}");
     assert_eq!(latency["calls"], 3);
     let avg = latency["avg_seconds"].as_f64().unwrap();
-    assert!((53.0..54.0).contains(&avg), "two 80 s calls and a quick one average about 53 s: {avg}");
+    assert!(
+        (53.0..54.0).contains(&avg),
+        "two 80 s calls and a quick one average about 53 s: {avg}"
+    );
     // The seconds are that average, spread.
     let seconds = &task_of(&second, "TEST_CASE_GENERATION")["seconds"];
-    assert!(seconds["min"].as_u64().unwrap() > 30 && seconds["max"].as_u64().unwrap() > 90, "body={second}");
+    assert!(
+        seconds["min"].as_u64().unwrap() > 30 && seconds["max"].as_u64().unwrap() > 90,
+        "body={second}"
+    );
 }
 
 #[tokio::test]
@@ -13030,9 +14584,23 @@ async fn phase7b_a_provider_that_charges_makes_the_estimate_a_paid_one_and_says_
     let (state, _dir) = test_state_with_ai_router(priced_ai_infra()).await;
     let project = make_project(&state, "Phase7B Paid").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-    upload_document(&state, &owner, project, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+    upload_document(
+        &state,
+        &owner,
+        project,
+        "FRD.md",
+        SHOP_FRD.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
 
-    let (status, e) = autopilot_estimate(&state, project, &owner, serde_json::json!({"execute": false})).await;
+    let (status, e) = autopilot_estimate(
+        &state,
+        project,
+        &owner,
+        serde_json::json!({"execute": false}),
+    )
+    .await;
 
     assert_eq!(status, StatusCode::OK, "body={e}");
     let generation = task_of(&e, "TEST_CASE_GENERATION");
@@ -13041,30 +14609,68 @@ async fn phase7b_a_provider_that_charges_makes_the_estimate_a_paid_one_and_says_
         generation["provider"]["pricing"],
         serde_json::json!({"kind": "METERED", "input_usd_per_1k": 0.002, "output_usd_per_1k": 0.01})
     );
-    assert!(generation["cost_usd"]["max"].as_f64().unwrap() > 0.0, "body={e}");
+    assert!(
+        generation["cost_usd"]["max"].as_f64().unwrap() > 0.0,
+        "body={e}"
+    );
     assert_eq!(e["totals"]["paid"], true);
     assert!(e["totals"]["cost_usd"]["max"].as_f64().unwrap() > 0.0);
-    assert!(e["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("may cost up to $") && w.as_str().unwrap().contains("on paid")), "body={e}");
+    assert!(
+        e["warnings"].as_array().unwrap().iter().any(|w| w
+            .as_str()
+            .unwrap()
+            .contains("may cost up to $")
+            && w.as_str().unwrap().contains("on paid")),
+        "body={e}"
+    );
     // Not asked to run the cases: nothing is compiled.
-    assert!(e["tasks"].as_array().unwrap().iter().all(|t| t["task"] != "TEST_CASE_COMPILATION"), "body={e}");
+    assert!(
+        e["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["task"] != "TEST_CASE_COMPILATION"),
+        "body={e}"
+    );
 }
 
 #[tokio::test]
 async fn phase7b_with_no_provider_the_estimate_gives_no_cost_and_a_warning_not_a_zero() {
-    let (state, _dir) = test_state_with_ai_router(Arc::new(AiInfrastructure::new(vec![], std::collections::HashMap::new()))).await;
+    let (state, _dir) = test_state_with_ai_router(Arc::new(AiInfrastructure::new(
+        vec![],
+        std::collections::HashMap::new(),
+    )))
+    .await;
     let project = make_project(&state, "Phase7B No Provider").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-    upload_document(&state, &owner, project, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+    upload_document(
+        &state,
+        &owner,
+        project,
+        "FRD.md",
+        SHOP_FRD.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
 
     let (status, e) = autopilot_estimate(&state, project, &owner, serde_json::json!({})).await;
 
     assert_eq!(status, StatusCode::OK, "body={e}");
     let generation = task_of(&e, "TEST_CASE_GENERATION");
     assert!(generation["provider"].is_null());
-    assert!(generation["cost_usd"].is_null(), "no provider: no cost figure");
+    assert!(
+        generation["cost_usd"].is_null(),
+        "no provider: no cost figure"
+    );
     assert_eq!(generation["latency"]["basis"], "UNKNOWN");
     assert!(e["totals"]["cost_usd"].is_null(), "body={e}");
-    assert!(e["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("No provider can serve generating the cases")), "body={e}");
+    assert!(
+        e["warnings"].as_array().unwrap().iter().any(|w| w
+            .as_str()
+            .unwrap()
+            .contains("No provider can serve generating the cases")),
+        "body={e}"
+    );
 }
 
 #[tokio::test]
@@ -13072,14 +14678,48 @@ async fn phase7b_the_documents_chosen_and_the_skills_selected_decide_what_is_cou
     let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
     let project = make_project(&state, "Phase7B Choices").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-    let (_, shop) = upload_document(&state, &owner, project, "Shop.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
-    let (_, sample) = upload_document(&state, &owner, project, "Sample.md", SAMPLE_FRD.as_bytes(), Some("PRD")).await;
-    let shop_id = shop["requirements_document"]["document_id"].as_str().unwrap().to_string();
-    let sample_id = sample["requirements_document"]["document_id"].as_str().unwrap().to_string();
+    let (_, shop) = upload_document(
+        &state,
+        &owner,
+        project,
+        "Shop.md",
+        SHOP_FRD.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
+    let (_, sample) = upload_document(
+        &state,
+        &owner,
+        project,
+        "Sample.md",
+        SAMPLE_FRD.as_bytes(),
+        Some("PRD"),
+    )
+    .await;
+    let shop_id = shop["requirements_document"]["document_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let sample_id = sample["requirements_document"]["document_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let (_, all) = autopilot_estimate(&state, project, &owner, serde_json::json!({})).await;
-    let (_, only_sample) = autopilot_estimate(&state, project, &owner, serde_json::json!({"requirement_document_ids": [sample_id]})).await;
-    let (_, only_shop) = autopilot_estimate(&state, project, &owner, serde_json::json!({"requirement_document_ids": [shop_id]})).await;
+    let (_, only_sample) = autopilot_estimate(
+        &state,
+        project,
+        &owner,
+        serde_json::json!({"requirement_document_ids": [sample_id]}),
+    )
+    .await;
+    let (_, only_shop) = autopilot_estimate(
+        &state,
+        project,
+        &owner,
+        serde_json::json!({"requirement_document_ids": [shop_id]}),
+    )
+    .await;
     assert_eq!(all["requirements"], 9);
     assert_eq!(only_shop["requirements"], 6);
     assert_eq!(only_sample["requirements"], 3);
@@ -13093,15 +14733,32 @@ async fn phase7b_the_documents_chosen_and_the_skills_selected_decide_what_is_cou
         serde_json::json!({"requirement_document_ids": [shop_id], "skills": [{"id": "skill-performance", "name": "Performance Testing"}]}),
     )
     .await;
-    assert_eq!(task_of(&one_offered, "TEST_CASE_GENERATION")["calls"]["min"], 1, "body={one_offered}");
+    assert_eq!(
+        task_of(&one_offered, "TEST_CASE_GENERATION")["calls"]["min"],
+        1,
+        "body={one_offered}"
+    );
     assert!(
-        one_offered["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().starts_with("5 requirement(s) are of a kind no selected skill tests")),
+        one_offered["warnings"].as_array().unwrap().iter().any(|w| w
+            .as_str()
+            .unwrap()
+            .starts_with("5 requirement(s) are of a kind no selected skill tests")),
         "body={one_offered}"
     );
 
     // The gap check's AI step is counted when asked for: at most 12 requirements, eight to a call.
-    let (_, verify) = autopilot_estimate(&state, project, &owner, serde_json::json!({"verify_gaps": 12})).await;
-    assert_eq!(task_of(&verify, "TRACEABILITY")["calls"], serde_json::json!({"min": 0, "max": 2}), "body={verify}");
+    let (_, verify) = autopilot_estimate(
+        &state,
+        project,
+        &owner,
+        serde_json::json!({"verify_gaps": 12}),
+    )
+    .await;
+    assert_eq!(
+        task_of(&verify, "TRACEABILITY")["calls"],
+        serde_json::json!({"min": 0, "max": 2}),
+        "body={verify}"
+    );
 }
 
 #[tokio::test]
@@ -13110,27 +14767,73 @@ async fn phase7b_a_project_with_no_requirements_gets_an_estimate_that_says_so() 
     let project = make_project(&state, "Phase7B Nothing").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
 
-    let (status, e) = autopilot_estimate(&state, project, &owner, serde_json::json!({"depth": "STANDARD"})).await;
+    let (status, e) = autopilot_estimate(
+        &state,
+        project,
+        &owner,
+        serde_json::json!({"depth": "STANDARD"}),
+    )
+    .await;
 
     assert_eq!(status, StatusCode::OK, "body={e}");
     assert_eq!(e["requirements"], 0);
-    assert!(e["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("no requirements")), "body={e}");
-    assert!(e["tasks"].as_array().unwrap().iter().all(|t| t["task"] != "TEST_CASE_GENERATION"));
+    assert!(
+        e["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w.as_str().unwrap().contains("no requirements")),
+        "body={e}"
+    );
+    assert!(e["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|t| t["task"] != "TEST_CASE_GENERATION"));
 }
 
 #[tokio::test]
-async fn phase7b_what_is_left_out_of_the_request_takes_its_defaults_and_the_figures_follow_what_was_asked_for() {
+async fn phase7b_what_is_left_out_of_the_request_takes_its_defaults_and_the_figures_follow_what_was_asked_for(
+) {
     let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
     let project = make_project(&state, "Phase7B Defaults").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-    upload_document(&state, &owner, project, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
-    let step_of = |e: &Value, name: &str| e["steps"].as_array().unwrap().iter().find(|s| s["step"] == name).unwrap().clone();
-    let has = |e: &Value, text: &str| e["assumptions"].as_array().unwrap().iter().any(|a| a.as_str().unwrap().contains(text));
+    upload_document(
+        &state,
+        &owner,
+        project,
+        "FRD.md",
+        SHOP_FRD.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
+    let step_of = |e: &Value, name: &str| {
+        e["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["step"] == name)
+            .unwrap()
+            .clone()
+    };
+    let has = |e: &Value, text: &str| {
+        e["assumptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a.as_str().unwrap().contains(text))
+    };
 
     // Nothing said: one role, two runs at a time.
     let (_, plain) = autopilot_estimate(&state, project, &owner, serde_json::json!({})).await;
-    assert_eq!(step_of(&plain, "CRAWL")["note"], "1 role(s), up to 20 pages each");
-    assert!(has(&plain, "Running: 10-45 s a case, 2 at a time;"), "body={plain}");
+    assert_eq!(
+        step_of(&plain, "CRAWL")["note"],
+        "1 role(s), up to 20 pages each"
+    );
+    assert!(
+        has(&plain, "Running: 10-45 s a case, 2 at a time;"),
+        "body={plain}"
+    );
     // One requirement no skill is chosen for tests: named as such, and it is one, not "more than one".
     assert!(
         plain["warnings"].as_array().unwrap().iter().any(|w| w == "1 requirement(s) are of a kind no selected skill tests, so no case would be generated for them."),
@@ -13138,38 +14841,110 @@ async fn phase7b_what_is_left_out_of_the_request_takes_its_defaults_and_the_figu
     );
 
     // Asked for: the number of runs at a time reaches the figures.
-    let (_, four) = autopilot_estimate(&state, project, &owner, serde_json::json!({"depth": "STANDARD", "run_concurrency": 4})).await;
-    assert!(has(&four, "Running: 10-45 s a case, 4 at a time;"), "body={four}");
-    let (_, one) = autopilot_estimate(&state, project, &owner, serde_json::json!({"depth": "STANDARD", "run_concurrency": 1})).await;
+    let (_, four) = autopilot_estimate(
+        &state,
+        project,
+        &owner,
+        serde_json::json!({"depth": "STANDARD", "run_concurrency": 4}),
+    )
+    .await;
+    assert!(
+        has(&four, "Running: 10-45 s a case, 4 at a time;"),
+        "body={four}"
+    );
+    let (_, one) = autopilot_estimate(
+        &state,
+        project,
+        &owner,
+        serde_json::json!({"depth": "STANDARD", "run_concurrency": 1}),
+    )
+    .await;
     let seconds = |e: &Value| step_of(e, "EXECUTE")["seconds"]["max"].as_u64().unwrap();
-    assert!(seconds(&one) > seconds(&four), "one at a time takes longer: {} against {}", seconds(&one), seconds(&four));
+    assert!(
+        seconds(&one) > seconds(&four),
+        "one at a time takes longer: {} against {}",
+        seconds(&one),
+        seconds(&four)
+    );
 
     // A depth with no top-up makes no gap-filling calls; with one, two rounds of them.
-    let (_, without) = autopilot_estimate(&state, project, &owner, serde_json::json!({"depth": "STANDARD", "coverage_top_up": false})).await;
-    assert_eq!(task_of(&without, "TEST_CASE_GENERATION")["calls"], serde_json::json!({"min": 1, "max": 2}), "body={without}");
+    let (_, without) = autopilot_estimate(
+        &state,
+        project,
+        &owner,
+        serde_json::json!({"depth": "STANDARD", "coverage_top_up": false}),
+    )
+    .await;
+    assert_eq!(
+        task_of(&without, "TEST_CASE_GENERATION")["calls"],
+        serde_json::json!({"min": 1, "max": 2}),
+        "body={without}"
+    );
     assert!(!has(&without, "gap-filling"), "body={without}");
-    let (_, with) = autopilot_estimate(&state, project, &owner, serde_json::json!({"depth": "STANDARD", "coverage_top_up": true})).await;
-    assert_eq!(task_of(&with, "TEST_CASE_GENERATION")["calls"], serde_json::json!({"min": 1, "max": 4}), "body={with}");
-    assert!(has(&with, "up to 2 round(s) of gap-filling calls"), "body={with}");
+    let (_, with) = autopilot_estimate(
+        &state,
+        project,
+        &owner,
+        serde_json::json!({"depth": "STANDARD", "coverage_top_up": true}),
+    )
+    .await;
+    assert_eq!(
+        task_of(&with, "TEST_CASE_GENERATION")["calls"],
+        serde_json::json!({"min": 1, "max": 4}),
+        "body={with}"
+    );
+    assert!(
+        has(&with, "up to 2 round(s) of gap-filling calls"),
+        "body={with}"
+    );
 
     // The cases a depth asks for are, for each technique, its requirements times what it wants of each.
     assert_eq!(without["cases"]["min"], 6);
     assert_eq!(without["cases"]["max"], 15, "body={without}");
     // A deeper run wants more of each: the same techniques, times what the depth asks of each.
-    let (_, thorough) = autopilot_estimate(&state, project, &owner, serde_json::json!({"depth": "EXHAUSTIVE"})).await;
-    assert_eq!(thorough["cases"]["max"], 30, "twice what a standard run asks of each: body={thorough}");
+    let (_, thorough) = autopilot_estimate(
+        &state,
+        project,
+        &owner,
+        serde_json::json!({"depth": "EXHAUSTIVE"}),
+    )
+    .await;
+    assert_eq!(
+        thorough["cases"]["max"], 30,
+        "twice what a standard run asks of each: body={thorough}"
+    );
 }
 
 /// Two providers, `alpha` (local, unmetered) and `beta` (charges, of the kind given), to tell which task goes where.
 fn two_provider_infra(beta_kind: crate::ai_router::ProviderType) -> Arc<AiInfrastructure> {
-    let alpha = healthy_provider("alpha", vec![healthy_model("alpha-model", "alpha", CapabilityLevel::Strong)]);
-    let mut beta = healthy_provider("beta", vec![healthy_model("beta-model", "beta", CapabilityLevel::Strong)]);
+    let alpha = healthy_provider(
+        "alpha",
+        vec![healthy_model(
+            "alpha-model",
+            "alpha",
+            CapabilityLevel::Strong,
+        )],
+    );
+    let mut beta = healthy_provider(
+        "beta",
+        vec![healthy_model("beta-model", "beta", CapabilityLevel::Strong)],
+    );
     beta.provider_type = beta_kind;
-    beta.pricing = crate::ai_router::ProviderPricing::Metered { input_usd_per_1k: 0.002, output_usd_per_1k: 0.01 };
-    let mut executors: std::collections::HashMap<&'static str, Arc<dyn AiExecutor>> = std::collections::HashMap::new();
+    beta.pricing = crate::ai_router::ProviderPricing::Metered {
+        input_usd_per_1k: 0.002,
+        output_usd_per_1k: 0.01,
+    };
+    let mut executors: std::collections::HashMap<&'static str, Arc<dyn AiExecutor>> =
+        std::collections::HashMap::new();
     executors.insert("alpha", Arc::new(FakeExecutor::ok("{}")));
     executors.insert("beta", Arc::new(FakeExecutor::ok("{}")));
-    Arc::new(AiInfrastructure::new(vec![Arc::new(FakeDiscovery(alpha)), Arc::new(FakeDiscovery(beta))], executors))
+    Arc::new(AiInfrastructure::new(
+        vec![
+            Arc::new(FakeDiscovery(alpha)),
+            Arc::new(FakeDiscovery(beta)),
+        ],
+        executors,
+    ))
 }
 
 /// Sends generation to `alpha` and compiling to `beta`.
@@ -13196,21 +14971,59 @@ async fn route_generation_to_alpha_and_compiling_to_beta(state: &AppState) {
 }
 
 #[tokio::test]
-async fn phase7b_each_task_is_estimated_for_the_provider_it_goes_to_with_the_measurements_of_that_task_provider_and_model() {
-    let (state, _dir) = test_state_with_ai_router(two_provider_infra(crate::ai_router::ProviderType::Api)).await;
+async fn phase7b_each_task_is_estimated_for_the_provider_it_goes_to_with_the_measurements_of_that_task_provider_and_model(
+) {
+    let (state, _dir) =
+        test_state_with_ai_router(two_provider_infra(crate::ai_router::ProviderType::Api)).await;
     let project = make_project(&state, "Phase7B Two Providers").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-    upload_document(&state, &owner, project, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+    upload_document(
+        &state,
+        &owner,
+        project,
+        "FRD.md",
+        SHOP_FRD.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
     route_generation_to_alpha_and_compiling_to_beta(&state).await;
-    let record = |provider: &'static str, model: &'static str, task: &'static str, ms: u64, tokens: Option<(u32, u32)>| {
+    let record = |provider: &'static str,
+                  model: &'static str,
+                  task: &'static str,
+                  ms: u64,
+                  tokens: Option<(u32, u32)>| {
         let store = state.store.clone();
         async move {
-            store.record_ai_call(provider, model, task, ms, tokens.map(|t| t.0), tokens.map(|t| t.1)).await.unwrap();
+            store
+                .record_ai_call(
+                    provider,
+                    model,
+                    task,
+                    ms,
+                    tokens.map(|t| t.0),
+                    tokens.map(|t| t.1),
+                )
+                .await
+                .unwrap();
         }
     };
     // Generation on alpha took a minute a call (two of the three said how many tokens); compiling on beta ten seconds (none did).
-    record("alpha", "alpha-model", "TEST_CASE_GENERATION", 60_000, Some((1_000, 400))).await;
-    record("alpha", "alpha-model", "TEST_CASE_GENERATION", 60_000, Some((2_000, 600))).await;
+    record(
+        "alpha",
+        "alpha-model",
+        "TEST_CASE_GENERATION",
+        60_000,
+        Some((1_000, 400)),
+    )
+    .await;
+    record(
+        "alpha",
+        "alpha-model",
+        "TEST_CASE_GENERATION",
+        60_000,
+        Some((2_000, 600)),
+    )
+    .await;
     record("alpha", "alpha-model", "TEST_CASE_GENERATION", 60_000, None).await;
     for _ in 0..3 {
         record("beta", "beta-model", "TEST_CASE_COMPILATION", 10_000, None).await;
@@ -13218,44 +15031,127 @@ async fn phase7b_each_task_is_estimated_for_the_provider_it_goes_to_with_the_mea
     // What is measured of another model of the same provider, or of another provider's model of the same name, is not this one's.
     for _ in 0..3 {
         // (Named to sort before the right ones, so a lookup that ignored the difference would find them first.)
-        record("alpha", "aaa-model", "TEST_CASE_GENERATION", 5_000, Some((9, 9))).await;
-        record("aaa-provider", "alpha-model", "TEST_CASE_GENERATION", 7_000, Some((9, 9))).await;
+        record(
+            "alpha",
+            "aaa-model",
+            "TEST_CASE_GENERATION",
+            5_000,
+            Some((9, 9)),
+        )
+        .await;
+        record(
+            "aaa-provider",
+            "alpha-model",
+            "TEST_CASE_GENERATION",
+            7_000,
+            Some((9, 9)),
+        )
+        .await;
         // Nor is what is measured of a task another task's.
-        record("beta", "beta-model", "TEST_CASE_GENERATION", 1_000, Some((9, 9))).await;
+        record(
+            "beta",
+            "beta-model",
+            "TEST_CASE_GENERATION",
+            1_000,
+            Some((9, 9)),
+        )
+        .await;
     }
 
-    let (status, e) = autopilot_estimate(&state, project, &owner, serde_json::json!({"depth": "STANDARD"})).await;
+    let (status, e) = autopilot_estimate(
+        &state,
+        project,
+        &owner,
+        serde_json::json!({"depth": "STANDARD"}),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={e}");
     let generation = task_of(&e, "TEST_CASE_GENERATION");
     let compile = task_of(&e, "TEST_CASE_COMPILATION");
-    assert_eq!((generation["provider"]["id"].as_str(), compile["provider"]["id"].as_str()), (Some("alpha"), Some("beta")), "each task to its own provider: body={e}");
-    assert_eq!(generation["latency"], serde_json::json!({"basis": "MEASURED", "calls": 3, "avg_seconds": 60.0}), "body={e}");
-    assert_eq!(compile["latency"], serde_json::json!({"basis": "MEASURED", "calls": 3, "avg_seconds": 10.0}), "body={e}");
+    assert_eq!(
+        (
+            generation["provider"]["id"].as_str(),
+            compile["provider"]["id"].as_str()
+        ),
+        (Some("alpha"), Some("beta")),
+        "each task to its own provider: body={e}"
+    );
+    assert_eq!(
+        generation["latency"],
+        serde_json::json!({"basis": "MEASURED", "calls": 3, "avg_seconds": 60.0}),
+        "body={e}"
+    );
+    assert_eq!(
+        compile["latency"],
+        serde_json::json!({"basis": "MEASURED", "calls": 3, "avg_seconds": 10.0}),
+        "body={e}"
+    );
     // The plan's one to two calls, each carrying what the measured calls carried: 3,000 in and 1,000 out over two calls.
     assert_eq!(generation["calls"], serde_json::json!({"min": 1, "max": 2}));
-    assert_eq!(generation["prompt_tokens"], serde_json::json!({"min": 1500, "max": 3000}), "body={e}");
-    assert_eq!(generation["completion_tokens"], serde_json::json!({"min": 500, "max": 1000}), "body={e}");
+    assert_eq!(
+        generation["prompt_tokens"],
+        serde_json::json!({"min": 1500, "max": 3000}),
+        "body={e}"
+    );
+    assert_eq!(
+        generation["completion_tokens"],
+        serde_json::json!({"min": 500, "max": 1000}),
+        "body={e}"
+    );
     // Compiling has no token figures measured: the plan's own are kept, not a division of nothing by nothing.
     let compile_calls_max = compile["calls"]["max"].as_u64().unwrap();
-    assert_eq!(compile["prompt_tokens"]["max"].as_u64().unwrap(), compile_calls_max * crate::autopilot_estimate::COMPILE_TOKENS.0, "body={e}");
-    assert_eq!(compile["completion_tokens"]["max"].as_u64().unwrap(), compile_calls_max * crate::autopilot_estimate::COMPILE_TOKENS.1);
+    assert_eq!(
+        compile["prompt_tokens"]["max"].as_u64().unwrap(),
+        compile_calls_max * crate::autopilot_estimate::COMPILE_TOKENS.0,
+        "body={e}"
+    );
+    assert_eq!(
+        compile["completion_tokens"]["max"].as_u64().unwrap(),
+        compile_calls_max * crate::autopilot_estimate::COMPILE_TOKENS.1
+    );
     // Only compiling is on the provider that charges.
-    assert_eq!(generation["cost_usd"], serde_json::json!({"min": 0.0, "max": 0.0}));
+    assert_eq!(
+        generation["cost_usd"],
+        serde_json::json!({"min": 0.0, "max": 0.0})
+    );
     assert!(compile["cost_usd"]["max"].as_f64().unwrap() > 0.0);
     assert_eq!(e["totals"]["paid"], true);
 }
 
 #[tokio::test]
-async fn phase7b_another_endpoint_is_assumed_slower_than_a_hosted_service_and_faster_than_a_home_machine() {
-    let (state, _dir) = test_state_with_ai_router(two_provider_infra(crate::ai_router::ProviderType::OpenAiCompatible)).await;
+async fn phase7b_another_endpoint_is_assumed_slower_than_a_hosted_service_and_faster_than_a_home_machine(
+) {
+    let (state, _dir) = test_state_with_ai_router(two_provider_infra(
+        crate::ai_router::ProviderType::OpenAiCompatible,
+    ))
+    .await;
     let project = make_project(&state, "Phase7B Other Endpoint").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-    upload_document(&state, &owner, project, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+    upload_document(
+        &state,
+        &owner,
+        project,
+        "FRD.md",
+        SHOP_FRD.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
     route_generation_to_alpha_and_compiling_to_beta(&state).await;
     let (_, e) = autopilot_estimate(&state, project, &owner, serde_json::json!({})).await;
-    assert_eq!(task_of(&e, "TEST_CASE_GENERATION")["latency"], serde_json::json!({"basis": "ASSUMED", "tokens_per_second": 20.0}), "a local one: body={e}");
-    assert_eq!(task_of(&e, "TEST_CASE_COMPILATION")["latency"], serde_json::json!({"basis": "ASSUMED", "tokens_per_second": 40.0}), "another endpoint: body={e}");
-    assert_eq!(task_of(&e, "TEST_CASE_COMPILATION")["provider"]["kind"], "OTHER");
+    assert_eq!(
+        task_of(&e, "TEST_CASE_GENERATION")["latency"],
+        serde_json::json!({"basis": "ASSUMED", "tokens_per_second": 20.0}),
+        "a local one: body={e}"
+    );
+    assert_eq!(
+        task_of(&e, "TEST_CASE_COMPILATION")["latency"],
+        serde_json::json!({"basis": "ASSUMED", "tokens_per_second": 40.0}),
+        "another endpoint: body={e}"
+    );
+    assert_eq!(
+        task_of(&e, "TEST_CASE_COMPILATION")["provider"]["kind"],
+        "OTHER"
+    );
 }
 
 #[tokio::test]
@@ -13275,10 +15171,18 @@ async fn phase7b_the_tokens_a_call_reports_are_remembered_with_its_time() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body={generated}");
-    let stats = state.store.ai_call_stats("TEST_CASE_GENERATION").await.unwrap();
+    let stats = state
+        .store
+        .ai_call_stats("TEST_CASE_GENERATION")
+        .await
+        .unwrap();
     assert_eq!(stats.len(), 1, "{stats:?}");
     assert_eq!((stats[0].calls, stats[0].token_calls), (1, 1));
-    assert_eq!((stats[0].prompt_tokens, stats[0].completion_tokens), (120, 30), "{stats:?}");
+    assert_eq!(
+        (stats[0].prompt_tokens, stats[0].completion_tokens),
+        (120, 30),
+        "{stats:?}"
+    );
 }
 
 #[tokio::test]
@@ -13287,27 +15191,47 @@ async fn phase7b_the_request_is_checked_and_needs_an_operator_of_the_project() {
     let project = make_project(&state, "Phase7B Checks").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
     let viewer = mint_key(&state, "viewer", Some(&project.to_string())).await;
-    let stranger = mint_key(&state, "operator", Some(&make_project(&state, "Phase7B Other").await.to_string())).await;
+    let stranger = mint_key(
+        &state,
+        "operator",
+        Some(&make_project(&state, "Phase7B Other").await.to_string()),
+    )
+    .await;
 
     for (what, body) in [
         ("no roles", serde_json::json!({"roles": 0})),
         ("too many roles", serde_json::json!({"roles": 21})),
         ("no concurrency", serde_json::json!({"run_concurrency": 0})),
-        ("too much concurrency", serde_json::json!({"run_concurrency": 9})),
+        (
+            "too much concurrency",
+            serde_json::json!({"run_concurrency": 9}),
+        ),
         ("no verifications", serde_json::json!({"verify_gaps": 0})),
-        ("too many verifications", serde_json::json!({"verify_gaps": 61})),
+        (
+            "too many verifications",
+            serde_json::json!({"verify_gaps": 61}),
+        ),
         ("an unknown depth", serde_json::json!({"depth": "EXTREME"})),
-        ("a top-up with no depth", serde_json::json!({"coverage_top_up": true})),
+        (
+            "a top-up with no depth",
+            serde_json::json!({"coverage_top_up": true}),
+        ),
     ] {
         let (status, body) = autopilot_estimate(&state, project, &owner, body).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{what}: body={body}");
     }
-    for ok in [serde_json::json!({"roles": 20}), serde_json::json!({"run_concurrency": 8}), serde_json::json!({"verify_gaps": 60})] {
+    for ok in [
+        serde_json::json!({"roles": 20}),
+        serde_json::json!({"run_concurrency": 8}),
+        serde_json::json!({"verify_gaps": 60}),
+    ] {
         let (status, body) = autopilot_estimate(&state, project, &owner, ok).await;
         assert_eq!(status, StatusCode::OK, "body={body}");
     }
-    let (viewer_status, _) = autopilot_estimate(&state, project, &viewer, serde_json::json!({})).await;
-    let (stranger_status, _) = autopilot_estimate(&state, project, &stranger, serde_json::json!({})).await;
+    let (viewer_status, _) =
+        autopilot_estimate(&state, project, &viewer, serde_json::json!({})).await;
+    let (stranger_status, _) =
+        autopilot_estimate(&state, project, &stranger, serde_json::json!({})).await;
     assert_eq!(viewer_status, StatusCode::FORBIDDEN);
     assert_eq!(stranger_status, StatusCode::FORBIDDEN);
 }
@@ -13315,14 +15239,22 @@ async fn phase7b_the_request_is_checked_and_needs_an_operator_of_the_project() {
 // ------------------------------------------------- Phase 7C — an autopilot run: made, accepted, started, watched
 
 fn fast_autopilot(state: &AppState) {
-    state.autopilot.set_options(crate::autopilot_runner::RunnerOptions {
-        poll_every: std::time::Duration::from_millis(10),
-        crawl_timeout: std::time::Duration::from_secs(20),
-        run_timeout: std::time::Duration::from_secs(20),
-    });
+    state
+        .autopilot
+        .set_options(crate::autopilot_runner::RunnerOptions {
+            poll_every: std::time::Duration::from_millis(10),
+            crawl_timeout: std::time::Duration::from_secs(20),
+            run_timeout: std::time::Duration::from_secs(20),
+        });
 }
 
-async fn autopilot(state: &AppState, method: &str, path: &str, key: &str, body: Option<Value>) -> (StatusCode, Value) {
+async fn autopilot(
+    state: &AppState,
+    method: &str,
+    path: &str,
+    key: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
     send(state, req(method, path, Some(key), body)).await
 }
 
@@ -13341,7 +15273,15 @@ fn autopilot_body(extra: Value) -> Value {
 async fn autopilot_project(state: &AppState, name: &str) -> (Uuid, String) {
     let project = make_project(state, name).await;
     let owner = mint_key(state, "operator", Some(&project.to_string())).await;
-    let (status, uploaded) = upload_document(state, &owner, project, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
+    let (status, uploaded) = upload_document(
+        state,
+        &owner,
+        project,
+        "FRD.md",
+        SHOP_FRD.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={uploaded}");
     (project, owner)
 }
@@ -13358,7 +15298,12 @@ impl Drop for CrawlFiles {
 }
 
 /// A crawl run that has finished and left the grounding a crawl leaves: what a run can be told to use instead of crawling.
-async fn finished_crawl(state: &AppState, project: Uuid, key: &str, grounding: Option<&str>) -> (String, CrawlFiles) {
+async fn finished_crawl(
+    state: &AppState,
+    project: Uuid,
+    key: &str,
+    grounding: Option<&str>,
+) -> (String, CrawlFiles) {
     let (run_id, task_id) = crawl_run_and_task(state, project, key).await;
     // A crawl leaves its grounding and its result; the files go when this value does.
     let file = CrawlFiles(match grounding {
@@ -13378,15 +15323,32 @@ async fn finished_crawl(state: &AppState, project: Uuid, key: &str, grounding: O
         }
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
-    state.store.set_run_finished(id, crate::domain::RunState::Completed, None).await.unwrap();
+    state
+        .store
+        .set_run_finished(id, crate::domain::RunState::Completed, None)
+        .await
+        .unwrap();
     state.runs.write().await.remove(&id);
     (run_id, file)
 }
 
-async fn wait_for_autopilot(state: &AppState, project: Uuid, key: &str, run: &str, wanted: &[&str]) -> Value {
+async fn wait_for_autopilot(
+    state: &AppState,
+    project: Uuid,
+    key: &str,
+    run: &str,
+    wanted: &[&str],
+) -> Value {
     let mut last = Value::Null;
     for _ in 0..600 {
-        let (status, detail) = autopilot(state, "GET", &format!("/api/v1/projects/{project}/autopilot/runs/{run}"), key, None).await;
+        let (status, detail) = autopilot(
+            state,
+            "GET",
+            &format!("/api/v1/projects/{project}/autopilot/runs/{run}"),
+            key,
+            None,
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "body={detail}");
         if wanted.contains(&detail["run"]["state"].as_str().unwrap_or("")) {
             return detail;
@@ -13398,13 +15360,38 @@ async fn wait_for_autopilot(state: &AppState, project: Uuid, key: &str, run: &st
 }
 
 /// Waits until the run's step `name` is in one of `wanted` (or the run has ended, which is returned as it is).
-async fn wait_for_step(state: &AppState, project: Uuid, key: &str, run: &str, name: &str, wanted: &[&str]) -> Value {
+async fn wait_for_step(
+    state: &AppState,
+    project: Uuid,
+    key: &str,
+    run: &str,
+    name: &str,
+    wanted: &[&str],
+) -> Value {
     let mut last = Value::Null;
     for _ in 0..600 {
-        let (status, detail) = autopilot(state, "GET", &format!("/api/v1/projects/{project}/autopilot/runs/{run}"), key, None).await;
+        let (status, detail) = autopilot(
+            state,
+            "GET",
+            &format!("/api/v1/projects/{project}/autopilot/runs/{run}"),
+            key,
+            None,
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "body={detail}");
-        let step = detail["steps"].as_array().unwrap().iter().find(|s| s["name"] == name).cloned().unwrap_or(Value::Null);
-        if wanted.contains(&step["state"].as_str().unwrap_or("")) || matches!(detail["run"]["state"].as_str(), Some("FAILED" | "CANCELLED" | "COMPLETED")) {
+        let step = detail["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["name"] == name)
+            .cloned()
+            .unwrap_or(Value::Null);
+        if wanted.contains(&step["state"].as_str().unwrap_or(""))
+            || matches!(
+                detail["run"]["state"].as_str(),
+                Some("FAILED" | "CANCELLED" | "COMPLETED")
+            )
+        {
             return detail;
         }
         last = detail;
@@ -13416,10 +15403,27 @@ async fn wait_for_step(state: &AppState, project: Uuid, key: &str, run: &str, na
 /// Cancels a run that has gone on past what a test is about and waits until it has ended.
 async fn stop_run(state: &AppState, project: Uuid, key: &str, run: &str) {
     for _ in 0..3 {
-        autopilot(state, "POST", &format!("/api/v1/projects/{project}/autopilot/runs/{run}/cancel"), key, None).await;
+        autopilot(
+            state,
+            "POST",
+            &format!("/api/v1/projects/{project}/autopilot/runs/{run}/cancel"),
+            key,
+            None,
+        )
+        .await;
         for _ in 0..200 {
-            let (_, detail) = autopilot(state, "GET", &format!("/api/v1/projects/{project}/autopilot/runs/{run}"), key, None).await;
-            if matches!(detail["run"]["state"].as_str(), Some("FAILED" | "CANCELLED" | "COMPLETED")) {
+            let (_, detail) = autopilot(
+                state,
+                "GET",
+                &format!("/api/v1/projects/{project}/autopilot/runs/{run}"),
+                key,
+                None,
+            )
+            .await;
+            if matches!(
+                detail["run"]["state"].as_str(),
+                Some("FAILED" | "CANCELLED" | "COMPLETED")
+            ) {
                 return;
             }
             if detail["run"]["state"] == "WAITING" {
@@ -13435,7 +15439,12 @@ fn steps_of(detail: &Value) -> Vec<(String, String)> {
         .as_array()
         .unwrap()
         .iter()
-        .map(|s| (s["name"].as_str().unwrap().to_string(), s["state"].as_str().unwrap().to_string()))
+        .map(|s| {
+            (
+                s["name"].as_str().unwrap().to_string(),
+                s["state"].as_str().unwrap().to_string(),
+            )
+        })
         .collect()
 }
 
@@ -13448,7 +15457,9 @@ async fn phase7c_a_run_is_made_with_its_estimate_and_nothing_starts() {
         "POST",
         &format!("/api/v1/projects/{project}/autopilot/runs"),
         &owner,
-        Some(autopilot_body(serde_json::json!({"name": "  Release 4  ", "depth": "STANDARD"}))),
+        Some(autopilot_body(
+            serde_json::json!({"name": "  Release 4  ", "depth": "STANDARD"}),
+        )),
     )
     .await;
 
@@ -13458,32 +15469,75 @@ async fn phase7c_a_run_is_made_with_its_estimate_and_nothing_starts() {
     assert_eq!(run["name"], "Release 4");
     assert_eq!(run["project_id"], project.to_string());
     assert_eq!(run["created_by_name"], "test-key");
-    assert!(run.get("created_by_key").is_none(), "the key's id is not shown: {run}");
+    assert!(
+        run.get("created_by_key").is_none(),
+        "the key's id is not shown: {run}"
+    );
     assert_eq!(run["config"]["base_url"], "http://127.0.0.1:8080/app");
     assert_eq!(run["config"]["depth"], "STANDARD");
-    assert_eq!(run["estimate"]["requirements"], 6, "the estimate is stored with the run: {run}");
+    assert_eq!(
+        run["estimate"]["requirements"], 6,
+        "the estimate is stored with the run: {run}"
+    );
     assert!(run["estimate"]["totals"]["ai_calls"].is_object());
     assert!(run["approved_at"].is_null() && run["started_at"].is_null());
     assert_eq!(
         steps_of(&made),
-        ["REQUIREMENTS", "CRAWL", "GAP_CHECK", "GENERATE", "VALIDATE", "APPROVE", "EXECUTE", "REPORT"].map(|name| (name.to_string(), "PENDING".to_string()))
+        [
+            "REQUIREMENTS",
+            "CRAWL",
+            "GAP_CHECK",
+            "GENERATE",
+            "VALIDATE",
+            "APPROVE",
+            "EXECUTE",
+            "REPORT"
+        ]
+        .map(|name| (name.to_string(), "PENDING".to_string()))
     );
     assert_eq!(made["events"][0]["kind"], "run.created");
     assert_eq!(made["working"], false);
 
     // Nothing has been started: no crawl run exists, and the run is still awaiting approval a moment later.
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    let (_, runs) = autopilot(&state, "GET", &format!("/api/v1/projects/{project}/executions"), &owner, None).await;
+    let (_, runs) = autopilot(
+        &state,
+        "GET",
+        &format!("/api/v1/projects/{project}/executions"),
+        &owner,
+        None,
+    )
+    .await;
     assert_eq!(runs.as_array().unwrap().len(), 0, "{runs}");
-    let (_, again) = autopilot(&state, "GET", &format!("/api/v1/projects/{project}/autopilot/runs/{}", run["id"].as_str().unwrap()), &owner, None).await;
+    let (_, again) = autopilot(
+        &state,
+        "GET",
+        &format!(
+            "/api/v1/projects/{project}/autopilot/runs/{}",
+            run["id"].as_str().unwrap()
+        ),
+        &owner,
+        None,
+    )
+    .await;
     assert_eq!(again["run"]["state"], "AWAITING_APPROVAL");
 
     // The run appears in the project's list, newest first, and its creation is an audited action.
-    let (_, list) = autopilot(&state, "GET", &format!("/api/v1/projects/{project}/autopilot/runs"), &owner, None).await;
+    let (_, list) = autopilot(
+        &state,
+        "GET",
+        &format!("/api/v1/projects/{project}/autopilot/runs"),
+        &owner,
+        None,
+    )
+    .await;
     assert_eq!(list["runs"].as_array().unwrap().len(), 1);
     assert_eq!(list["runs"][0]["id"], run["id"]);
     let audit_rows = state.store.list_audit(None, 100, 0).await.unwrap();
-    let created: Vec<_> = audit_rows.iter().filter(|a| a.action == "autopilot.create").collect();
+    let created: Vec<_> = audit_rows
+        .iter()
+        .filter(|a| a.action == "autopilot.create")
+        .collect();
     assert_eq!(created.len(), 1, "{audit_rows:?}");
     assert_eq!(created[0].target.as_deref(), run["id"].as_str());
     assert_eq!(created[0].detail.as_deref(), Some("Release 4"));
@@ -13512,7 +15566,10 @@ async fn phase7c_the_estimate_a_run_is_made_with_is_the_one_the_estimate_route_g
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={made}");
-    assert_eq!(made["run"]["estimate"], from_route, "the same estimate, whichever way it was asked for");
+    assert_eq!(
+        made["run"]["estimate"], from_route,
+        "the same estimate, whichever way it was asked for"
+    );
 }
 
 #[tokio::test]
@@ -13525,7 +15582,10 @@ async fn phase7c_a_run_that_could_only_fail_is_refused_when_it_is_made() {
     let make = |body: Value| autopilot(&state, "POST", &path, &owner, Some(body));
 
     let (a, no_address) = make(autopilot_body(serde_json::json!({"base_url": "  "}))).await;
-    let (b, private_address) = make(autopilot_body(serde_json::json!({"base_url": "http://169.254.169.254/"}))).await;
+    let (b, private_address) = make(autopilot_body(
+        serde_json::json!({"base_url": "http://169.254.169.254/"}),
+    ))
+    .await;
     let (c, no_roles) = make(autopilot_body(serde_json::json!({"roles": []}))).await;
     let (d, secrets) = make(autopilot_body(serde_json::json!({"roles": [
         {"name": "admin", "login_actions": [{"type": "FILL", "selector": "#u", "value": "env:AIQA_LOGIN_P7C_NEVER_SET_USERNAME"}]}
@@ -13540,31 +15600,82 @@ async fn phase7c_a_run_that_could_only_fail_is_refused_when_it_is_made() {
         Some(autopilot_body(serde_json::json!({}))),
     )
     .await;
-    let (h, chosen_none) = make(autopilot_body(serde_json::json!({"requirement_document_ids": [Uuid::new_v4()]}))).await;
+    let (h, chosen_none) = make(autopilot_body(
+        serde_json::json!({"requirement_document_ids": [Uuid::new_v4()]}),
+    ))
+    .await;
     let (i, not_a_crawl) = {
         // A run of the project that is not a crawl: any other run will do.
-        let (_, plain) = send(&state, req("POST", &format!("/api/v1/projects/{project}/executions"), Some(&owner), Some(simple_plan("not a crawl")))).await;
+        let (_, plain) = send(
+            &state,
+            req(
+                "POST",
+                &format!("/api/v1/projects/{project}/executions"),
+                Some(&owner),
+                Some(simple_plan("not a crawl")),
+            ),
+        )
+        .await;
         let plain_id = plain["run_id"].as_str().unwrap().to_string();
-        make(autopilot_body(serde_json::json!({"crawl_run_id": plain_id}))).await
+        make(autopilot_body(
+            serde_json::json!({"crawl_run_id": plain_id}),
+        ))
+        .await
     };
-    let (j, unknown_crawl) = make(autopilot_body(serde_json::json!({"crawl_run_id": Uuid::new_v4()}))).await;
+    let (j, unknown_crawl) = make(autopilot_body(
+        serde_json::json!({"crawl_run_id": Uuid::new_v4()}),
+    ))
+    .await;
 
     assert_eq!(a, StatusCode::BAD_REQUEST, "body={no_address}");
-    assert!(no_address.to_string().contains("base_url"), "body={no_address}");
-    assert_eq!(b, StatusCode::BAD_REQUEST, "an address the guard refuses: body={private_address}");
+    assert!(
+        no_address.to_string().contains("base_url"),
+        "body={no_address}"
+    );
+    assert_eq!(
+        b,
+        StatusCode::BAD_REQUEST,
+        "an address the guard refuses: body={private_address}"
+    );
     assert_eq!(c, StatusCode::BAD_REQUEST, "body={no_roles}");
-    assert!(no_roles.to_string().contains("needs at least one role"), "body={no_roles}");
+    assert!(
+        no_roles.to_string().contains("needs at least one role"),
+        "body={no_roles}"
+    );
     assert_eq!(d, StatusCode::BAD_REQUEST, "body={secrets}");
-    assert!(secrets.to_string().contains("AIQA_LOGIN_P7C_NEVER_SET_USERNAME"), "the variable is named: body={secrets}");
+    assert!(
+        secrets
+            .to_string()
+            .contains("AIQA_LOGIN_P7C_NEVER_SET_USERNAME"),
+        "the variable is named: body={secrets}"
+    );
     assert_eq!(e, StatusCode::BAD_REQUEST, "body={too_many}");
-    assert!(too_many.to_string().contains("run_concurrency must be between 1 and 8"), "body={too_many}");
+    assert!(
+        too_many
+            .to_string()
+            .contains("run_concurrency must be between 1 and 8"),
+        "body={too_many}"
+    );
     assert_eq!(f, StatusCode::BAD_REQUEST, "body={bad_depth}");
     assert_eq!(g, StatusCode::BAD_REQUEST, "body={no_requirements}");
-    assert!(no_requirements.to_string().contains("upload a requirements document"), "body={no_requirements}");
+    assert!(
+        no_requirements
+            .to_string()
+            .contains("upload a requirements document"),
+        "body={no_requirements}"
+    );
     assert_eq!(h, StatusCode::BAD_REQUEST, "body={chosen_none}");
-    assert!(chosen_none.to_string().contains("documents you chose have no requirements"), "body={chosen_none}");
+    assert!(
+        chosen_none
+            .to_string()
+            .contains("documents you chose have no requirements"),
+        "body={chosen_none}"
+    );
     assert_eq!(i, StatusCode::BAD_REQUEST, "body={not_a_crawl}");
-    assert!(not_a_crawl.to_string().contains("is not a crawl"), "body={not_a_crawl}");
+    assert!(
+        not_a_crawl.to_string().contains("is not a crawl"),
+        "body={not_a_crawl}"
+    );
     assert_eq!(j, StatusCode::NOT_FOUND, "body={unknown_crawl}");
 
     // Not one of them made a run.
@@ -13577,22 +15688,53 @@ async fn phase7c_a_project_has_one_run_that_has_not_ended() {
     let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
     let (project, owner) = autopilot_project(&state, "Phase7C One At A Time").await;
     let path = format!("/api/v1/projects/{project}/autopilot/runs");
-    let (first_status, first) = autopilot(&state, "POST", &path, &owner, Some(autopilot_body(serde_json::json!({"name": "First"})))).await;
-    let (second_status, second) = autopilot(&state, "POST", &path, &owner, Some(autopilot_body(serde_json::json!({"name": "Second"})))).await;
+    let (first_status, first) = autopilot(
+        &state,
+        "POST",
+        &path,
+        &owner,
+        Some(autopilot_body(serde_json::json!({"name": "First"}))),
+    )
+    .await;
+    let (second_status, second) = autopilot(
+        &state,
+        "POST",
+        &path,
+        &owner,
+        Some(autopilot_body(serde_json::json!({"name": "Second"}))),
+    )
+    .await;
     assert_eq!(first_status, StatusCode::CREATED, "body={first}");
     assert_eq!(second_status, StatusCode::CONFLICT, "body={second}");
     let message = second.to_string();
-    assert!(message.contains("First") && message.contains(first["run"]["id"].as_str().unwrap()), "the run in the way is named: {message}");
+    assert!(
+        message.contains("First") && message.contains(first["run"]["id"].as_str().unwrap()),
+        "the run in the way is named: {message}"
+    );
 
     // Once it has ended, the project may have another.
     let cancel = format!("{path}/{}/cancel", first["run"]["id"].as_str().unwrap());
     let (cancel_status, cancelled) = autopilot(&state, "POST", &cancel, &owner, None).await;
     assert_eq!(cancel_status, StatusCode::OK, "body={cancelled}");
-    let (third_status, third) = autopilot(&state, "POST", &path, &owner, Some(autopilot_body(serde_json::json!({"name": "Third"})))).await;
+    let (third_status, third) = autopilot(
+        &state,
+        "POST",
+        &path,
+        &owner,
+        Some(autopilot_body(serde_json::json!({"name": "Third"}))),
+    )
+    .await;
     assert_eq!(third_status, StatusCode::CREATED, "body={third}");
     // Another project is not held back by this one.
     let (other, other_owner) = autopilot_project(&state, "Phase7C One At A Time Other").await;
-    let (other_status, _) = autopilot(&state, "POST", &format!("/api/v1/projects/{other}/autopilot/runs"), &other_owner, Some(autopilot_body(serde_json::json!({})))).await;
+    let (other_status, _) = autopilot(
+        &state,
+        "POST",
+        &format!("/api/v1/projects/{other}/autopilot/runs"),
+        &other_owner,
+        Some(autopilot_body(serde_json::json!({}))),
+    )
+    .await;
     assert_eq!(other_status, StatusCode::CREATED);
 }
 
@@ -13609,48 +15751,122 @@ async fn phase7c_starting_needs_the_estimate_accepted_and_a_paid_one_the_cost_ac
         "POST",
         &path,
         &owner,
-        Some(autopilot_body(serde_json::json!({"crawl_run_id": crawl, "depth": "STANDARD"}))),
+        Some(autopilot_body(
+            serde_json::json!({"crawl_run_id": crawl, "depth": "STANDARD"}),
+        )),
     )
     .await;
     let run_id = made["run"]["id"].as_str().unwrap().to_string();
-    assert_eq!(made["run"]["estimate"]["totals"]["paid"], true, "body={made}");
+    assert_eq!(
+        made["run"]["estimate"]["totals"]["paid"], true,
+        "body={made}"
+    );
     let start = format!("{path}/{run_id}/start");
 
     let (none_status, none) = autopilot(&state, "POST", &start, &owner, None).await;
-    let (empty_status, _) = autopilot(&state, "POST", &start, &owner, Some(serde_json::json!({}))).await;
-    let (cost_only_status, cost_only) = autopilot(&state, "POST", &start, &owner, Some(serde_json::json!({"accept_paid": true}))).await;
-    let (free_only_status, free_only) = autopilot(&state, "POST", &start, &owner, Some(serde_json::json!({"accept_estimate": true}))).await;
+    let (empty_status, _) =
+        autopilot(&state, "POST", &start, &owner, Some(serde_json::json!({}))).await;
+    let (cost_only_status, cost_only) = autopilot(
+        &state,
+        "POST",
+        &start,
+        &owner,
+        Some(serde_json::json!({"accept_paid": true})),
+    )
+    .await;
+    let (free_only_status, free_only) = autopilot(
+        &state,
+        "POST",
+        &start,
+        &owner,
+        Some(serde_json::json!({"accept_estimate": true})),
+    )
+    .await;
     // None of these started it.
     let (_, still) = autopilot(&state, "GET", &format!("{path}/{run_id}"), &owner, None).await;
     assert_eq!(still["run"]["state"], "AWAITING_APPROVAL");
 
-    let (ok_status, started) =
-        autopilot(&state, "POST", &start, &owner, Some(serde_json::json!({"accept_estimate": true, "accept_paid": true}))).await;
-    let (again_status, again) = autopilot(&state, "POST", &start, &owner, Some(serde_json::json!({"accept_estimate": true, "accept_paid": true}))).await;
+    let (ok_status, started) = autopilot(
+        &state,
+        "POST",
+        &start,
+        &owner,
+        Some(serde_json::json!({"accept_estimate": true, "accept_paid": true})),
+    )
+    .await;
+    let (again_status, again) = autopilot(
+        &state,
+        "POST",
+        &start,
+        &owner,
+        Some(serde_json::json!({"accept_estimate": true, "accept_paid": true})),
+    )
+    .await;
     let finished = wait_for_step(&state, project, &owner, &run_id, "GAP_CHECK", &["DONE"]).await;
     stop_run(&state, project, &owner, &run_id).await;
     drop(file);
 
     assert_eq!(none_status, StatusCode::BAD_REQUEST, "body={none}");
-    assert!(none.to_string().contains("accept_estimate: true"), "body={none}");
+    assert!(
+        none.to_string().contains("accept_estimate: true"),
+        "body={none}"
+    );
     assert_eq!(empty_status, StatusCode::BAD_REQUEST);
-    assert_eq!(cost_only_status, StatusCode::BAD_REQUEST, "accepting the cost is not accepting the estimate: body={cost_only}");
-    assert_eq!(free_only_status, StatusCode::BAD_REQUEST, "body={free_only}");
-    assert!(free_only.to_string().contains("accept_paid: true"), "body={free_only}");
+    assert_eq!(
+        cost_only_status,
+        StatusCode::BAD_REQUEST,
+        "accepting the cost is not accepting the estimate: body={cost_only}"
+    );
+    assert_eq!(
+        free_only_status,
+        StatusCode::BAD_REQUEST,
+        "body={free_only}"
+    );
+    assert!(
+        free_only.to_string().contains("accept_paid: true"),
+        "body={free_only}"
+    );
     assert_eq!(ok_status, StatusCode::OK, "body={started}");
     assert_eq!(started["run"]["state"], "RUNNING", "body={started}");
     assert_eq!(started["run"]["approved_paid"], true);
     assert!(started["run"]["approved_at"].is_string() && started["run"]["started_at"].is_string());
-    assert_eq!(again_status, StatusCode::CONFLICT, "a run starts once: body={again}");
+    assert_eq!(
+        again_status,
+        StatusCode::CONFLICT,
+        "a run starts once: body={again}"
+    );
     assert_eq!(finished["steps"][2]["state"], "DONE", "body={finished}");
-    let kinds: Vec<&str> = finished["events"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
+    let kinds: Vec<&str> = finished["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["kind"].as_str().unwrap())
+        .collect();
     assert!(kinds.contains(&"run.started"), "{kinds:?}");
-    let started_event = finished["events"].as_array().unwrap().iter().find(|e| e["kind"] == "run.started").unwrap();
-    assert!(started_event["message"].as_str().unwrap().contains("including its cost"), "{started_event}");
+    let started_event = finished["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["kind"] == "run.started")
+        .unwrap();
+    assert!(
+        started_event["message"]
+            .as_str()
+            .unwrap()
+            .contains("including its cost"),
+        "{started_event}"
+    );
 
     let audit_rows = state.store.list_audit(None, 100, 0).await.unwrap();
-    let starts: Vec<_> = audit_rows.iter().filter(|a| a.action == "autopilot.start").collect();
-    assert_eq!(starts.len(), 1, "only the start that worked: {audit_rows:?}");
+    let starts: Vec<_> = audit_rows
+        .iter()
+        .filter(|a| a.action == "autopilot.start")
+        .collect();
+    assert_eq!(
+        starts.len(),
+        1,
+        "only the start that worked: {audit_rows:?}"
+    );
     assert_eq!(starts[0].detail.as_deref(), Some("paid"));
 }
 
@@ -13661,10 +15877,27 @@ async fn phase7c_a_free_run_needs_only_the_estimate_accepted() {
     let (project, owner) = autopilot_project(&state, "Phase7C Free").await;
     let (crawl, file) = finished_crawl(&state, project, &owner, Some(SHOP_GROUNDING)).await;
     let path = format!("/api/v1/projects/{project}/autopilot/runs");
-    let (_, made) = autopilot(&state, "POST", &path, &owner, Some(autopilot_body(serde_json::json!({"crawl_run_id": crawl})))).await;
+    let (_, made) = autopilot(
+        &state,
+        "POST",
+        &path,
+        &owner,
+        Some(autopilot_body(serde_json::json!({"crawl_run_id": crawl}))),
+    )
+    .await;
     let run_id = made["run"]["id"].as_str().unwrap().to_string();
-    assert_eq!(made["run"]["estimate"]["totals"]["paid"], false, "an unmetered provider costs nothing: body={made}");
-    let (status, started) = autopilot(&state, "POST", &format!("{path}/{run_id}/start"), &owner, Some(serde_json::json!({"accept_estimate": true}))).await;
+    assert_eq!(
+        made["run"]["estimate"]["totals"]["paid"], false,
+        "an unmetered provider costs nothing: body={made}"
+    );
+    let (status, started) = autopilot(
+        &state,
+        "POST",
+        &format!("{path}/{run_id}/start"),
+        &owner,
+        Some(serde_json::json!({"accept_estimate": true})),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={started}");
     assert_eq!(started["run"]["approved_paid"], false);
     wait_for_step(&state, project, &owner, &run_id, "GAP_CHECK", &["DONE"]).await;
@@ -13679,28 +15912,71 @@ async fn phase7c_a_started_run_reads_the_requirements_uses_the_crawl_and_checks_
     let (project, owner) = autopilot_project(&state, "Phase7C Flow").await;
     let (crawl, file) = finished_crawl(&state, project, &owner, Some(SHOP_GROUNDING)).await;
     let path = format!("/api/v1/projects/{project}/autopilot/runs");
-    let (_, made) = autopilot(&state, "POST", &path, &owner, Some(autopilot_body(serde_json::json!({"crawl_run_id": crawl})))).await;
+    let (_, made) = autopilot(
+        &state,
+        "POST",
+        &path,
+        &owner,
+        Some(autopilot_body(serde_json::json!({"crawl_run_id": crawl}))),
+    )
+    .await;
     let run_id = made["run"]["id"].as_str().unwrap().to_string();
-    autopilot(&state, "POST", &format!("{path}/{run_id}/start"), &owner, Some(serde_json::json!({"accept_estimate": true}))).await;
+    autopilot(
+        &state,
+        "POST",
+        &format!("{path}/{run_id}/start"),
+        &owner,
+        Some(serde_json::json!({"accept_estimate": true})),
+    )
+    .await;
     let done = wait_for_step(&state, project, &owner, &run_id, "GAP_CHECK", &["DONE"]).await;
     // The gap check the run made, made by hand, says the same.
-    let (_, by_hand) = autopilot(&state, "POST", &format!("/api/v1/projects/{project}/gap-check"), &owner, Some(serde_json::json!({"crawl_run_id": crawl}))).await;
+    let (_, by_hand) = autopilot(
+        &state,
+        "POST",
+        &format!("/api/v1/projects/{project}/gap-check"),
+        &owner,
+        Some(serde_json::json!({"crawl_run_id": crawl})),
+    )
+    .await;
     stop_run(&state, project, &owner, &run_id).await;
     drop(file);
 
     assert!(done["run"]["error"].is_null(), "body={done}");
-    assert_eq!(steps_of(&done)[..3], [("REQUIREMENTS", "DONE"), ("CRAWL", "SKIPPED"), ("GAP_CHECK", "DONE")].map(|(a, b)| (a.to_string(), b.to_string())));
+    assert_eq!(
+        steps_of(&done)[..3],
+        [
+            ("REQUIREMENTS", "DONE"),
+            ("CRAWL", "SKIPPED"),
+            ("GAP_CHECK", "DONE")
+        ]
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+    );
     let steps = done["steps"].as_array().unwrap();
     assert_eq!(steps[0]["detail"]["requirements"], 6);
     assert_eq!(steps[0]["detail"]["documents"], 1);
-    assert_eq!(steps[0]["detail"]["by_kind"], serde_json::json!({"data": 1, "functional": 3, "performance": 1, "security": 1}));
-    assert_eq!(steps[1]["detail"], serde_json::json!({"crawl_run_id": crawl, "reused": true}));
+    assert_eq!(
+        steps[0]["detail"]["by_kind"],
+        serde_json::json!({"data": 1, "functional": 3, "performance": 1, "security": 1})
+    );
+    assert_eq!(
+        steps[1]["detail"],
+        serde_json::json!({"crawl_run_id": crawl, "reused": true})
+    );
     assert_eq!(steps[2]["detail"]["crawl_run_id"], crawl);
     assert_eq!(steps[2]["detail"]["summary"], by_hand["summary"]);
     assert!(steps[..3].iter().all(|s| s["attempts"] == 1));
-    let kinds: Vec<&str> = done["events"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
+    let kinds: Vec<&str> = done["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["kind"].as_str().unwrap())
+        .collect();
     assert_eq!(kinds.first(), Some(&"run.created"));
-    assert!(kinds.iter().filter(|k| **k == "step.started").count() >= 3, "{kinds:?}");
+    assert!(
+        kinds.iter().filter(|k| **k == "step.started").count() >= 3,
+        "{kinds:?}"
+    );
 }
 
 #[tokio::test]
@@ -13711,99 +15987,291 @@ async fn phase7c_a_run_that_fails_says_which_step_and_why_and_the_project_may_st
     // A finished crawl that left nothing to read: the gap check cannot run.
     let (crawl, _) = finished_crawl(&state, project, &owner, None).await;
     let path = format!("/api/v1/projects/{project}/autopilot/runs");
-    let (_, made) = autopilot(&state, "POST", &path, &owner, Some(autopilot_body(serde_json::json!({"crawl_run_id": crawl})))).await;
+    let (_, made) = autopilot(
+        &state,
+        "POST",
+        &path,
+        &owner,
+        Some(autopilot_body(serde_json::json!({"crawl_run_id": crawl}))),
+    )
+    .await;
     let run_id = made["run"]["id"].as_str().unwrap().to_string();
-    autopilot(&state, "POST", &format!("{path}/{run_id}/start"), &owner, Some(serde_json::json!({"accept_estimate": true}))).await;
-    let failed = wait_for_autopilot(&state, project, &owner, &run_id, &["COMPLETED", "FAILED"]).await;
+    autopilot(
+        &state,
+        "POST",
+        &format!("{path}/{run_id}/start"),
+        &owner,
+        Some(serde_json::json!({"accept_estimate": true})),
+    )
+    .await;
+    let failed =
+        wait_for_autopilot(&state, project, &owner, &run_id, &["COMPLETED", "FAILED"]).await;
 
     assert_eq!(failed["run"]["state"], "FAILED", "body={failed}");
     let error = failed["run"]["error"].as_str().unwrap();
-    assert!(error.starts_with("Checking the requirements against the crawl: "), "{error}");
-    assert!(error.contains("recorded no crawl"), "the reason is the service's own: {error}");
+    assert!(
+        error.starts_with("Checking the requirements against the crawl: "),
+        "{error}"
+    );
+    assert!(
+        error.contains("recorded no crawl"),
+        "the reason is the service's own: {error}"
+    );
     assert_eq!(failed["run"]["current_step"], "GAP_CHECK");
     assert_eq!(
         steps_of(&failed),
-        [("REQUIREMENTS", "DONE"), ("CRAWL", "SKIPPED"), ("GAP_CHECK", "FAILED"), ("GENERATE", "PENDING"), ("VALIDATE", "PENDING"), ("APPROVE", "PENDING"), ("EXECUTE", "PENDING"), ("REPORT", "PENDING")]
-            .map(|(a, b)| (a.to_string(), b.to_string()))
+        [
+            ("REQUIREMENTS", "DONE"),
+            ("CRAWL", "SKIPPED"),
+            ("GAP_CHECK", "FAILED"),
+            ("GENERATE", "PENDING"),
+            ("VALIDATE", "PENDING"),
+            ("APPROVE", "PENDING"),
+            ("EXECUTE", "PENDING"),
+            ("REPORT", "PENDING")
+        ]
+        .map(|(a, b)| (a.to_string(), b.to_string()))
     );
-    assert!(failed["steps"][2]["error"].as_str().unwrap().contains("recorded no crawl"));
-    let kinds: Vec<&str> = failed["events"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
+    assert!(failed["steps"][2]["error"]
+        .as_str()
+        .unwrap()
+        .contains("recorded no crawl"));
+    let kinds: Vec<&str> = failed["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["kind"].as_str().unwrap())
+        .collect();
     assert_eq!(&kinds[kinds.len() - 2..], ["step.failed", "run.failed"]);
 
-    let (status, another) = autopilot(&state, "POST", &path, &owner, Some(autopilot_body(serde_json::json!({})))).await;
-    assert_eq!(status, StatusCode::CREATED, "a failed run does not hold the project: body={another}");
+    let (status, another) = autopilot(
+        &state,
+        "POST",
+        &path,
+        &owner,
+        Some(autopilot_body(serde_json::json!({}))),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "a failed run does not hold the project: body={another}"
+    );
 }
 
 #[tokio::test]
-async fn phase7c_cancelling_a_run_that_awaits_approval_ends_it_and_an_ended_run_cannot_be_cancelled() {
+async fn phase7c_cancelling_a_run_that_awaits_approval_ends_it_and_an_ended_run_cannot_be_cancelled(
+) {
     let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
     let (project, owner) = autopilot_project(&state, "Phase7C Cancel").await;
     let path = format!("/api/v1/projects/{project}/autopilot/runs");
-    let (_, made) = autopilot(&state, "POST", &path, &owner, Some(autopilot_body(serde_json::json!({})))).await;
+    let (_, made) = autopilot(
+        &state,
+        "POST",
+        &path,
+        &owner,
+        Some(autopilot_body(serde_json::json!({}))),
+    )
+    .await;
     let run_id = made["run"]["id"].as_str().unwrap().to_string();
 
-    let (status, cancelled) = autopilot(&state, "POST", &format!("{path}/{run_id}/cancel"), &owner, None).await;
+    let (status, cancelled) = autopilot(
+        &state,
+        "POST",
+        &format!("{path}/{run_id}/cancel"),
+        &owner,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={cancelled}");
     assert_eq!(cancelled["outcome"], "cancelled");
     assert_eq!(cancelled["run"]["state"], "CANCELLED");
     assert!(cancelled["run"]["finished_at"].is_string());
-    assert!(cancelled["steps"].as_array().unwrap().iter().all(|s| s["state"] == "SKIPPED"));
-    let (again_status, again) = autopilot(&state, "POST", &format!("{path}/{run_id}/cancel"), &owner, None).await;
+    assert!(cancelled["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|s| s["state"] == "SKIPPED"));
+    let (again_status, again) = autopilot(
+        &state,
+        "POST",
+        &format!("{path}/{run_id}/cancel"),
+        &owner,
+        None,
+    )
+    .await;
     assert_eq!(again_status, StatusCode::CONFLICT, "body={again}");
     assert!(again.to_string().contains("CANCELLED"), "body={again}");
     // A cancelled run cannot be started.
-    let (start_status, start) = autopilot(&state, "POST", &format!("{path}/{run_id}/start"), &owner, Some(serde_json::json!({"accept_estimate": true}))).await;
+    let (start_status, start) = autopilot(
+        &state,
+        "POST",
+        &format!("{path}/{run_id}/start"),
+        &owner,
+        Some(serde_json::json!({"accept_estimate": true})),
+    )
+    .await;
     assert_eq!(start_status, StatusCode::CONFLICT, "body={start}");
     assert!(start.to_string().contains("CANCELLED"), "body={start}");
     let audit_rows = state.store.list_audit(None, 100, 0).await.unwrap();
-    let cancels: Vec<_> = audit_rows.iter().filter(|a| a.action == "autopilot.cancel").collect();
+    let cancels: Vec<_> = audit_rows
+        .iter()
+        .filter(|a| a.action == "autopilot.cancel")
+        .collect();
     assert_eq!(cancels.len(), 1, "{audit_rows:?}");
     assert_eq!(cancels[0].detail.as_deref(), Some("cancelled"));
 }
 
 #[tokio::test]
-async fn phase7c_only_an_operator_of_the_project_may_make_start_or_cancel_a_run_and_a_run_stays_in_its_project() {
+async fn phase7c_only_an_operator_of_the_project_may_make_start_or_cancel_a_run_and_a_run_stays_in_its_project(
+) {
     let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
     let (project, owner) = autopilot_project(&state, "Phase7C Roles").await;
     let viewer = mint_key(&state, "viewer", Some(&project.to_string())).await;
     let (other, other_owner) = autopilot_project(&state, "Phase7C Roles Other").await;
     let path = format!("/api/v1/projects/{project}/autopilot/runs");
-    let (_, made) = autopilot(&state, "POST", &path, &owner, Some(autopilot_body(serde_json::json!({})))).await;
+    let (_, made) = autopilot(
+        &state,
+        "POST",
+        &path,
+        &owner,
+        Some(autopilot_body(serde_json::json!({}))),
+    )
+    .await;
     let run_id = made["run"]["id"].as_str().unwrap().to_string();
     let body = Some(serde_json::json!({"accept_estimate": true}));
 
     // A viewer may look, and may not change anything.
     let (list, _) = autopilot(&state, "GET", &path, &viewer, None).await;
     let (get, _) = autopilot(&state, "GET", &format!("{path}/{run_id}"), &viewer, None).await;
-    let (events, _) = autopilot(&state, "GET", &format!("{path}/{run_id}/events"), &viewer, None).await;
-    let (create, _) = autopilot(&state, "POST", &path, &viewer, Some(autopilot_body(serde_json::json!({})))).await;
-    let (start, _) = autopilot(&state, "POST", &format!("{path}/{run_id}/start"), &viewer, body.clone()).await;
-    let (cancel, _) = autopilot(&state, "POST", &format!("{path}/{run_id}/cancel"), &viewer, None).await;
-    assert_eq!((list, get, events), (StatusCode::OK, StatusCode::OK, StatusCode::OK));
-    assert_eq!((create, start, cancel), (StatusCode::FORBIDDEN, StatusCode::FORBIDDEN, StatusCode::FORBIDDEN));
+    let (events, _) = autopilot(
+        &state,
+        "GET",
+        &format!("{path}/{run_id}/events"),
+        &viewer,
+        None,
+    )
+    .await;
+    let (create, _) = autopilot(
+        &state,
+        "POST",
+        &path,
+        &viewer,
+        Some(autopilot_body(serde_json::json!({}))),
+    )
+    .await;
+    let (start, _) = autopilot(
+        &state,
+        "POST",
+        &format!("{path}/{run_id}/start"),
+        &viewer,
+        body.clone(),
+    )
+    .await;
+    let (cancel, _) = autopilot(
+        &state,
+        "POST",
+        &format!("{path}/{run_id}/cancel"),
+        &viewer,
+        None,
+    )
+    .await;
+    assert_eq!(
+        (list, get, events),
+        (StatusCode::OK, StatusCode::OK, StatusCode::OK)
+    );
+    assert_eq!(
+        (create, start, cancel),
+        (
+            StatusCode::FORBIDDEN,
+            StatusCode::FORBIDDEN,
+            StatusCode::FORBIDDEN
+        )
+    );
 
     // A key of another project may do nothing here.
     let mut denied = Vec::new();
     for (method, tail, body) in [
         ("GET", String::new(), None),
-        ("POST", String::new(), Some(autopilot_body(serde_json::json!({})))),
+        (
+            "POST",
+            String::new(),
+            Some(autopilot_body(serde_json::json!({}))),
+        ),
         ("GET", format!("/{run_id}"), None),
         ("POST", format!("/{run_id}/start"), body.clone()),
         ("POST", format!("/{run_id}/cancel"), None),
         ("GET", format!("/{run_id}/events"), None),
     ] {
-        denied.push(autopilot(&state, method, &format!("{path}{tail}"), &other_owner, body).await.0);
+        denied.push(
+            autopilot(&state, method, &format!("{path}{tail}"), &other_owner, body)
+                .await
+                .0,
+        );
     }
-    assert!(denied.iter().all(|s| *s == StatusCode::FORBIDDEN), "{denied:?}");
+    assert!(
+        denied.iter().all(|s| *s == StatusCode::FORBIDDEN),
+        "{denied:?}"
+    );
 
     // A run is found only under its own project, even by a key that may see both.
     let admin = mint_key(&state, "admin", None).await;
-    let (wrong_project, _) = autopilot(&state, "GET", &format!("/api/v1/projects/{other}/autopilot/runs/{run_id}"), &admin, None).await;
-    let (wrong_start, _) = autopilot(&state, "POST", &format!("/api/v1/projects/{other}/autopilot/runs/{run_id}/start"), &admin, body).await;
-    let (wrong_cancel, _) = autopilot(&state, "POST", &format!("/api/v1/projects/{other}/autopilot/runs/{run_id}/cancel"), &admin, None).await;
-    let (wrong_events, _) = autopilot(&state, "GET", &format!("/api/v1/projects/{other}/autopilot/runs/{run_id}/events"), &admin, None).await;
-    let (unknown, _) = autopilot(&state, "GET", &format!("{path}/{}", Uuid::new_v4()), &owner, None).await;
-    assert_eq!((wrong_project, wrong_start, wrong_cancel, wrong_events, unknown), (StatusCode::NOT_FOUND, StatusCode::NOT_FOUND, StatusCode::NOT_FOUND, StatusCode::NOT_FOUND, StatusCode::NOT_FOUND));
+    let (wrong_project, _) = autopilot(
+        &state,
+        "GET",
+        &format!("/api/v1/projects/{other}/autopilot/runs/{run_id}"),
+        &admin,
+        None,
+    )
+    .await;
+    let (wrong_start, _) = autopilot(
+        &state,
+        "POST",
+        &format!("/api/v1/projects/{other}/autopilot/runs/{run_id}/start"),
+        &admin,
+        body,
+    )
+    .await;
+    let (wrong_cancel, _) = autopilot(
+        &state,
+        "POST",
+        &format!("/api/v1/projects/{other}/autopilot/runs/{run_id}/cancel"),
+        &admin,
+        None,
+    )
+    .await;
+    let (wrong_events, _) = autopilot(
+        &state,
+        "GET",
+        &format!("/api/v1/projects/{other}/autopilot/runs/{run_id}/events"),
+        &admin,
+        None,
+    )
+    .await;
+    let (unknown, _) = autopilot(
+        &state,
+        "GET",
+        &format!("{path}/{}", Uuid::new_v4()),
+        &owner,
+        None,
+    )
+    .await;
+    assert_eq!(
+        (
+            wrong_project,
+            wrong_start,
+            wrong_cancel,
+            wrong_events,
+            unknown
+        ),
+        (
+            StatusCode::NOT_FOUND,
+            StatusCode::NOT_FOUND,
+            StatusCode::NOT_FOUND,
+            StatusCode::NOT_FOUND,
+            StatusCode::NOT_FOUND
+        )
+    );
     // Without a key at all.
     let (anonymous, _) = send(&state, req("GET", &path, None, None)).await;
     assert_eq!(anonymous, StatusCode::UNAUTHORIZED);
@@ -13819,25 +16287,85 @@ async fn phase7c_the_timeline_can_be_read_from_where_a_watcher_was() {
     let (project, owner) = autopilot_project(&state, "Phase7C Events").await;
     let (crawl, file) = finished_crawl(&state, project, &owner, Some(SHOP_GROUNDING)).await;
     let path = format!("/api/v1/projects/{project}/autopilot/runs");
-    let (_, made) = autopilot(&state, "POST", &path, &owner, Some(autopilot_body(serde_json::json!({"crawl_run_id": crawl})))).await;
+    let (_, made) = autopilot(
+        &state,
+        "POST",
+        &path,
+        &owner,
+        Some(autopilot_body(serde_json::json!({"crawl_run_id": crawl}))),
+    )
+    .await;
     let run_id = made["run"]["id"].as_str().unwrap().to_string();
-    autopilot(&state, "POST", &format!("{path}/{run_id}/start"), &owner, Some(serde_json::json!({"accept_estimate": true}))).await;
+    autopilot(
+        &state,
+        "POST",
+        &format!("{path}/{run_id}/start"),
+        &owner,
+        Some(serde_json::json!({"accept_estimate": true})),
+    )
+    .await;
     wait_for_step(&state, project, &owner, &run_id, "GAP_CHECK", &["DONE"]).await;
     stop_run(&state, project, &owner, &run_id).await;
     drop(file);
 
-    let (_, all) = autopilot(&state, "GET", &format!("{path}/{run_id}/events"), &owner, None).await;
+    let (_, all) = autopilot(
+        &state,
+        "GET",
+        &format!("{path}/{run_id}/events"),
+        &owner,
+        None,
+    )
+    .await;
     let events = all["events"].as_array().unwrap();
     assert!(events.len() >= 8, "{all}");
     let ids: Vec<i64> = events.iter().map(|e| e["id"].as_i64().unwrap()).collect();
     assert!(ids.windows(2).all(|w| w[0] < w[1]), "oldest first: {ids:?}");
-    let (_, after) = autopilot(&state, "GET", &format!("{path}/{run_id}/events?after={}", ids[2]), &owner, None).await;
-    let later: Vec<i64> = after["events"].as_array().unwrap().iter().map(|e| e["id"].as_i64().unwrap()).collect();
-    assert_eq!(later, ids[3..].to_vec(), "only what the watcher has not seen");
-    let (_, limited) = autopilot(&state, "GET", &format!("{path}/{run_id}/events?limit=2"), &owner, None).await;
-    let last_two: Vec<i64> = limited["events"].as_array().unwrap().iter().map(|e| e["id"].as_i64().unwrap()).collect();
-    assert_eq!(last_two, ids[ids.len() - 2..].to_vec(), "the latest two, still oldest first");
-    let (_, none) = autopilot(&state, "GET", &format!("{path}/{run_id}/events?after={}", ids[ids.len() - 1]), &owner, None).await;
+    let (_, after) = autopilot(
+        &state,
+        "GET",
+        &format!("{path}/{run_id}/events?after={}", ids[2]),
+        &owner,
+        None,
+    )
+    .await;
+    let later: Vec<i64> = after["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["id"].as_i64().unwrap())
+        .collect();
+    assert_eq!(
+        later,
+        ids[3..].to_vec(),
+        "only what the watcher has not seen"
+    );
+    let (_, limited) = autopilot(
+        &state,
+        "GET",
+        &format!("{path}/{run_id}/events?limit=2"),
+        &owner,
+        None,
+    )
+    .await;
+    let last_two: Vec<i64> = limited["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["id"].as_i64().unwrap())
+        .collect();
+    assert_eq!(
+        last_two,
+        ids[ids.len() - 2..].to_vec(),
+        "the latest two, still oldest first"
+    );
+    let (_, none) = autopilot(
+        &state,
+        "GET",
+        &format!("{path}/{run_id}/events?after={}", ids[ids.len() - 1]),
+        &owner,
+        None,
+    )
+    .await;
     assert_eq!(none["events"], serde_json::json!([]));
 }
 
@@ -13851,23 +16379,54 @@ async fn phase7c_a_key_that_has_been_revoked_stops_the_runs_it_made() {
     let maker = crate::auth::generate_key();
     state
         .store
-        .insert_api_key(maker_id, "maker", &crate::auth::hash_key(&maker), "operator", Some(&project.to_string()))
+        .insert_api_key(
+            maker_id,
+            "maker",
+            &crate::auth::hash_key(&maker),
+            "operator",
+            Some(&project.to_string()),
+        )
         .await
         .unwrap();
     let path = format!("/api/v1/projects/{project}/autopilot/runs");
-    let (_, made) = autopilot(&state, "POST", &path, &maker, Some(autopilot_body(serde_json::json!({})))).await;
+    let (_, made) = autopilot(
+        &state,
+        "POST",
+        &path,
+        &maker,
+        Some(autopilot_body(serde_json::json!({}))),
+    )
+    .await;
     let run_id = made["run"]["id"].as_str().unwrap().to_string();
     assert_eq!(made["run"]["created_by_name"], "maker");
 
     state.store.revoke_api_key(maker_id).await.unwrap();
-    let (status, started) = autopilot(&state, "POST", &format!("{path}/{run_id}/start"), &starter, Some(serde_json::json!({"accept_estimate": true}))).await;
-    assert_eq!(status, StatusCode::OK, "the operator who accepts is not the one whose identity the run uses: body={started}");
-    let failed = wait_for_autopilot(&state, project, &starter, &run_id, &["COMPLETED", "FAILED"]).await;
+    let (status, started) = autopilot(
+        &state,
+        "POST",
+        &format!("{path}/{run_id}/start"),
+        &starter,
+        Some(serde_json::json!({"accept_estimate": true})),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the operator who accepts is not the one whose identity the run uses: body={started}"
+    );
+    let failed =
+        wait_for_autopilot(&state, project, &starter, &run_id, &["COMPLETED", "FAILED"]).await;
 
     assert_eq!(failed["run"]["state"], "FAILED", "body={failed}");
     let error = failed["run"]["error"].as_str().unwrap();
-    assert!(error.contains("the API key that started this run has been revoked"), "{error}");
-    assert_eq!(steps_of(&failed)[0], ("REQUIREMENTS".to_string(), "FAILED".to_string()));
+    assert!(
+        error.contains("the API key that started this run has been revoked"),
+        "{error}"
+    );
+    assert_eq!(
+        steps_of(&failed)[0],
+        ("REQUIREMENTS".to_string(), "FAILED".to_string())
+    );
 }
 
 #[tokio::test]
@@ -13885,30 +16444,89 @@ async fn phase7c_a_run_that_was_going_when_the_service_stopped_carries_on_after_
         crawl = finished.0;
         file = finished.1;
         let path = format!("/api/v1/projects/{project}/autopilot/runs");
-        let (_, run) = autopilot(&state, "POST", &path, &owner, Some(autopilot_body(serde_json::json!({"crawl_run_id": crawl})))).await;
+        let (_, run) = autopilot(
+            &state,
+            "POST",
+            &path,
+            &owner,
+            Some(autopilot_body(serde_json::json!({"crawl_run_id": crawl}))),
+        )
+        .await;
         run_id = Uuid::parse_str(run["run"]["id"].as_str().unwrap()).unwrap();
         // The service stops after the run was accepted and its first step finished, in the middle of the second: what the
         // database holds then, without a task working on it.
-        assert!(state.store.start_autopilot_run(run_id, false).await.unwrap());
-        state.store.begin_autopilot_step(run_id, "REQUIREMENTS").await.unwrap();
+        assert!(state
+            .store
+            .start_autopilot_run(run_id, false)
+            .await
+            .unwrap());
         state
             .store
-            .settle_autopilot_step(run_id, "REQUIREMENTS", crate::autopilot::StepState::Done, Some(&serde_json::json!({"requirements": 6})), None)
+            .begin_autopilot_step(run_id, "REQUIREMENTS")
             .await
             .unwrap();
-        state.store.begin_autopilot_step(run_id, "CRAWL").await.unwrap();
+        state
+            .store
+            .settle_autopilot_step(
+                run_id,
+                "REQUIREMENTS",
+                crate::autopilot::StepState::Done,
+                Some(&serde_json::json!({"requirements": 6})),
+                None,
+            )
+            .await
+            .unwrap();
+        state
+            .store
+            .begin_autopilot_step(run_id, "CRAWL")
+            .await
+            .unwrap();
         // Runs of other projects, that wait for a person, are not picked up.
         let other = make_project(&state, "Phase7C Restart Waiting").await;
         let other_owner = mint_key(&state, "operator", Some(&other.to_string())).await;
-        upload_document(&state, &other_owner, other, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
-        let (_, waiting) = autopilot(&state, "POST", &format!("/api/v1/projects/{other}/autopilot/runs"), &other_owner, Some(autopilot_body(serde_json::json!({})))).await;
+        upload_document(
+            &state,
+            &other_owner,
+            other,
+            "FRD.md",
+            SHOP_FRD.as_bytes(),
+            Some("FRD"),
+        )
+        .await;
+        let (_, waiting) = autopilot(
+            &state,
+            "POST",
+            &format!("/api/v1/projects/{other}/autopilot/runs"),
+            &other_owner,
+            Some(autopilot_body(serde_json::json!({}))),
+        )
+        .await;
         waiting_id = Uuid::parse_str(waiting["run"]["id"].as_str().unwrap()).unwrap();
-        state.store.start_autopilot_run(waiting_id, false).await.unwrap();
+        state
+            .store
+            .start_autopilot_run(waiting_id, false)
+            .await
+            .unwrap();
         state.store.wait_autopilot_run(waiting_id).await.unwrap();
         let third = make_project(&state, "Phase7C Restart Awaiting").await;
         let third_owner = mint_key(&state, "operator", Some(&third.to_string())).await;
-        upload_document(&state, &third_owner, third, "FRD.md", SHOP_FRD.as_bytes(), Some("FRD")).await;
-        let (_, awaiting) = autopilot(&state, "POST", &format!("/api/v1/projects/{third}/autopilot/runs"), &third_owner, Some(autopilot_body(serde_json::json!({})))).await;
+        upload_document(
+            &state,
+            &third_owner,
+            third,
+            "FRD.md",
+            SHOP_FRD.as_bytes(),
+            Some("FRD"),
+        )
+        .await;
+        let (_, awaiting) = autopilot(
+            &state,
+            "POST",
+            &format!("/api/v1/projects/{third}/autopilot/runs"),
+            &third_owner,
+            Some(autopilot_body(serde_json::json!({}))),
+        )
+        .await;
         awaiting_id = Uuid::parse_str(awaiting["run"]["id"].as_str().unwrap()).unwrap();
     }
 
@@ -13918,23 +16536,63 @@ async fn phase7c_a_run_that_was_going_when_the_service_stopped_carries_on_after_
     let resumed = crate::autopilot_runner::resume_runs(&state).await.unwrap();
     assert_eq!(resumed, 1, "only the run that was going");
     let owner = mint_key(&state, "admin", None).await;
-    let done = wait_for_step(&state, project, &owner, &run_id.to_string(), "GAP_CHECK", &["DONE"]).await;
+    let done = wait_for_step(
+        &state,
+        project,
+        &owner,
+        &run_id.to_string(),
+        "GAP_CHECK",
+        &["DONE"],
+    )
+    .await;
     let steps = done["steps"].as_array().unwrap().clone();
     stop_run(&state, project, &owner, &run_id.to_string()).await;
     drop(file);
 
-    assert_eq!(steps[0]["attempts"], 1, "the step that was done is not done again");
+    assert_eq!(
+        steps[0]["attempts"], 1,
+        "the step that was done is not done again"
+    );
     assert_eq!(steps[0]["detail"], serde_json::json!({"requirements": 6}));
-    assert_eq!(steps[1]["attempts"], 2, "the step that was cut short was started again");
+    assert_eq!(
+        steps[1]["attempts"], 2,
+        "the step that was cut short was started again"
+    );
     assert_eq!(steps[1]["state"], "SKIPPED");
     assert_eq!(steps[2]["state"], "DONE");
-    let kinds: Vec<&str> = done["events"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
+    let kinds: Vec<&str> = done["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["kind"].as_str().unwrap())
+        .collect();
     assert!(kinds.contains(&"run.resumed"), "{kinds:?}");
     // The others are as they were.
-    assert_eq!(state.store.get_autopilot_run(waiting_id).await.unwrap().unwrap().state, "WAITING");
-    assert_eq!(state.store.get_autopilot_run(awaiting_id).await.unwrap().unwrap().state, "AWAITING_APPROVAL");
+    assert_eq!(
+        state
+            .store
+            .get_autopilot_run(waiting_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        "WAITING"
+    );
+    assert_eq!(
+        state
+            .store
+            .get_autopilot_run(awaiting_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        "AWAITING_APPROVAL"
+    );
     // Once done, a second look picks nothing up.
-    assert_eq!(crate::autopilot_runner::resume_runs(&state).await.unwrap(), 0);
+    assert_eq!(
+        crate::autopilot_runner::resume_runs(&state).await.unwrap(),
+        0
+    );
 }
 
 #[tokio::test]
@@ -13942,36 +16600,72 @@ async fn phase7c_a_run_something_is_already_working_on_is_not_picked_up_again_an
     let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
     fast_autopilot(&state);
     let (project, owner) = autopilot_project(&state, "Phase7C Claimed").await;
-    let (_, made) = autopilot(&state, "POST", &format!("/api/v1/projects/{project}/autopilot/runs"), &owner, Some(autopilot_body(serde_json::json!({})))).await;
+    let (_, made) = autopilot(
+        &state,
+        "POST",
+        &format!("/api/v1/projects/{project}/autopilot/runs"),
+        &owner,
+        Some(autopilot_body(serde_json::json!({}))),
+    )
+    .await;
     let run_id = Uuid::parse_str(made["run"]["id"].as_str().unwrap()).unwrap();
     // A run that is going, with something already working on it.
-    assert!(state.store.start_autopilot_run(run_id, false).await.unwrap());
-    let claim = state.autopilot.claim(run_id).expect("nothing worked on it yet");
-    assert_eq!(crate::autopilot_runner::resume_runs(&state).await.unwrap(), 0, "it is being worked on: nothing is picked up, so nothing is counted");
+    assert!(state
+        .store
+        .start_autopilot_run(run_id, false)
+        .await
+        .unwrap());
+    let claim = state
+        .autopilot
+        .claim(run_id)
+        .expect("nothing worked on it yet");
+    assert_eq!(
+        crate::autopilot_runner::resume_runs(&state).await.unwrap(),
+        0,
+        "it is being worked on: nothing is picked up, so nothing is counted"
+    );
     // Once nothing works on it, the next pick-up takes it.
     drop(claim);
-    assert_eq!(crate::autopilot_runner::resume_runs(&state).await.unwrap(), 1);
+    assert_eq!(
+        crate::autopilot_runner::resume_runs(&state).await.unwrap(),
+        1
+    );
     stop_run(&state, project, &owner, &run_id.to_string()).await;
 }
 
 #[tokio::test]
-async fn phase7c_the_internal_routes_are_not_reachable_without_a_key_and_the_public_ones_still_are_guarded() {
+async fn phase7c_the_internal_routes_are_not_reachable_without_a_key_and_the_public_ones_still_are_guarded(
+) {
     let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
     let (project, _owner) = autopilot_project(&state, "Phase7C Guard").await;
     // The public router still refuses a request with no key, or with a key that does not exist.
     let path = format!("/api/v1/projects/{project}/autopilot/runs");
     let (none, _) = send(&state, req("GET", &path, None, None)).await;
     let (wrong, _) = send(&state, req("GET", &path, Some("aiqa_not_a_key"), None)).await;
-    assert_eq!((none, wrong), (StatusCode::UNAUTHORIZED, StatusCode::UNAUTHORIZED));
+    assert_eq!(
+        (none, wrong),
+        (StatusCode::UNAUTHORIZED, StatusCode::UNAUTHORIZED)
+    );
     // The internal one has no such check (its callers attach an identity themselves): a request with none is a server
     // error, not a way in, and one that names a key that is not active is stopped before it is sent.
     let internal = crate::api::internal_router(state.clone());
-    let response = internal.oneshot(req("GET", &path, None, None)).await.unwrap();
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR, "no identity, no route");
+    let response = internal
+        .oneshot(req("GET", &path, None, None))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "no identity, no route"
+    );
     let gone = crate::autopilot_pipeline::InternalApi::new(&state, Uuid::new_v4());
     let reply = crate::autopilot_pipeline::PipelineApi::send(&gone, "GET", &path, None).await;
     assert_eq!(reply.status, 401);
-    assert!(reply.problem().contains("has been revoked"), "{}", reply.problem());
+    assert!(
+        reply.problem().contains("has been revoked"),
+        "{}",
+        reply.problem()
+    );
 }
 
 // ------------------------------------------------- Phase 7D — generating a few of the requirements at a time
@@ -13979,12 +16673,26 @@ async fn phase7c_the_internal_routes_are_not_reachable_without_a_key_and_the_pub
 #[tokio::test]
 async fn phase7d_generation_can_be_narrowed_to_some_of_the_requirements_of_the_documents() {
     let _env = REQUIREMENT_ENV.lock().await;
-    let executor = Arc::new(RecordingExecutor::ok_sequence(vec![valid_ai_response(), valid_ai_response()]));
+    let executor = Arc::new(RecordingExecutor::ok_sequence(vec![
+        valid_ai_response(),
+        valid_ai_response(),
+    ]));
     let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
     let project = make_project(&state, "Phase7D Narrow").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-    let (_, uploaded) = upload_document(&state, &owner, project, "FRD.md", PASSWORD_FRD.as_bytes(), Some("FRD")).await;
-    let doc_id = uploaded["requirements_document"]["document_id"].as_str().unwrap().to_string();
+    let (_, uploaded) = upload_document(
+        &state,
+        &owner,
+        project,
+        "FRD.md",
+        PASSWORD_FRD.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
+    let doc_id = uploaded["requirements_document"]["document_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let mut narrowed = generate_ai_body(&[&doc_id], &["Functional Testing"]);
     narrowed["requirement_keys"] = serde_json::json!(["FRD-2-02"]);
@@ -13994,7 +16702,11 @@ async fn phase7d_generation_can_be_narrowed_to_some_of_the_requirements_of_the_d
     assert_eq!(body["waves"][0]["requirements"], 1);
     let prompts = executor.prompts.lock().unwrap().clone();
     assert!(prompts[0].contains("[FRD-2-02] "), "{}", prompts[0]);
-    assert!(!prompts[0].contains("[FRD-2-01]"), "the requirement that was not asked for is not shown: {}", prompts[0]);
+    assert!(
+        !prompts[0].contains("[FRD-2-01]"),
+        "the requirement that was not asked for is not shown: {}",
+        prompts[0]
+    );
 
     // An empty list is every requirement, as it always was.
     let mut all = generate_ai_body(&[&doc_id], &["Functional Testing"]);
@@ -14005,23 +16717,45 @@ async fn phase7d_generation_can_be_narrowed_to_some_of_the_requirements_of_the_d
 }
 
 #[tokio::test]
-async fn phase7d_a_requirement_id_that_no_selected_document_has_is_refused_and_so_are_ids_without_documents() {
+async fn phase7d_a_requirement_id_that_no_selected_document_has_is_refused_and_so_are_ids_without_documents(
+) {
     let _env = REQUIREMENT_ENV.lock().await;
     let executor = Arc::new(RecordingExecutor::ok_sequence(vec![]));
     let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
     let project = make_project(&state, "Phase7D Unknown Key").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-    let (_, uploaded) = upload_document(&state, &owner, project, "FRD.md", PASSWORD_FRD.as_bytes(), Some("FRD")).await;
-    let doc_id = uploaded["requirements_document"]["document_id"].as_str().unwrap().to_string();
+    let (_, uploaded) = upload_document(
+        &state,
+        &owner,
+        project,
+        "FRD.md",
+        PASSWORD_FRD.as_bytes(),
+        Some("FRD"),
+    )
+    .await;
+    let doc_id = uploaded["requirements_document"]["document_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let mut typo = generate_ai_body(&[&doc_id], &["Functional Testing"]);
-    typo["requirement_keys"] = serde_json::json!(["FRD-2-01", "FRD-9-99", "FR-000", "A", "B", "C", "D"]);
+    typo["requirement_keys"] =
+        serde_json::json!(["FRD-2-01", "FRD-9-99", "FR-000", "A", "B", "C", "D"]);
     let (status, body) = post_generate(&state, &owner, project, typo).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
     let message = body["error"]["message"].as_str().unwrap();
-    assert!(message.contains("FRD-9-99") && message.contains("FR-000"), "{message}");
-    assert!(!message.contains("FRD-2-01"), "a key that exists is not blamed: {message}");
-    assert!(message.contains("(and more)"), "only the first few are named: {message}");
+    assert!(
+        message.contains("FRD-9-99") && message.contains("FR-000"),
+        "{message}"
+    );
+    assert!(
+        !message.contains("FRD-2-01"),
+        "a key that exists is not blamed: {message}"
+    );
+    assert!(
+        message.contains("(and more)"),
+        "only the first few are named: {message}"
+    );
 
     let (status, body) = post_generate(
         &state,
@@ -14031,8 +16765,18 @@ async fn phase7d_a_requirement_id_that_no_selected_document_has_is_refused_and_s
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
-    assert!(body["error"]["message"].as_str().unwrap().contains("requirement_document_ids"), "body={body}");
-    assert_eq!(executor.prompts.lock().unwrap().len(), 0, "no model was asked");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("requirement_document_ids"),
+        "body={body}"
+    );
+    assert_eq!(
+        executor.prompts.lock().unwrap().len(),
+        0,
+        "no model was asked"
+    );
 }
 
 // ------------------------------------------------- Phase 7D — generating, validating and the gate
@@ -14119,7 +16863,13 @@ async fn named_key(state: &AppState, name: &str, role: &str, project: Uuid) -> S
     let raw = crate::auth::generate_key();
     state
         .store
-        .insert_api_key(Uuid::new_v4(), name, &crate::auth::hash_key(&raw), role, Some(&project.to_string()))
+        .insert_api_key(
+            Uuid::new_v4(),
+            name,
+            &crate::auth::hash_key(&raw),
+            role,
+            Some(&project.to_string()),
+        )
         .await
         .unwrap();
     raw
@@ -14127,14 +16877,26 @@ async fn named_key(state: &AppState, name: &str, role: &str, project: Uuid) -> S
 
 /// A project with the shop's requirements, a finished crawl of it, an AI that writes cases and a run made and started: the
 /// run's id and what to clean up. It goes on by itself to the gate.
-async fn run_at_the_gate(state: &AppState, project: Uuid, key: &str, config: Value) -> (String, CrawlFiles) {
+async fn run_at_the_gate(
+    state: &AppState,
+    project: Uuid,
+    key: &str,
+    config: Value,
+) -> (String, CrawlFiles) {
     run_at_the_gate_with(state, project, key, config, SHOP_GROUNDING).await
 }
 
 /// `run_at_the_gate`, with a crawl that grounded what `grounding` says.
-async fn run_at_the_gate_with(state: &AppState, project: Uuid, key: &str, config: Value, grounding: &str) -> (String, CrawlFiles) {
+async fn run_at_the_gate_with(
+    state: &AppState,
+    project: Uuid,
+    key: &str,
+    config: Value,
+    grounding: &str,
+) -> (String, CrawlFiles) {
     let (crawl, file) = finished_crawl(state, project, key, Some(grounding)).await;
-    let mut body = autopilot_body(serde_json::json!({"crawl_run_id": crawl, "skills": autopilot_skills()}));
+    let mut body =
+        autopilot_body(serde_json::json!({"crawl_run_id": crawl, "skills": autopilot_skills()}));
     for (k, v) in config.as_object().cloned().unwrap_or_default() {
         body[k] = v;
     }
@@ -14142,13 +16904,27 @@ async fn run_at_the_gate_with(state: &AppState, project: Uuid, key: &str, config
     let (status, made) = autopilot(state, "POST", &path, key, Some(body)).await;
     assert_eq!(status, StatusCode::CREATED, "body={made}");
     let run_id = made["run"]["id"].as_str().unwrap().to_string();
-    let (status, started) = autopilot(state, "POST", &format!("{path}/{run_id}/start"), key, Some(serde_json::json!({"accept_estimate": true, "accept_paid": true}))).await;
+    let (status, started) = autopilot(
+        state,
+        "POST",
+        &format!("{path}/{run_id}/start"),
+        key,
+        Some(serde_json::json!({"accept_estimate": true, "accept_paid": true})),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={started}");
     (run_id, file)
 }
 
 async fn cases_of(state: &AppState, project: Uuid, key: &str, suite: &str) -> Vec<Value> {
-    let (status, cases) = autopilot(state, "GET", &format!("/api/v1/projects/{project}/test-cases?suite_id={suite}"), key, None).await;
+    let (status, cases) = autopilot(
+        state,
+        "GET",
+        &format!("/api/v1/projects/{project}/test-cases?suite_id={suite}"),
+        key,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={cases}");
     cases.as_array().unwrap().clone()
 }
@@ -14161,76 +16937,207 @@ async fn phase7d_a_run_writes_the_cases_checks_them_and_waits_for_a_person_to_ap
     let (project, _) = autopilot_project(&state, "Phase7D Gate").await;
     let maker = named_key(&state, "maker", "operator", project).await;
     let checker = named_key(&state, "checker", "operator", project).await;
-    let (run_id, file) = run_at_the_gate(&state, project, &maker, serde_json::json!({"name": "Release 5"})).await;
-    let at_gate = wait_for_autopilot(&state, project, &maker, &run_id, &["WAITING", "FAILED", "COMPLETED"]).await;
+    let (run_id, file) = run_at_the_gate(
+        &state,
+        project,
+        &maker,
+        serde_json::json!({"name": "Release 5"}),
+    )
+    .await;
+    let at_gate = wait_for_autopilot(
+        &state,
+        project,
+        &maker,
+        &run_id,
+        &["WAITING", "FAILED", "COMPLETED"],
+    )
+    .await;
 
     assert_eq!(at_gate["run"]["state"], "WAITING", "body={at_gate}");
-    assert!(at_gate["run"]["finished_at"].is_null(), "a run at a gate has not ended");
+    assert!(
+        at_gate["run"]["finished_at"].is_null(),
+        "a run at a gate has not ended"
+    );
     assert_eq!(
         steps_of(&at_gate),
-        [("REQUIREMENTS", "DONE"), ("CRAWL", "SKIPPED"), ("GAP_CHECK", "DONE"), ("GENERATE", "DONE"), ("VALIDATE", "DONE"), ("APPROVE", "WAITING"), ("EXECUTE", "PENDING"), ("REPORT", "PENDING")]
-            .map(|(a, b)| (a.to_string(), b.to_string()))
+        [
+            ("REQUIREMENTS", "DONE"),
+            ("CRAWL", "SKIPPED"),
+            ("GAP_CHECK", "DONE"),
+            ("GENERATE", "DONE"),
+            ("VALIDATE", "DONE"),
+            ("APPROVE", "WAITING"),
+            ("EXECUTE", "PENDING"),
+            ("REPORT", "PENDING")
+        ]
+        .map(|(a, b)| (a.to_string(), b.to_string()))
     );
     let steps = at_gate["steps"].as_array().unwrap();
     let generate = &steps[3]["detail"];
     let suite = generate["suite_id"].as_str().unwrap().to_string();
-    assert_eq!(generate["cases"], 5, "one for each requirement a skill offers: body={at_gate}");
-    assert_eq!(generate["groups"].as_array().unwrap().len(), 1, "six requirements are one group");
-    assert_eq!(generate["providers"], serde_json::json!({"mock/mock-model": 1}));
+    assert_eq!(
+        generate["cases"], 5,
+        "one for each requirement a skill offers: body={at_gate}"
+    );
+    assert_eq!(
+        generate["groups"].as_array().unwrap().len(),
+        1,
+        "six requirements are one group"
+    );
+    assert_eq!(
+        generate["providers"],
+        serde_json::json!({"mock/mock-model": 1})
+    );
     assert_eq!(generate["fallback_used"], false);
     assert_eq!(steps[4]["detail"]["validated"], 5);
     assert_eq!(steps[4]["detail"]["invalid"], serde_json::json!([]));
     assert_eq!(steps[5]["detail"]["pending"], 5);
     assert_eq!(steps[5]["detail"]["approved"], 0);
-    let events: Vec<&str> = at_gate["events"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
+    let events: Vec<&str> = at_gate["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["kind"].as_str().unwrap())
+        .collect();
     assert_eq!(events.last(), Some(&"step.waiting"), "{events:?}");
-    assert!(at_gate["events"].as_array().unwrap().last().unwrap()["message"].as_str().unwrap().starts_with("5 generated case(s) wait for approval"));
+    assert!(
+        at_gate["events"].as_array().unwrap().last().unwrap()["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("5 generated case(s) wait for approval")
+    );
 
     // The cases are in a suite named after the run, tagged with it, tied to their requirements, and validated.
     let cases = cases_of(&state, project, &maker, &suite).await;
     assert_eq!(cases.len(), 5);
     for case in &cases {
         assert_eq!(case["status"], "VALIDATED", "{case}");
-        assert!(case["tags"].as_array().unwrap().iter().any(|t| t == &serde_json::json!(format!("autopilot:{run_id}"))), "{case}");
-        assert!(case["requirement_reference"].as_str().unwrap().starts_with("FR-00"), "{case}");
+        assert!(
+            case["tags"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t == &serde_json::json!(format!("autopilot:{run_id}"))),
+            "{case}"
+        );
+        assert!(
+            case["requirement_reference"]
+                .as_str()
+                .unwrap()
+                .starts_with("FR-00"),
+            "{case}"
+        );
         assert_eq!(case["source_document"], "FRD.md");
-        assert_eq!(case["created_by"], "maker", "saved as the key that made the run");
+        assert_eq!(
+            case["created_by"], "maker",
+            "saved as the key that made the run"
+        );
     }
-    let (_, suites) = autopilot(&state, "GET", &format!("/api/v1/projects/{project}/test-suites"), &maker, None).await;
-    assert!(suites.as_array().unwrap().iter().any(|s| s["name"] == "Autopilot: Release 5" && s["id"] == suite), "body={suites}");
-    assert_eq!(writer.calls.load(std::sync::atomic::Ordering::SeqCst), 1, "one call for the group: nothing was asked twice");
+    let (_, suites) = autopilot(
+        &state,
+        "GET",
+        &format!("/api/v1/projects/{project}/test-suites"),
+        &maker,
+        None,
+    )
+    .await;
+    assert!(
+        suites
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["name"] == "Autopilot: Release 5" && s["id"] == suite),
+        "body={suites}"
+    );
+    assert_eq!(
+        writer.calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "one call for the group: nothing was asked twice"
+    );
 
     // Approving is the person's: another operator approves what the run made, and it is theirs in the audit log.
     let path = format!("/api/v1/projects/{project}/autopilot/runs/{run_id}");
-    let (status, approved) = autopilot(&state, "POST", &format!("{path}/approve-cases"), &checker, None).await;
+    let (status, approved) = autopilot(
+        &state,
+        "POST",
+        &format!("{path}/approve-cases"),
+        &checker,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={approved}");
     assert_eq!(approved["suite_id"], suite);
     assert_eq!(approved["approved"].as_array().unwrap().len(), 5);
     assert_eq!(approved["refused"], serde_json::json!([]));
     let (_, still) = autopilot(&state, "GET", &path, &maker, None).await;
-    assert_eq!(still["run"]["state"], "WAITING", "approving the cases does not let the run go on: body={still}");
+    assert_eq!(
+        still["run"]["state"], "WAITING",
+        "approving the cases does not let the run go on: body={still}"
+    );
     let audit_rows = state.store.list_audit(None, 200, 0).await.unwrap();
-    let approvals: Vec<_> = audit_rows.iter().filter(|a| a.action == "test_case.approve").collect();
+    let approvals: Vec<_> = audit_rows
+        .iter()
+        .filter(|a| a.action == "test_case.approve")
+        .collect();
     assert_eq!(approvals.len(), 5, "{audit_rows:?}");
-    assert!(approvals.iter().all(|a| a.actor.as_deref() == Some("checker")), "the approver, not the run's key: {approvals:?}");
-    let bulk: Vec<_> = audit_rows.iter().filter(|a| a.action == "autopilot.approve_cases").collect();
+    assert!(
+        approvals
+            .iter()
+            .all(|a| a.actor.as_deref() == Some("checker")),
+        "the approver, not the run's key: {approvals:?}"
+    );
+    let bulk: Vec<_> = audit_rows
+        .iter()
+        .filter(|a| a.action == "autopilot.approve_cases")
+        .collect();
     assert_eq!(bulk.len(), 1);
     assert_eq!(bulk[0].detail.as_deref(), Some("5 approved, 0 refused"));
 
     // A second approval finds nothing left to approve, and the ones asked for by name say why they cannot be.
-    let (_, none) = autopilot(&state, "POST", &format!("{path}/approve-cases"), &checker, None).await;
+    let (_, none) = autopilot(
+        &state,
+        "POST",
+        &format!("{path}/approve-cases"),
+        &checker,
+        None,
+    )
+    .await;
     assert_eq!(none["approved"], serde_json::json!([]));
     let named = cases[0]["id"].as_str().unwrap();
-    let (_, again) = autopilot(&state, "POST", &format!("{path}/approve-cases"), &checker, Some(serde_json::json!({"case_ids": [named]}))).await;
+    let (_, again) = autopilot(
+        &state,
+        "POST",
+        &format!("{path}/approve-cases"),
+        &checker,
+        Some(serde_json::json!({"case_ids": [named]})),
+    )
+    .await;
     assert_eq!(again["approved"], serde_json::json!([]));
     assert_eq!(again["refused"][0]["id"], named);
-    assert!(again["refused"][0]["reason"].as_str().unwrap().contains("must be VALIDATED before approval"), "body={again}");
-    let (unknown_status, unknown) = autopilot(&state, "POST", &format!("{path}/approve-cases"), &checker, Some(serde_json::json!({"case_ids": [Uuid::new_v4()]}))).await;
+    assert!(
+        again["refused"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("must be VALIDATED before approval"),
+        "body={again}"
+    );
+    let (unknown_status, unknown) = autopilot(
+        &state,
+        "POST",
+        &format!("{path}/approve-cases"),
+        &checker,
+        Some(serde_json::json!({"case_ids": [Uuid::new_v4()]})),
+    )
+    .await;
     assert_eq!(unknown_status, StatusCode::BAD_REQUEST, "body={unknown}");
-    assert!(unknown.to_string().contains("is not a case of this run"), "body={unknown}");
+    assert!(
+        unknown.to_string().contains("is not a case of this run"),
+        "body={unknown}"
+    );
 
     // The person lets the run go on: it finishes with every case approved.
-    let (status, continued) = autopilot(&state, "POST", &format!("{path}/continue"), &checker, None).await;
+    let (status, continued) =
+        autopilot(&state, "POST", &format!("{path}/continue"), &checker, None).await;
     assert_eq!(status, StatusCode::OK, "body={continued}");
     assert_eq!(continued["run"]["state"], "RUNNING");
     let done = wait_for_autopilot(&state, project, &maker, &run_id, &["COMPLETED", "FAILED"]).await;
@@ -14241,10 +17148,28 @@ async fn phase7d_a_run_writes_the_cases_checks_them_and_waits_for_a_person_to_ap
     assert_eq!(gate["detail"]["approved"], 5);
     assert_eq!(gate["detail"]["pending"], 0);
     assert_eq!(gate["detail"]["released"], true);
-    assert_eq!(gate["attempts"], 2, "the step that waited was started again when the run went on");
-    let kinds: Vec<&str> = done["events"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
-    assert!(kinds.contains(&"run.continued") && kinds.last() == Some(&"run.completed"), "{kinds:?}");
-    let continues: Vec<_> = state.store.list_audit(None, 200, 0).await.unwrap().into_iter().filter(|a| a.action == "autopilot.continue").collect();
+    assert_eq!(
+        gate["attempts"], 2,
+        "the step that waited was started again when the run went on"
+    );
+    let kinds: Vec<&str> = done["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["kind"].as_str().unwrap())
+        .collect();
+    assert!(
+        kinds.contains(&"run.continued") && kinds.last() == Some(&"run.completed"),
+        "{kinds:?}"
+    );
+    let continues: Vec<_> = state
+        .store
+        .list_audit(None, 200, 0)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|a| a.action == "autopilot.continue")
+        .collect();
     assert_eq!(continues.len(), 1);
     assert_eq!(continues[0].actor.as_deref(), Some("checker"));
 }
@@ -14255,17 +17180,51 @@ async fn phase7d_cases_left_undecided_when_the_person_lets_the_run_go_are_not_pa
     fast_autopilot(&state);
     let (project, owner) = autopilot_project(&state, "Phase7D Undecided").await;
     let (run_id, file) = run_at_the_gate(&state, project, &owner, serde_json::json!({})).await;
-    let at_gate = wait_for_autopilot(&state, project, &owner, &run_id, &["WAITING", "FAILED", "COMPLETED"]).await;
+    let at_gate = wait_for_autopilot(
+        &state,
+        project,
+        &owner,
+        &run_id,
+        &["WAITING", "FAILED", "COMPLETED"],
+    )
+    .await;
     assert_eq!(at_gate["run"]["state"], "WAITING", "body={at_gate}");
-    let suite = at_gate["steps"][3]["detail"]["suite_id"].as_str().unwrap().to_string();
+    let suite = at_gate["steps"][3]["detail"]["suite_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let cases = cases_of(&state, project, &owner, &suite).await;
     let path = format!("/api/v1/projects/{project}/autopilot/runs/{run_id}");
 
     // Two approved by name, one rejected the ordinary way, the other two left alone.
-    let two: Vec<String> = cases[..2].iter().map(|c| c["id"].as_str().unwrap().to_string()).collect();
-    let (_, approved) = autopilot(&state, "POST", &format!("{path}/approve-cases"), &owner, Some(serde_json::json!({"case_ids": two}))).await;
-    assert_eq!(approved["approved"].as_array().unwrap().len(), 2, "body={approved}");
-    let (reject_status, _) = autopilot(&state, "POST", &format!("/api/v1/projects/{project}/test-cases/{}/reject", cases[2]["id"].as_str().unwrap()), &owner, None).await;
+    let two: Vec<String> = cases[..2]
+        .iter()
+        .map(|c| c["id"].as_str().unwrap().to_string())
+        .collect();
+    let (_, approved) = autopilot(
+        &state,
+        "POST",
+        &format!("{path}/approve-cases"),
+        &owner,
+        Some(serde_json::json!({"case_ids": two})),
+    )
+    .await;
+    assert_eq!(
+        approved["approved"].as_array().unwrap().len(),
+        2,
+        "body={approved}"
+    );
+    let (reject_status, _) = autopilot(
+        &state,
+        "POST",
+        &format!(
+            "/api/v1/projects/{project}/test-cases/{}/reject",
+            cases[2]["id"].as_str().unwrap()
+        ),
+        &owner,
+        None,
+    )
+    .await;
     assert_eq!(reject_status, StatusCode::OK);
 
     let (status, _) = autopilot(&state, "POST", &format!("{path}/continue"), &owner, None).await;
@@ -14274,17 +17233,39 @@ async fn phase7d_cases_left_undecided_when_the_person_lets_the_run_go_are_not_pa
     drop(file);
     assert_eq!(done["run"]["state"], "COMPLETED", "body={done}");
     let gate = &done["steps"][5]["detail"];
-    assert_eq!((gate["approved"].as_u64(), gate["rejected"].as_u64(), gate["pending"].as_u64()), (Some(2), Some(1), Some(2)), "body={gate}");
+    assert_eq!(
+        (
+            gate["approved"].as_u64(),
+            gate["rejected"].as_u64(),
+            gate["pending"].as_u64()
+        ),
+        (Some(2), Some(1), Some(2)),
+        "body={gate}"
+    );
     assert_eq!(gate["released"], true);
 }
 
 #[tokio::test]
-async fn phase7d_a_run_made_with_automatic_approval_approves_what_passed_validation_and_does_not_wait() {
+async fn phase7d_a_run_made_with_automatic_approval_approves_what_passed_validation_and_does_not_wait(
+) {
     let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(CaseWriter::new(0))).await;
     fast_autopilot(&state);
     let (project, owner) = autopilot_project(&state, "Phase7D Automatic").await;
-    let (run_id, file) = run_at_the_gate(&state, project, &owner, serde_json::json!({"approval": "auto_validated"})).await;
-    let done = wait_for_autopilot(&state, project, &owner, &run_id, &["COMPLETED", "FAILED", "WAITING"]).await;
+    let (run_id, file) = run_at_the_gate(
+        &state,
+        project,
+        &owner,
+        serde_json::json!({"approval": "auto_validated"}),
+    )
+    .await;
+    let done = wait_for_autopilot(
+        &state,
+        project,
+        &owner,
+        &run_id,
+        &["COMPLETED", "FAILED", "WAITING"],
+    )
+    .await;
     drop(file);
 
     assert_eq!(done["run"]["state"], "COMPLETED", "body={done}");
@@ -14294,13 +17275,27 @@ async fn phase7d_a_run_made_with_automatic_approval_approves_what_passed_validat
     assert_eq!(gate["approved"], 5);
     assert_eq!(gate["pending"], 0);
     let suite = done["steps"][3]["detail"]["suite_id"].as_str().unwrap();
-    assert!(cases_of(&state, project, &owner, suite).await.iter().all(|c| c["status"] == "APPROVED"));
-    let lines: Vec<&str> = done["events"].as_array().unwrap().iter().map(|e| e["message"].as_str().unwrap()).collect();
-    assert!(lines.contains(&"Approved 5 validated case(s), because the run was made with automatic approval"), "{lines:?}");
+    assert!(cases_of(&state, project, &owner, suite)
+        .await
+        .iter()
+        .all(|c| c["status"] == "APPROVED"));
+    let lines: Vec<&str> = done["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["message"].as_str().unwrap())
+        .collect();
+    assert!(
+        lines.contains(
+            &"Approved 5 validated case(s), because the run was made with automatic approval"
+        ),
+        "{lines:?}"
+    );
 }
 
 #[tokio::test]
-async fn phase7d_a_run_whose_ai_failed_is_taken_over_and_goes_on_from_that_step_keeping_what_was_done() {
+async fn phase7d_a_run_whose_ai_failed_is_taken_over_and_goes_on_from_that_step_keeping_what_was_done(
+) {
     // The provider fails the first call, so the run fails at its first group.
     let writer = CaseWriter::new(1);
     let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(writer.clone())).await;
@@ -14309,42 +17304,113 @@ async fn phase7d_a_run_whose_ai_failed_is_taken_over_and_goes_on_from_that_step_
     let maker = named_key(&state, "maker", "operator", project).await;
     let second = named_key(&state, "second", "operator", project).await;
     let (run_id, file) = run_at_the_gate(&state, project, &maker, serde_json::json!({})).await;
-    let failed = wait_for_autopilot(&state, project, &maker, &run_id, &["FAILED", "WAITING", "COMPLETED"]).await;
+    let failed = wait_for_autopilot(
+        &state,
+        project,
+        &maker,
+        &run_id,
+        &["FAILED", "WAITING", "COMPLETED"],
+    )
+    .await;
     let path = format!("/api/v1/projects/{project}/autopilot/runs/{run_id}");
 
     assert_eq!(failed["run"]["state"], "FAILED", "body={failed}");
-    assert!(failed["run"]["error"].as_str().unwrap().starts_with("Generating the test cases: the AI could not generate group 1/1"), "body={failed}");
+    assert!(
+        failed["run"]["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("Generating the test cases: the AI could not generate group 1/1"),
+        "body={failed}"
+    );
     assert_eq!(failed["run"]["current_step"], "GENERATE");
     assert_eq!(failed["steps"][3]["state"], "FAILED");
-    let suite = failed["steps"][3]["detail"]["suite_id"].as_str().expect("the suite was made before the group failed").to_string();
-    assert_eq!(failed["steps"][3]["detail"]["groups"][0]["state"], "PENDING");
+    let suite = failed["steps"][3]["detail"]["suite_id"]
+        .as_str()
+        .expect("the suite was made before the group failed")
+        .to_string();
+    assert_eq!(
+        failed["steps"][3]["detail"]["groups"][0]["state"],
+        "PENDING"
+    );
 
     // Not while it is not failed, and only by an operator.
     let viewer = mint_key(&state, "viewer", Some(&project.to_string())).await;
-    let (viewer_status, _) = autopilot(&state, "POST", &format!("{path}/resume"), &viewer, None).await;
+    let (viewer_status, _) =
+        autopilot(&state, "POST", &format!("{path}/resume"), &viewer, None).await;
     assert_eq!(viewer_status, StatusCode::FORBIDDEN);
 
-    let (status, resumed) = autopilot(&state, "POST", &format!("{path}/resume"), &second, None).await;
+    let (status, resumed) =
+        autopilot(&state, "POST", &format!("{path}/resume"), &second, None).await;
     assert_eq!(status, StatusCode::OK, "body={resumed}");
     assert_eq!(resumed["run"]["state"], "RUNNING");
-    assert_eq!(resumed["run"]["created_by_name"], "second", "the run acts as the person who took it over");
+    assert_eq!(
+        resumed["run"]["created_by_name"], "second",
+        "the run acts as the person who took it over"
+    );
     assert!(resumed["run"]["error"].is_null());
-    let (again_status, again) = autopilot(&state, "POST", &format!("{path}/resume"), &second, None).await;
+    let (again_status, again) =
+        autopilot(&state, "POST", &format!("{path}/resume"), &second, None).await;
     assert_eq!(again_status, StatusCode::CONFLICT, "body={again}");
-    assert!(again.to_string().contains("only a run that failed"), "body={again}");
+    assert!(
+        again.to_string().contains("only a run that failed"),
+        "body={again}"
+    );
 
-    let at_gate = wait_for_autopilot(&state, project, &second, &run_id, &["WAITING", "FAILED", "COMPLETED"]).await;
+    let at_gate = wait_for_autopilot(
+        &state,
+        project,
+        &second,
+        &run_id,
+        &["WAITING", "FAILED", "COMPLETED"],
+    )
+    .await;
     drop(file);
     assert_eq!(at_gate["run"]["state"], "WAITING", "body={at_gate}");
-    assert_eq!(at_gate["steps"][3]["attempts"], 2, "the generate step was started again");
-    assert_eq!(at_gate["steps"][3]["detail"]["suite_id"], suite, "the same suite: nothing made twice");
-    assert_eq!(at_gate["steps"][2]["attempts"], 1, "the steps before it were not done again");
+    assert_eq!(
+        at_gate["steps"][3]["attempts"], 2,
+        "the generate step was started again"
+    );
+    assert_eq!(
+        at_gate["steps"][3]["detail"]["suite_id"], suite,
+        "the same suite: nothing made twice"
+    );
+    assert_eq!(
+        at_gate["steps"][2]["attempts"], 1,
+        "the steps before it were not done again"
+    );
     assert_eq!(cases_of(&state, project, &maker, &suite).await.len(), 5);
-    let (_, suites) = autopilot(&state, "GET", &format!("/api/v1/projects/{project}/test-suites"), &maker, None).await;
-    assert_eq!(suites.as_array().unwrap().iter().filter(|s| s["name"].as_str().unwrap().starts_with("Autopilot:")).count(), 1);
-    let kinds: Vec<&str> = at_gate["events"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
+    let (_, suites) = autopilot(
+        &state,
+        "GET",
+        &format!("/api/v1/projects/{project}/test-suites"),
+        &maker,
+        None,
+    )
+    .await;
+    assert_eq!(
+        suites
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|s| s["name"].as_str().unwrap().starts_with("Autopilot:"))
+            .count(),
+        1
+    );
+    let kinds: Vec<&str> = at_gate["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["kind"].as_str().unwrap())
+        .collect();
     assert!(kinds.contains(&"run.retried"), "{kinds:?}");
-    let resumes: Vec<_> = state.store.list_audit(None, 200, 0).await.unwrap().into_iter().filter(|a| a.action == "autopilot.resume").collect();
+    let resumes: Vec<_> = state
+        .store
+        .list_audit(None, 200, 0)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|a| a.action == "autopilot.resume")
+        .collect();
     assert_eq!(resumes.len(), 1);
     assert_eq!(resumes[0].actor.as_deref(), Some("second"));
 }
@@ -14359,18 +17425,39 @@ async fn phase7d_a_failed_run_may_not_start_again_beside_another_run_of_the_proj
     wait_for_autopilot(&state, project, &owner, &run_id, &["FAILED"]).await;
     drop(file);
     let path = format!("/api/v1/projects/{project}/autopilot/runs");
-    let (_, other) = autopilot(&state, "POST", &path, &owner, Some(autopilot_body(serde_json::json!({"name": "The other one"})))).await;
-    assert!(other["run"]["id"].is_string(), "the failed run does not hold the project: body={other}");
+    let (_, other) = autopilot(
+        &state,
+        "POST",
+        &path,
+        &owner,
+        Some(autopilot_body(serde_json::json!({"name": "The other one"}))),
+    )
+    .await;
+    assert!(
+        other["run"]["id"].is_string(),
+        "the failed run does not hold the project: body={other}"
+    );
 
-    let (status, blocked) = autopilot(&state, "POST", &format!("{path}/{run_id}/resume"), &owner, None).await;
+    let (status, blocked) = autopilot(
+        &state,
+        "POST",
+        &format!("{path}/{run_id}/resume"),
+        &owner,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::CONFLICT, "body={blocked}");
-    assert!(blocked.to_string().contains("The other one"), "the run in the way is named: body={blocked}");
+    assert!(
+        blocked.to_string().contains("The other one"),
+        "the run in the way is named: body={blocked}"
+    );
     let (_, still) = autopilot(&state, "GET", &format!("{path}/{run_id}"), &owner, None).await;
     assert_eq!(still["run"]["state"], "FAILED");
 }
 
 #[tokio::test]
-async fn phase7d_only_an_operator_may_let_a_run_go_on_or_approve_its_cases_and_only_a_run_at_a_gate_goes_on() {
+async fn phase7d_only_an_operator_may_let_a_run_go_on_or_approve_its_cases_and_only_a_run_at_a_gate_goes_on(
+) {
     let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(CaseWriter::new(0))).await;
     fast_autopilot(&state);
     let (project, owner) = autopilot_project(&state, "Phase7D Roles").await;
@@ -14379,21 +17466,79 @@ async fn phase7d_only_an_operator_may_let_a_run_go_on_or_approve_its_cases_and_o
     let path = format!("/api/v1/projects/{project}/autopilot/runs");
 
     // A run that has not started does not wait at any gate, and has no cases yet.
-    let (_, made) = autopilot(&state, "POST", &path, &owner, Some(autopilot_body(serde_json::json!({"skills": autopilot_skills()})))).await;
+    let (_, made) = autopilot(
+        &state,
+        "POST",
+        &path,
+        &owner,
+        Some(autopilot_body(
+            serde_json::json!({"skills": autopilot_skills()}),
+        )),
+    )
+    .await;
     let early = made["run"]["id"].as_str().unwrap().to_string();
-    let (status, body) = autopilot(&state, "POST", &format!("{path}/{early}/continue"), &owner, None).await;
+    let (status, body) = autopilot(
+        &state,
+        "POST",
+        &format!("{path}/{early}/continue"),
+        &owner,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::CONFLICT, "body={body}");
-    assert!(body.to_string().contains("AWAITING_APPROVAL"), "body={body}");
-    let (status, body) = autopilot(&state, "POST", &format!("{path}/{early}/approve-cases"), &owner, None).await;
+    assert!(
+        body.to_string().contains("AWAITING_APPROVAL"),
+        "body={body}"
+    );
+    let (status, body) = autopilot(
+        &state,
+        "POST",
+        &format!("{path}/{early}/approve-cases"),
+        &owner,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::CONFLICT, "body={body}");
-    assert!(body.to_string().contains("has not generated any"), "body={body}");
+    assert!(
+        body.to_string().contains("has not generated any"),
+        "body={body}"
+    );
 
     for tail in ["continue", "resume", "approve-cases"] {
-        let (viewer_status, _) = autopilot(&state, "POST", &format!("{path}/{early}/{tail}"), &viewer, None).await;
-        let (stranger_status, _) = autopilot(&state, "POST", &format!("{path}/{early}/{tail}"), &other_owner, None).await;
-        assert_eq!((viewer_status, stranger_status), (StatusCode::FORBIDDEN, StatusCode::FORBIDDEN), "{tail}");
-        let (elsewhere, _) = autopilot(&state, "POST", &format!("/api/v1/projects/{other}/autopilot/runs/{early}/{tail}"), &other_owner, None).await;
-        assert_eq!(elsewhere, StatusCode::NOT_FOUND, "a run is found only under its own project: {tail}");
+        let (viewer_status, _) = autopilot(
+            &state,
+            "POST",
+            &format!("{path}/{early}/{tail}"),
+            &viewer,
+            None,
+        )
+        .await;
+        let (stranger_status, _) = autopilot(
+            &state,
+            "POST",
+            &format!("{path}/{early}/{tail}"),
+            &other_owner,
+            None,
+        )
+        .await;
+        assert_eq!(
+            (viewer_status, stranger_status),
+            (StatusCode::FORBIDDEN, StatusCode::FORBIDDEN),
+            "{tail}"
+        );
+        let (elsewhere, _) = autopilot(
+            &state,
+            "POST",
+            &format!("/api/v1/projects/{other}/autopilot/runs/{early}/{tail}"),
+            &other_owner,
+            None,
+        )
+        .await;
+        assert_eq!(
+            elsewhere,
+            StatusCode::NOT_FOUND,
+            "a run is found only under its own project: {tail}"
+        );
     }
 }
 
@@ -14403,25 +17548,57 @@ async fn phase7d_a_run_at_a_gate_survives_a_restart_and_goes_on_when_a_person_le
     let db_path = dir.path().join("api.sqlite3");
     let (project, run_id, file);
     {
-        let state = restart_test_state_with_ai(&db_path, dir.path().join("evidence"), ai_infra_with_executor(CaseWriter::new(0))).await;
+        let state = restart_test_state_with_ai(
+            &db_path,
+            dir.path().join("evidence"),
+            ai_infra_with_executor(CaseWriter::new(0)),
+        )
+        .await;
         fast_autopilot(&state);
         let made = autopilot_project(&state, "Phase7D Restart At Gate").await;
         project = made.0;
         let started = run_at_the_gate(&state, project, &made.1, serde_json::json!({})).await;
         run_id = started.0;
         file = started.1;
-        wait_for_autopilot(&state, project, &made.1, &run_id, &["WAITING", "FAILED", "COMPLETED"]).await;
+        wait_for_autopilot(
+            &state,
+            project,
+            &made.1,
+            &run_id,
+            &["WAITING", "FAILED", "COMPLETED"],
+        )
+        .await;
     }
-    let state = restart_test_state_with_ai(&db_path, dir.path().join("evidence"), ai_infra_with_executor(CaseWriter::new(0))).await;
+    let state = restart_test_state_with_ai(
+        &db_path,
+        dir.path().join("evidence"),
+        ai_infra_with_executor(CaseWriter::new(0)),
+    )
+    .await;
     fast_autopilot(&state);
-    assert_eq!(crate::autopilot_runner::resume_runs(&state).await.unwrap(), 0, "a run waiting for a person is not worked on");
+    assert_eq!(
+        crate::autopilot_runner::resume_runs(&state).await.unwrap(),
+        0,
+        "a run waiting for a person is not worked on"
+    );
     let owner = mint_key(&state, "admin", None).await;
     let path = format!("/api/v1/projects/{project}/autopilot/runs/{run_id}");
     let (_, waiting) = autopilot(&state, "GET", &path, &owner, None).await;
     assert_eq!(waiting["run"]["state"], "WAITING", "body={waiting}");
     assert_eq!(waiting["working"], false);
-    let (_, approved) = autopilot(&state, "POST", &format!("{path}/approve-cases"), &owner, None).await;
-    assert_eq!(approved["approved"].as_array().unwrap().len(), 5, "body={approved}");
+    let (_, approved) = autopilot(
+        &state,
+        "POST",
+        &format!("{path}/approve-cases"),
+        &owner,
+        None,
+    )
+    .await;
+    assert_eq!(
+        approved["approved"].as_array().unwrap().len(),
+        5,
+        "body={approved}"
+    );
     let (status, _) = autopilot(&state, "POST", &format!("{path}/continue"), &owner, None).await;
     assert_eq!(status, StatusCode::OK);
     let done = wait_for_autopilot(&state, project, &owner, &run_id, &["COMPLETED", "FAILED"]).await;
@@ -14448,29 +17625,58 @@ impl crate::executor::Executor for StubPlaywright {
             *n
         };
         let (status, reason) = if task.name.contains("FR-002") {
-            (crate::domain::TaskStatus::Failed, Some("expected the cart badge to show 1"))
+            (
+                crate::domain::TaskStatus::Failed,
+                Some("expected the cart badge to show 1"),
+            )
         } else if task.name.contains("FR-003") && attempt == 1 {
-            (crate::domain::TaskStatus::InfraError, Some("no browser could be started"))
+            (
+                crate::domain::TaskStatus::InfraError,
+                Some("no browser could be started"),
+            )
         } else {
             (crate::domain::TaskStatus::Passed, None)
         };
-        crate::executor::ExecutionOutcome { status, reason: reason.map(String::from), evidence: None }
+        crate::executor::ExecutionOutcome {
+            status,
+            reason: reason.map(String::from),
+            evidence: None,
+        }
     }
 }
 
-async fn test_state_with_playwright_stub(ai_router: Arc<AiInfrastructure>) -> (AppState, tempfile::TempDir) {
+async fn test_state_with_playwright_stub(
+    ai_router: Arc<AiInfrastructure>,
+) -> (AppState, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
-    let store = Store::connect(&dir.path().join("api.sqlite3")).await.expect("connect");
+    let store = Store::connect(&dir.path().join("api.sqlite3"))
+        .await
+        .expect("connect");
     let evidence = LocalEvidenceStore::new(dir.path().join("evidence")).expect("evidence store");
     let registry = ExecutorRegistry::new(Arc::new(SimulatedExecutor))
         .register("maestro", Arc::new(SimulatedExecutor))
-        .register("playwright", Arc::new(StubPlaywright { attempts: Default::default() }));
+        .register(
+            "playwright",
+            Arc::new(StubPlaywright {
+                attempts: Default::default(),
+            }),
+        );
     let policy = PolicyConfig {
         max_concurrency: 8,
         require_approval_for: ["maestro".to_string()].into_iter().collect(),
         blocked_executors: HashSet::new(),
     };
-    (AppState::new(Arc::new(registry), store, policy, evidence, ai_router, unconfigured_embedder()), dir)
+    (
+        AppState::new(
+            Arc::new(registry),
+            store,
+            policy,
+            evidence,
+            ai_router,
+            unconfigured_embedder(),
+        ),
+        dir,
+    )
 }
 
 /// The crawl of a small app whose pages are ones a browser task may be sent to (`GROUNDING_TEMPLATE`), with the visitor's
@@ -14484,28 +17690,50 @@ const LOGIN_PAGE_PLAN: &str = r##"{"executable":true,"execution_type":"BROWSER",
   {"type":"ASSERT_VISIBLE","selector":"#submit-login"}]}"##;
 
 /// A run through to its gate, with a crawl whose pages a browser task may be sent to.
-async fn run_to_the_gate_for_execution(state: &AppState, project: Uuid, key: &str, config: Value) -> (String, CrawlFiles) {
+async fn run_to_the_gate_for_execution(
+    state: &AppState,
+    project: Uuid,
+    key: &str,
+    config: Value,
+) -> (String, CrawlFiles) {
     run_at_the_gate_with(state, project, key, config, &execution_grounding()).await
 }
 
 /// Approves every case the run wrote and lets the run go on to its execution.
 async fn approve_all_and_continue(state: &AppState, project: Uuid, key: &str, run: &str) {
     let path = format!("/api/v1/projects/{project}/autopilot/runs/{run}");
-    let (status, approved) = autopilot(state, "POST", &format!("{path}/approve-cases"), key, None).await;
+    let (status, approved) =
+        autopilot(state, "POST", &format!("{path}/approve-cases"), key, None).await;
     assert_eq!(status, StatusCode::OK, "body={approved}");
-    let (status, continued) = autopilot(state, "POST", &format!("{path}/continue"), key, None).await;
+    let (status, continued) =
+        autopilot(state, "POST", &format!("{path}/continue"), key, None).await;
     assert_eq!(status, StatusCode::OK, "body={continued}");
 }
 
 #[tokio::test]
-async fn phase7e_a_run_runs_the_approved_cases_runs_an_infrastructure_failure_again_and_writes_the_report() {
+async fn phase7e_a_run_runs_the_approved_cases_runs_an_infrastructure_failure_again_and_writes_the_report(
+) {
     let writer = CaseWriter::new(0);
-    let (state, _dir) = test_state_with_playwright_stub(ai_infra_with_executor(writer.clone())).await;
+    let (state, _dir) =
+        test_state_with_playwright_stub(ai_infra_with_executor(writer.clone())).await;
     fast_autopilot(&state);
     let (project, _) = autopilot_project(&state, "Phase7E Execute").await;
     let maker = named_key(&state, "maker", "operator", project).await;
-    let (run_id, files) = run_to_the_gate_for_execution(&state, project, &maker, serde_json::json!({"run_concurrency": 2})).await;
-    let gate = wait_for_autopilot(&state, project, &maker, &run_id, &["WAITING", "FAILED", "COMPLETED"]).await;
+    let (run_id, files) = run_to_the_gate_for_execution(
+        &state,
+        project,
+        &maker,
+        serde_json::json!({"run_concurrency": 2}),
+    )
+    .await;
+    let gate = wait_for_autopilot(
+        &state,
+        project,
+        &maker,
+        &run_id,
+        &["WAITING", "FAILED", "COMPLETED"],
+    )
+    .await;
     assert_eq!(gate["run"]["state"], "WAITING", "body={gate}");
     approve_all_and_continue(&state, project, &maker, &run_id).await;
     let done = wait_for_autopilot(&state, project, &maker, &run_id, &["COMPLETED", "FAILED"]).await;
@@ -14518,41 +17746,116 @@ async fn phase7e_a_run_runs_the_approved_cases_runs_an_infrastructure_failure_ag
     assert_eq!(steps[7]["name"], "REPORT");
     assert_eq!(steps[7]["state"], "DONE");
     let execute = &steps[6]["detail"];
-    let by_title = |title: &str| execute["cases"].as_array().unwrap().iter().find(|c| c["title"] == title).unwrap().clone();
-    assert_eq!(execute["total"], 5, "one case for every requirement a skill offers: {execute}");
-    assert_eq!(execute["counts"], serde_json::json!({"FAILED": 1, "NOT_EXECUTABLE": 1, "PASSED": 3}), "{execute}");
+    let by_title = |title: &str| {
+        execute["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["title"] == title)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(
+        execute["total"], 5,
+        "one case for every requirement a skill offers: {execute}"
+    );
+    assert_eq!(
+        execute["counts"],
+        serde_json::json!({"FAILED": 1, "NOT_EXECUTABLE": 1, "PASSED": 3}),
+        "{execute}"
+    );
     let failed = by_title("Check FR-002");
     assert_eq!(failed["outcome"], "FAILED");
     assert_eq!(failed["reason"], "expected the cart badge to show 1");
-    assert_eq!(failed["retried"], false, "a real failure is never run again");
+    assert_eq!(
+        failed["retried"], false,
+        "a real failure is never run again"
+    );
     let retried = by_title("Check FR-003");
     assert_eq!(retried["outcome"], "PASSED");
     assert_eq!(retried["retried"], true);
     assert_eq!(retried["attempts"][0]["outcome"], "INFRA_ERROR");
-    assert_eq!(retried["attempts"][0]["reason"], "no browser could be started");
-    assert_ne!(retried["attempts"][0]["run_id"], retried["run_id"], "the second run is another run");
+    assert_eq!(
+        retried["attempts"][0]["reason"],
+        "no browser could be started"
+    );
+    assert_ne!(
+        retried["attempts"][0]["run_id"], retried["run_id"],
+        "the second run is another run"
+    );
     let refused = by_title("Check FR-004");
     assert_eq!(refused["outcome"], "NOT_EXECUTABLE");
-    assert!(refused["reason"].as_str().unwrap().contains("does not say what to check"), "{refused}");
-    assert!(refused["run_id"].is_null(), "no run was made for a case the compiler refused");
+    assert!(
+        refused["reason"]
+            .as_str()
+            .unwrap()
+            .contains("does not say what to check"),
+        "{refused}"
+    );
+    assert!(
+        refused["run_id"].is_null(),
+        "no run was made for a case the compiler refused"
+    );
 
     // The cases are what the run says: run (EXECUTED) for those that ran, still approved for the one that could not be.
     let suite = steps[3]["detail"]["suite_id"].as_str().unwrap();
     let cases = cases_of(&state, project, &maker, suite).await;
-    let status_of = |title: &str| cases.iter().find(|c| c["title"] == title).unwrap()["status"].clone();
+    let status_of =
+        |title: &str| cases.iter().find(|c| c["title"] == title).unwrap()["status"].clone();
     assert_eq!(status_of("Check FR-001"), "EXECUTED");
     assert_eq!(status_of("Check FR-004"), "APPROVED");
     // The runs are ordinary runs of the project: one for each case that ran, and the retry.
-    let (_, runs) = autopilot(&state, "GET", &format!("/api/v1/projects/{project}/executions"), &maker, None).await;
-    let names: Vec<&str> = runs.as_array().unwrap().iter().map(|r| r["name"].as_str().unwrap()).collect();
-    assert_eq!(names.iter().filter(|n| n.starts_with("Test Case: ")).count(), 4, "{names:?}");
-    assert_eq!(names.iter().filter(|n| n.starts_with("Retry (infra failures): ")).count(), 1, "{names:?}");
-    let events: Vec<&str> = done["events"].as_array().unwrap().iter().map(|e| e["message"].as_str().unwrap()).collect();
-    assert!(events.contains(&"Check FR-002: FAILED — expected the cart badge to show 1"), "{events:?}");
-    assert!(events.contains(&"Check FR-003: INFRA_ERROR on the first run, run again once"), "{events:?}");
+    let (_, runs) = autopilot(
+        &state,
+        "GET",
+        &format!("/api/v1/projects/{project}/executions"),
+        &maker,
+        None,
+    )
+    .await;
+    let names: Vec<&str> = runs
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names
+            .iter()
+            .filter(|n| n.starts_with("Test Case: "))
+            .count(),
+        4,
+        "{names:?}"
+    );
+    assert_eq!(
+        names
+            .iter()
+            .filter(|n| n.starts_with("Retry (infra failures): "))
+            .count(),
+        1,
+        "{names:?}"
+    );
+    let events: Vec<&str> = done["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["message"].as_str().unwrap())
+        .collect();
+    assert!(
+        events.contains(&"Check FR-002: FAILED — expected the cart badge to show 1"),
+        "{events:?}"
+    );
+    assert!(
+        events.contains(&"Check FR-003: INFRA_ERROR on the first run, run again once"),
+        "{events:?}"
+    );
 
     // The report: written by the last step, read on its own route, and not carried in every look at the run.
-    assert!(steps[7]["detail"].get("report").is_none(), "{}", steps[7]["detail"]);
+    assert!(
+        steps[7]["detail"].get("report").is_none(),
+        "{}",
+        steps[7]["detail"]
+    );
     assert_eq!(steps[7]["detail"]["summary"]["findings"], 1);
     let path = format!("/api/v1/projects/{project}/autopilot/runs/{run_id}");
     let (status, report) = autopilot(&state, "GET", &format!("{path}/report"), &maker, None).await;
@@ -14560,7 +17863,16 @@ async fn phase7e_a_run_runs_the_approved_cases_runs_an_infrastructure_failure_ag
     assert_eq!(report["final"], true);
     assert_eq!(report["run"]["state"], "COMPLETED");
     // What is served is the report the last step wrote, not one worked out again from the cases as they are by now.
-    let written = state.store.list_autopilot_steps(Uuid::parse_str(&run_id).unwrap()).await.unwrap().into_iter().find(|s| s.name == "REPORT").unwrap().detail["report"].clone();
+    let written = state
+        .store
+        .list_autopilot_steps(Uuid::parse_str(&run_id).unwrap())
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|s| s.name == "REPORT")
+        .unwrap()
+        .detail["report"]
+        .clone();
     assert!(written.is_object(), "the last step kept its report");
     assert_eq!(report, written);
     assert_eq!(report["execution"]["passed"], 3);
@@ -14568,71 +17880,191 @@ async fn phase7e_a_run_runs_the_approved_cases_runs_an_infrastructure_failure_ag
     assert_eq!(report["findings"][0]["title"], "Check FR-002");
     assert_eq!(report["findings"][0]["requirement"], "FR-002");
     assert_eq!(report["not_run"][0]["outcome"], "NOT_EXECUTABLE");
-    let verdict_of = |key: &str| report["coverage"].as_array().unwrap().iter().find(|r| r["key"] == key).unwrap()["verdict"].clone();
+    let verdict_of = |key: &str| {
+        report["coverage"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["key"] == key)
+            .unwrap()["verdict"]
+            .clone()
+    };
     assert_eq!(verdict_of("FR-001"), "PASSED", "body={report}");
     assert_eq!(verdict_of("FR-002"), "FAILED");
     assert_eq!(verdict_of("FR-003"), "PASSED", "after its second run");
-    assert_eq!(verdict_of("FR-004"), "NOT_EXECUTED", "the case that could not be compiled");
-    assert_eq!(verdict_of("FR-006"), "NO_CASES", "no skill offers a performance requirement");
+    assert_eq!(
+        verdict_of("FR-004"),
+        "NOT_EXECUTED",
+        "the case that could not be compiled"
+    );
+    assert_eq!(
+        verdict_of("FR-006"),
+        "NO_CASES",
+        "no skill offers a performance requirement"
+    );
     assert_eq!(report["generation"]["cases"], 5);
-    assert_eq!(report["generation"]["providers"], serde_json::json!({"mock/mock-model": 1}));
-    assert_eq!(report["application"]["execution_role"], Value::Null, "the visitor's role");
-    let notes: Vec<&str> = report["notes"].as_array().unwrap().iter().map(|n| n.as_str().unwrap()).collect();
-    assert!(notes.iter().any(|n| n.contains("1 requirement(s) have no case")), "{notes:?}");
+    assert_eq!(
+        report["generation"]["providers"],
+        serde_json::json!({"mock/mock-model": 1})
+    );
+    assert_eq!(
+        report["application"]["execution_role"],
+        Value::Null,
+        "the visitor's role"
+    );
+    let notes: Vec<&str> = report["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n.as_str().unwrap())
+        .collect();
+    assert!(
+        notes
+            .iter()
+            .any(|n| n.contains("1 requirement(s) have no case")),
+        "{notes:?}"
+    );
     // The same report as text to paste.
-    let response = router(state.clone()).oneshot(req("GET", &format!("{path}/report?format=markdown"), Some(&maker), None)).await.unwrap();
+    let response = router(state.clone())
+        .oneshot(req(
+            "GET",
+            &format!("{path}/report?format=markdown"),
+            Some(&maker),
+            None,
+        ))
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(response.headers().get("content-type").unwrap(), "text/markdown; charset=utf-8");
+    assert_eq!(
+        response.headers().get("content-type").unwrap(),
+        "text/markdown; charset=utf-8"
+    );
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let markdown = String::from_utf8(bytes.to_vec()).unwrap();
     assert!(markdown.starts_with("# Autopilot report: "), "{markdown}");
-    assert!(markdown.contains("| Check FR-002 | FR-002 | expected the cart badge to show 1 |"), "{markdown}");
+    assert!(
+        markdown.contains("| Check FR-002 | FR-002 | expected the cart badge to show 1 |"),
+        "{markdown}"
+    );
     // The handoffs were made as the key that made the run, and every one is in the audit log.
     let audit_rows = state.store.list_audit(None, 400, 0).await.unwrap();
-    let handoffs: Vec<_> = audit_rows.iter().filter(|a| a.action == "test_case.handoff").collect();
+    let handoffs: Vec<_> = audit_rows
+        .iter()
+        .filter(|a| a.action == "test_case.handoff")
+        .collect();
     assert_eq!(handoffs.len(), 4, "{handoffs:?}");
-    assert!(handoffs.iter().all(|a| a.actor.as_deref() == Some("maker")), "{handoffs:?}");
+    assert!(
+        handoffs.iter().all(|a| a.actor.as_deref() == Some("maker")),
+        "{handoffs:?}"
+    );
 }
 
 #[tokio::test]
 async fn phase7e_the_report_of_a_run_at_its_gate_is_worked_out_now_and_says_it_is_not_final() {
-    let (state, _dir) = test_state_with_playwright_stub(ai_infra_with_executor(CaseWriter::new(0))).await;
+    let (state, _dir) =
+        test_state_with_playwright_stub(ai_infra_with_executor(CaseWriter::new(0))).await;
     fast_autopilot(&state);
     let (project, owner) = autopilot_project(&state, "Phase7E Live Report").await;
-    let (run_id, files) = run_to_the_gate_for_execution(&state, project, &owner, serde_json::json!({})).await;
-    let gate = wait_for_autopilot(&state, project, &owner, &run_id, &["WAITING", "FAILED", "COMPLETED"]).await;
+    let (run_id, files) =
+        run_to_the_gate_for_execution(&state, project, &owner, serde_json::json!({})).await;
+    let gate = wait_for_autopilot(
+        &state,
+        project,
+        &owner,
+        &run_id,
+        &["WAITING", "FAILED", "COMPLETED"],
+    )
+    .await;
     assert_eq!(gate["run"]["state"], "WAITING", "body={gate}");
-    let (status, report) = autopilot(&state, "GET", &format!("/api/v1/projects/{project}/autopilot/runs/{run_id}/report"), &owner, None).await;
+    let (status, report) = autopilot(
+        &state,
+        "GET",
+        &format!("/api/v1/projects/{project}/autopilot/runs/{run_id}/report"),
+        &owner,
+        None,
+    )
+    .await;
     drop(files);
     assert_eq!(status, StatusCode::OK, "body={report}");
     assert_eq!(report["final"], false);
     assert_eq!(report["run"]["state"], "WAITING");
     assert_eq!(report["execution"]["done"], false);
     assert_eq!(report["approval"]["undecided"], 5);
-    let verdicts: std::collections::BTreeSet<&str> = report["coverage"].as_array().unwrap().iter().map(|r| r["verdict"].as_str().unwrap()).collect();
-    assert_eq!(verdicts, ["NOT_EXECUTED", "NO_CASES"].into_iter().collect(), "nothing has run: {report}");
-    assert!(report["notes"].as_array().unwrap().iter().any(|n| n == "The run has not ended: this is what it has found so far."));
+    let verdicts: std::collections::BTreeSet<&str> = report["coverage"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["verdict"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        verdicts,
+        ["NOT_EXECUTED", "NO_CASES"].into_iter().collect(),
+        "nothing has run: {report}"
+    );
+    assert!(report["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|n| n == "The run has not ended: this is what it has found so far."));
 }
 
 #[tokio::test]
-async fn phase7e_a_run_made_with_execution_off_skips_the_step_and_the_report_says_the_cases_were_not_run() {
-    let (state, _dir) = test_state_with_playwright_stub(ai_infra_with_executor(CaseWriter::new(0))).await;
+async fn phase7e_a_run_made_with_execution_off_skips_the_step_and_the_report_says_the_cases_were_not_run(
+) {
+    let (state, _dir) =
+        test_state_with_playwright_stub(ai_infra_with_executor(CaseWriter::new(0))).await;
     fast_autopilot(&state);
     let (project, owner) = autopilot_project(&state, "Phase7E Execution Off").await;
-    let (run_id, files) = run_to_the_gate_for_execution(&state, project, &owner, serde_json::json!({"execute": false})).await;
-    wait_for_autopilot(&state, project, &owner, &run_id, &["WAITING", "FAILED", "COMPLETED"]).await;
+    let (run_id, files) = run_to_the_gate_for_execution(
+        &state,
+        project,
+        &owner,
+        serde_json::json!({"execute": false}),
+    )
+    .await;
+    wait_for_autopilot(
+        &state,
+        project,
+        &owner,
+        &run_id,
+        &["WAITING", "FAILED", "COMPLETED"],
+    )
+    .await;
     approve_all_and_continue(&state, project, &owner, &run_id).await;
     let done = wait_for_autopilot(&state, project, &owner, &run_id, &["COMPLETED", "FAILED"]).await;
     drop(files);
     assert_eq!(done["run"]["state"], "COMPLETED", "body={done}");
     assert_eq!(done["steps"][6]["state"], "SKIPPED");
-    assert_eq!(done["steps"][6]["detail"], serde_json::json!({"execute": false}));
+    assert_eq!(
+        done["steps"][6]["detail"],
+        serde_json::json!({"execute": false})
+    );
     assert_eq!(done["steps"][7]["state"], "DONE");
-    let (_, report) = autopilot(&state, "GET", &format!("/api/v1/projects/{project}/autopilot/runs/{run_id}/report"), &owner, None).await;
+    let (_, report) = autopilot(
+        &state,
+        "GET",
+        &format!("/api/v1/projects/{project}/autopilot/runs/{run_id}/report"),
+        &owner,
+        None,
+    )
+    .await;
     assert_eq!(report["execution"]["enabled"], false);
     assert!(report["notes"].as_array().unwrap().iter().any(|n| n == "The run was made with execution off: the cases were written and approved but not run."), "{report}");
-    let (_, runs) = autopilot(&state, "GET", &format!("/api/v1/projects/{project}/executions"), &owner, None).await;
-    assert!(runs.as_array().unwrap().iter().all(|r| !r["name"].as_str().unwrap().starts_with("Test Case: ")), "no case was run: {runs}");
+    let (_, runs) = autopilot(
+        &state,
+        "GET",
+        &format!("/api/v1/projects/{project}/executions"),
+        &owner,
+        None,
+    )
+    .await;
+    assert!(
+        runs.as_array()
+            .unwrap()
+            .iter()
+            .all(|r| !r["name"].as_str().unwrap().starts_with("Test Case: ")),
+        "no case was run: {runs}"
+    );
 }
 
 #[tokio::test]
@@ -14641,22 +18073,54 @@ async fn phase7e_a_viewer_reads_the_report_in_either_format_and_only_within_its_
     let (project, owner) = autopilot_project(&state, "Phase7E Report Access").await;
     let viewer = mint_key(&state, "viewer", Some(&project.to_string())).await;
     let (other, other_owner) = autopilot_project(&state, "Phase7E Report Access Other").await;
-    let (_, made) = autopilot(&state, "POST", &format!("/api/v1/projects/{project}/autopilot/runs"), &owner, Some(autopilot_body(serde_json::json!({})))).await;
+    let (_, made) = autopilot(
+        &state,
+        "POST",
+        &format!("/api/v1/projects/{project}/autopilot/runs"),
+        &owner,
+        Some(autopilot_body(serde_json::json!({}))),
+    )
+    .await;
     let run_id = made["run"]["id"].as_str().unwrap().to_string();
     let path = format!("/api/v1/projects/{project}/autopilot/runs/{run_id}/report");
 
     let (json_status, report) = autopilot(&state, "GET", &path, &viewer, None).await;
-    let (explicit_status, _) = autopilot(&state, "GET", &format!("{path}?format=json"), &viewer, None).await;
-    let (bad_status, bad) = autopilot(&state, "GET", &format!("{path}?format=pdf"), &viewer, None).await;
+    let (explicit_status, _) =
+        autopilot(&state, "GET", &format!("{path}?format=json"), &viewer, None).await;
+    let (bad_status, bad) =
+        autopilot(&state, "GET", &format!("{path}?format=pdf"), &viewer, None).await;
     let (stranger_status, _) = autopilot(&state, "GET", &path, &other_owner, None).await;
-    let (elsewhere_status, _) = autopilot(&state, "GET", &format!("/api/v1/projects/{other}/autopilot/runs/{run_id}/report"), &other_owner, None).await;
-    let (unknown_status, _) = autopilot(&state, "GET", &format!("/api/v1/projects/{project}/autopilot/runs/{}/report", Uuid::new_v4()), &owner, None).await;
+    let (elsewhere_status, _) = autopilot(
+        &state,
+        "GET",
+        &format!("/api/v1/projects/{other}/autopilot/runs/{run_id}/report"),
+        &other_owner,
+        None,
+    )
+    .await;
+    let (unknown_status, _) = autopilot(
+        &state,
+        "GET",
+        &format!(
+            "/api/v1/projects/{project}/autopilot/runs/{}/report",
+            Uuid::new_v4()
+        ),
+        &owner,
+        None,
+    )
+    .await;
     let (anonymous_status, _) = send(&state, req("GET", &path, None, None)).await;
-    assert_eq!((json_status, explicit_status), (StatusCode::OK, StatusCode::OK));
+    assert_eq!(
+        (json_status, explicit_status),
+        (StatusCode::OK, StatusCode::OK)
+    );
     assert_eq!(report["run"]["state"], "AWAITING_APPROVAL");
     assert_eq!(report["final"], false);
     assert_eq!(bad_status, StatusCode::BAD_REQUEST, "body={bad}");
-    assert!(bad.to_string().contains("format must be json or markdown"), "body={bad}");
+    assert!(
+        bad.to_string().contains("format must be json or markdown"),
+        "body={bad}"
+    );
     assert_eq!(stranger_status, StatusCode::FORBIDDEN);
     assert_eq!(elsewhere_status, StatusCode::NOT_FOUND);
     assert_eq!(unknown_status, StatusCode::NOT_FOUND);
@@ -14668,10 +18132,34 @@ async fn phase7e_the_role_the_cases_run_as_has_to_be_one_of_the_runs_roles() {
     let (state, _dir) = test_state_with_ai_router(ai_infra_with(Ok(valid_ai_response()))).await;
     let (project, owner) = autopilot_project(&state, "Phase7E Role Check").await;
     let path = format!("/api/v1/projects/{project}/autopilot/runs");
-    let (status, body) = autopilot(&state, "POST", &path, &owner, Some(autopilot_body(serde_json::json!({"execution_role": "root"})))).await;
+    let (status, body) = autopilot(
+        &state,
+        "POST",
+        &path,
+        &owner,
+        Some(autopilot_body(
+            serde_json::json!({"execution_role": "root"}),
+        )),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
-    assert!(body["error"]["message"].as_str().unwrap().contains("execution_role names \"root\""), "body={body}");
-    let (status, body) = autopilot(&state, "POST", &path, &owner, Some(autopilot_body(serde_json::json!({"execution_role": "anonymous"})))).await;
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("execution_role names \"root\""),
+        "body={body}"
+    );
+    let (status, body) = autopilot(
+        &state,
+        "POST",
+        &path,
+        &owner,
+        Some(autopilot_body(
+            serde_json::json!({"execution_role": "anonymous"}),
+        )),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
     assert_eq!(body["run"]["config"]["execution_role"], "anonymous");
 }
@@ -14681,11 +18169,28 @@ async fn phase7e_the_role_the_cases_run_as_has_to_be_one_of_the_runs_roles() {
 /// One AI provider with a price ($0.50 in and $1.50 out per 1,000 tokens) that answers every call with 2,000 tokens in and
 /// 500 out, which is $1.75 a call.
 fn usage_ai_infra() -> Arc<AiInfrastructure> {
-    let mut executors: std::collections::HashMap<&'static str, Arc<dyn AiExecutor>> = std::collections::HashMap::new();
-    executors.insert("priced", Arc::new(FakeExecutor::ok_with_usage("an answer", 2000, 500)));
-    let mut info = healthy_provider("priced", vec![healthy_model("priced-model", "priced", CapabilityLevel::Strong)]);
-    info.pricing = crate::ai_router::ProviderPricing::Metered { input_usd_per_1k: 0.5, output_usd_per_1k: 1.5 };
-    Arc::new(AiInfrastructure::new(vec![Arc::new(FakeDiscovery(info))], executors))
+    let mut executors: std::collections::HashMap<&'static str, Arc<dyn AiExecutor>> =
+        std::collections::HashMap::new();
+    executors.insert(
+        "priced",
+        Arc::new(FakeExecutor::ok_with_usage("an answer", 2000, 500)),
+    );
+    let mut info = healthy_provider(
+        "priced",
+        vec![healthy_model(
+            "priced-model",
+            "priced",
+            CapabilityLevel::Strong,
+        )],
+    );
+    info.pricing = crate::ai_router::ProviderPricing::Metered {
+        input_usd_per_1k: 0.5,
+        output_usd_per_1k: 1.5,
+    };
+    Arc::new(AiInfrastructure::new(
+        vec![Arc::new(FakeDiscovery(info))],
+        executors,
+    ))
 }
 
 fn general_ai_request() -> crate::ai_router::AiRequest {
@@ -14724,9 +18229,37 @@ async fn phase8a_every_ai_call_is_counted_under_the_project_it_was_made_for() {
     let (status, all) = usage(&state, "/api/v1/ai/usage", &admin).await;
     assert_eq!(status, StatusCode::OK, "body={all}");
     let totals = &all["totals"];
-    assert_eq!((totals["calls"].clone(), totals["answered"].clone(), totals["failed"].clone()), (serde_json::json!(5), serde_json::json!(5), serde_json::json!(0)));
-    assert_eq!((totals["prompt_tokens"].clone(), totals["completion_tokens"].clone()), (serde_json::json!(10_000), serde_json::json!(2_500)));
-    assert_eq!((totals["priced_calls"].clone(), totals["no_price_calls"].clone(), totals["no_tokens_calls"].clone()), (serde_json::json!(5), serde_json::json!(0), serde_json::json!(0)));
+    assert_eq!(
+        (
+            totals["calls"].clone(),
+            totals["answered"].clone(),
+            totals["failed"].clone()
+        ),
+        (
+            serde_json::json!(5),
+            serde_json::json!(5),
+            serde_json::json!(0)
+        )
+    );
+    assert_eq!(
+        (
+            totals["prompt_tokens"].clone(),
+            totals["completion_tokens"].clone()
+        ),
+        (serde_json::json!(10_000), serde_json::json!(2_500))
+    );
+    assert_eq!(
+        (
+            totals["priced_calls"].clone(),
+            totals["no_price_calls"].clone(),
+            totals["no_tokens_calls"].clone()
+        ),
+        (
+            serde_json::json!(5),
+            serde_json::json!(0),
+            serde_json::json!(0)
+        )
+    );
     assert_eq!(totals["cost_usd"], 8.75, "five calls at $1.75");
     assert_eq!(all["by_provider"].as_array().unwrap().len(), 1);
     assert_eq!(all["by_provider"][0]["provider"], "priced");
@@ -14736,9 +18269,21 @@ async fn phase8a_every_ai_call_is_counted_under_the_project_it_was_made_for() {
         .as_array()
         .expect("every project at once is split by project")
         .iter()
-        .map(|p| (p["project_id"].as_str().unwrap_or("none").to_string(), p["calls"].as_i64().unwrap()))
+        .map(|p| {
+            (
+                p["project_id"].as_str().unwrap_or("none").to_string(),
+                p["calls"].as_i64().unwrap(),
+            )
+        })
         .collect();
-    assert_eq!(by_project, std::collections::HashMap::from([(a.to_string(), 1), (b.to_string(), 2), ("none".to_string(), 2)]));
+    assert_eq!(
+        by_project,
+        std::collections::HashMap::from([
+            (a.to_string(), 1),
+            (b.to_string(), 2),
+            ("none".to_string(), 2)
+        ])
+    );
     assert_eq!(all["range"]["days"], 30, "a month unless said");
     let days = all["by_day"].as_array().unwrap();
     assert_eq!(days.len(), 30);
@@ -14747,13 +18292,28 @@ async fn phase8a_every_ai_call_is_counted_under_the_project_it_was_made_for() {
     // One project, asked for by an admin.
     let (status, only_a) = usage(&state, &format!("/api/v1/ai/usage?project_id={a}"), &admin).await;
     assert_eq!(status, StatusCode::OK, "body={only_a}");
-    assert_eq!((only_a["totals"]["calls"].clone(), only_a["totals"]["cost_usd"].clone()), (serde_json::json!(1), serde_json::json!(1.75)));
-    assert!(only_a.get("by_project").is_none(), "one project is not split by project: {only_a}");
+    assert_eq!(
+        (
+            only_a["totals"]["calls"].clone(),
+            only_a["totals"]["cost_usd"].clone()
+        ),
+        (serde_json::json!(1), serde_json::json!(1.75))
+    );
+    assert!(
+        only_a.get("by_project").is_none(),
+        "one project is not split by project: {only_a}"
+    );
 
     // The project's own route gives the same, without the split.
     let (status, scoped) = usage(&state, &format!("/api/v1/projects/{b}/ai-usage"), &admin).await;
     assert_eq!(status, StatusCode::OK, "body={scoped}");
-    assert_eq!((scoped["totals"]["calls"].clone(), scoped["totals"]["cost_usd"].clone()), (serde_json::json!(2), serde_json::json!(3.5)));
+    assert_eq!(
+        (
+            scoped["totals"]["calls"].clone(),
+            scoped["totals"]["cost_usd"].clone()
+        ),
+        (serde_json::json!(2), serde_json::json!(3.5))
+    );
     assert!(scoped.get("by_project").is_none());
 }
 
@@ -14773,12 +18333,20 @@ async fn phase8a_who_may_see_the_usage_is_the_project_for_its_own_and_an_admin_f
     for key in [&owner_a, &viewer_a, &admin_of_a] {
         let (status, body) = usage(&state, &format!("/api/v1/projects/{a}/ai-usage"), key).await;
         assert_eq!(status, StatusCode::OK, "body={body}");
-        assert_eq!(body["totals"]["calls"], 1, "only its own project's call: {body}");
+        assert_eq!(
+            body["totals"]["calls"], 1,
+            "only its own project's call: {body}"
+        );
         let (status, body) = usage(&state, &format!("/api/v1/projects/{b}/ai-usage"), key).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
     }
     // A key that sees every project reads any project's, whatever its role.
-    let (status, body) = usage(&state, &format!("/api/v1/projects/{b}/ai-usage"), &viewer_everywhere).await;
+    let (status, body) = usage(
+        &state,
+        &format!("/api/v1/projects/{b}/ai-usage"),
+        &viewer_everywhere,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(body["totals"]["calls"], 1);
 
@@ -14789,21 +18357,49 @@ async fn phase8a_who_may_see_the_usage_is_the_project_for_its_own_and_an_admin_f
     let (status, body) = usage(&state, "/api/v1/ai/usage", &operator_everywhere).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "an operator: body={body}");
     let (status, body) = usage(&state, "/api/v1/ai/usage", &admin_of_a).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "an admin of one project: body={body}");
-    assert!(body["error"]["message"].as_str().unwrap().contains("not tied to one project"), "body={body}");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "an admin of one project: body={body}"
+    );
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("not tied to one project"),
+        "body={body}"
+    );
     let (status, body) = usage(&state, "/api/v1/ai/usage", &owner_a).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "an operator of one project: body={body}");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "an operator of one project: body={body}"
+    );
 
     // A project that is not there is not there, on either route; and nobody is anonymous.
     let admin = mint_key(&state, "admin", None).await;
     let phantom = Uuid::new_v4();
-    let (status, _) = usage(&state, &format!("/api/v1/projects/{phantom}/ai-usage"), &admin).await;
+    let (status, _) = usage(
+        &state,
+        &format!("/api/v1/projects/{phantom}/ai-usage"),
+        &admin,
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    let (status, _) = usage(&state, &format!("/api/v1/ai/usage?project_id={phantom}"), &admin).await;
+    let (status, _) = usage(
+        &state,
+        &format!("/api/v1/ai/usage?project_id={phantom}"),
+        &admin,
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     let (status, body) = send(&state, req("GET", "/api/v1/ai/usage", None, None)).await;
     assert_envelope(status, &body, StatusCode::UNAUTHORIZED, "UNAUTHENTICATED");
-    let (status, body) = send(&state, req("GET", &format!("/api/v1/projects/{a}/ai-usage"), None, None)).await;
+    let (status, body) = send(
+        &state,
+        req("GET", &format!("/api/v1/projects/{a}/ai-usage"), None, None),
+    )
+    .await;
     assert_envelope(status, &body, StatusCode::UNAUTHORIZED, "UNAUTHENTICATED");
 }
 
@@ -14821,9 +18417,18 @@ async fn phase8a_the_window_of_days_and_the_askers_clock_are_kept_to_what_makes_
         assert_eq!(status, StatusCode::OK, "{query}: body={body}");
         assert_eq!(body["range"]["days"], days, "{query}");
         assert_eq!(body["range"]["tz_offset_minutes"], offset, "{query}");
-        assert_eq!(body["by_day"].as_array().unwrap().len() as u64, days, "{query}");
+        assert_eq!(
+            body["by_day"].as_array().unwrap().len() as u64,
+            days,
+            "{query}"
+        );
     }
-    for query in ["days=abc", "days=-1", "tz_offset_minutes=soon", "project_id=not-a-uuid"] {
+    for query in [
+        "days=abc",
+        "days=-1",
+        "tz_offset_minutes=soon",
+        "project_id=not-a-uuid",
+    ] {
         let (status, body) = usage(&state, &format!("/api/v1/ai/usage?{query}"), &admin).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{query}: body={body}");
     }
@@ -14831,21 +18436,62 @@ async fn phase8a_the_window_of_days_and_the_askers_clock_are_kept_to_what_makes_
 
 #[tokio::test]
 async fn phase8a_a_call_that_failed_is_counted_as_failed_and_costs_nothing() {
-    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Err(crate::ai_router::ExecutionError::Timeout))).await;
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with(Err(
+        crate::ai_router::ExecutionError::Timeout,
+    )))
+    .await;
     let project = make_project(&state, "Usage Failure").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-    let outcome = crate::auth::with_request_path(&format!("/api/v1/projects/{project}/x"), state.ai_infra.generate(general_ai_request())).await;
-    assert!(matches!(outcome, crate::ai_router::GenerationOutcome2::Failed { .. }));
+    let outcome = crate::auth::with_request_path(
+        &format!("/api/v1/projects/{project}/x"),
+        state.ai_infra.generate(general_ai_request()),
+    )
+    .await;
+    assert!(matches!(
+        outcome,
+        crate::ai_router::GenerationOutcome2::Failed { .. }
+    ));
 
-    let (status, body) = usage(&state, &format!("/api/v1/projects/{project}/ai-usage"), &owner).await;
+    let (status, body) = usage(
+        &state,
+        &format!("/api/v1/projects/{project}/ai-usage"),
+        &owner,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
     let totals = &body["totals"];
-    assert_eq!((totals["calls"].clone(), totals["answered"].clone(), totals["failed"].clone()), (serde_json::json!(1), serde_json::json!(0), serde_json::json!(1)));
-    assert_eq!((totals["cost_usd"].clone(), totals["prompt_tokens"].clone()), (serde_json::json!(0.0), serde_json::json!(0)));
+    assert_eq!(
+        (
+            totals["calls"].clone(),
+            totals["answered"].clone(),
+            totals["failed"].clone()
+        ),
+        (
+            serde_json::json!(1),
+            serde_json::json!(0),
+            serde_json::json!(1)
+        )
+    );
+    assert_eq!(
+        (totals["cost_usd"].clone(), totals["prompt_tokens"].clone()),
+        (serde_json::json!(0.0), serde_json::json!(0))
+    );
     assert_eq!(totals["avg_answer_ms"], Value::Null, "it answered nothing");
-    assert_eq!(body["by_provider"][0]["failed"], 1, "the provider that failed is the one shown as failing");
-    let notes: Vec<&str> = body["notes"].as_array().unwrap().iter().map(|n| n.as_str().unwrap()).collect();
-    assert_eq!(notes, ["1 call did not answer; nothing is counted as its cost."], "{body}");
+    assert_eq!(
+        body["by_provider"][0]["failed"], 1,
+        "the provider that failed is the one shown as failing"
+    );
+    let notes: Vec<&str> = body["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        notes,
+        ["1 call did not answer; nothing is counted as its cost."],
+        "{body}"
+    );
 }
 
 #[tokio::test]
@@ -14854,14 +18500,39 @@ async fn phase8a_a_provider_with_no_price_is_used_and_counted_but_never_given_a_
     let project = make_project(&state, "Usage No Price").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
     for _ in 0..3 {
-        crate::auth::with_request_path(&format!("/api/v1/projects/{project}/x"), state.ai_infra.generate(general_ai_request())).await;
+        crate::auth::with_request_path(
+            &format!("/api/v1/projects/{project}/x"),
+            state.ai_infra.generate(general_ai_request()),
+        )
+        .await;
     }
-    let (status, body) = usage(&state, &format!("/api/v1/projects/{project}/ai-usage"), &owner).await;
+    let (status, body) = usage(
+        &state,
+        &format!("/api/v1/projects/{project}/ai-usage"),
+        &owner,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
     let totals = &body["totals"];
-    assert_eq!((totals["calls"].clone(), totals["priced_calls"].clone(), totals["no_price_calls"].clone()), (serde_json::json!(3), serde_json::json!(0), serde_json::json!(3)));
+    assert_eq!(
+        (
+            totals["calls"].clone(),
+            totals["priced_calls"].clone(),
+            totals["no_price_calls"].clone()
+        ),
+        (
+            serde_json::json!(3),
+            serde_json::json!(0),
+            serde_json::json!(3)
+        )
+    );
     assert_eq!(totals["cost_usd"], 0.0);
-    let notes: Vec<&str> = body["notes"].as_array().unwrap().iter().map(|n| n.as_str().unwrap()).collect();
+    let notes: Vec<&str> = body["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n.as_str().unwrap())
+        .collect();
     assert_eq!(
         notes,
         ["3 calls went to models with no price (a local model, or a hosted one whose price is not entered in Settings), so no cost is counted for them."],
@@ -14871,7 +18542,13 @@ async fn phase8a_a_provider_with_no_price_is_used_and_counted_but_never_given_a_
 
 // ------------------------------------------------- Phase 8B: API tests made from an OpenAPI document
 
-async fn openapi_call(state: &AppState, method: &str, path: &str, key: &str, body: Option<Value>) -> (StatusCode, Value) {
+async fn openapi_call(
+    state: &AppState,
+    method: &str,
+    path: &str,
+    key: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
     send(state, req(method, path, Some(key), body)).await
 }
 
@@ -14890,7 +18567,14 @@ fn openapi_body(secret_variable: &str, extra: Value) -> Value {
 /// The report of an OpenAPI run once its execution has ended.
 async fn openapi_report_when_done(state: &AppState, project: Uuid, id: &str, key: &str) -> Value {
     for _ in 0..200 {
-        let (status, report) = openapi_call(state, "GET", &format!("/api/v1/projects/{project}/openapi/runs/{id}"), key, None).await;
+        let (status, report) = openapi_call(
+            state,
+            "GET",
+            &format!("/api/v1/projects/{project}/openapi/runs/{id}"),
+            key,
+            None,
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "body={report}");
         if report["final"] == true {
             return report;
@@ -14911,7 +18595,14 @@ fn case_of<'a>(report: &'a Value, id: &str) -> &'a Value {
 }
 
 fn verdict_of<'a>(report: &'a Value, operation: &str) -> &'a str {
-    report["operations"].as_array().unwrap().iter().find(|op| op["id"] == operation).unwrap()["verdict"].as_str().unwrap()
+    report["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|op| op["id"] == operation)
+        .unwrap()["verdict"]
+        .as_str()
+        .unwrap()
 }
 
 const FIXTURE_CASE_IDS: [&str; 12] = [
@@ -14937,34 +18628,109 @@ async fn phase8b_the_plan_shows_the_cases_that_would_be_made_and_runs_nothing() 
     let project = make_project(&state, "Phase8B Plan").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
 
-    let (status, plan) = openapi_call(&state, "POST", &format!("/api/v1/projects/{project}/openapi/plan"), &owner, Some(openapi_body("AIQA_SECRET_T8B_PLAN", serde_json::json!({})))).await;
+    let (status, plan) = openapi_call(
+        &state,
+        "POST",
+        &format!("/api/v1/projects/{project}/openapi/plan"),
+        &owner,
+        Some(openapi_body("AIQA_SECRET_T8B_PLAN", serde_json::json!({}))),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={plan}");
     assert_eq!(plan["spec"]["title"], "Fixture Pets");
     assert_eq!(plan["spec"]["version"], "1.0");
-    assert_eq!(plan["base_url"], "http://127.0.0.1:8080/fixture", "the document's own server when none is given");
-    let operations: Vec<&str> = plan["operations"].as_array().unwrap().iter().map(|o| o["id"].as_str().unwrap()).collect();
-    assert_eq!(operations, ["GET /pets", "POST /pets", "GET /pets/{petId}", "GET /secure"]);
-    let cases: Vec<&str> = plan["cases"].as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap()).collect();
+    assert_eq!(
+        plan["base_url"], "http://127.0.0.1:8080/fixture",
+        "the document's own server when none is given"
+    );
+    let operations: Vec<&str> = plan["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        operations,
+        [
+            "GET /pets",
+            "POST /pets",
+            "GET /pets/{petId}",
+            "GET /secure"
+        ]
+    );
+    let cases: Vec<&str> = plan["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["id"].as_str().unwrap())
+        .collect();
     assert_eq!(cases, FIXTURE_CASE_IDS);
-    assert_eq!(plan["counts"], serde_json::json!({"cases": 12, "runnable": 8, "not_run": 4}));
+    assert_eq!(
+        plan["counts"],
+        serde_json::json!({"cases": 12, "runnable": 8, "not_run": 4})
+    );
     assert_eq!(plan["missing_secrets"], serde_json::json!([]));
-    let happy = plan["cases"].as_array().unwrap().iter().find(|c| c["id"] == "GET /pets#HAPPY").unwrap();
-    assert_eq!(happy["request"]["url"], "http://127.0.0.1:8080/fixture/pets?limit=1");
-    assert_eq!(happy["request"]["headers"]["Authorization"], "env:AIQA_SECRET_T8B_PLAN", "the credential is a reference, in the plan as anywhere");
+    let happy = plan["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "GET /pets#HAPPY")
+        .unwrap();
+    assert_eq!(
+        happy["request"]["url"],
+        "http://127.0.0.1:8080/fixture/pets?limit=1"
+    );
+    assert_eq!(
+        happy["request"]["headers"]["Authorization"], "env:AIQA_SECRET_T8B_PLAN",
+        "the credential is a reference, in the plan as anywhere"
+    );
     assert_eq!(happy["expect"]["statuses"], serde_json::json!([200]));
-    assert_eq!(plan["cases"].as_array().unwrap().iter().filter(|c| !c["skipped"].is_null()).count(), 4, "the four that change data are not run");
+    assert_eq!(
+        plan["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| !c["skipped"].is_null())
+            .count(),
+        4,
+        "the four that change data are not run"
+    );
 
     // Nothing was made: no run, no execution.
-    let (_, runs) = openapi_call(&state, "GET", &format!("/api/v1/projects/{project}/openapi/runs"), &owner, None).await;
+    let (_, runs) = openapi_call(
+        &state,
+        "GET",
+        &format!("/api/v1/projects/{project}/openapi/runs"),
+        &owner,
+        None,
+    )
+    .await;
     assert_eq!(runs["runs"], serde_json::json!([]));
-    let (_, executions) = openapi_call(&state, "GET", &format!("/api/v1/projects/{project}/executions"), &owner, None).await;
+    let (_, executions) = openapi_call(
+        &state,
+        "GET",
+        &format!("/api/v1/projects/{project}/executions"),
+        &owner,
+        None,
+    )
+    .await;
     assert_eq!(executions.as_array().map(Vec::len), Some(0), "{executions}");
 
     // A variable that is not set is named, and is not a reason to refuse the plan.
     std::env::remove_var("AIQA_SECRET_T8B_PLAN");
-    let (status, plan) = openapi_call(&state, "POST", &format!("/api/v1/projects/{project}/openapi/plan"), &owner, Some(openapi_body("AIQA_SECRET_T8B_PLAN", serde_json::json!({})))).await;
+    let (status, plan) = openapi_call(
+        &state,
+        "POST",
+        &format!("/api/v1/projects/{project}/openapi/plan"),
+        &owner,
+        Some(openapi_body("AIQA_SECRET_T8B_PLAN", serde_json::json!({}))),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={plan}");
-    assert_eq!(plan["missing_secrets"], serde_json::json!(["AIQA_SECRET_T8B_PLAN"]));
+    assert_eq!(
+        plan["missing_secrets"],
+        serde_json::json!(["AIQA_SECRET_T8B_PLAN"])
+    );
 }
 
 #[tokio::test]
@@ -14991,11 +18757,19 @@ async fn phase8b_a_document_in_yaml_and_the_kinds_and_operations_asked_for_are_h
         "POST",
         &format!("/api/v1/projects/{project}/openapi/plan"),
         &owner,
-        Some(openapi_body("AIQA_SECRET_T8B_YAML", serde_json::json!({"kinds": ["NOT_FOUND"], "operations": ["GET /pets/{petId}"]}))),
+        Some(openapi_body(
+            "AIQA_SECRET_T8B_YAML",
+            serde_json::json!({"kinds": ["NOT_FOUND"], "operations": ["GET /pets/{petId}"]}),
+        )),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body={plan}");
-    let ids: Vec<&str> = plan["cases"].as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap()).collect();
+    let ids: Vec<&str> = plan["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["id"].as_str().unwrap())
+        .collect();
     assert_eq!(ids, ["GET /pets/{petId}#NOT_FOUND:petId"]);
 }
 
@@ -15007,24 +18781,72 @@ async fn phase8b_the_cases_run_as_one_execution_and_the_report_says_what_each_op
     let project = make_project(&state, "Phase8B Run").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
 
-    let (status, created) = openapi_call(&state, "POST", &format!("/api/v1/projects/{project}/openapi/runs"), &owner, Some(openapi_body("AIQA_SECRET_T8B_RUN", serde_json::json!({})))).await;
+    let (status, created) = openapi_call(
+        &state,
+        "POST",
+        &format!("/api/v1/projects/{project}/openapi/runs"),
+        &owner,
+        Some(openapi_body("AIQA_SECRET_T8B_RUN", serde_json::json!({}))),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "body={created}");
-    assert_eq!((created["cases"].clone(), created["cases_run"].clone(), created["not_run"].clone()), (serde_json::json!(12), serde_json::json!(8), serde_json::json!(4)));
+    assert_eq!(
+        (
+            created["cases"].clone(),
+            created["cases_run"].clone(),
+            created["not_run"].clone()
+        ),
+        (
+            serde_json::json!(12),
+            serde_json::json!(8),
+            serde_json::json!(4)
+        )
+    );
     let id = created["id"].as_str().unwrap().to_string();
     let run_id = created["run_id"].as_str().unwrap().to_string();
 
     // It is an ordinary execution of the project: one task for each case that is run.
-    let (status, execution) = openapi_call(&state, "GET", &format!("/api/v1/projects/{project}/executions/{run_id}"), &owner, None).await;
+    let (status, execution) = openapi_call(
+        &state,
+        "GET",
+        &format!("/api/v1/projects/{project}/executions/{run_id}"),
+        &owner,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={execution}");
     assert_eq!(execution["tasks"].as_array().unwrap().len(), 8);
-    assert!(execution["name"].as_str().unwrap().starts_with("OpenAPI tests: Fixture Pets 1.0"), "{}", execution["name"]);
+    assert!(
+        execution["name"]
+            .as_str()
+            .unwrap()
+            .starts_with("OpenAPI tests: Fixture Pets 1.0"),
+        "{}",
+        execution["name"]
+    );
 
     let report = openapi_report_when_done(&state, project, &id, &owner).await;
     assert_eq!(report["spec"]["base_url"], "http://127.0.0.1:8080/fixture");
     let s = &report["summary"];
     assert_eq!(
-        (s["cases"].clone(), s["ran"].clone(), s["passed"].clone(), s["failed"].clone(), s["error"].clone(), s["pending"].clone(), s["not_run"].clone()),
-        (serde_json::json!(12), serde_json::json!(8), serde_json::json!(7), serde_json::json!(1), serde_json::json!(0), serde_json::json!(0), serde_json::json!(4)),
+        (
+            s["cases"].clone(),
+            s["ran"].clone(),
+            s["passed"].clone(),
+            s["failed"].clone(),
+            s["error"].clone(),
+            s["pending"].clone(),
+            s["not_run"].clone()
+        ),
+        (
+            serde_json::json!(12),
+            serde_json::json!(8),
+            serde_json::json!(7),
+            serde_json::json!(1),
+            serde_json::json!(0),
+            serde_json::json!(0),
+            serde_json::json!(4)
+        ),
         "{report}"
     );
     assert_eq!(s["pass_rate"], 0.875);
@@ -15034,8 +18856,14 @@ async fn phase8b_the_cases_run_as_one_execution_and_the_report_says_what_each_op
     assert_eq!(verdict_of(&report, "POST /pets"), "NOT_RUN");
     assert_eq!(verdict_of(&report, "GET /pets/{petId}"), "FAILED");
     assert_eq!(verdict_of(&report, "GET /secure"), "PASSED");
-    assert_eq!(report["by_kind"]["HAPPY"], serde_json::json!({"passed": 3, "failed": 0, "error": 0, "pending": 0, "not_run": 1}));
-    assert_eq!(report["by_kind"]["WRONG_TYPE"], serde_json::json!({"passed": 1, "failed": 1, "error": 0, "pending": 0, "not_run": 1}));
+    assert_eq!(
+        report["by_kind"]["HAPPY"],
+        serde_json::json!({"passed": 3, "failed": 0, "error": 0, "pending": 0, "not_run": 1})
+    );
+    assert_eq!(
+        report["by_kind"]["WRONG_TYPE"],
+        serde_json::json!({"passed": 1, "failed": 1, "error": 0, "pending": 0, "not_run": 1})
+    );
     assert_eq!(report["by_kind"]["NO_AUTH"]["passed"], 1);
 
     // The case that does not pass says why, in the words of what the document promised and what came back.
@@ -15043,47 +18871,155 @@ async fn phase8b_the_cases_run_as_one_execution_and_the_report_says_what_each_op
     assert_eq!(drift["outcome"], "FAILED");
     assert_eq!(drift["expect"]["statuses"], serde_json::json!([404]));
     assert_eq!(drift["actual"]["status"], 400);
-    assert!(drift["reason"].as_str().unwrap().contains("Status is one of 404: got 400"), "{}", drift["reason"]);
-    assert!(drift["request"]["url"].as_str().unwrap().ends_with("/fixture/pets/not-a-number"));
+    assert!(
+        drift["reason"]
+            .as_str()
+            .unwrap()
+            .contains("Status is one of 404: got 400"),
+        "{}",
+        drift["reason"]
+    );
+    assert!(drift["request"]["url"]
+        .as_str()
+        .unwrap()
+        .ends_with("/fixture/pets/not-a-number"));
     assert_eq!(case_of(&report, "GET /secure#NO_AUTH")["outcome"], "PASSED");
-    assert_eq!(case_of(&report, "GET /pets#HAPPY")["expect"]["schema"], true, "the answer was also checked against the document's schema");
+    assert_eq!(
+        case_of(&report, "GET /pets#HAPPY")["expect"]["schema"],
+        true,
+        "the answer was also checked against the document's schema"
+    );
     assert_eq!(case_of(&report, "POST /pets#HAPPY")["outcome"], "NOT_RUN");
-    assert!(case_of(&report, "POST /pets#HAPPY")["reason"].as_str().unwrap().contains("changes data"));
+    assert!(case_of(&report, "POST /pets#HAPPY")["reason"]
+        .as_str()
+        .unwrap()
+        .contains("changes data"));
 
     assert_eq!(report["coverage"]["operations"], 4);
     assert_eq!(report["coverage"]["tested"], 3);
-    assert_eq!(report["coverage"]["not_tested"], serde_json::json!([{"operation": "POST /pets", "reason": "none of its cases was run"}]));
-    let notes: Vec<&str> = report["notes"].as_array().unwrap().iter().map(|n| n.as_str().unwrap()).collect();
-    assert!(notes.iter().any(|n| n.starts_with("4 case(s) were not run because their request changes data")), "{notes:?}");
+    assert_eq!(
+        report["coverage"]["not_tested"],
+        serde_json::json!([{"operation": "POST /pets", "reason": "none of its cases was run"}])
+    );
+    let notes: Vec<&str> = report["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n.as_str().unwrap())
+        .collect();
+    assert!(
+        notes
+            .iter()
+            .any(|n| n.starts_with("4 case(s) were not run because their request changes data")),
+        "{notes:?}"
+    );
 
     // The report as text to paste.
-    let response = router(state.clone()).oneshot(req("GET", &format!("/api/v1/projects/{project}/openapi/runs/{id}?format=markdown"), Some(&owner), None)).await.unwrap();
+    let response = router(state.clone())
+        .oneshot(req(
+            "GET",
+            &format!("/api/v1/projects/{project}/openapi/runs/{id}?format=markdown"),
+            Some(&owner),
+            None,
+        ))
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    assert!(response.headers().get("content-type").unwrap().to_str().unwrap().starts_with("text/markdown"));
-    let markdown = String::from_utf8(response.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
-    assert!(markdown.contains("# API tests from Fixture Pets 1.0"), "{markdown}");
-    assert!(markdown.contains("| GET /pets/{petId} | FAILED | 2 | 1 | 0 | 0 |"), "{markdown}");
+    assert!(response
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .starts_with("text/markdown"));
+    let markdown = String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(
+        markdown.contains("# API tests from Fixture Pets 1.0"),
+        "{markdown}"
+    );
+    assert!(
+        markdown.contains("| GET /pets/{petId} | FAILED | 2 | 1 | 0 | 0 |"),
+        "{markdown}"
+    );
     assert!(markdown.contains("## What did not pass"), "{markdown}");
-    assert!(markdown.contains("Operations tested: 3 of 4."), "{markdown}");
+    assert!(
+        markdown.contains("Operations tested: 3 of 4."),
+        "{markdown}"
+    );
 
     // What was remembered, and what was kept out of it: no credential anywhere, in the run's record or in its evidence.
-    let row = state.store.get_openapi_run(Uuid::parse_str(&id).unwrap()).await.unwrap().unwrap();
-    assert!(!serde_json::to_string(&row.cases).unwrap().contains("t8b-test-token"));
-    assert_eq!(row.options["auth_headers"], serde_json::json!(["Authorization"]), "only the name of the header is kept");
-    let evidence = state.store.list_evidence_for_run(Uuid::parse_str(&run_id).unwrap()).await.unwrap();
+    let row = state
+        .store
+        .get_openapi_run(Uuid::parse_str(&id).unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!serde_json::to_string(&row.cases)
+        .unwrap()
+        .contains("t8b-test-token"));
+    assert_eq!(
+        row.options["auth_headers"],
+        serde_json::json!(["Authorization"]),
+        "only the name of the header is kept"
+    );
+    let evidence = state
+        .store
+        .list_evidence_for_run(Uuid::parse_str(&run_id).unwrap())
+        .await
+        .unwrap();
     assert!(!evidence.is_empty());
     for e in &evidence {
-        let text = String::from_utf8_lossy(&state.evidence.read(&e.object_key).unwrap()).to_string();
-        assert!(!text.contains("t8b-test-token"), "the credential reached the evidence: {text}");
+        let text =
+            String::from_utf8_lossy(&state.evidence.read(&e.object_key).unwrap()).to_string();
+        assert!(
+            !text.contains("t8b-test-token"),
+            "the credential reached the evidence: {text}"
+        );
     }
 
     // Audited, and in the project's list.
-    let (_, audit) = openapi_call(&state, "GET", &format!("/api/v1/projects/{project}/audit"), &owner, None).await;
-    assert!(audit["rows"].as_array().unwrap().iter().any(|r| r["action"] == "openapi.run"), "{audit}");
-    let (_, list) = openapi_call(&state, "GET", &format!("/api/v1/projects/{project}/openapi/runs"), &owner, None).await;
+    let (_, audit) = openapi_call(
+        &state,
+        "GET",
+        &format!("/api/v1/projects/{project}/audit"),
+        &owner,
+        None,
+    )
+    .await;
+    assert!(
+        audit["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["action"] == "openapi.run"),
+        "{audit}"
+    );
+    let (_, list) = openapi_call(
+        &state,
+        "GET",
+        &format!("/api/v1/projects/{project}/openapi/runs"),
+        &owner,
+        None,
+    )
+    .await;
     assert_eq!(list["runs"].as_array().unwrap().len(), 1);
     assert_eq!(list["runs"][0]["id"], id.as_str());
-    assert_eq!((list["runs"][0]["cases"].clone(), list["runs"][0]["cases_run"].clone()), (serde_json::json!(12), serde_json::json!(8)));
+    assert_eq!(
+        (
+            list["runs"][0]["cases"].clone(),
+            list["runs"][0]["cases_run"].clone()
+        ),
+        (serde_json::json!(12), serde_json::json!(8))
+    );
     assert_eq!(list["runs"][0]["title"], "Fixture Pets");
 }
 
@@ -15094,23 +19030,72 @@ async fn phase8b_the_requests_that_change_data_are_run_only_when_asked_for() {
     let (state, _dir) = test_state_with_compiled_api().await;
     let project = make_project(&state, "Phase8B Unsafe").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-    let (status, created) = openapi_call(&state, "POST", &format!("/api/v1/projects/{project}/openapi/runs"), &owner, Some(openapi_body("AIQA_SECRET_T8B_UNSAFE", serde_json::json!({"include_unsafe": true})))).await;
+    let (status, created) = openapi_call(
+        &state,
+        "POST",
+        &format!("/api/v1/projects/{project}/openapi/runs"),
+        &owner,
+        Some(openapi_body(
+            "AIQA_SECRET_T8B_UNSAFE",
+            serde_json::json!({"include_unsafe": true}),
+        )),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "body={created}");
-    assert_eq!((created["cases_run"].clone(), created["not_run"].clone()), (serde_json::json!(12), serde_json::json!(0)));
-    let report = openapi_report_when_done(&state, project, created["id"].as_str().unwrap(), &owner).await;
     assert_eq!(
-        (report["summary"]["passed"].clone(), report["summary"]["failed"].clone(), report["summary"]["not_run"].clone()),
-        (serde_json::json!(11), serde_json::json!(1), serde_json::json!(0)),
+        (created["cases_run"].clone(), created["not_run"].clone()),
+        (serde_json::json!(12), serde_json::json!(0))
+    );
+    let report =
+        openapi_report_when_done(&state, project, created["id"].as_str().unwrap(), &owner).await;
+    assert_eq!(
+        (
+            report["summary"]["passed"].clone(),
+            report["summary"]["failed"].clone(),
+            report["summary"]["not_run"].clone()
+        ),
+        (
+            serde_json::json!(11),
+            serde_json::json!(1),
+            serde_json::json!(0)
+        ),
         "{report}"
     );
     assert_eq!(verdict_of(&report, "POST /pets"), "PASSED");
     assert_eq!(case_of(&report, "POST /pets#HAPPY")["outcome"], "PASSED");
-    assert_eq!(case_of(&report, "POST /pets#MISSING_REQUIRED:body.name")["outcome"], "PASSED", "the API refuses it with the 422 the document promises");
+    assert_eq!(
+        case_of(&report, "POST /pets#MISSING_REQUIRED:body.name")["outcome"],
+        "PASSED",
+        "the API refuses it with the 422 the document promises"
+    );
     assert_eq!(report["coverage"]["tested"], 4);
-    let notes: Vec<&str> = report["notes"].as_array().unwrap().iter().map(|n| n.as_str().unwrap()).collect();
-    assert!(!notes.iter().any(|n| n.contains("changes data")), "{notes:?}");
-    let (_, audit) = openapi_call(&state, "GET", &format!("/api/v1/projects/{project}/audit"), &owner, None).await;
-    let detail = audit["rows"].as_array().unwrap().iter().find(|r| r["action"] == "openapi.run").unwrap()["detail"].as_str().unwrap().to_string();
+    let notes: Vec<&str> = report["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n.as_str().unwrap())
+        .collect();
+    assert!(
+        !notes.iter().any(|n| n.contains("changes data")),
+        "{notes:?}"
+    );
+    let (_, audit) = openapi_call(
+        &state,
+        "GET",
+        &format!("/api/v1/projects/{project}/audit"),
+        &owner,
+        None,
+    )
+    .await;
+    let detail = audit["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["action"] == "openapi.run")
+        .unwrap()["detail"]
+        .as_str()
+        .unwrap()
+        .to_string();
     assert!(detail.contains("unsafe methods allowed"), "{detail}");
 }
 
@@ -15127,10 +19112,22 @@ async fn phase8b_a_relative_server_is_worked_out_from_the_address_the_document_w
     let fetched = serde_json::json!({"spec_url": "http://127.0.0.1:8080/fixture/openapi.json", "kinds": ["HAPPY"]});
     let (status, plan) = openapi_call(&state, "POST", &path, &owner, Some(fetched.clone())).await;
     assert_eq!(status, StatusCode::OK, "body={plan}");
-    assert_eq!(plan["spec"]["servers"], serde_json::json!(["/fixture"]), "the document says what it says");
+    assert_eq!(
+        plan["spec"]["servers"],
+        serde_json::json!(["/fixture"]),
+        "the document says what it says"
+    );
     assert_eq!(plan["base_url"], "http://127.0.0.1:8080/fixture");
-    let happy = plan["cases"].as_array().unwrap().iter().find(|c| c["id"] == "GET /pets#HAPPY").unwrap();
-    assert_eq!(happy["request"]["url"], "http://127.0.0.1:8080/fixture/pets?limit=1");
+    let happy = plan["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "GET /pets#HAPPY")
+        .unwrap();
+    assert_eq!(
+        happy["request"]["url"],
+        "http://127.0.0.1:8080/fixture/pets?limit=1"
+    );
 
     // A base address that is given still wins.
     let mut given = fetched.clone();
@@ -15142,9 +19139,19 @@ async fn phase8b_a_relative_server_is_worked_out_from_the_address_the_document_w
     // The same document pasted has no address to work `/fixture` out from: the person is told what to give.
     let mut pasted = openapi_fixture_document();
     pasted["servers"] = serde_json::json!([{"url": "/fixture"}]);
-    let (status, body) = openapi_call(&state, "POST", &path, &owner, Some(serde_json::json!({"spec": pasted.to_string()}))).await;
+    let (status, body) = openapi_call(
+        &state,
+        "POST",
+        &path,
+        &owner,
+        Some(serde_json::json!({"spec": pasted.to_string()})),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    assert!(message(&body).contains("give `base_url`") && message(&body).contains("`spec_url`"), "{body}");
+    assert!(
+        message(&body).contains("give `base_url`") && message(&body).contains("`spec_url`"),
+        "{body}"
+    );
 }
 
 #[tokio::test]
@@ -15161,48 +19168,108 @@ async fn phase8b_a_run_is_refused_in_words_before_anything_starts() {
 
     let (status, body) = run(serde_json::json!({})).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(message(&body).contains("`spec` (its text) or as `spec_url`"), "{body}");
-    let (status, body) = run(serde_json::json!({"spec": "{}", "spec_url": "https://x.test/a.json"})).await;
+    assert!(
+        message(&body).contains("`spec` (its text) or as `spec_url`"),
+        "{body}"
+    );
+    let (status, body) =
+        run(serde_json::json!({"spec": "{}", "spec_url": "https://x.test/a.json"})).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(message(&body).contains("not both"), "{body}");
     let (status, body) = run(serde_json::json!({"spec": "{\"hello\": 1}"})).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(message(&body).contains("missing required OpenAPI/Swagger root fields") || message(&body).contains("not an OpenAPI"), "{body}");
+    assert!(
+        message(&body).contains("missing required OpenAPI/Swagger root fields")
+            || message(&body).contains("not an OpenAPI"),
+        "{body}"
+    );
     let (status, body) = run(serde_json::json!({"spec": "not json or yaml at all: [", "base_url": "http://127.0.0.1:8080"})).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     let (status, body) = run(serde_json::json!({"spec_url": "http://127.0.0.1:1/spec.json"})).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(message(&body).contains("could not fetch the document"), "{body}");
+    assert!(
+        message(&body).contains("could not fetch the document"),
+        "{body}"
+    );
 
-    let (status, body) = run(openapi_body("AIQA_SECRET_T8B_REFUSE", serde_json::json!({"operations": ["GET /nowhere"]}))).await;
+    let (status, body) = run(openapi_body(
+        "AIQA_SECRET_T8B_REFUSE",
+        serde_json::json!({"operations": ["GET /nowhere"]}),
+    ))
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(message(&body).contains("the document has no operation \"GET /nowhere\""), "{body}");
-    let (status, body) = run(openapi_body("AIQA_SECRET_T8B_REFUSE", serde_json::json!({"base_url": "http://127.0.0.1:9/elsewhere"}))).await;
+    assert!(
+        message(&body).contains("the document has no operation \"GET /nowhere\""),
+        "{body}"
+    );
+    let (status, body) = run(openapi_body(
+        "AIQA_SECRET_T8B_REFUSE",
+        serde_json::json!({"base_url": "http://127.0.0.1:9/elsewhere"}),
+    ))
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(message(&body).starts_with("TARGET_NOT_ALLOWED:"), "{body}");
     let (status, body) = run(openapi_body("AIQA_SECRET_T8B_UNSET", serde_json::json!({}))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(message(&body).contains("AIQA_SECRET_T8B_UNSET is not set"), "{body}");
+    assert!(
+        message(&body).contains("AIQA_SECRET_T8B_UNSET is not set"),
+        "{body}"
+    );
     let (status, body) = run(serde_json::json!({"spec": openapi_fixture_document().to_string(), "auth_headers": {"Authorization": "Bearer a-typed-in-token"}})).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(message(&body).contains("must be a secret reference"), "{body}");
-    assert!(!message(&body).contains("a-typed-in-token"), "a value typed by mistake is never repeated: {body}");
+    assert!(
+        message(&body).contains("must be a secret reference"),
+        "{body}"
+    );
+    assert!(
+        !message(&body).contains("a-typed-in-token"),
+        "a value typed by mistake is never repeated: {body}"
+    );
     let (status, body) = run(serde_json::json!({"spec": openapi_fixture_document().to_string(), "auth_headers": {"Bad:Name": "env:AIQA_SECRET_T8B_REFUSE"}})).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "a header name that cannot be sent is refused now, not by every case later: {body}");
-    assert!(message(&body).contains("needs a name HTTP allows") && message(&body).contains("\"Bad:Name\""), "{body}");
-    let (status, body) = run(openapi_body("AIQA_SECRET_T8B_REFUSE", serde_json::json!({"kinds": ["HAPPY"], "operations": ["POST /pets"]}))).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a header name that cannot be sent is refused now, not by every case later: {body}"
+    );
+    assert!(
+        message(&body).contains("needs a name HTTP allows")
+            && message(&body).contains("\"Bad:Name\""),
+        "{body}"
+    );
+    let (status, body) = run(openapi_body(
+        "AIQA_SECRET_T8B_REFUSE",
+        serde_json::json!({"kinds": ["HAPPY"], "operations": ["POST /pets"]}),
+    ))
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(message(&body).contains("there is nothing to run: all 1 case(s) change data on the server"), "{body}");
+    assert!(
+        message(&body).contains("there is nothing to run: all 1 case(s) change data on the server"),
+        "{body}"
+    );
     for bad in [0, 9] {
-        let (status, body) = run(openapi_body("AIQA_SECRET_T8B_REFUSE", serde_json::json!({"concurrency": bad}))).await;
+        let (status, body) = run(openapi_body(
+            "AIQA_SECRET_T8B_REFUSE",
+            serde_json::json!({"concurrency": bad}),
+        ))
+        .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {body}");
-        assert!(message(&body).contains("concurrency must be from 1 to 8"), "{body}");
+        assert!(
+            message(&body).contains("concurrency must be from 1 to 8"),
+            "{body}"
+        );
     }
 
     // None of that made a run.
     let (_, list) = openapi_call(&state, "GET", &path, &owner, None).await;
     assert_eq!(list["runs"], serde_json::json!([]));
-    let (_, executions) = openapi_call(&state, "GET", &format!("/api/v1/projects/{project}/executions"), &owner, None).await;
+    let (_, executions) = openapi_call(
+        &state,
+        "GET",
+        &format!("/api/v1/projects/{project}/executions"),
+        &owner,
+        None,
+    )
+    .await;
     assert_eq!(executions.as_array().map(Vec::len), Some(0), "{executions}");
 }
 
@@ -15225,8 +19292,18 @@ async fn phase8b_deleting_a_project_removes_its_openapi_runs_and_only_its_own() 
     for name in ["Phase8B Delete A", "Phase8B Delete B"] {
         let project = make_project(&state, name).await;
         let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-        let body = openapi_body("AIQA_SECRET_T8B_DELETE", serde_json::json!({"kinds": ["HAPPY"], "operations": ["GET /pets"]}));
-        let (status, made) = openapi_call(&state, "POST", &format!("/api/v1/projects/{project}/openapi/runs"), &owner, Some(body)).await;
+        let body = openapi_body(
+            "AIQA_SECRET_T8B_DELETE",
+            serde_json::json!({"kinds": ["HAPPY"], "operations": ["GET /pets"]}),
+        );
+        let (status, made) = openapi_call(
+            &state,
+            "POST",
+            &format!("/api/v1/projects/{project}/openapi/runs"),
+            &owner,
+            Some(body),
+        )
+        .await;
         assert_eq!(status, StatusCode::CREATED, "body={made}");
         // Its execution has ended before the project goes.
         openapi_report_when_done(&state, project, made["id"].as_str().unwrap(), &owner).await;
@@ -15234,8 +19311,16 @@ async fn phase8b_deleting_a_project_removes_its_openapi_runs_and_only_its_own() 
     }
     assert_eq!((rows(projects[0]).await, rows(projects[1]).await), (1, 1));
     assert!(state.store.delete_project(projects[0]).await.unwrap());
-    assert_eq!(rows(projects[0]).await, 0, "the deleted project's OpenAPI runs are gone with it");
-    assert_eq!(rows(projects[1]).await, 1, "another project's are not touched");
+    assert_eq!(
+        rows(projects[0]).await,
+        0,
+        "the deleted project's OpenAPI runs are gone with it"
+    );
+    assert_eq!(
+        rows(projects[1]).await,
+        1,
+        "another project's are not touched"
+    );
 }
 
 #[tokio::test]
@@ -15248,32 +19333,102 @@ async fn phase8b_who_may_plan_run_and_read_is_the_projects_operator_and_its_view
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
     let viewer = mint_key(&state, "viewer", Some(&project.to_string())).await;
     let stranger = mint_key(&state, "operator", Some(&other.to_string())).await;
-    let body = openapi_body("AIQA_SECRET_T8B_ACCESS", serde_json::json!({"kinds": ["HAPPY"], "operations": ["GET /pets"]}));
+    let body = openapi_body(
+        "AIQA_SECRET_T8B_ACCESS",
+        serde_json::json!({"kinds": ["HAPPY"], "operations": ["GET /pets"]}),
+    );
     let base = format!("/api/v1/projects/{project}/openapi");
 
-    let (status, _) = openapi_call(&state, "POST", &format!("{base}/plan"), &viewer, Some(body.clone())).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "a viewer cannot plan (an address is fetched)");
-    let (status, _) = openapi_call(&state, "POST", &format!("{base}/runs"), &viewer, Some(body.clone())).await;
+    let (status, _) = openapi_call(
+        &state,
+        "POST",
+        &format!("{base}/plan"),
+        &viewer,
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a viewer cannot plan (an address is fetched)"
+    );
+    let (status, _) = openapi_call(
+        &state,
+        "POST",
+        &format!("{base}/runs"),
+        &viewer,
+        Some(body.clone()),
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "a viewer cannot run");
-    let (status, _) = openapi_call(&state, "POST", &format!("{base}/runs"), &stranger, Some(body.clone())).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "another project's key cannot run here");
-    let (status, created) = openapi_call(&state, "POST", &format!("{base}/runs"), &owner, Some(body)).await;
+    let (status, _) = openapi_call(
+        &state,
+        "POST",
+        &format!("{base}/runs"),
+        &stranger,
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "another project's key cannot run here"
+    );
+    let (status, created) =
+        openapi_call(&state, "POST", &format!("{base}/runs"), &owner, Some(body)).await;
     assert_eq!(status, StatusCode::CREATED, "body={created}");
     let id = created["id"].as_str().unwrap();
 
     let (status, _) = openapi_call(&state, "GET", &format!("{base}/runs"), &viewer, None).await;
     assert_eq!(status, StatusCode::OK, "a viewer reads the list");
-    let (status, report) = openapi_call(&state, "GET", &format!("{base}/runs/{id}"), &viewer, None).await;
+    let (status, report) =
+        openapi_call(&state, "GET", &format!("{base}/runs/{id}"), &viewer, None).await;
     assert_eq!(status, StatusCode::OK, "a viewer reads a report: {report}");
-    let (status, _) = openapi_call(&state, "GET", &format!("{base}/runs/{id}"), &stranger, None).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "another project's key cannot read it");
-    let (status, _) = openapi_call(&state, "GET", &format!("/api/v1/projects/{other}/openapi/runs/{id}"), &stranger, None).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "a run is not found under another project");
-    let (status, _) = openapi_call(&state, "GET", &format!("{base}/runs/{}", Uuid::new_v4()), &owner, None).await;
+    let (status, _) =
+        openapi_call(&state, "GET", &format!("{base}/runs/{id}"), &stranger, None).await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "another project's key cannot read it"
+    );
+    let (status, _) = openapi_call(
+        &state,
+        "GET",
+        &format!("/api/v1/projects/{other}/openapi/runs/{id}"),
+        &stranger,
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a run is not found under another project"
+    );
+    let (status, _) = openapi_call(
+        &state,
+        "GET",
+        &format!("{base}/runs/{}", Uuid::new_v4()),
+        &owner,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    let (status, body) = openapi_call(&state, "GET", &format!("{base}/runs/{id}?format=pdf"), &owner, None).await;
+    let (status, body) = openapi_call(
+        &state,
+        "GET",
+        &format!("{base}/runs/{id}?format=pdf"),
+        &owner,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(body["error"]["message"].as_str().unwrap().contains("format must be json, markdown or junit"), "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("format must be json, markdown or junit"),
+        "{body}"
+    );
     let (status, body) = send(&state, req("GET", &format!("{base}/runs"), None, None)).await;
     assert_envelope(status, &body, StatusCode::UNAUTHORIZED, "UNAUTHENTICATED");
     openapi_report_when_done(&state, project, id, &owner).await;
@@ -15283,7 +19438,8 @@ async fn phase8b_who_may_plan_run_and_read_is_the_projects_operator_and_its_view
 
 /// What the fixture API's `/fixture/flip/:name` answers: 200 while the name is up (the default), 500 once a test switches it off.
 fn fixture_flips() -> &'static std::sync::Mutex<std::collections::HashMap<String, bool>> {
-    static FLIPS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, bool>>> = std::sync::OnceLock::new();
+    static FLIPS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, bool>>> =
+        std::sync::OnceLock::new();
     FLIPS.get_or_init(Default::default)
 }
 
@@ -15291,27 +19447,78 @@ fn set_fixture_flip(name: &str, up: bool) {
     fixture_flips().lock().unwrap().insert(name.to_string(), up);
 }
 
-async fn regression_call(state: &AppState, method: &str, project: Uuid, tail: &str, key: &str, body: Option<Value>) -> (StatusCode, Value) {
-    send(state, req(method, &format!("/api/v1/projects/{project}/regression/{tail}"), Some(key), body)).await
+async fn regression_call(
+    state: &AppState,
+    method: &str,
+    project: Uuid,
+    tail: &str,
+    key: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
+    send(
+        state,
+        req(
+            method,
+            &format!("/api/v1/projects/{project}/regression/{tail}"),
+            Some(key),
+            body,
+        ),
+    )
+    .await
 }
 
 /// A response that is text, not JSON: its status, its body and its content type.
-async fn regression_text(state: &AppState, project: Uuid, tail: &str, key: &str) -> (StatusCode, String, Option<String>) {
+async fn regression_text(
+    state: &AppState,
+    project: Uuid,
+    tail: &str,
+    key: &str,
+) -> (StatusCode, String, Option<String>) {
     let response = router(state.clone())
-        .oneshot(req("GET", &format!("/api/v1/projects/{project}/regression/{tail}"), Some(key), None))
+        .oneshot(req(
+            "GET",
+            &format!("/api/v1/projects/{project}/regression/{tail}"),
+            Some(key),
+            None,
+        ))
         .await
         .expect("router call");
     let status = response.status();
-    let content_type = response.headers().get("content-type").and_then(|v| v.to_str().ok()).map(str::to_string);
-    let bytes = response.into_body().collect().await.expect("collect body").to_bytes();
-    (status, String::from_utf8_lossy(&bytes).to_string(), content_type)
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("collect body")
+        .to_bytes();
+    (
+        status,
+        String::from_utf8_lossy(&bytes).to_string(),
+        content_type,
+    )
 }
 
 async fn wait_run_ended(state: &AppState, project: Uuid, run_id: &str, key: &str) {
     for _ in 0..400 {
-        let (status, detail) = send(state, req("GET", &format!("/api/v1/projects/{project}/executions/{run_id}"), Some(key), None)).await;
+        let (status, detail) = send(
+            state,
+            req(
+                "GET",
+                &format!("/api/v1/projects/{project}/executions/{run_id}"),
+                Some(key),
+                None,
+            ),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "body={detail}");
-        if matches!(detail["state"].as_str(), Some("COMPLETED" | "FAILED" | "PARTIAL" | "CANCELLED" | "REJECTED")) {
+        if matches!(
+            detail["state"].as_str(),
+            Some("COMPLETED" | "FAILED" | "PARTIAL" | "CANCELLED" | "REJECTED")
+        ) {
             return;
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -15321,7 +19528,13 @@ async fn wait_run_ended(state: &AppState, project: Uuid, run_id: &str, key: &str
 
 /// An approved case that has been run once for real: a GET of `path` on the fixture API that must answer 200. Gives the case's id and
 /// the run it was executed in.
-async fn executed_case(state: &AppState, project: Uuid, key: &str, title: &str, path: &str) -> (String, String) {
+async fn executed_case(
+    state: &AppState,
+    project: Uuid,
+    key: &str,
+    title: &str,
+    path: &str,
+) -> (String, String) {
     let id = approved_case(state, project, key, sample_test_case_body(title)).await;
     let url = format!("http://127.0.0.1:8080{path}");
     let plan = crate::execution_plan::ExecutionPlan {
@@ -15329,8 +19542,15 @@ async fn executed_case(state: &AppState, project: Uuid, key: &str, title: &str, 
         execution_type: crate::execution_plan::ExecutionType::Api,
         target: Some(url.clone()),
         actions: vec![
-            crate::execution_plan::Action::Request { method: "GET".to_string(), url, headers: Default::default(), body: None },
-            crate::execution_plan::Action::AssertStatusIn { statuses: vec![200] },
+            crate::execution_plan::Action::Request {
+                method: "GET".to_string(),
+                url,
+                headers: Default::default(),
+                body: None,
+            },
+            crate::execution_plan::Action::AssertStatusIn {
+                statuses: vec![200],
+            },
         ],
         compiler: crate::execution_plan::CompilerMethod::Deterministic,
         diagnostics: Vec::new(),
@@ -15338,7 +19558,16 @@ async fn executed_case(state: &AppState, project: Uuid, key: &str, title: &str, 
         model: None,
     };
     let handoff_body = serde_json::json!({"executor": "compiled-api", "params": serde_json::to_value(&plan).unwrap()});
-    let (status, handoff) = send(state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{id}/handoff"), Some(key), Some(handoff_body))).await;
+    let (status, handoff) = send(
+        state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{id}/handoff"),
+            Some(key),
+            Some(handoff_body),
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "body={handoff}");
     let run_id = handoff["run_id"].as_str().unwrap().to_string();
     wait_run_ended(state, project, &run_id, key).await;
@@ -15346,9 +19575,15 @@ async fn executed_case(state: &AppState, project: Uuid, key: &str, title: &str, 
 }
 
 /// The report of a regression run once its execution has ended.
-async fn regression_report_when_done(state: &AppState, project: Uuid, id: &str, key: &str) -> Value {
+async fn regression_report_when_done(
+    state: &AppState,
+    project: Uuid,
+    id: &str,
+    key: &str,
+) -> Value {
     for _ in 0..400 {
-        let (status, report) = regression_call(state, "GET", project, &format!("runs/{id}"), key, None).await;
+        let (status, report) =
+            regression_call(state, "GET", project, &format!("runs/{id}"), key, None).await;
         assert_eq!(status, StatusCode::OK, "body={report}");
         if report["final"] == true {
             return report;
@@ -15359,10 +19594,19 @@ async fn regression_report_when_done(state: &AppState, project: Uuid, id: &str, 
 }
 
 fn regression_case_of<'a>(report: &'a Value, case_id: &str) -> &'a Value {
-    report["cases"].as_array().unwrap().iter().find(|c| c["case_id"] == case_id).unwrap_or_else(|| panic!("no case {case_id} in {report}"))
+    report["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["case_id"] == case_id)
+        .unwrap_or_else(|| panic!("no case {case_id} in {report}"))
 }
 
-fn a_schedule_row(project: Uuid, name: &str, at: chrono::DateTime<chrono::Utc>) -> crate::regression::ScheduleRow {
+fn a_schedule_row(
+    project: Uuid,
+    name: &str,
+    at: chrono::DateTime<chrono::Utc>,
+) -> crate::regression::ScheduleRow {
     crate::regression::ScheduleRow {
         id: Uuid::new_v4(),
         project_id: project.to_string(),
@@ -15382,21 +19626,49 @@ fn a_schedule_row(project: Uuid, name: &str, at: chrono::DateTime<chrono::Utc>) 
 }
 
 async fn a_schedule(state: &AppState, project: Uuid, key: &str, body: Value) -> String {
-    let (status, made) = regression_call(state, "POST", project, "schedules", key, Some(body)).await;
+    let (status, made) =
+        regression_call(state, "POST", project, "schedules", key, Some(body)).await;
     assert_eq!(status, StatusCode::CREATED, "body={made}");
     made["id"].as_str().unwrap().to_string()
 }
 
-async fn run_schedule_call(state: &AppState, project: Uuid, sid: &str, key: &str) -> (StatusCode, Value) {
-    regression_call(state, "POST", project, &format!("schedules/{sid}/run"), key, None).await
+async fn run_schedule_call(
+    state: &AppState,
+    project: Uuid,
+    sid: &str,
+    key: &str,
+) -> (StatusCode, Value) {
+    regression_call(
+        state,
+        "POST",
+        project,
+        &format!("schedules/{sid}/run"),
+        key,
+        None,
+    )
+    .await
 }
 
 async fn stored_schedule(state: &AppState, id: &str) -> crate::regression::ScheduleRow {
-    state.store.get_regression_schedule(Uuid::parse_str(id).unwrap()).await.unwrap().unwrap()
+    state
+        .store
+        .get_regression_schedule(Uuid::parse_str(id).unwrap())
+        .await
+        .unwrap()
+        .unwrap()
 }
 
 async fn a_suite(state: &AppState, project: Uuid, key: &str, name: &str) -> String {
-    let (status, made) = send(state, req("POST", &format!("/api/v1/projects/{project}/test-suites"), Some(key), Some(serde_json::json!({"name": name})))).await;
+    let (status, made) = send(
+        state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-suites"),
+            Some(key),
+            Some(serde_json::json!({"name": name})),
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "body={made}");
     made["id"].as_str().unwrap().to_string()
 }
@@ -15413,12 +19685,31 @@ async fn phase8c_schedules_are_made_changed_and_removed_by_an_operator_and_read_
     let now = chrono::Utc::now();
 
     // Made: the name is trimmed, it runs every two cases at a time, one interval from now.
-    let (status, made) = regression_call(&state, "POST", project, "schedules", &owner, Some(serde_json::json!({"name": "  Nightly  ", "every_minutes": 60}))).await;
+    let (status, made) = regression_call(
+        &state,
+        "POST",
+        project,
+        "schedules",
+        &owner,
+        Some(serde_json::json!({"name": "  Nightly  ", "every_minutes": 60})),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "body={made}");
     assert_eq!(made["name"], "Nightly");
-    assert_eq!((&made["enabled"], &made["suite_id"], &made["concurrency"]), (&serde_json::json!(true), &Value::Null, &serde_json::json!(2)));
-    let next: chrono::DateTime<chrono::Utc> = made["next_run_at"].as_str().unwrap().parse().unwrap();
-    assert!(next > now + chrono::Duration::minutes(59) && next < now + chrono::Duration::minutes(61), "{next}");
+    assert_eq!(
+        (&made["enabled"], &made["suite_id"], &made["concurrency"]),
+        (
+            &serde_json::json!(true),
+            &Value::Null,
+            &serde_json::json!(2)
+        )
+    );
+    let next: chrono::DateTime<chrono::Utc> =
+        made["next_run_at"].as_str().unwrap().parse().unwrap();
+    assert!(
+        next > now + chrono::Duration::minutes(59) && next < now + chrono::Duration::minutes(61),
+        "{next}"
+    );
     let id = made["id"].as_str().unwrap().to_string();
     let first_next = stored_schedule(&state, &id).await.next_run_at;
 
@@ -15426,106 +19717,329 @@ async fn phase8c_schedules_are_made_changed_and_removed_by_an_operator_and_read_
     let start = now - chrono::Duration::days(2) - chrono::Duration::minutes(7);
     let (status, grid) = regression_call(&state, "POST", project, "schedules", &owner, Some(serde_json::json!({"name": "Grid", "every_minutes": 60, "start_at": start.to_rfc3339()}))).await;
     assert_eq!(status, StatusCode::CREATED, "body={grid}");
-    let next: chrono::DateTime<chrono::Utc> = grid["next_run_at"].as_str().unwrap().parse().unwrap();
-    assert!(next > now && next <= now + chrono::Duration::minutes(60), "{next}");
-    assert_eq!((next - start).num_seconds() % 3600, 0, "on the grid of the start");
+    let next: chrono::DateTime<chrono::Utc> =
+        grid["next_run_at"].as_str().unwrap().parse().unwrap();
+    assert!(
+        next > now && next <= now + chrono::Duration::minutes(60),
+        "{next}"
+    );
+    assert_eq!(
+        (next - start).num_seconds() % 3600,
+        0,
+        "on the grid of the start"
+    );
 
     // Refused, in words.
     let bad = [
         (serde_json::json!({"every_minutes": 60}), "name is required"),
-        (serde_json::json!({"name": "x"}), "every_minutes is required"),
-        (serde_json::json!({"name": " ", "every_minutes": 60}), "name must not be empty"),
-        (serde_json::json!({"name": "x", "every_minutes": 4}), "every_minutes must be from 5 to 44640"),
-        (serde_json::json!({"name": "x", "every_minutes": 44641}), "every_minutes must be from 5 to 44640"),
-        (serde_json::json!({"name": "x", "every_minutes": 60, "concurrency": 0}), "concurrency must be from 1 to 8"),
-        (serde_json::json!({"name": "x", "every_minutes": 60, "concurrency": 9}), "concurrency must be from 1 to 8"),
+        (
+            serde_json::json!({"name": "x"}),
+            "every_minutes is required",
+        ),
+        (
+            serde_json::json!({"name": " ", "every_minutes": 60}),
+            "name must not be empty",
+        ),
+        (
+            serde_json::json!({"name": "x", "every_minutes": 4}),
+            "every_minutes must be from 5 to 44640",
+        ),
+        (
+            serde_json::json!({"name": "x", "every_minutes": 44641}),
+            "every_minutes must be from 5 to 44640",
+        ),
+        (
+            serde_json::json!({"name": "x", "every_minutes": 60, "concurrency": 0}),
+            "concurrency must be from 1 to 8",
+        ),
+        (
+            serde_json::json!({"name": "x", "every_minutes": 60, "concurrency": 9}),
+            "concurrency must be from 1 to 8",
+        ),
     ];
     for (body, needle) in bad {
-        let (status, out) = regression_call(&state, "POST", project, "schedules", &owner, Some(body.clone())).await;
+        let (status, out) = regression_call(
+            &state,
+            "POST",
+            project,
+            "schedules",
+            &owner,
+            Some(body.clone()),
+        )
+        .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {out}");
-        assert!(out["error"]["message"].as_str().unwrap().contains(needle), "{body}: {out}");
+        assert!(
+            out["error"]["message"].as_str().unwrap().contains(needle),
+            "{body}: {out}"
+        );
     }
     // A suite that is not there, or is another project's, is not found.
     let elsewhere = a_suite(&state, other, &other_owner, "Elsewhere").await;
     for suite in [Uuid::new_v4().to_string(), elsewhere] {
-        let (status, out) = regression_call(&state, "POST", project, "schedules", &owner, Some(serde_json::json!({"name": "x", "every_minutes": 60, "suite_id": suite}))).await;
+        let (status, out) = regression_call(
+            &state,
+            "POST",
+            project,
+            "schedules",
+            &owner,
+            Some(serde_json::json!({"name": "x", "every_minutes": 60, "suite_id": suite})),
+        )
+        .await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{out}");
     }
     let suite = a_suite(&state, project, &owner, "Smoke").await;
     let (status, with_suite) = regression_call(&state, "POST", project, "schedules", &owner, Some(serde_json::json!({"name": "Suite", "every_minutes": 30, "suite_id": suite, "concurrency": 3}))).await;
     assert_eq!(status, StatusCode::CREATED, "body={with_suite}");
-    assert_eq!((with_suite["suite_id"].as_str(), with_suite["concurrency"].as_i64()), (Some(suite.as_str()), Some(3)));
+    assert_eq!(
+        (
+            with_suite["suite_id"].as_str(),
+            with_suite["concurrency"].as_i64()
+        ),
+        (Some(suite.as_str()), Some(3))
+    );
 
     // Who may: a viewer reads and does nothing else; another project's key does not reach it.
-    let (status, listed) = regression_call(&state, "GET", project, "schedules", &viewer, None).await;
+    let (status, listed) =
+        regression_call(&state, "GET", project, "schedules", &viewer, None).await;
     assert_eq!(status, StatusCode::OK, "body={listed}");
     assert_eq!(listed["schedules"].as_array().unwrap().len(), 3);
-    assert!(listed["schedules"].as_array().unwrap().iter().all(|s| s["last_run"].is_null()));
+    assert!(listed["schedules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|s| s["last_run"].is_null()));
     let attempts = [
-        ("POST", "schedules".to_string(), Some(serde_json::json!({"name": "x", "every_minutes": 60}))),
-        ("PATCH", format!("schedules/{id}"), Some(serde_json::json!({"name": "x"}))),
+        (
+            "POST",
+            "schedules".to_string(),
+            Some(serde_json::json!({"name": "x", "every_minutes": 60})),
+        ),
+        (
+            "PATCH",
+            format!("schedules/{id}"),
+            Some(serde_json::json!({"name": "x"})),
+        ),
         ("DELETE", format!("schedules/{id}"), None),
         ("POST", format!("schedules/{id}/run"), None),
     ];
     for (method, tail, body) in attempts {
         let (status, out) = regression_call(&state, method, project, &tail, &viewer, body).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "a viewer: {method} {tail}: {out}");
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "a viewer: {method} {tail}: {out}"
+        );
     }
-    for (method, tail) in [("GET", "schedules".to_string()), ("GET", format!("schedules/{id}/runs")), ("PATCH", format!("schedules/{id}")), ("DELETE", format!("schedules/{id}"))] {
-        let (status, out) = regression_call(&state, method, project, &tail, &stranger, (method == "PATCH").then_some(serde_json::json!({"name": "x"}))).await;
-        assert!(status == StatusCode::FORBIDDEN || status == StatusCode::NOT_FOUND, "another project's key: {method} {tail}: {status} {out}");
+    for (method, tail) in [
+        ("GET", "schedules".to_string()),
+        ("GET", format!("schedules/{id}/runs")),
+        ("PATCH", format!("schedules/{id}")),
+        ("DELETE", format!("schedules/{id}")),
+    ] {
+        let (status, out) = regression_call(
+            &state,
+            method,
+            project,
+            &tail,
+            &stranger,
+            (method == "PATCH").then_some(serde_json::json!({"name": "x"})),
+        )
+        .await;
+        assert!(
+            status == StatusCode::FORBIDDEN || status == StatusCode::NOT_FOUND,
+            "another project's key: {method} {tail}: {status} {out}"
+        );
     }
-    let (status, _) = regression_call(&state, "PATCH", other, &format!("schedules/{id}"), &other_owner, Some(serde_json::json!({"name": "x"}))).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "a schedule is not found through another project");
+    let (status, _) = regression_call(
+        &state,
+        "PATCH",
+        other,
+        &format!("schedules/{id}"),
+        &other_owner,
+        Some(serde_json::json!({"name": "x"})),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a schedule is not found through another project"
+    );
 
     // Changed: only what is given.
-    let (status, renamed) = regression_call(&state, "PATCH", project, &format!("schedules/{id}"), &owner, Some(serde_json::json!({"name": "Weekly"}))).await;
+    let (status, renamed) = regression_call(
+        &state,
+        "PATCH",
+        project,
+        &format!("schedules/{id}"),
+        &owner,
+        Some(serde_json::json!({"name": "Weekly"})),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={renamed}");
-    assert_eq!((renamed["name"].as_str(), renamed["every_minutes"].as_i64()), (Some("Weekly"), Some(60)));
-    let at = |v: &Value| v.as_str().unwrap().parse::<chrono::DateTime<chrono::Utc>>().unwrap();
-    assert_eq!(at(&renamed["next_run_at"]), first_next, "changing the name does not move the next run");
-    let (_, paused) = regression_call(&state, "PATCH", project, &format!("schedules/{id}"), &owner, Some(serde_json::json!({"enabled": false}))).await;
+    assert_eq!(
+        (renamed["name"].as_str(), renamed["every_minutes"].as_i64()),
+        (Some("Weekly"), Some(60))
+    );
+    let at = |v: &Value| {
+        v.as_str()
+            .unwrap()
+            .parse::<chrono::DateTime<chrono::Utc>>()
+            .unwrap()
+    };
+    assert_eq!(
+        at(&renamed["next_run_at"]),
+        first_next,
+        "changing the name does not move the next run"
+    );
+    let (_, paused) = regression_call(
+        &state,
+        "PATCH",
+        project,
+        &format!("schedules/{id}"),
+        &owner,
+        Some(serde_json::json!({"enabled": false})),
+    )
+    .await;
     assert_eq!(paused["enabled"], false);
     assert_eq!(at(&paused["next_run_at"]), first_next);
     // Turned on again it forgets why it stopped and takes the next slot.
     let stored_id = Uuid::parse_str(&id).unwrap();
-    let mut row = state.store.get_regression_schedule(stored_id).await.unwrap().unwrap();
+    let mut row = state
+        .store
+        .get_regression_schedule(stored_id)
+        .await
+        .unwrap()
+        .unwrap();
     row.last_note = Some("paused: the key this schedule runs as was revoked".to_string());
     assert!(state.store.update_regression_schedule(&row).await.unwrap());
-    let (_, resumed) = regression_call(&state, "PATCH", project, &format!("schedules/{id}"), &owner, Some(serde_json::json!({"enabled": true}))).await;
-    assert_eq!((&resumed["enabled"], &resumed["last_note"]), (&serde_json::json!(true), &Value::Null));
+    let (_, resumed) = regression_call(
+        &state,
+        "PATCH",
+        project,
+        &format!("schedules/{id}"),
+        &owner,
+        Some(serde_json::json!({"enabled": true})),
+    )
+    .await;
+    assert_eq!(
+        (&resumed["enabled"], &resumed["last_note"]),
+        (&serde_json::json!(true), &Value::Null)
+    );
     // A new interval puts the next run on its grid.
-    let (_, every_day) = regression_call(&state, "PATCH", project, &format!("schedules/{id}"), &owner, Some(serde_json::json!({"every_minutes": 1440, "concurrency": 4}))).await;
-    assert_eq!((every_day["every_minutes"].as_i64(), every_day["concurrency"].as_i64()), (Some(1440), Some(4)));
-    let anchor: chrono::DateTime<chrono::Utc> = every_day["anchor_at"].as_str().unwrap().parse().unwrap();
-    let next: chrono::DateTime<chrono::Utc> = every_day["next_run_at"].as_str().unwrap().parse().unwrap();
+    let (_, every_day) = regression_call(
+        &state,
+        "PATCH",
+        project,
+        &format!("schedules/{id}"),
+        &owner,
+        Some(serde_json::json!({"every_minutes": 1440, "concurrency": 4})),
+    )
+    .await;
+    assert_eq!(
+        (
+            every_day["every_minutes"].as_i64(),
+            every_day["concurrency"].as_i64()
+        ),
+        (Some(1440), Some(4))
+    );
+    let anchor: chrono::DateTime<chrono::Utc> =
+        every_day["anchor_at"].as_str().unwrap().parse().unwrap();
+    let next: chrono::DateTime<chrono::Utc> =
+        every_day["next_run_at"].as_str().unwrap().parse().unwrap();
     assert_eq!((next - anchor).num_seconds() % 86_400, 0);
     assert!(next >= now);
     // A suite can be given and taken away; `null` is "every case", not "unchanged".
-    let (_, suited) = regression_call(&state, "PATCH", project, &format!("schedules/{id}"), &owner, Some(serde_json::json!({"suite_id": suite}))).await;
+    let (_, suited) = regression_call(
+        &state,
+        "PATCH",
+        project,
+        &format!("schedules/{id}"),
+        &owner,
+        Some(serde_json::json!({"suite_id": suite})),
+    )
+    .await;
     assert_eq!(suited["suite_id"].as_str(), Some(suite.as_str()));
-    let (_, untouched) = regression_call(&state, "PATCH", project, &format!("schedules/{id}"), &owner, Some(serde_json::json!({"name": "Still suited"}))).await;
-    assert_eq!(untouched["suite_id"].as_str(), Some(suite.as_str()), "a field that is not given is not changed");
-    let (_, all_cases) = regression_call(&state, "PATCH", project, &format!("schedules/{id}"), &owner, Some(serde_json::json!({"suite_id": null}))).await;
+    let (_, untouched) = regression_call(
+        &state,
+        "PATCH",
+        project,
+        &format!("schedules/{id}"),
+        &owner,
+        Some(serde_json::json!({"name": "Still suited"})),
+    )
+    .await;
+    assert_eq!(
+        untouched["suite_id"].as_str(),
+        Some(suite.as_str()),
+        "a field that is not given is not changed"
+    );
+    let (_, all_cases) = regression_call(
+        &state,
+        "PATCH",
+        project,
+        &format!("schedules/{id}"),
+        &owner,
+        Some(serde_json::json!({"suite_id": null})),
+    )
+    .await;
     assert_eq!(all_cases["suite_id"], Value::Null);
-    let (status, out) = regression_call(&state, "PATCH", project, &format!("schedules/{id}"), &owner, Some(serde_json::json!({"every_minutes": 3}))).await;
+    let (status, out) = regression_call(
+        &state,
+        "PATCH",
+        project,
+        &format!("schedules/{id}"),
+        &owner,
+        Some(serde_json::json!({"every_minutes": 3})),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{out}");
 
     // Removed.
-    let (status, _) = regression_call(&state, "DELETE", project, &format!("schedules/{id}"), &owner, None).await;
+    let (status, _) = regression_call(
+        &state,
+        "DELETE",
+        project,
+        &format!("schedules/{id}"),
+        &owner,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    let (status, _) = regression_call(&state, "PATCH", project, &format!("schedules/{id}"), &owner, Some(serde_json::json!({"name": "x"}))).await;
+    let (status, _) = regression_call(
+        &state,
+        "PATCH",
+        project,
+        &format!("schedules/{id}"),
+        &owner,
+        Some(serde_json::json!({"name": "x"})),
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     let (_, listed) = regression_call(&state, "GET", project, "schedules", &viewer, None).await;
     assert_eq!(listed["schedules"].as_array().unwrap().len(), 2);
 
     // A project has at most twenty.
     for n in 0..18 {
-        state.store.insert_regression_schedule(&a_schedule_row(project, &format!("Filler {n}"), now)).await.unwrap();
+        state
+            .store
+            .insert_regression_schedule(&a_schedule_row(project, &format!("Filler {n}"), now))
+            .await
+            .unwrap();
     }
-    let (status, out) = regression_call(&state, "POST", project, "schedules", &owner, Some(serde_json::json!({"name": "One too many", "every_minutes": 60}))).await;
+    let (status, out) = regression_call(
+        &state,
+        "POST",
+        project,
+        "schedules",
+        &owner,
+        Some(serde_json::json!({"name": "One too many", "every_minutes": 60})),
+    )
+    .await;
     assert_eq!(status, StatusCode::CONFLICT, "{out}");
-    assert!(out["error"]["message"].as_str().unwrap().contains("at most 20"));
+    assert!(out["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("at most 20"));
 }
 
 #[tokio::test]
@@ -15536,33 +20050,110 @@ async fn phase8c_the_scope_shows_what_can_be_repeated_and_why_a_case_cannot() {
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
     let viewer = mint_key(&state, "viewer", Some(&project.to_string())).await;
 
-    let (ran, _) = executed_case(&state, project, &owner, "Runs for real", "/fixture/flip/t8c-scope").await;
-    let approved = approved_case(&state, project, &owner, sample_test_case_body("Approved only")).await;
-    let simulated = approved_case(&state, project, &owner, sample_test_case_body("Only simulated")).await;
-    let (status, handoff) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases/{simulated}/handoff"), Some(&owner), Some(serde_json::json!({"simulate": {"outcome": "pass", "delay_ms": 0}})))).await;
+    let (ran, _) = executed_case(
+        &state,
+        project,
+        &owner,
+        "Runs for real",
+        "/fixture/flip/t8c-scope",
+    )
+    .await;
+    let approved = approved_case(
+        &state,
+        project,
+        &owner,
+        sample_test_case_body("Approved only"),
+    )
+    .await;
+    let simulated = approved_case(
+        &state,
+        project,
+        &owner,
+        sample_test_case_body("Only simulated"),
+    )
+    .await;
+    let (status, handoff) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases/{simulated}/handoff"),
+            Some(&owner),
+            Some(serde_json::json!({"simulate": {"outcome": "pass", "delay_ms": 0}})),
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "body={handoff}");
     wait_run_ended(&state, project, handoff["run_id"].as_str().unwrap(), &owner).await;
     // A case nobody approved is not in scope at all.
-    let (status, generated) = send(&state, req("POST", &format!("/api/v1/projects/{project}/test-cases"), Some(&owner), Some(sample_test_case_body("Not approved")))).await;
+    let (status, generated) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(&owner),
+            Some(sample_test_case_body("Not approved")),
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "body={generated}");
 
     let (status, scope) = regression_call(&state, "GET", project, "scope", &viewer, None).await;
     assert_eq!(status, StatusCode::OK, "a viewer may see it: {scope}");
-    let repeatable: Vec<&str> = scope["repeatable"].as_array().unwrap().iter().map(|c| c["case_id"].as_str().unwrap()).collect();
+    let repeatable: Vec<&str> = scope["repeatable"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["case_id"].as_str().unwrap())
+        .collect();
     assert_eq!(repeatable, [ran.as_str()]);
     assert_eq!(scope["repeatable"][0]["title"], "Runs for real");
     let skipped = scope["skipped"].as_array().unwrap();
     assert_eq!(skipped.len(), 2, "{scope}");
-    let why = |id: &str| skipped.iter().find(|c| c["case_id"] == id).unwrap_or_else(|| panic!("{id} not in {scope}"))["reason"].as_str().unwrap().to_string();
-    assert!(why(&approved).starts_with("approved, but not run yet"), "{}", why(&approved));
-    assert!(why(&simulated).contains("simulated, not executed"), "{}", why(&simulated));
+    let why = |id: &str| {
+        skipped
+            .iter()
+            .find(|c| c["case_id"] == id)
+            .unwrap_or_else(|| panic!("{id} not in {scope}"))["reason"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert!(
+        why(&approved).starts_with("approved, but not run yet"),
+        "{}",
+        why(&approved)
+    );
+    assert!(
+        why(&simulated).contains("simulated, not executed"),
+        "{}",
+        why(&simulated)
+    );
     assert!(skipped.iter().all(|c| c["case_id"] != generated["id"]));
 
     // A suite with no case in it repeats nothing; one that is not there is not found.
     let suite = a_suite(&state, project, &owner, "Empty").await;
-    let (_, in_suite) = regression_call(&state, "GET", project, &format!("scope?suite_id={suite}"), &owner, None).await;
-    assert_eq!((&in_suite["repeatable"], &in_suite["skipped"]), (&serde_json::json!([]), &serde_json::json!([])));
-    let (status, _) = regression_call(&state, "GET", project, &format!("scope?suite_id={}", Uuid::new_v4()), &owner, None).await;
+    let (_, in_suite) = regression_call(
+        &state,
+        "GET",
+        project,
+        &format!("scope?suite_id={suite}"),
+        &owner,
+        None,
+    )
+    .await;
+    assert_eq!(
+        (&in_suite["repeatable"], &in_suite["skipped"]),
+        (&serde_json::json!([]), &serde_json::json!([]))
+    );
+    let (status, _) = regression_call(
+        &state,
+        "GET",
+        project,
+        &format!("scope?suite_id={}", Uuid::new_v4()),
+        &owner,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -15577,67 +20168,159 @@ async fn phase8c_a_run_repeats_the_tasks_and_says_what_changed_since_the_last_ti
     let stranger = mint_key(&state, "operator", Some(&other.to_string())).await;
     set_fixture_flip("t8c-a", true);
     set_fixture_flip("t8c-b", true);
-    let (case_a, source_a) = executed_case(&state, project, &owner, "Case A", "/fixture/flip/t8c-a").await;
+    let (case_a, source_a) =
+        executed_case(&state, project, &owner, "Case A", "/fixture/flip/t8c-a").await;
     let (case_b, _) = executed_case(&state, project, &owner, "Case B", "/fixture/flip/t8c-b").await;
     let never = approved_case(&state, project, &owner, sample_test_case_body("Never run")).await;
 
     // A schedule that is off never runs by itself and is run when asked.
-    let sid = a_schedule(&state, project, &owner, serde_json::json!({"name": "On demand", "every_minutes": 60, "enabled": false})).await;
+    let sid = a_schedule(
+        &state,
+        project,
+        &owner,
+        serde_json::json!({"name": "On demand", "every_minutes": 60, "enabled": false}),
+    )
+    .await;
 
     // First run: there is no run of this schedule before it, so each case is compared with the run it was copied from.
     let (status, first) = run_schedule_call(&state, project, &sid, &owner).await;
     assert_eq!(status, StatusCode::CREATED, "body={first}");
-    assert_eq!((first["cases"].as_i64(), first["skipped"].as_i64()), (Some(2), Some(1)));
-    let report1 = regression_report_when_done(&state, project, first["id"].as_str().unwrap(), &owner).await;
+    assert_eq!(
+        (first["cases"].as_i64(), first["skipped"].as_i64()),
+        (Some(2), Some(1))
+    );
+    let report1 =
+        regression_report_when_done(&state, project, first["id"].as_str().unwrap(), &owner).await;
     assert_eq!(report1["verdict"], "PASSING", "{report1}");
     assert_eq!(report1["summary"]["still_passing"], 2);
     assert_eq!(report1["trigger"], "MANUAL");
     assert_eq!(report1["schedule_name"], "On demand");
     for case in [&case_a, &case_b] {
         let c = regression_case_of(&report1, case);
-        assert_eq!((c["outcome"].as_str(), c["before"].as_str(), c["before_from"].as_str()), (Some("PASSED"), Some("PASSED"), Some("SOURCE_RUN")));
+        assert_eq!(
+            (
+                c["outcome"].as_str(),
+                c["before"].as_str(),
+                c["before_from"].as_str()
+            ),
+            (Some("PASSED"), Some("PASSED"), Some("SOURCE_RUN"))
+        );
     }
-    assert_eq!(regression_case_of(&report1, &case_a)["source_run_id"], source_a.as_str());
+    assert_eq!(
+        regression_case_of(&report1, &case_a)["source_run_id"],
+        source_a.as_str()
+    );
     assert_eq!(report1["skipped"][0]["case_id"], never.as_str());
-    assert!(report1["skipped"][0]["reason"].as_str().unwrap().starts_with("approved, but not run yet"));
+    assert!(report1["skipped"][0]["reason"]
+        .as_str()
+        .unwrap()
+        .starts_with("approved, but not run yet"));
     // The run is an ordinary execution: two tasks, named as the cases are, in the project's list of runs.
     let run_id = first["run_id"].as_str().unwrap();
-    let (status, detail) = send(&state, req("GET", &format!("/api/v1/projects/{project}/executions/{run_id}"), Some(&owner), None)).await;
+    let (status, detail) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/executions/{run_id}"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={detail}");
-    let mut names: Vec<&str> = detail["tasks"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
+    let mut names: Vec<&str> = detail["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
     names.sort_unstable();
     assert_eq!(names, ["Case A", "Case B"]);
-    assert!(detail["name"].as_str().unwrap().starts_with("Regression: On demand ("), "{}", detail["name"]);
+    assert!(
+        detail["name"]
+            .as_str()
+            .unwrap()
+            .starts_with("Regression: On demand ("),
+        "{}",
+        detail["name"]
+    );
 
     // Case B breaks: the next run says so, first, and beside what it came to last time.
     set_fixture_flip("t8c-b", false);
     let (_, second) = run_schedule_call(&state, project, &sid, &owner).await;
-    let report2 = regression_report_when_done(&state, project, second["id"].as_str().unwrap(), &owner).await;
+    let report2 =
+        regression_report_when_done(&state, project, second["id"].as_str().unwrap(), &owner).await;
     assert_eq!(report2["verdict"], "REGRESSED", "{report2}");
     assert_eq!(report2["summary"]["regressed"], 1);
     assert_eq!(report2["summary"]["still_passing"], 1);
     let broken = &report2["cases"][0];
     assert_eq!(broken["case_id"], case_b.as_str(), "regressions come first");
-    assert_eq!((broken["change"].as_str(), broken["before"].as_str(), broken["before_from"].as_str(), broken["outcome"].as_str()), (Some("REGRESSED"), Some("PASSED"), Some("PREVIOUS_RUN"), Some("FAILED")));
-    assert!(broken["reason"].as_str().unwrap().contains("500"), "the reason is what the run said: {}", broken["reason"]);
-    assert_eq!(regression_case_of(&report2, &case_a)["change"], "STILL_PASSING");
-    let (status, markdown, content_type) = regression_text(&state, project, &format!("runs/{}?format=markdown", second["id"].as_str().unwrap()), &viewer).await;
+    assert_eq!(
+        (
+            broken["change"].as_str(),
+            broken["before"].as_str(),
+            broken["before_from"].as_str(),
+            broken["outcome"].as_str()
+        ),
+        (
+            Some("REGRESSED"),
+            Some("PASSED"),
+            Some("PREVIOUS_RUN"),
+            Some("FAILED")
+        )
+    );
+    assert!(
+        broken["reason"].as_str().unwrap().contains("500"),
+        "the reason is what the run said: {}",
+        broken["reason"]
+    );
+    assert_eq!(
+        regression_case_of(&report2, &case_a)["change"],
+        "STILL_PASSING"
+    );
+    let (status, markdown, content_type) = regression_text(
+        &state,
+        project,
+        &format!("runs/{}?format=markdown", second["id"].as_str().unwrap()),
+        &viewer,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
-    assert!(content_type.unwrap_or_default().starts_with("text/markdown"));
-    assert!(markdown.contains("Regressions found") && markdown.contains("**Case B** (FAILED, regressed)"), "{markdown}");
+    assert!(content_type
+        .unwrap_or_default()
+        .starts_with("text/markdown"));
+    assert!(
+        markdown.contains("Regressions found")
+            && markdown.contains("**Case B** (FAILED, regressed)"),
+        "{markdown}"
+    );
 
     // It is fixed: that is said too, and the run passes.
     set_fixture_flip("t8c-b", true);
     let (_, third) = run_schedule_call(&state, project, &sid, &owner).await;
-    let report3 = regression_report_when_done(&state, project, third["id"].as_str().unwrap(), &owner).await;
+    let report3 =
+        regression_report_when_done(&state, project, third["id"].as_str().unwrap(), &owner).await;
     assert_eq!(report3["verdict"], "PASSING", "{report3}");
     assert_eq!(regression_case_of(&report3, &case_b)["change"], "FIXED");
     assert_eq!(report3["summary"]["fixed"], 1);
 
     // The history, newest first, and the schedule's account of its latest run.
-    let (status, history) = regression_call(&state, "GET", project, &format!("schedules/{sid}/runs"), &viewer, None).await;
+    let (status, history) = regression_call(
+        &state,
+        "GET",
+        project,
+        &format!("schedules/{sid}/runs"),
+        &viewer,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={history}");
-    let verdicts: Vec<&str> = history["runs"].as_array().unwrap().iter().map(|r| r["verdict"].as_str().unwrap()).collect();
+    let verdicts: Vec<&str> = history["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["verdict"].as_str().unwrap())
+        .collect();
     assert_eq!(verdicts, ["PASSING", "REGRESSED", "PASSING"]);
     assert_eq!(history["runs"][0]["id"], third["id"]);
     let (_, listed) = regression_call(&state, "GET", project, "schedules", &viewer, None).await;
@@ -15647,32 +20330,96 @@ async fn phase8c_a_run_repeats_the_tasks_and_says_what_changed_since_the_last_ti
     assert!(schedule["last_started_at"].is_string() && schedule["last_note"].is_null());
 
     // Repeating a case leaves the case as it was: it still points at the run it was first executed in.
-    let (_, case) = send(&state, req("GET", &format!("/api/v1/projects/{project}/test-cases/{case_a}"), Some(&owner), None)).await;
-    assert_eq!((case["status"].as_str(), case["executed_run_id"].as_str()), (Some("EXECUTED"), Some(source_a.as_str())));
+    let (_, case) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/test-cases/{case_a}"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(
+        (case["status"].as_str(), case["executed_run_id"].as_str()),
+        (Some("EXECUTED"), Some(source_a.as_str()))
+    );
 
     // A run that is not there, another project's key and a bad format.
-    let (status, _) = regression_call(&state, "GET", project, &format!("runs/{}", Uuid::new_v4()), &owner, None).await;
+    let (status, _) = regression_call(
+        &state,
+        "GET",
+        project,
+        &format!("runs/{}", Uuid::new_v4()),
+        &owner,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    let (status, _) = regression_call(&state, "GET", project, &format!("runs/{}", third["id"].as_str().unwrap()), &stranger, None).await;
-    assert!(status == StatusCode::FORBIDDEN || status == StatusCode::NOT_FOUND, "{status}");
-    let (status, _) = regression_call(&state, "GET", other, &format!("runs/{}", third["id"].as_str().unwrap()), &stranger, None).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "a run is not found through another project");
-    let (status, out) = regression_call(&state, "GET", project, &format!("runs/{}?format=pdf", third["id"].as_str().unwrap()), &owner, None).await;
+    let (status, _) = regression_call(
+        &state,
+        "GET",
+        project,
+        &format!("runs/{}", third["id"].as_str().unwrap()),
+        &stranger,
+        None,
+    )
+    .await;
+    assert!(
+        status == StatusCode::FORBIDDEN || status == StatusCode::NOT_FOUND,
+        "{status}"
+    );
+    let (status, _) = regression_call(
+        &state,
+        "GET",
+        other,
+        &format!("runs/{}", third["id"].as_str().unwrap()),
+        &stranger,
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a run is not found through another project"
+    );
+    let (status, out) = regression_call(
+        &state,
+        "GET",
+        project,
+        &format!("runs/{}?format=pdf", third["id"].as_str().unwrap()),
+        &owner,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{out}");
 }
 
 #[tokio::test]
-async fn phase8c_a_run_is_not_piled_on_a_run_that_has_not_ended_and_a_schedule_with_nothing_to_repeat_says_so() {
+async fn phase8c_a_run_is_not_piled_on_a_run_that_has_not_ended_and_a_schedule_with_nothing_to_repeat_says_so(
+) {
     ensure_local_health_target().await;
     let (state, _dir) = test_state_with_compiled_api().await;
     let project = make_project(&state, "Phase8C Overlap").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-    let sid = a_schedule(&state, project, &owner, serde_json::json!({"name": "Slow", "every_minutes": 60, "enabled": false})).await;
+    let sid = a_schedule(
+        &state,
+        project,
+        &owner,
+        serde_json::json!({"name": "Slow", "every_minutes": 60, "enabled": false}),
+    )
+    .await;
 
     // Nothing has been run once: nothing to repeat.
     let (status, out) = run_schedule_call(&state, project, &sid, &owner).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{out}");
-    assert!(out["error"]["message"].as_str().unwrap().starts_with("nothing to run"), "{out}");
+    assert!(
+        out["error"]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("nothing to run"),
+        "{out}"
+    );
 
     // A case whose run takes a moment: asked again while it goes, the answer is no.
     let (case, _) = executed_case(&state, project, &owner, "Slow case", "/fixture/slow").await;
@@ -15680,25 +20427,51 @@ async fn phase8c_a_run_is_not_piled_on_a_run_that_has_not_ended_and_a_schedule_w
     assert_eq!(status, StatusCode::CREATED, "body={first}");
     let (status, again) = run_schedule_call(&state, project, &sid, &owner).await;
     assert_eq!(status, StatusCode::CONFLICT, "{again}");
-    assert!(again["error"]["message"].as_str().unwrap().contains("has not ended"), "{again}");
+    assert!(
+        again["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("has not ended"),
+        "{again}"
+    );
 
     // The loop skips it too, and moves the schedule on so that it does not queue up behind it.
     let stored = Uuid::parse_str(&sid).unwrap();
     // Whole milliseconds, as a time is stored.
-    let due = chrono::DateTime::from_timestamp_millis((chrono::Utc::now() + chrono::Duration::days(3)).timestamp_millis()).unwrap();
-    let mut row = state.store.get_regression_schedule(stored).await.unwrap().unwrap();
+    let due = chrono::DateTime::from_timestamp_millis(
+        (chrono::Utc::now() + chrono::Duration::days(3)).timestamp_millis(),
+    )
+    .unwrap();
+    let mut row = state
+        .store
+        .get_regression_schedule(stored)
+        .await
+        .unwrap()
+        .unwrap();
     row.enabled = true;
     row.next_run_at = due;
     row.anchor_at = due;
     assert!(state.store.update_regression_schedule(&row).await.unwrap());
-    assert_eq!(crate::regression_runner::tick(&state, due).await.unwrap(), 0);
-    let row = state.store.get_regression_schedule(stored).await.unwrap().unwrap();
-    assert_eq!(row.last_note.as_deref(), Some("skipped this time: the run before it has not ended"));
+    assert_eq!(
+        crate::regression_runner::tick(&state, due).await.unwrap(),
+        0
+    );
+    let row = state
+        .store
+        .get_regression_schedule(stored)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        row.last_note.as_deref(),
+        Some("skipped this time: the run before it has not ended")
+    );
     assert!(row.enabled);
     assert_eq!(row.next_run_at, due + chrono::Duration::minutes(60));
 
     // Once it has ended, a run can be made.
-    let report = regression_report_when_done(&state, project, first["id"].as_str().unwrap(), &owner).await;
+    let report =
+        regression_report_when_done(&state, project, first["id"].as_str().unwrap(), &owner).await;
     assert_eq!(report["verdict"], "PASSING", "{report}");
     assert_eq!(regression_case_of(&report, &case)["outcome"], "PASSED");
     let (status, next) = run_schedule_call(&state, project, &sid, &owner).await;
@@ -15714,57 +20487,151 @@ async fn phase8c_the_loop_runs_what_is_due_moves_on_and_pauses_what_nobody_can_r
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
     set_fixture_flip("t8c-loop", true);
     let start = chrono::Utc::now() + chrono::Duration::days(1);
-    let sid = a_schedule(&state, project, &owner, serde_json::json!({"name": "Loop", "every_minutes": 60, "start_at": start.to_rfc3339()})).await;
+    let sid = a_schedule(
+        &state,
+        project,
+        &owner,
+        serde_json::json!({"name": "Loop", "every_minutes": 60, "start_at": start.to_rfc3339()}),
+    )
+    .await;
     let first_slot = stored_schedule(&state, &sid).await.next_run_at;
-    assert!((first_slot - start).num_milliseconds().abs() <= 1, "the first run is at its start: {first_slot} and {start}");
+    assert!(
+        (first_slot - start).num_milliseconds().abs() <= 1,
+        "the first run is at its start: {first_slot} and {start}"
+    );
 
     // Not due: nothing is done and nothing changes.
-    assert_eq!(crate::regression_runner::tick(&state, chrono::Utc::now()).await.unwrap(), 0);
+    assert_eq!(
+        crate::regression_runner::tick(&state, chrono::Utc::now())
+            .await
+            .unwrap(),
+        0
+    );
     assert_eq!(stored_schedule(&state, &sid).await.next_run_at, first_slot);
 
     // Due, with nothing that has been run once: a note, and the next slot.
     let at = first_slot + chrono::Duration::minutes(1);
     assert_eq!(crate::regression_runner::tick(&state, at).await.unwrap(), 0);
     let row = stored_schedule(&state, &sid).await;
-    assert!(row.last_note.as_deref().unwrap().starts_with("nothing to run"), "{:?}", row.last_note);
+    assert!(
+        row.last_note
+            .as_deref()
+            .unwrap()
+            .starts_with("nothing to run"),
+        "{:?}",
+        row.last_note
+    );
     assert_eq!(row.next_run_at, first_slot + chrono::Duration::minutes(60));
     assert!(row.enabled && row.last_started_at.is_none());
 
     // Due, with a case that has been run: one run is made, as the key that made the schedule, and the schedule moves on.
-    let (case, _) = executed_case(&state, project, &owner, "Loop case", "/fixture/flip/t8c-loop").await;
+    let (case, _) = executed_case(
+        &state,
+        project,
+        &owner,
+        "Loop case",
+        "/fixture/flip/t8c-loop",
+    )
+    .await;
     let at = first_slot + chrono::Duration::minutes(61);
     assert_eq!(crate::regression_runner::tick(&state, at).await.unwrap(), 1);
     let row = stored_schedule(&state, &sid).await;
     assert_eq!(row.next_run_at, first_slot + chrono::Duration::minutes(120));
     assert!(row.last_note.is_none());
-    assert_eq!(row.last_started_at.map(|t| t.timestamp_millis()), Some(at.timestamp_millis()));
-    assert_eq!(crate::regression_runner::tick(&state, at).await.unwrap(), 0, "and it is not due again at once");
-    let (_, history) = regression_call(&state, "GET", project, &format!("schedules/{sid}/runs"), &owner, None).await;
+    assert_eq!(
+        row.last_started_at.map(|t| t.timestamp_millis()),
+        Some(at.timestamp_millis())
+    );
+    assert_eq!(
+        crate::regression_runner::tick(&state, at).await.unwrap(),
+        0,
+        "and it is not due again at once"
+    );
+    let (_, history) = regression_call(
+        &state,
+        "GET",
+        project,
+        &format!("schedules/{sid}/runs"),
+        &owner,
+        None,
+    )
+    .await;
     assert_eq!(history["runs"].as_array().unwrap().len(), 1);
     assert_eq!(history["runs"][0]["trigger"], "SCHEDULE");
-    let report = regression_report_when_done(&state, project, history["runs"][0]["id"].as_str().unwrap(), &owner).await;
+    let report = regression_report_when_done(
+        &state,
+        project,
+        history["runs"][0]["id"].as_str().unwrap(),
+        &owner,
+    )
+    .await;
     assert_eq!(regression_case_of(&report, &case)["outcome"], "PASSED");
     // The run says it was made by the key that made the schedule.
     assert_eq!(report["created_by"], "test-key");
 
     // Ten days later it makes one run, not ten, and keeps its hour.
     let later = first_slot + chrono::Duration::days(10) + chrono::Duration::minutes(30);
-    assert_eq!(crate::regression_runner::tick(&state, later).await.unwrap(), 1);
+    assert_eq!(
+        crate::regression_runner::tick(&state, later).await.unwrap(),
+        1
+    );
     let row = stored_schedule(&state, &sid).await;
-    assert_eq!(row.next_run_at, first_slot + chrono::Duration::days(10) + chrono::Duration::minutes(60));
+    assert_eq!(
+        row.next_run_at,
+        first_slot + chrono::Duration::days(10) + chrono::Duration::minutes(60)
+    );
     assert_eq!((row.next_run_at - row.anchor_at).num_minutes() % 60, 0);
-    let (_, history) = regression_call(&state, "GET", project, &format!("schedules/{sid}/runs"), &owner, None).await;
-    regression_report_when_done(&state, project, history["runs"][0]["id"].as_str().unwrap(), &owner).await;
+    let (_, history) = regression_call(
+        &state,
+        "GET",
+        project,
+        &format!("schedules/{sid}/runs"),
+        &owner,
+        None,
+    )
+    .await;
+    regression_report_when_done(
+        &state,
+        project,
+        history["runs"][0]["id"].as_str().unwrap(),
+        &owner,
+    )
+    .await;
 
     // Nobody can run it: the key was revoked. It is paused, with the reason, and left alone after that.
-    state.store.revoke_api_key(row.created_by_key).await.unwrap();
+    state
+        .store
+        .revoke_api_key(row.created_by_key)
+        .await
+        .unwrap();
     let much_later = later + chrono::Duration::days(2);
-    assert_eq!(crate::regression_runner::tick(&state, much_later).await.unwrap(), 0);
+    assert_eq!(
+        crate::regression_runner::tick(&state, much_later)
+            .await
+            .unwrap(),
+        0
+    );
     let row = stored_schedule(&state, &sid).await;
     assert!(!row.enabled);
-    assert_eq!(row.last_note.as_deref(), Some("paused: the key this schedule runs as was revoked"));
-    assert_eq!(crate::regression_runner::tick(&state, much_later + chrono::Duration::days(1)).await.unwrap(), 0);
-    assert!(state.store.due_regression_schedules(much_later + chrono::Duration::days(9)).await.unwrap().is_empty(), "a paused schedule is never due");
+    assert_eq!(
+        row.last_note.as_deref(),
+        Some("paused: the key this schedule runs as was revoked")
+    );
+    assert_eq!(
+        crate::regression_runner::tick(&state, much_later + chrono::Duration::days(1))
+            .await
+            .unwrap(),
+        0
+    );
+    assert!(
+        state
+            .store
+            .due_regression_schedules(much_later + chrono::Duration::days(9))
+            .await
+            .unwrap()
+            .is_empty(),
+        "a paused schedule is never due"
+    );
 }
 
 #[tokio::test]
@@ -15774,48 +20641,113 @@ async fn phase8c_deleting_a_project_removes_its_schedules_and_runs_and_only_its_
     let count = |table: &'static str, project: Uuid| {
         let pool = state.store.pool.clone();
         let sql: &'static str = match table {
-            "regression_schedules" => "SELECT COUNT(*) FROM regression_schedules WHERE project_id = ?",
+            "regression_schedules" => {
+                "SELECT COUNT(*) FROM regression_schedules WHERE project_id = ?"
+            }
             _ => "SELECT COUNT(*) FROM regression_runs WHERE project_id = ?",
         };
-        async move { sqlx::query_scalar::<_, i64>(sql).bind(project.to_string()).fetch_one(&pool).await.unwrap() }
+        async move {
+            sqlx::query_scalar::<_, i64>(sql)
+                .bind(project.to_string())
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
     };
     set_fixture_flip("t8c-delete", true);
     let mut projects = Vec::new();
     for name in ["Phase8C Delete A", "Phase8C Delete B"] {
         let project = make_project(&state, name).await;
         let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-        executed_case(&state, project, &owner, "Deleted with its project", "/fixture/flip/t8c-delete").await;
-        let sid = a_schedule(&state, project, &owner, serde_json::json!({"name": "Doomed", "every_minutes": 60, "enabled": false})).await;
-        let (status, run) = regression_call(&state, "POST", project, &format!("schedules/{sid}/run"), &owner, None).await;
+        executed_case(
+            &state,
+            project,
+            &owner,
+            "Deleted with its project",
+            "/fixture/flip/t8c-delete",
+        )
+        .await;
+        let sid = a_schedule(
+            &state,
+            project,
+            &owner,
+            serde_json::json!({"name": "Doomed", "every_minutes": 60, "enabled": false}),
+        )
+        .await;
+        let (status, run) = regression_call(
+            &state,
+            "POST",
+            project,
+            &format!("schedules/{sid}/run"),
+            &owner,
+            None,
+        )
+        .await;
         assert_eq!(status, StatusCode::CREATED, "body={run}");
         regression_report_when_done(&state, project, run["id"].as_str().unwrap(), &owner).await;
         projects.push(project);
     }
     for project in &projects {
-        assert_eq!((count("regression_schedules", *project).await, count("regression_runs", *project).await), (1, 1));
+        assert_eq!(
+            (
+                count("regression_schedules", *project).await,
+                count("regression_runs", *project).await
+            ),
+            (1, 1)
+        );
     }
     assert!(state.store.delete_project(projects[0]).await.unwrap());
-    assert_eq!((count("regression_schedules", projects[0]).await, count("regression_runs", projects[0]).await), (0, 0));
-    assert_eq!((count("regression_schedules", projects[1]).await, count("regression_runs", projects[1]).await), (1, 1), "another project's are not touched");
+    assert_eq!(
+        (
+            count("regression_schedules", projects[0]).await,
+            count("regression_runs", projects[0]).await
+        ),
+        (0, 0)
+    );
+    assert_eq!(
+        (
+            count("regression_schedules", projects[1]).await,
+            count("regression_runs", projects[1]).await
+        ),
+        (1, 1),
+        "another project's are not touched"
+    );
 }
 
 // ------------------------------------------------- Phase 8D: CI integration (JUnit, waiting for a run, the verdict in the headers)
 
 /// A response's status, its body as text and its headers.
-async fn text_and_headers(state: &AppState, path: &str, key: &str) -> (StatusCode, String, axum::http::HeaderMap) {
-    let response = router(state.clone()).oneshot(req("GET", path, Some(key), None)).await.expect("router call");
+async fn text_and_headers(
+    state: &AppState,
+    path: &str,
+    key: &str,
+) -> (StatusCode, String, axum::http::HeaderMap) {
+    let response = router(state.clone())
+        .oneshot(req("GET", path, Some(key), None))
+        .await
+        .expect("router call");
     let status = response.status();
     let headers = response.headers().clone();
-    let bytes = response.into_body().collect().await.expect("collect body").to_bytes();
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("collect body")
+        .to_bytes();
     (status, String::from_utf8_lossy(&bytes).to_string(), headers)
 }
 
 fn header_text(headers: &axum::http::HeaderMap, name: &str) -> String {
-    headers.get(name).and_then(|v| v.to_str().ok()).unwrap_or("(none)").to_string()
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("(none)")
+        .to_string()
 }
 
 #[tokio::test]
-async fn phase8d_a_regression_report_is_read_as_junit_and_waited_for_and_says_how_it_came_out_in_its_headers() {
+async fn phase8d_a_regression_report_is_read_as_junit_and_waited_for_and_says_how_it_came_out_in_its_headers(
+) {
     ensure_local_health_target().await;
     let (state, _dir) = test_state_with_compiled_api().await;
     let project = make_project(&state, "Phase8D Regression").await;
@@ -15826,101 +20758,207 @@ async fn phase8d_a_regression_report_is_read_as_junit_and_waited_for_and_says_ho
     executed_case(&state, project, &owner, "Case A", "/fixture/flip/t8d-a").await;
     executed_case(&state, project, &owner, "Case B", "/fixture/flip/t8d-b").await;
     approved_case(&state, project, &owner, sample_test_case_body("Never run")).await;
-    let sid = a_schedule(&state, project, &owner, serde_json::json!({"name": "CI gate", "every_minutes": 60, "enabled": false})).await;
-    let report_path = |run: &str, query: &str| format!("/api/v1/projects/{project}/regression/runs/{run}{query}");
-    let how = |headers: &axum::http::HeaderMap| (header_text(headers, "x-aiqa-verdict"), header_text(headers, "x-aiqa-final"));
+    let sid = a_schedule(
+        &state,
+        project,
+        &owner,
+        serde_json::json!({"name": "CI gate", "every_minutes": 60, "enabled": false}),
+    )
+    .await;
+    let report_path =
+        |run: &str, query: &str| format!("/api/v1/projects/{project}/regression/runs/{run}{query}");
+    let how = |headers: &axum::http::HeaderMap| {
+        (
+            header_text(headers, "x-aiqa-verdict"),
+            header_text(headers, "x-aiqa-final"),
+        )
+    };
 
     // A run that passed: a test for each case, and a skipped one for the case that was not repeated.
     let (_, first) = run_schedule_call(&state, project, &sid, &owner).await;
     let first_id = first["id"].as_str().unwrap().to_string();
     regression_report_when_done(&state, project, &first_id, &owner).await;
-    let (status, xml, headers) = text_and_headers(&state, &report_path(&first_id, "?format=junit"), &viewer).await;
+    let (status, xml, headers) =
+        text_and_headers(&state, &report_path(&first_id, "?format=junit"), &viewer).await;
     assert_eq!(status, StatusCode::OK, "a viewer may read it: {xml}");
-    assert_eq!(header_text(&headers, "content-type"), "application/xml; charset=utf-8");
+    assert_eq!(
+        header_text(&headers, "content-type"),
+        "application/xml; charset=utf-8"
+    );
     assert_eq!(how(&headers), ("PASSING".to_string(), "true".to_string()));
-    assert!(xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"), "{xml}");
+    assert!(
+        xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"),
+        "{xml}"
+    );
     assert!(xml.contains("<testsuites name=\"AIQA regression: CI gate\" tests=\"3\" failures=\"0\" errors=\"0\" skipped=\"1\">"), "{xml}");
-    assert!(xml.contains("<testcase classname=\"regression.CI gate\" name=\"Case A\""), "{xml}");
-    assert!(xml.contains("<skipped message=\"approved, but not run yet"), "{xml}");
-    assert!(xml.contains("<property name=\"verdict\" value=\"PASSING\"/>"), "{xml}");
+    assert!(
+        xml.contains("<testcase classname=\"regression.CI gate\" name=\"Case A\""),
+        "{xml}"
+    );
+    assert!(
+        xml.contains("<skipped message=\"approved, but not run yet"),
+        "{xml}"
+    );
+    assert!(
+        xml.contains("<property name=\"verdict\" value=\"PASSING\"/>"),
+        "{xml}"
+    );
     // The other formats say it in the headers too.
     let (_, json, headers) = text_and_headers(&state, &report_path(&first_id, ""), &viewer).await;
     assert!(json.contains("\"verdict\":\"PASSING\""), "{json}");
     assert_eq!(how(&headers), ("PASSING".to_string(), "true".to_string()));
-    let (_, _, headers) = text_and_headers(&state, &report_path(&first_id, "?format=markdown"), &viewer).await;
+    let (_, _, headers) =
+        text_and_headers(&state, &report_path(&first_id, "?format=markdown"), &viewer).await;
     assert_eq!(how(&headers), ("PASSING".to_string(), "true".to_string()));
 
     // Case B breaks. The report is asked for at once, with a wait: it comes when the run has ended, and says so.
     set_fixture_flip("t8d-b", false);
     let (_, second) = run_schedule_call(&state, project, &sid, &owner).await;
     let second_id = second["id"].as_str().unwrap().to_string();
-    let (status, xml, headers) = text_and_headers(&state, &report_path(&second_id, "?format=junit&wait=30"), &owner).await;
+    let (status, xml, headers) = text_and_headers(
+        &state,
+        &report_path(&second_id, "?format=junit&wait=30"),
+        &owner,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{xml}");
     assert_eq!(how(&headers), ("REGRESSED".to_string(), "true".to_string()));
-    assert!(xml.contains("tests=\"3\" failures=\"1\" errors=\"0\" skipped=\"1\""), "{xml}");
-    assert!(xml.contains("<failure message=\"") && xml.contains("500"), "the case that broke says why: {xml}");
-    assert!(xml.contains("<system-out>REGRESSED; before: passed (previous run)</system-out>"), "and that it broke since last time: {xml}");
+    assert!(
+        xml.contains("tests=\"3\" failures=\"1\" errors=\"0\" skipped=\"1\""),
+        "{xml}"
+    );
+    assert!(
+        xml.contains("<failure message=\"") && xml.contains("500"),
+        "the case that broke says why: {xml}"
+    );
+    assert!(
+        xml.contains("<system-out>REGRESSED; before: passed (previous run)</system-out>"),
+        "and that it broke since last time: {xml}"
+    );
 
     // A run that has not ended says so, in its body and its headers; asked to wait, it comes when the run has ended.
     set_fixture_flip("t8d-b", true);
     executed_case(&state, project, &owner, "Slow one", "/fixture/slow").await;
     let (_, third) = run_schedule_call(&state, project, &sid, &owner).await;
     let third_id = third["id"].as_str().unwrap().to_string();
-    let (status, json, headers) = text_and_headers(&state, &report_path(&third_id, ""), &owner).await;
+    let (status, json, headers) =
+        text_and_headers(&state, &report_path(&third_id, ""), &owner).await;
     assert_eq!(status, StatusCode::OK, "{json}");
     assert!(json.contains("\"final\":false"), "{json}");
     assert_eq!(how(&headers), ("RUNNING".to_string(), "false".to_string()));
-    let (status, xml, headers) = text_and_headers(&state, &report_path(&third_id, "?format=junit&wait=60"), &owner).await;
+    let (status, xml, headers) = text_and_headers(
+        &state,
+        &report_path(&third_id, "?format=junit&wait=60"),
+        &owner,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{xml}");
-    assert_eq!(how(&headers), ("PASSING".to_string(), "true".to_string()), "{xml}");
+    assert_eq!(
+        how(&headers),
+        ("PASSING".to_string(), "true".to_string()),
+        "{xml}"
+    );
     assert!(xml.contains("name=\"Slow one\""), "{xml}");
 
     // A wait longer than a request may make, one that is not a number, and a format there is not.
-    let (status, body, _) = text_and_headers(&state, &report_path(&third_id, "?wait=301"), &owner).await;
+    let (status, body, _) =
+        text_and_headers(&state, &report_path(&third_id, "?wait=301"), &owner).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert!(body.contains("at most 300 seconds"), "{body}");
-    let (status, body, _) = text_and_headers(&state, &report_path(&third_id, "?wait=soon"), &owner).await;
+    let (status, body, _) =
+        text_and_headers(&state, &report_path(&third_id, "?wait=soon"), &owner).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    let (status, body, _) = text_and_headers(&state, &report_path(&third_id, "?format=pdf"), &owner).await;
+    let (status, body, _) =
+        text_and_headers(&state, &report_path(&third_id, "?format=pdf"), &owner).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert!(body.contains("json, markdown or junit"), "{body}");
 }
 
 #[tokio::test]
-async fn phase8d_an_openapi_report_is_waited_for_and_read_as_junit_and_says_how_it_came_out_in_its_headers() {
+async fn phase8d_an_openapi_report_is_waited_for_and_read_as_junit_and_says_how_it_came_out_in_its_headers(
+) {
     ensure_local_health_target().await;
     std::env::set_var("AIQA_SECRET_T8D_RUN", "Bearer t8b-test-token");
     let (state, _dir) = test_state_with_compiled_api().await;
     let project = make_project(&state, "Phase8D OpenApi").await;
     let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
     let viewer = mint_key(&state, "viewer", Some(&project.to_string())).await;
-    let path = |run: &str, query: &str| format!("/api/v1/projects/{project}/openapi/runs/{run}{query}");
-    let how = |headers: &axum::http::HeaderMap| (header_text(headers, "x-aiqa-verdict"), header_text(headers, "x-aiqa-final"));
+    let path =
+        |run: &str, query: &str| format!("/api/v1/projects/{project}/openapi/runs/{run}{query}");
+    let how = |headers: &axum::http::HeaderMap| {
+        (
+            header_text(headers, "x-aiqa-verdict"),
+            header_text(headers, "x-aiqa-final"),
+        )
+    };
 
     // The whole document, with its one lie: asked for at once with a wait, the report comes when the run has ended and it fails.
-    let (status, created) = openapi_call(&state, "POST", &format!("/api/v1/projects/{project}/openapi/runs"), &owner, Some(openapi_body("AIQA_SECRET_T8D_RUN", serde_json::json!({})))).await;
+    let (status, created) = openapi_call(
+        &state,
+        "POST",
+        &format!("/api/v1/projects/{project}/openapi/runs"),
+        &owner,
+        Some(openapi_body("AIQA_SECRET_T8D_RUN", serde_json::json!({}))),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "body={created}");
     let id = created["id"].as_str().unwrap().to_string();
-    let (status, xml, headers) = text_and_headers(&state, &path(&id, "?format=junit&wait=60"), &viewer).await;
+    let (status, xml, headers) =
+        text_and_headers(&state, &path(&id, "?format=junit&wait=60"), &viewer).await;
     assert_eq!(status, StatusCode::OK, "a viewer may read it: {xml}");
-    assert_eq!(header_text(&headers, "content-type"), "application/xml; charset=utf-8");
-    assert_eq!(how(&headers), ("FAILING".to_string(), "true".to_string()), "{xml}");
+    assert_eq!(
+        header_text(&headers, "content-type"),
+        "application/xml; charset=utf-8"
+    );
+    assert_eq!(
+        how(&headers),
+        ("FAILING".to_string(), "true".to_string()),
+        "{xml}"
+    );
     assert!(xml.contains("<testsuites name=\"AIQA API tests: Fixture Pets 1.0\" tests=\"12\" failures=\"1\" errors=\"0\" skipped=\"4\">"), "{xml}");
-    assert!(xml.contains("classname=\"GET /pets/{petId}\""), "an operation of the document is the class: {xml}");
-    assert!(xml.contains("<failure message=\"Status is one of 404: got 400"), "the failure says what the document promised and what came back: {xml}");
-    assert!(xml.contains("<property name=\"base_url\" value=\"http://127.0.0.1:8080/fixture\"/>"), "{xml}");
+    assert!(
+        xml.contains("classname=\"GET /pets/{petId}\""),
+        "an operation of the document is the class: {xml}"
+    );
+    assert!(
+        xml.contains("<failure message=\"Status is one of 404: got 400"),
+        "the failure says what the document promised and what came back: {xml}"
+    );
+    assert!(
+        xml.contains("<property name=\"base_url\" value=\"http://127.0.0.1:8080/fixture\"/>"),
+        "{xml}"
+    );
     let (_, json, headers) = text_and_headers(&state, &path(&id, ""), &viewer).await;
     assert!(json.contains("\"verdict\":\"FAILING\""), "{json}");
     assert_eq!(how(&headers), ("FAILING".to_string(), "true".to_string()));
 
     // A run that only passes.
     let only_one = serde_json::json!({"kinds": ["HAPPY"], "operations": ["GET /pets"]});
-    let (status, created) = openapi_call(&state, "POST", &format!("/api/v1/projects/{project}/openapi/runs"), &owner, Some(openapi_body("AIQA_SECRET_T8D_RUN", only_one))).await;
+    let (status, created) = openapi_call(
+        &state,
+        "POST",
+        &format!("/api/v1/projects/{project}/openapi/runs"),
+        &owner,
+        Some(openapi_body("AIQA_SECRET_T8D_RUN", only_one)),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "body={created}");
-    let (status, xml, headers) = text_and_headers(&state, &path(created["id"].as_str().unwrap(), "?format=junit&wait=60"), &owner).await;
+    let (status, xml, headers) = text_and_headers(
+        &state,
+        &path(created["id"].as_str().unwrap(), "?format=junit&wait=60"),
+        &owner,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{xml}");
-    assert_eq!(how(&headers), ("PASSING".to_string(), "true".to_string()), "{xml}");
-    assert!(xml.contains("tests=\"1\" failures=\"0\" errors=\"0\" skipped=\"0\""), "{xml}");
+    assert_eq!(
+        how(&headers),
+        ("PASSING".to_string(), "true".to_string()),
+        "{xml}"
+    );
+    assert!(
+        xml.contains("tests=\"1\" failures=\"0\" errors=\"0\" skipped=\"0\""),
+        "{xml}"
+    );
 
     // A wait longer than a request may make, and a format there is not.
     let (status, body, _) = text_and_headers(&state, &path(&id, "?wait=301"), &owner).await;
@@ -15955,7 +20993,10 @@ async fn the_skill_viewer_shows_the_detailed_built_in_instruction_and_a_custom_s
     .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
     let edge = body[0]["instruction"].as_str().expect("an instruction");
-    assert!(edge.contains("minimum-1") && edge.contains("Case standard"), "{edge}");
+    assert!(
+        edge.contains("minimum-1") && edge.contains("Case standard"),
+        "{edge}"
+    );
     assert_eq!(body[1]["instruction"], "PIN codes have exactly 6 digits.");
 }
 
@@ -15969,11 +21010,17 @@ async fn execution_settings_default_to_headless_and_a_put_changes_the_real_live_
 
     // Never set: a fresh install must default to off (headless) — the only behavior every
     // earlier release had.
-    let (status, body) = send(&state, req("GET", "/api/v1/execution-settings", Some(&viewer), None)).await;
+    let (status, body) = send(
+        &state,
+        req("GET", "/api/v1/execution-settings", Some(&viewer), None),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(body["show_browser_window"], false, "body={body}");
     assert!(
-        !state.show_browser_window.load(std::sync::atomic::Ordering::Relaxed),
+        !state
+            .show_browser_window
+            .load(std::sync::atomic::Ordering::Relaxed),
         "the real, live flag a PlaywrightExecutor would read must default to off too"
     );
 
@@ -15993,12 +21040,18 @@ async fn execution_settings_default_to_headless_and_a_put_changes_the_real_live_
     // The real, live in-memory flag a PlaywrightExecutor holds a clone of — not just the DB row —
     // must reflect it in the same request, so the very next run already sees the change.
     assert!(
-        state.show_browser_window.load(std::sync::atomic::Ordering::Relaxed),
+        state
+            .show_browser_window
+            .load(std::sync::atomic::Ordering::Relaxed),
         "the PUT must update the real live flag, not only persist a row nothing reads yet"
     );
 
     // A fresh, independent GET (not just an echo of the PUT body) must show the real, persisted setting.
-    let (status, refetched) = send(&state, req("GET", "/api/v1/execution-settings", Some(&viewer), None)).await;
+    let (status, refetched) = send(
+        &state,
+        req("GET", "/api/v1/execution-settings", Some(&viewer), None),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body={refetched}");
     assert_eq!(refetched["show_browser_window"], true);
 }
@@ -16047,7 +21100,9 @@ async fn execution_settings_put_requires_operator_a_viewer_is_refused_and_change
     .await;
     assert_envelope(status, &body, StatusCode::FORBIDDEN, "FORBIDDEN");
     assert!(
-        !state.show_browser_window.load(std::sync::atomic::Ordering::Relaxed),
+        !state
+            .show_browser_window
+            .load(std::sync::atomic::Ordering::Relaxed),
         "a refused request must never change the real live flag"
     );
 }

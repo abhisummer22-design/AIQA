@@ -979,7 +979,11 @@ mod tests {
 
     #[test]
     fn a_division_by_nothing_is_a_division_by_one() {
-        assert_eq!(ceil_div(5, 0), 5, "an empty group size does not divide by zero");
+        assert_eq!(
+            ceil_div(5, 0),
+            5,
+            "an empty group size does not divide by zero"
+        );
         assert_eq!(ceil_div(5, 2), 3);
         assert_eq!(ceil_div(0, 4), 0);
         // A run that goes none at a time is taken to go one at a time.
@@ -1068,7 +1072,10 @@ mod tests {
         let mut off = input();
         off.execute = false;
         assert!(
-            estimate(&off).assumptions.iter().all(|a| !a.starts_with("Running:")),
+            estimate(&off)
+                .assumptions
+                .iter()
+                .all(|a| !a.starts_with("Running:")),
             "{:?}",
             estimate(&off).assumptions
         );

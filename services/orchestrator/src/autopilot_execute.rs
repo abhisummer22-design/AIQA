@@ -138,7 +138,10 @@ fn outcome_of_run(run: &Value) -> Option<(String, Option<String>)> {
         return None;
     }
     let task = &run["tasks"][0];
-    let reason = task["reason"].as_str().map(tidy_reason).filter(|r| !r.is_empty());
+    let reason = task["reason"]
+        .as_str()
+        .map(tidy_reason)
+        .filter(|r| !r.is_empty());
     match task["status"].as_str() {
         Some("QUEUED") | Some("RUNNING") | None => Some((state.to_string(), reason)),
         Some(status) => Some((status.to_string(), reason)),
@@ -159,8 +162,12 @@ fn tidy_reason(reason: &str) -> String {
         let rest = line.strip_prefix("> ")?;
         let (number, code) = rest.split_once('|')?;
         let number = number.trim();
-        (!number.is_empty() && number.chars().all(|c| c.is_ascii_digit()))
-            .then(|| format!("line {number}: {}", code.split_whitespace().collect::<Vec<_>>().join(" ")))
+        (!number.is_empty() && number.chars().all(|c| c.is_ascii_digit())).then(|| {
+            format!(
+                "line {number}: {}",
+                code.split_whitespace().collect::<Vec<_>>().join(" ")
+            )
+        })
     });
     let text = match marked {
         Some(failed) => format!("{first} \u{2014} failed at {failed}"),
@@ -462,14 +469,32 @@ mod tests {
 
     #[test]
     fn a_reason_is_read_without_the_terminals_colour_codes() {
-        assert_eq!(tidy_reason("\u{1b}[31mexpected 1, got 2\u{1b}[0m"), "expected 1, got 2");
-        assert_eq!(strip_terminal_codes("a\u{1b}[1A\u{1b}[2Kb\u{1b}[38;5;9mc"), "abc");
-        assert_eq!(strip_terminal_codes("a\u{1b}[3~b\u{1b}[@c"), "abc", "the final byte may be any of `@` to `~`");
-        assert_eq!(strip_terminal_codes("a\u{1b}[Hb"), "ab", "a sequence with no parameters");
+        assert_eq!(
+            tidy_reason("\u{1b}[31mexpected 1, got 2\u{1b}[0m"),
+            "expected 1, got 2"
+        );
+        assert_eq!(
+            strip_terminal_codes("a\u{1b}[1A\u{1b}[2Kb\u{1b}[38;5;9mc"),
+            "abc"
+        );
+        assert_eq!(
+            strip_terminal_codes("a\u{1b}[3~b\u{1b}[@c"),
+            "abc",
+            "the final byte may be any of `@` to `~`"
+        );
+        assert_eq!(
+            strip_terminal_codes("a\u{1b}[Hb"),
+            "ab",
+            "a sequence with no parameters"
+        );
         // An escape that is not a control sequence, and a lone one at the end, are left alone (nothing is swallowed).
         assert_eq!(strip_terminal_codes("x\u{1b}Ty"), "x\u{1b}Ty");
         assert_eq!(strip_terminal_codes("x\u{1b}"), "x\u{1b}");
-        assert_eq!(strip_terminal_codes("x\u{1b}[31"), "x", "an unfinished sequence ends the text");
+        assert_eq!(
+            strip_terminal_codes("x\u{1b}[31"),
+            "x",
+            "an unfinished sequence ends the text"
+        );
     }
 
     #[test]
@@ -482,13 +507,23 @@ mod tests {
 
     #[test]
     fn any_other_reason_is_its_words_on_one_line() {
-        assert_eq!(tidy_reason("expected the cart badge to show 1"), "expected the cart badge to show 1");
-        assert_eq!(tidy_reason("no browser\ncould be   started\n"), "no browser could be started");
+        assert_eq!(
+            tidy_reason("expected the cart badge to show 1"),
+            "expected the cart badge to show 1"
+        );
+        assert_eq!(
+            tidy_reason("no browser\ncould be   started\n"),
+            "no browser could be started"
+        );
         assert_eq!(tidy_reason(""), "");
         assert_eq!(tidy_reason("\u{1b}[31m\u{1b}[0m"), "");
         // A `>` that is not a marked code line (no line number before the bar) is just text.
         assert_eq!(tidy_reason("> a | b"), "> a | b");
-        assert_eq!(tidy_reason("> 2a | b"), "> 2a | b", "a number is all digits");
+        assert_eq!(
+            tidy_reason("> 2a | b"),
+            "> 2a | b",
+            "a number is all digits"
+        );
         assert_eq!(tidy_reason("> | x"), "> | x", "and there is one");
     }
 
@@ -501,16 +536,38 @@ mod tests {
         let exact = "x".repeat(MAX_REASON_CHARS);
         assert_eq!(tidy_reason(&exact), exact, "exactly the most is not cut");
         let over = "x".repeat(MAX_REASON_CHARS + 1);
-        assert_eq!(tidy_reason(&over).chars().count(), MAX_REASON_CHARS + 1, "the cut text and its ellipsis");
+        assert_eq!(
+            tidy_reason(&over).chars().count(),
+            MAX_REASON_CHARS + 1,
+            "the cut text and its ellipsis"
+        );
     }
 
     #[test]
     fn a_run_that_ended_gives_its_tidied_reason_and_no_reason_when_nothing_is_left_of_it() {
         let ended = |reason: Value| json!({"state": "COMPLETED", "tasks": [{"status": "FAILED", "reason": reason}]});
-        assert_eq!(outcome_of_run(&ended(json!("\u{1b}[31mboom\u{1b}[0m"))), Some(("FAILED".to_string(), Some("boom".to_string()))));
-        assert_eq!(outcome_of_run(&ended(json!(PLAYWRIGHT_REASON))).unwrap().1.unwrap().chars().take(30).collect::<String>(), "playwright exited with Some(1)");
-        assert_eq!(outcome_of_run(&ended(json!("\u{1b}[0m"))), Some(("FAILED".to_string(), None)));
-        assert_eq!(outcome_of_run(&ended(Value::Null)), Some(("FAILED".to_string(), None)));
+        assert_eq!(
+            outcome_of_run(&ended(json!("\u{1b}[31mboom\u{1b}[0m"))),
+            Some(("FAILED".to_string(), Some("boom".to_string())))
+        );
+        assert_eq!(
+            outcome_of_run(&ended(json!(PLAYWRIGHT_REASON)))
+                .unwrap()
+                .1
+                .unwrap()
+                .chars()
+                .take(30)
+                .collect::<String>(),
+            "playwright exited with Some(1)"
+        );
+        assert_eq!(
+            outcome_of_run(&ended(json!("\u{1b}[0m"))),
+            Some(("FAILED".to_string(), None))
+        );
+        assert_eq!(
+            outcome_of_run(&ended(Value::Null)),
+            Some(("FAILED".to_string(), None))
+        );
     }
 
     fn run_reply(state: &str, status: &str, reason: Option<&str>) -> Reply {
@@ -1435,12 +1492,23 @@ mod tests {
             let mut script = ScriptedApi::new().on(
                 "GET",
                 &listing(&f),
-                vec![ok(json!(ids.iter().map(|id| case(id, "APPROVED")).collect::<Vec<_>>()))],
+                vec![ok(json!(ids
+                    .iter()
+                    .map(|id| case(id, "APPROVED"))
+                    .collect::<Vec<_>>()))],
             );
             for id in &ids {
                 script = script
-                    .on("POST", &f.p(&format!("test-cases/{id}/handoff")), vec![handoff_ok(&format!("run-{id}"))])
-                    .on("GET", &f.p(&format!("executions/run-{id}")), vec![run_reply("COMPLETED", "PASSED", None)]);
+                    .on(
+                        "POST",
+                        &f.p(&format!("test-cases/{id}/handoff")),
+                        vec![handoff_ok(&format!("run-{id}"))],
+                    )
+                    .on(
+                        "GET",
+                        &f.p(&format!("executions/run-{id}")),
+                        vec![run_reply("COMPLETED", "PASSED", None)],
+                    );
             }
             f.api = std::sync::Arc::new(script);
             f.ctx.api = f.api.clone();
@@ -1448,7 +1516,11 @@ mod tests {
             let lines = timeline(&f).await;
             let progress: Vec<&String> = lines.iter().filter(|l| l.starts_with("Ran ")).collect();
             if said {
-                assert_eq!(progress, [&format!("Ran {count} of {count} case(s)")], "{lines:?}");
+                assert_eq!(
+                    progress,
+                    [&format!("Ran {count} of {count} case(s)")],
+                    "{lines:?}"
+                );
             } else {
                 assert!(progress.is_empty(), "{count} cases: {lines:?}");
             }

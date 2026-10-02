@@ -36,8 +36,7 @@ static BEARER_PATTERN: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| 
     Regex::new(r"(?i)bearer\s+[a-zA-Z0-9_\-\.]{12,}").expect("static pattern")
 });
 static SECRET_PARAM_PATTERN: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-    Regex::new(r"(?i)(password|secret|api_key|token|auth_token)=([^&\s]+)")
-        .expect("static pattern")
+    Regex::new(r"(?i)(password|secret|api_key|token|auth_token)=([^&\s]+)").expect("static pattern")
 });
 
 /// Sanitizes log messages to ensure sensitive tokens, API keys, and credentials

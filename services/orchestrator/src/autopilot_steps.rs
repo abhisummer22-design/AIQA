@@ -579,7 +579,10 @@ mod tests {
             .find(|s| s.name == "CRAWL")
             .unwrap();
         assert_eq!(step.detail["crawl_run_id"], "crawl-1");
-        assert_eq!(step.detail["reused"], false, "what is saved while it is going says it was not an earlier crawl");
+        assert_eq!(
+            step.detail["reused"], false,
+            "what is saved while it is going says it was not an earlier crawl"
+        );
         assert!(timeline(&f)
             .await
             .iter()
@@ -815,9 +818,21 @@ mod tests {
     async fn a_role_whose_result_does_not_say_its_login_worked_is_counted_as_one_that_did_not() {
         let f = fixture(Step::Crawl, config(json!({})), |p| {
             ScriptedApi::new()
-                .on("POST", &p("crawl"), vec![Reply::new(202, json!({"run_id": "c"}))])
-                .on("GET", &p("executions/c"), vec![run_reply("COMPLETED", "Crawl: x")])
-                .on("GET", &p("crawl/c/result"), vec![result_body(json!([{"role": "anonymous", "pages": [{}]}]))])
+                .on(
+                    "POST",
+                    &p("crawl"),
+                    vec![Reply::new(202, json!({"run_id": "c"}))],
+                )
+                .on(
+                    "GET",
+                    &p("executions/c"),
+                    vec![run_reply("COMPLETED", "Crawl: x")],
+                )
+                .on(
+                    "GET",
+                    &p("crawl/c/result"),
+                    vec![result_body(json!([{"role": "anonymous", "pages": [{}]}]))],
+                )
         })
         .await;
         let (detail, _) = detail_of_done(crawl(&f.ctx).await);
@@ -1006,13 +1021,18 @@ mod tests {
             ScriptedApi::new().on(
                 "POST",
                 &p("gap-check"),
-                vec![ok(json!({"summary": {"requirements": 10}, "notes": [], "method": {}}))],
+                vec![ok(
+                    json!({"summary": {"requirements": 10}, "notes": [], "method": {}}),
+                )],
             )
         })
         .await;
         with_crawl_recorded(&f).await;
         detail_of_done(gap_check(&f.ctx).await);
-        assert!(timeline(&f).await.iter().all(|m| !m.contains("show no sign")));
+        assert!(timeline(&f)
+            .await
+            .iter()
+            .all(|m| !m.contains("show no sign")));
     }
 
     #[tokio::test]

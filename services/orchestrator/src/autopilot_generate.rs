@@ -1560,7 +1560,10 @@ mod tests {
                 ScriptedApi::new().on(
                     "GET",
                     &p(&format!("test-cases?suite_id={SUITE}")),
-                    vec![ok(json!([case("c", "GENERATED")])), ok(json!([case("c", "GENERATED")]))],
+                    vec![
+                        ok(json!([case("c", "GENERATED")])),
+                        ok(json!([case("c", "GENERATED")])),
+                    ],
                 )
             },
         )
@@ -1570,7 +1573,10 @@ mod tests {
         let (detail, _) = detail_of_done(approve(&f.ctx).await);
         assert_eq!(detail["automatic"], true);
         assert_eq!(detail["approved_by_run"], 0);
-        assert_eq!(detail["pending"], 1, "the case that never validated is not run");
+        assert_eq!(
+            detail["pending"], 1,
+            "the case that never validated is not run"
+        );
         let lines = timeline(&f).await;
         assert!(lines.iter().all(|l| !l.contains("Approved")), "{lines:?}");
     }

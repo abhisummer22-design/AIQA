@@ -11,9 +11,11 @@
 //! - Non-executing: strictly generates plans, never invokes real executors.
 //! - Zero private chain-of-thought leakage; structured operational telemetry only.
 
-use crate::agent::{run_agent_loop, Agent, AgentContext, AgentError, AgentLimits, AgentStatus, TurnDecision};
-use crate::agent_tools::{AgentToolRegistry, ToolInvocation};
 use crate::adaptive_intelligence::QaIntelligenceFeedback;
+use crate::agent::{
+    run_agent_loop, Agent, AgentContext, AgentError, AgentLimits, AgentStatus, TurnDecision,
+};
+use crate::agent_tools::{AgentToolRegistry, ToolInvocation};
 use crate::ai_router::AiInfrastructure;
 use crate::store::Store;
 use crate::tools::security::sanitize_secrets;
@@ -608,15 +610,11 @@ pub async fn generate_test_plan(
         return Err(format!(
             "test planning agent could not complete (status: {:?}{})",
             outcome.status,
-            outcome
-                .error
-                .map(|e| format!(", {e}"))
-                .unwrap_or_default()
+            outcome.error.map(|e| format!(", {e}")).unwrap_or_default()
         ));
     }
     let output_val = outcome
         .final_output
         .ok_or_else(|| "test planning agent completed without output".to_string())?;
-    serde_json::from_value(output_val)
-        .map_err(|e| format!("failed to parse test plan output: {e}"))
+    serde_json::from_value(output_val).map_err(|e| format!("failed to parse test plan output: {e}"))
 }

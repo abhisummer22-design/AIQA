@@ -3261,9 +3261,8 @@ mod tests {
         // The failure mode this guards: the model fabricated plausible steps and
         // an `evidenced` claim, so `validate_and_clean` and
         // `enforce_traceability` both pass it, and only the title betrayed it.
-        let mut echoed = valid_draft(
-            "Only one Offer step is displayed when multiple Offers are selected",
-        );
+        let mut echoed =
+            valid_draft("Only one Offer step is displayed when multiple Offers are selected");
         echoed.steps = vec![DraftStep {
             action: "Select Offer A then Offer B".to_string(),
             expected_result: "Exactly one Offer step row is rendered".to_string(),

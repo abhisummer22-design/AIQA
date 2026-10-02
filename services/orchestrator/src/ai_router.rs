@@ -2689,6 +2689,32 @@ impl AiInfrastructure {
     }
 
     /// `providers` without those whose breaker is open right now, and a note saying which were left out and for how
+    /// Whether a circuit breaker exists for `provider_id` right now.
+    ///
+    /// Exists so the retention tests can assert the *absence* of one. `breakers`
+    /// is private and has no accessor, and the property under test is precisely
+    /// that a deleted provider's entry is gone, which cannot be checked from
+    /// Records an execution outcome for `provider_id`, as a real request would.
+    ///
+    /// `record_outcome` is private, and it is the only thing that ever creates a
+    /// breaker entry -- configuring a provider does not. Without this, the retention
+    /// tests could not get a breaker into existence to then assert its removal.
+    pub fn record_outcome_for_tests(
+        &self,
+        provider_id: &str,
+        result: &Result<ExecutionOutput, ExecutionError>,
+    ) {
+        self.record_outcome(provider_id, result);
+    }
+
+    /// outside without this.
+    pub async fn has_breaker_for_tests(&self, provider_id: &str) -> bool {
+        self.breakers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(provider_id)
+    }
+
     /// long. Once a cooldown ends the provider is tried again; one more failure to reach it re-opens the breaker.
     fn without_open_breakers(
         &self,
@@ -2783,6 +2809,41 @@ impl AiInfrastructure {
     /// providers above). Mirrors `set_settings`'s own "replace the whole
     /// value, caller already has the full authoritative list" contract.
     pub async fn set_custom_providers(&self, providers: Vec<CustomProviderConfig>) {
+        // Drop the circuit-breaker state of any provider that is no longer
+        // configured, before replacing the set.
+        //
+        // `breakers` was insert-only for the life of the process: `or_default()`
+        // on every lookup, and no removal anywhere. Custom AI providers are
+        // user-deletable, so deleting one left its breaker resident forever --
+        // and worse than the memory, a provider deleted while its breaker was
+        // *open* would have come back the next time that id was re-added already
+        // tripped, because the old failure count was still there.
+        //
+        // Only ids absent from the new set are dropped. A built-in provider's
+        // breaker is keyed by the same map and is never named here, so this cannot
+        // touch one.
+        let removed: Vec<String> = {
+            let incoming: std::collections::HashSet<String> =
+                providers.iter().map(|c| c.id.clone()).collect();
+            self.custom_providers
+                .read()
+                .await
+                .iter()
+                // Was configured, is not configured any more. Note the direction:
+                // this has to be "in the old set and absent from the new one", not
+                // the reverse. Getting that backwards silently deleted the breaker
+                // of every provider that had just been *added* instead of every one
+                // that had been removed.
+                .map(|c| c.id.clone())
+                .filter(|id| !incoming.contains(id))
+                .collect()
+        };
+        if !removed.is_empty() {
+            let mut breakers = self.breakers.lock().unwrap_or_else(|e| e.into_inner());
+            for id in &removed {
+                breakers.remove(id);
+            }
+        }
         *self.custom_providers.write().await = providers;
     }
 
@@ -7106,12 +7167,9 @@ mod tests {
             task_overrides: HashMap::new(),
         };
 
-        let preview = AiInfrastructure::preview_route(
-            &providers,
-            AiTask::TestCaseGeneration,
-            &settings,
-        )
-        .expect("something is usable");
+        let preview =
+            AiInfrastructure::preview_route(&providers, AiTask::TestCaseGeneration, &settings)
+                .expect("something is usable");
         assert_eq!(
             preview.model_id, "weak-model",
             "the preview must apply the persisted preferred-model bonus, not rank without it"

@@ -628,10 +628,7 @@ async fn test_11_generate_test_plan_wires_real_agent_end_to_end() {
 
     assert_eq!(plan.project_id, "proj-wire");
     assert!(!plan.coverage_gaps.is_empty());
-    assert!(plan
-        .coverage_gaps
-        .iter()
-        .any(|g| g.area == "REQ-WIRE-01"));
+    assert!(plan.coverage_gaps.iter().any(|g| g.area == "REQ-WIRE-01"));
     assert!(plan.total_planned_tests > 0);
 }
 
@@ -647,7 +644,7 @@ async fn test_12_generate_test_plan_incorporates_qa_intelligence_feedback() {
         high_risk_components: vec!["checkout-service".to_string()],
         top_failure_clusters: vec!["FC-TIMEOUT-CHECKOUT".to_string()],
         recommended_priorities: vec![
-            "Stabilize #promo-code-input before next regression pass".to_string(),
+            "Stabilize #promo-code-input before next regression pass".to_string()
         ],
     };
 

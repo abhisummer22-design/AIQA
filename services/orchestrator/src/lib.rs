@@ -78,9 +78,11 @@ mod engine_tests;
 #[cfg(test)]
 mod governed_healing_tests;
 #[cfg(test)]
+mod key_scope_tests;
+#[cfg(test)]
 mod operations_tests;
 #[cfg(test)]
-mod key_scope_tests;
+mod process_lifetime_maps_tests;
 #[cfg(test)]
 mod retention_and_metrics_tests;
 #[cfg(test)]

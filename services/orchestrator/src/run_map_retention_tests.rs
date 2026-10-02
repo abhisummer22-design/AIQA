@@ -111,8 +111,17 @@ async fn insert_run(state: &AppState, run_state: RunState, age_secs: i64) -> Arc
 #[tokio::test]
 async fn a_finished_run_is_evicted_once_it_has_aged_out() {
     let (state, _dir) = test_state().await;
-    let record = insert_run(&state, RunState::Completed, FINISHED_RUN_RETENTION_SECS + 60).await;
-    assert_eq!(state.runs.read().await.len(), 1, "precondition: one run held");
+    let record = insert_run(
+        &state,
+        RunState::Completed,
+        FINISHED_RUN_RETENTION_SECS + 60,
+    )
+    .await;
+    assert_eq!(
+        state.runs.read().await.len(),
+        1,
+        "precondition: one run held"
+    );
 
     let removed = state.prune_finished_runs().await;
     assert_eq!(removed, 1);
@@ -148,7 +157,12 @@ async fn a_live_or_awaiting_approval_run_is_never_evicted() {
     let removed = state.prune_finished_runs().await;
     assert_eq!(removed, 0, "no non-terminal run may be evicted");
     let runs = state.runs.read().await;
-    for id in [running.run_id, scheduled.run_id, held.run_id, created.run_id] {
+    for id in [
+        running.run_id,
+        scheduled.run_id,
+        held.run_id,
+        created.run_id,
+    ] {
         assert!(
             runs.contains_key(&id),
             "{id} is not finished and must stay addressable -- approve/reject/cancel \

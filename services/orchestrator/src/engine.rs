@@ -43,6 +43,47 @@ impl Default for ProjectStream {
 /// `scheduler.rs`; everything else here is I/O plumbing around it —
 /// including, as of this session, the durable side of that plumbing
 /// (`store.rs`), not just the in-memory/broadcast side.
+impl RunRecord {
+    /// The in-memory events at or after `since`, or `None` when the answer is no
+    /// longer complete.
+    ///
+    /// `None` is the honest response once the retained window has moved past
+    /// `since`: the caller must then read `run_events` from the store, where every
+    /// event was durably written. Returning a truncated list instead would make a
+    /// client that reconnects with `since=0` silently receive only the tail, with
+    /// no indication that anything was dropped -- which is worse than a database
+    /// read, because the client cannot tell the difference.
+    pub async fn events_after(&self, since: u64) -> Option<Vec<RunEvent>> {
+        let events = self.events.read().await;
+        let oldest_retained = match events.first() {
+            Some(first) => first.sequence,
+            // Nothing retained. That is complete only if the caller wanted nothing
+            // newer than the very first sequence, which is unknowable here, so it
+            // is treated as incomplete and deferred to the store.
+            None => return None,
+        };
+        if since < oldest_retained.saturating_sub(1) {
+            return None;
+        }
+        Some(
+            events
+                .iter()
+                .filter(|e| e.sequence >= since)
+                .cloned()
+                .collect(),
+        )
+    }
+}
+
+/// How many `RunEvent`s a `RunRecord` keeps in memory.
+///
+/// A cap, not a budget: `RunRecord::emit` persists every event to the
+/// `run_events` table through `Store::insert_event`, so this bounds only how much
+/// is held resident per live run. Generous enough that an ordinary run never
+/// notices -- `events_after` degrades to a database read rather than anything
+/// visible -- while stopping a pathological run from growing without bound.
+pub const MAX_IN_MEMORY_EVENTS: usize = 2048;
+
 pub struct RunRecord {
     pub run_id: RunId,
     pub name: String,
@@ -220,7 +261,26 @@ impl RunRecord {
             project_id: self.project_id.clone(),
             project_sequence: None,
         };
-        self.events.write().await.push(ev.clone());
+        {
+            let mut events = self.events.write().await;
+            events.push(ev.clone());
+            // Trim to the most recent `MAX_IN_MEMORY_EVENTS`. This vec was
+            // push-only with no cap anywhere in the crate, so a long run kept
+            // every event it ever emitted, and the events endpoint cloned the
+            // whole thing on every poll.
+            //
+            // Nothing is lost: `emit` persists every event to `run_events` via
+            // `Store::insert_event` a few lines below, and `events_after` makes
+            // the in-memory read return `None` once the retained window no longer
+            // reaches back to the requested `since`, so the caller falls back to
+            // the store rather than silently answering a `since=0` request with
+            // only the tail. Trimming silently would have been a quiet data-loss
+            // bug dressed as a memory optimisation.
+            if events.len() > MAX_IN_MEMORY_EVENTS {
+                let excess = events.len() - MAX_IN_MEMORY_EVENTS;
+                events.drain(0..excess);
+            }
+        }
         // A send error just means no WebSocket subscribers are currently
         // connected; the event is already durably in `events` for replay.
         let _ = self.tx.send(ev.clone());

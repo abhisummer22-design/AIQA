@@ -488,7 +488,11 @@ impl AgentExecutionDispatcher {
                 // holds the write lock, and this sweep must never block or fail
                 // a dispatch. A record we cannot inspect is left alone and picked
                 // up by the next sweep.
-                let terminal = record.state.try_read().map(|s| s.is_terminal()).unwrap_or(false);
+                let terminal = record
+                    .state
+                    .try_read()
+                    .map(|s| s.is_terminal())
+                    .unwrap_or(false);
                 terminal.then_some(*id)
             })
             .collect();

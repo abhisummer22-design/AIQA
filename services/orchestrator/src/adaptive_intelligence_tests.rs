@@ -643,7 +643,10 @@ async fn test_32_intelligence_cannot_bypass_rbac() {
     service.record_execution_telemetry(mine).await.unwrap();
     service.record_execution_telemetry(theirs).await.unwrap();
 
-    let mine_rows = store.list_execution_telemetry("proj-mine", 100).await.unwrap();
+    let mine_rows = store
+        .list_execution_telemetry("proj-mine", 100)
+        .await
+        .unwrap();
     assert_eq!(mine_rows.len(), 1, "one record was written for proj-mine");
     assert_eq!(
         mine_rows[0].project_id, "proj-mine",
@@ -705,11 +708,10 @@ fn test_37_no_executor_bypass() {
     // unrecognised name is a real error, never a silent substitution — which is
     // what stops a request naming a "tool" that does not exist from quietly
     // running something else.
-    let registry = crate::executor::ExecutorRegistry::new(Arc::new(
-        crate::executor::SimulatedExecutor,
-    ))
-    .register("playwright", Arc::new(NoopExecutor))
-    .register("compiled-api", Arc::new(NoopExecutor));
+    let registry =
+        crate::executor::ExecutorRegistry::new(Arc::new(crate::executor::SimulatedExecutor))
+            .register("playwright", Arc::new(NoopExecutor))
+            .register("compiled-api", Arc::new(NoopExecutor));
     assert_eq!(
         registry.registered_kinds(),
         vec!["compiled-api".to_string(), "playwright".to_string()],
@@ -758,10 +760,7 @@ struct NoopExecutor;
 
 #[async_trait::async_trait]
 impl crate::executor::Executor for NoopExecutor {
-    async fn execute(
-        &self,
-        _task: &crate::domain::TaskDef,
-    ) -> crate::executor::ExecutionOutcome {
+    async fn execute(&self, _task: &crate::domain::TaskDef) -> crate::executor::ExecutionOutcome {
         crate::executor::ExecutionOutcome {
             status: TaskStatus::Passed,
             reason: None,
