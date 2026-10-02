@@ -2,6 +2,7 @@ import React from 'react';
 import { motion } from 'motion/react';
 import { ProjectStatus } from '../../types';
 import { Sparkles, ShieldCheck, Activity, AlertTriangle, Moon } from 'lucide-react';
+import { usePrefersReducedMotion } from '../../hooks/usePrefersReducedMotion';
 
 interface AIQualityCoreOrbProps {
   status: ProjectStatus;
@@ -14,6 +15,18 @@ export const AIQualityCoreOrb: React.FC<AIQualityCoreOrbProps> = ({
   hasActiveRun,
   projectName,
 }) => {
+  // Every animation in this component is framer-motion `repeat: Infinity`, and
+  // framer-motion drives its own rAF loop rather than CSS animation properties,
+  // so the blanket `prefers-reduced-motion` rule in `index.css` cannot reach it.
+  // This has to be a JS decision.
+  //
+  // The rings collapse to a fixed angle rather than to zero, so the layout the
+  // eye was reading does not jump — the ring is still visibly a ring, in a
+  // defined orientation. The core stops pulsing at the midpoint of its range,
+  // which is `scale: 1, opacity: 0.85`: still fully present, just no longer
+  // breathing. Collapsing the core to `opacity: 0` instead would have hidden the
+  // AIQA branding inside it, and that text is content, not decoration.
+  const reducedMotion = usePrefersReducedMotion();
   // Determine color scheme based on project status and active execution
   const getTheme = () => {
     if (status === 'Offline') {
@@ -109,8 +122,12 @@ export const AIQualityCoreOrb: React.FC<AIQualityCoreOrbProps> = ({
       <div className="relative w-48 h-48 flex items-center justify-center my-2">
         {/* Outer Elliptical Orbital Ring 1 */}
         <motion.div
-          animate={{ rotate: 360 }}
-          transition={{ duration: 24, repeat: Infinity, ease: 'linear' }}
+          animate={{ rotate: reducedMotion ? 45 : 360 }}
+          transition={
+            reducedMotion
+              ? { duration: 0 }
+              : { duration: 24, repeat: Infinity, ease: 'linear' }
+          }
           className={`absolute w-44 h-44 rounded-full border border-dashed ${theme.ringBorder1} opacity-70`}
           style={{ transformStyle: 'preserve-3d', transform: 'rotateX(68deg)' }}
         >
@@ -120,8 +137,12 @@ export const AIQualityCoreOrb: React.FC<AIQualityCoreOrbProps> = ({
 
         {/* Outer Elliptical Orbital Ring 2 (Counter-Rotating) */}
         <motion.div
-          animate={{ rotate: -360 }}
-          transition={{ duration: 18, repeat: Infinity, ease: 'linear' }}
+          animate={{ rotate: reducedMotion ? -30 : -360 }}
+          transition={
+            reducedMotion
+              ? { duration: 0 }
+              : { duration: 18, repeat: Infinity, ease: 'linear' }
+          }
           className={`absolute w-40 h-40 rounded-full border ${theme.ringBorder2} opacity-60`}
           style={{ transformStyle: 'preserve-3d', transform: 'rotateX(65deg) rotateY(35deg)' }}
         >
@@ -131,8 +152,12 @@ export const AIQualityCoreOrb: React.FC<AIQualityCoreOrbProps> = ({
 
         {/* Equatorial Energy Horizon Ring */}
         <motion.div
-          animate={{ rotate: 360 }}
-          transition={{ duration: 30, repeat: Infinity, ease: 'linear' }}
+          animate={{ rotate: reducedMotion ? 20 : 360 }}
+          transition={
+            reducedMotion
+              ? { duration: 0 }
+              : { duration: 30, repeat: Infinity, ease: 'linear' }
+          }
           className={`absolute w-36 h-36 rounded-full border border-dotted ${theme.ringBorder3} opacity-80`}
           style={{ transformStyle: 'preserve-3d', transform: 'rotateX(78deg) rotateY(-20deg)' }}
         />
@@ -147,15 +172,20 @@ export const AIQualityCoreOrb: React.FC<AIQualityCoreOrbProps> = ({
 
           {/* Internal Glowing Quantum Core */}
           <motion.div
-            animate={{
-              scale: [1, 1.08, 1],
-              opacity: [0.85, 1, 0.85],
-            }}
-            transition={{
-              duration: hasActiveRun ? 2 : 4,
-              repeat: Infinity,
-              ease: 'easeInOut',
-            }}
+            animate={
+              reducedMotion
+                ? { scale: 1, opacity: 0.85 }
+                : { scale: [1, 1.08, 1], opacity: [0.85, 1, 0.85] }
+            }
+            transition={
+              reducedMotion
+                ? { duration: 0 }
+                : {
+                    duration: hasActiveRun ? 2 : 4,
+                    repeat: Infinity,
+                    ease: 'easeInOut',
+                  }
+            }
             className={`w-16 h-16 rounded-full bg-gradient-to-tr ${theme.innerCore} shadow-[0_0_24px_currentColor] flex flex-col items-center justify-center text-center`}
           >
             {/* Center AIQA Branding Typography */}

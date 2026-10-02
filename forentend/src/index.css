@@ -81,3 +81,46 @@
   }
 }
 
+/* Honour the OS "reduce motion" setting. WCAG 2.2.2 Pause, Stop, Hide (A) and
+ * 2.3.3 Animation from Interactions: motion that runs on its own, forever, with
+ * nothing to pause and no way to interact with it, is exactly what the setting
+ * exists to turn off. Before this the app had zero occurrences of
+ * `prefers-reduced-motion` and no `@media` block of any kind, against 78
+ * `animate-spin`, 27 `animate-pulse`, 8 `animate-ping`, 2 `animate-bounce` and
+ * 143 `transition-*` usages.
+ *
+ * One blanket rule rather than a `motion-reduce:` class on ~115 sites, for three
+ * reasons. It cannot be forgotten at a new site, which per-usage classes
+ * eventually are. It covers Tailwind's own keyframes, which a class-level variant
+ * only catches if someone remembered to add it. And it survives the theme layer:
+ * `!important` beats Tailwind v4's cascade layer ordering, which a plain
+ * `@layer base` rule does not.
+ *
+ * `animation: none` rather than a tiny duration: a spinner that keeps spinning
+ * forever reads as "still working", and a pulse that keeps pulsing reads as
+ * "something is happening right now". Both are false once the user has asked for
+ * stillness, and a status must never be conveyed by motion alone anyway. What
+ * remains visible is the element itself — the LIVE badge is still a badge, the
+ * dot is still coloured, the text is still there — so no information is lost, only
+ * the movement.
+ *
+ * Deliberately NOT `animation-play-state: paused`: that freezes a `ping` part-way
+ * through its expansion, which leaves a permanently half-drawn halo that looks
+ * like a rendering artefact rather than a deliberate state.
+ *
+ * This does not cover framer-motion, SVG SMIL, or `requestAnimationFrame` loops.
+ * None of them go through CSS animation properties, so no stylesheet rule can
+ * reach them; they check `usePrefersReducedMotion` in JS instead
+ * (`AIQualityCoreOrb`, `OrchestratorRadar`, `neuralActivity`). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+

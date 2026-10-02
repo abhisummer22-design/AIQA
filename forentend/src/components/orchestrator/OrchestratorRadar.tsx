@@ -22,6 +22,7 @@
 import React from 'react';
 import { Radar as RadarIcon } from 'lucide-react';
 import type { OrchestratorStateResponse } from '../../types/contract';
+import { usePrefersReducedMotion } from '../../hooks/usePrefersReducedMotion';
 
 export interface OrchestratorRadarProps {
   orchState: OrchestratorStateResponse;
@@ -46,6 +47,16 @@ export const OrchestratorRadar: React.FC<OrchestratorRadarProps> = ({ orchState 
   const executors = orchState.executors;
   const activeRunCount = orchState.active_runs.length;
   const isLive = activeRunCount > 0;
+  // SVG SMIL (`<animateTransform>`, `<animate>`) is driven by the browser's own
+  // animation engine, not by CSS animation properties, so the blanket
+  // `prefers-reduced-motion` rule in `index.css` genuinely cannot reach these two
+  // elements -- there is no CSS property to override. The elements are omitted
+  // from the tree instead.
+  //
+  // Nothing is lost by omitting them: the sweep is a static wedge shape (already
+  // drawn, `opacity` still driven by `isLive`), and the blip's own `fill` is the
+  // real gate colour. Only the movement and the blink go.
+  const reducedMotion = usePrefersReducedMotion();
 
   const blips = executors.map((executor, i) => {
     const angle = (2 * Math.PI * i) / Math.max(executors.length, 1) - Math.PI / 2;
@@ -82,13 +93,15 @@ export const OrchestratorRadar: React.FC<OrchestratorRadarProps> = ({ orchState 
         <g opacity={isLive ? '0.9' : '0.45'}>
           <path d={`M ${CENTER} ${CENTER} L ${CENTER} 10 A 90 90 0 0 1 ${CENTER + 90 * Math.sin((40 * Math.PI) / 180)} ${CENTER - 90 * Math.cos((40 * Math.PI) / 180)} Z`} fill="#facc15" fillOpacity="0.25" />
           <line x1={CENTER} y1={CENTER} x2={CENTER} y2="10" stroke="#5eead4" strokeWidth="1.5" />
-          <animateTransform attributeName="transform" type="rotate" from={`0 ${CENTER} ${CENTER}`} to={`360 ${CENTER} ${CENTER}`} dur={isLive ? '2.5s' : '6s'} repeatCount="indefinite" />
+          {!reducedMotion && (
+            <animateTransform attributeName="transform" type="rotate" from={`0 ${CENTER} ${CENTER}`} to={`360 ${CENTER} ${CENTER}`} dur={isLive ? '2.5s' : '6s'} repeatCount="indefinite" />
+          )}
         </g>
 
         {blips.map((b) => (
           <g key={b.kind}>
             <circle cx={b.x} cy={b.y} r="4" fill={gateDot[b.gate] ?? '#94a3b8'}>
-              {b.gate === 'AUTO' && <animate attributeName="opacity" values="1;0.4;1" dur="2s" repeatCount="indefinite" />}
+              {!reducedMotion && b.gate === 'AUTO' && <animate attributeName="opacity" values="1;0.4;1" dur="2s" repeatCount="indefinite" />}
             </circle>
             <circle cx={b.x} cy={b.y} r="8" fill={gateDot[b.gate] ?? '#94a3b8'} fillOpacity="0.18" />
           </g>

@@ -97,6 +97,24 @@ export function canvasBackingSize(
   return { width, height, scaleX: width / cssW, scaleY: height / cssH };
 }
 
+/**
+ * Whether the OS has asked for reduced motion, read fresh each time it is asked.
+ *
+ * This module is a plain class, not a component, so it cannot use
+ * `usePrefersReducedMotion`. It is also a library that outlives any single
+ * render: it is driven by `requestAnimationFrame`, not by CSS, so the blanket
+ * `prefers-reduced-motion` rule in `index.css` cannot reach it. Reading it
+ * through a function rather than caching it at module load means a user who
+ * changes the setting while the dashboard is open is still obeyed.
+ */
+function prefersReducedMotion(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  );
+}
+
 export class NeuralActivity {
   private canvas: HTMLCanvasElement;
   /** `null` in an environment with no real 2D canvas support (some jsdom
@@ -153,7 +171,18 @@ export class NeuralActivity {
         : null;
     this.observeCanvas();
     this.resize();
-    if (this.ctx) this.raf = requestAnimationFrame(() => this.frame());
+    // Reduced motion: draw exactly one frame and never start the loop.
+    //
+    // The canvas is still drawn — an empty box would remove the visual entirely,
+    // and the node layout is information, not decoration. What is suppressed is
+    // the drift: `idleSpeed` is 0.02, so even at `level = 0` with nothing
+    // happening anywhere in the system this loop was moving every node a little
+    // on every frame, forever, for the lifetime of the dashboard.
+    if (this.ctx && !prefersReducedMotion()) {
+      this.raf = requestAnimationFrame(() => this.frame());
+    } else if (this.ctx) {
+      this.drawOnce();
+    }
   }
 
   /* ---------- public API ---------- */
@@ -208,7 +237,14 @@ export class NeuralActivity {
   resume(): void {
     if (!this.running && this.ctx) {
       this.running = true;
-      this.raf = requestAnimationFrame(() => this.frame());
+      if (prefersReducedMotion()) {
+        // Someone who paused the animation and then resumed it has asked for it
+        // back explicitly. Honouring that is the whole point of having a resume:
+        // a setting is a standing preference, not a lock.
+        this.drawOnce();
+      } else {
+        this.raf = requestAnimationFrame(() => this.frame());
+      }
     }
   }
 
@@ -340,9 +376,25 @@ export class NeuralActivity {
     }
   }
 
+  /** One update-and-draw pass, then schedules the next. This is the loop. */
   private frame(): void {
     if (!this.running || !this.ctx) return;
-    const { ctx, w, h, opts } = this;
+    const energy = this.step();
+    this.draw(energy);
+    this.raf = requestAnimationFrame(() => this.frame());
+  }
+
+  /**
+   * Advance node activations, signal spawning and pulse decay by one tick.
+   *
+   * Returns the energy value this tick used. It is handed to `draw` rather than
+   * recomputed there because `pulseEnergy` is decayed at the end of every tick,
+   * so recomputing would draw edges with a marginally different intensity than
+   * the tick that produced them -- a subtle difference, but exactly the kind that
+   * makes a refactor look like a behaviour change.
+   */
+  private step(): number {
+    const { opts } = this;
     const energy = Math.min(1, this.level + this.pulseEnergy);
     const speed = opts.idleSpeed + (opts.activeSpeed - opts.idleSpeed) * energy;
 
@@ -357,8 +409,18 @@ export class NeuralActivity {
     });
     if (energy > 0.3 && opts.showSignals && Math.random() < energy * 0.25) this.spawnSignals(1);
     this.pulseEnergy *= 0.94;
+    return energy;
+  }
 
-    // draw
+  /**
+   * Paint the current state. Reads state, writes pixels, mutates nothing -- so
+   * the reduced-motion path renders through exactly this code and therefore
+   * shows exactly what the animated path shows, minus the movement.
+   */
+  private draw(energy: number): void {
+    if (!this.ctx) return;
+    const { ctx, w, h, opts } = this;
+
     ctx.clearRect(0, 0, w, h);
     if (opts.background) {
       ctx.fillStyle = opts.background;
@@ -486,7 +548,23 @@ export class NeuralActivity {
         ctx.fillText(label, x, 2);
       });
     }
+  }
 
-    this.raf = requestAnimationFrame(() => this.frame());
+  /**
+   * One update-and-draw pass with no loop scheduled behind it.
+   *
+   * Called when reduced motion is on. It runs the same body as `frame()` -- so
+   * the canvas shows the real current state rather than a blank or a placeholder
+   * -- and then simply does not ask for the next frame. Duplicating the body was
+   * the alternative and is worse: two copies of the drawing code drift, and the
+   * reduced-motion path would end up rendering something subtly different from
+   * the animated one, which is exactly when a visual becomes a lie.
+   *
+   * `setLevel`/`setInputs`/`pulse` all still work against it: they mutate state
+   * and the next explicit `drawOnce`/`resume` reflects them.
+   */
+  private drawOnce(): void {
+    if (!this.ctx) return;
+    this.draw(this.step());
   }
 }
