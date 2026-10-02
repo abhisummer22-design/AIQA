@@ -31,6 +31,7 @@ import {
   Moon,
   Sun,
 } from 'lucide-react';
+import { matchesMedia } from './Sidebar';
 import { useAIQA } from '../../context/AIQAContext';
 import { useAuth } from '../../context/AuthContext';
 import { useProject } from '../../context/ProjectContext';
@@ -165,15 +166,43 @@ export const Header: React.FC = () => {
     };
   }, [anyPopoverOpen, closeAllPopovers]);
 
+  /**
+   * `overflow-x-auto` on the `<header>` below is a safety net, not a layout
+   * strategy. Both `body { overflow-x: hidden }` (`index.css`) and the app shell's
+   * own `overflow-hidden` clip anything wider than the viewport with no way to
+   * scroll to it -- so a header that overflows at a narrow width does not merely
+   * look wrong, the controls past the right edge become *unreachable*. With this
+   * they stay reachable by scrolling. The environment selector is additionally
+   * hidden under `md`, where the sidebar drawer is the navigation surface anyway.
+   *
+   * What is NOT claimed here: the exact overflowing width. No browser was
+   * attached when this was written, so no pixel figure is asserted. What was fixed
+   * is the part provable from the source alone.
+   */
   return (
-    <header className="h-13 border-b border-border-default/90 bg-surface-card px-3 sm:px-4 flex items-center justify-between gap-3 sticky top-0 z-30 select-none">
+    <header className="h-13 border-b border-border-default/90 bg-surface-card px-3 sm:px-4 flex items-center justify-between gap-3 sticky top-0 z-30 select-none overflow-x-auto">
       {/* Left: Hamburger & Brand */}
       <div className="flex items-center gap-2.5">
         <button
           id="sidebar-toggle-button"
-          onClick={toggleSidebar}
-          className="p-1.5 rounded-md text-content-secondary hover:text-content-primary hover:bg-slate-800/80 transition-colors cursor-pointer"
-          title="Toggle Navigation Sidebar (Ctrl+B)"
+          // Dispatches an event rather than toggling directly: below 768px the
+          // sidebar is an overlay drawer and this button has to *open* it,
+          // whereas above it the same button collapses the column. The sidebar
+          // listens and decides, so the breakpoint lives in exactly one place.
+          onClick={() => {
+            // `matchesMedia` rather than `window.matchMedia` directly: the guarded
+            // helper, because jsdom has no matchMedia and an unguarded call here
+            // takes down every test that renders the header.
+            if (matchesMedia('(max-width: 767px)')) {
+              window.dispatchEvent(new Event('aiqa:open-sidebar'));
+            } else {
+              toggleSidebar();
+            }
+          }}
+          className="p-1.5 rounded-md text-content-secondary hover:text-content-primary hover:bg-slate-800/80 transition-colors cursor-pointer md:hidden"
+          aria-label="Open navigation menu"
+          aria-controls="main-sidebar"
+          title="Open Navigation Menu"
         >
           <Menu className="w-4 h-4" />
         </button>
@@ -200,7 +229,7 @@ export const Header: React.FC = () => {
         <div className="hidden sm:block h-4 w-[1px] bg-border-default mx-1" />
 
         {/* Environment Selector Dropdown */}
-        <div className="relative">
+        <div className="relative hidden md:block">
           <button
             id="env-selector-button"
             aria-expanded={isEnvDropdownOpen}
@@ -261,8 +290,8 @@ export const Header: React.FC = () => {
             "prefer integrating into an existing header/sidebar area already
             intended for contextual controls" — least invasive, no layout
             redesign. */}
-        <div className="hidden sm:block h-4 w-[1px] bg-border-default mx-1" />
         <ProjectSelector />
+        <div className="hidden md:block"><ProjectSelector /></div>
       </div>
 
       {/* Center: Command Palette Trigger */}
