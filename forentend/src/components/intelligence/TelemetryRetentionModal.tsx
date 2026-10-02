@@ -48,6 +48,12 @@ export const TelemetryRetentionModal: React.FC<TelemetryRetentionModalProps> = (
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [report, setReport] = useState<RetentionReport | null>(null);
+  // Off by default, matching the backend default. Telemetry is operational data
+  // with a natural expiry; the audit trail is evidence of who did what, and how
+  // long that has to be kept is a compliance call. So this stays a deliberate,
+  // separate, per-invocation choice rather than something a cleanup sweep does
+  // on its own.
+  const [includeAudit, setIncludeAudit] = useState(false);
 
   // Real role, fetched fresh every time the modal opens — `null` while
   // loading or if the identity check itself failed, in which case the
@@ -97,6 +103,7 @@ export const TelemetryRetentionModal: React.FC<TelemetryRetentionModalProps> = (
     try {
       const res = await aiqaApi.intelligence.retentionDryRun(projectId, {
         retention_days: retentionDays,
+        include_audit: includeAudit,
       });
       setReport(res);
     } catch (err: unknown) {
@@ -107,7 +114,10 @@ export const TelemetryRetentionModal: React.FC<TelemetryRetentionModalProps> = (
   };
 
   const handleLivePrune = async () => {
-    if (!window.confirm(`Are you sure you want to permanently prune telemetry records older than ${retentionDays} days? This action cannot be undone.`)) {
+    const what = includeAudit
+      ? `telemetry records AND audit log entries older than ${retentionDays} days, including the record of who did what in this project`
+      : `telemetry records older than ${retentionDays} days`;
+    if (!window.confirm(`Are you sure you want to permanently prune ${what}? This action cannot be undone.`)) {
       return;
     }
 
@@ -116,6 +126,7 @@ export const TelemetryRetentionModal: React.FC<TelemetryRetentionModalProps> = (
     try {
       const res = await aiqaApi.intelligence.retentionPrune(projectId, {
         retention_days: retentionDays,
+        include_audit: includeAudit,
       });
       setReport(res);
     } catch (err: unknown) {
@@ -192,7 +203,11 @@ export const TelemetryRetentionModal: React.FC<TelemetryRetentionModalProps> = (
               <span>SAFETY INVARIANTS GUARANTEED</span>
             </div>
             <ul className="text-[11px] text-content-secondary space-y-1 list-disc list-inside">
-              <li>Audit logs and Quality Graph nodes are 100% preserved.</li>
+              <li>
+                {includeAudit
+                  ? 'Audit logs are being pruned too — the checkbox below is on. Quality Graph nodes are still 100% preserved.'
+                  : 'Audit logs and Quality Graph nodes are 100% preserved.'}
+              </li>
               <li>Active runs (PENDING or RUNNING) are never pruned.</li>
               <li>Telemetry linked to pending or approved healing is preserved.</li>
               <li>Prune operations are strictly tenant-isolated to this project.</li>
@@ -218,6 +233,20 @@ export const TelemetryRetentionModal: React.FC<TelemetryRetentionModalProps> = (
                 Records older than {retentionDays} days will be eligible for pruning.
               </span>
             </div>
+            <label className="flex items-start gap-2 text-xs text-content-secondary cursor-pointer">
+              <input
+                type="checkbox"
+                checked={includeAudit}
+                onChange={(e) => setIncludeAudit(e.target.checked)}
+                className="mt-0.5 accent-violet-500"
+                data-testid="retention-include-audit"
+              />
+              <span>
+                Also prune this project's <strong className="text-content-primary">audit log</strong>.
+                Off by default: the audit trail is the record of who did what, and how long it must be
+                kept is a compliance decision, so it is never swept up by a routine telemetry cleanup.
+              </span>
+            </label>
           </div>
 
           {/* Error Message */}
@@ -255,11 +284,19 @@ export const TelemetryRetentionModal: React.FC<TelemetryRetentionModalProps> = (
                   <span className="text-content-secondary">Pruned Records:</span>{' '}
                   <strong className="text-content-primary">{report.pruned_count}</strong>
                 </div>
+                {includeAudit && (
+                  <div className="col-span-2">
+                    <span className="text-content-secondary">Audit Rows Pruned:</span>{' '}
+                    <strong className="text-content-primary">{report.audit_pruned_count}</strong>
+                  </div>
+                )}
               </div>
               <p className="text-[10px] text-content-secondary font-sans mt-1">
                 {report.dry_run
                   ? 'No rows deleted. Click "Execute Prune" below to apply changes permanently.'
-                  : 'Selected historical telemetry rows have been permanently pruned.'}
+                  : includeAudit
+                    ? 'Selected historical telemetry rows and audit log entries have been permanently pruned. The prune itself is recorded in the audit log.'
+                    : 'Selected historical telemetry rows have been permanently pruned.'}
               </p>
             </div>
           )}

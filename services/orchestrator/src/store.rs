@@ -1910,7 +1910,9 @@ impl Store {
         .bind(project_id)
         .fetch_all(&self.pool)
         .await?;
-        rows.into_iter().map(requirement_document_from_row).collect()
+        rows.into_iter()
+            .map(requirement_document_from_row)
+            .collect()
     }
 
     /// The requirements of `document_ids` in that order (each document's own
@@ -2557,13 +2559,12 @@ impl Store {
     /// genuinely a no-op, so the second revoke is still reported honestly rather
     /// than as a success that changed state.
     pub async fn revoke_api_key(&self, id: Uuid) -> Result<bool> {
-        let updated = sqlx::query(
-            "UPDATE api_keys SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
-        )
-        .bind(now_rfc3339())
-        .bind(id.to_string())
-        .execute(&self.pool)
-        .await?;
+        let updated =
+            sqlx::query("UPDATE api_keys SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL")
+                .bind(now_rfc3339())
+                .bind(id.to_string())
+                .execute(&self.pool)
+                .await?;
         Ok(updated.rows_affected() > 0)
     }
 
@@ -3111,6 +3112,15 @@ impl Store {
         Ok(id)
     }
 
+    /// The most rows a findings read returns.
+    ///
+    /// `bug_drafts` is append-only and `list_bug_drafts` sits behind a polled
+    /// endpoint, so an unbounded read there grows with every finding the project
+    /// ever produced. The findings view reads the newest page; this bounds it to
+    /// a size a UI can actually render. Same shape of clamp `list_audit`'s own
+    /// `limit` already applies at its handler.
+    const BUG_DRAFTS_PAGE_MAX: i64 = 300;
+
     /// B14 — bug drafts are project-owned, via the failure cluster they were
     /// drafted from. This previously had no project filter at all, so a
     /// project-scoped viewer key received every tenant's drafts (title,
@@ -3123,6 +3133,18 @@ impl Store {
     pub async fn list_bug_drafts(&self, project_filter: Option<&str>) -> Result<Vec<BugDraftRow>> {
         // Two literal statements rather than one built by `format!`: sqlx 0.9
         // rejects runtime-constructed SQL at compile time.
+        //
+        // The project predicate was `COALESCE(c.project_id, 'default') = ?`,
+        // which is non-sargable: the column is wrapped in a function, so no
+        // index on `failure_clusters.project_id` can be used and the table is
+        // scanned and grouped to answer one project's page. Rewritten as the
+        // explicit disjunction that means exactly the same thing -- this project,
+        // or the untenanted bucket when the caller asked for it -- leaving both
+        // sides as plain column comparisons.
+        //
+        // `LIMIT` added because this is a polled endpoint over an append-only
+        // table with no bound, so its cost grew with every finding the project
+        // ever produced and the response grew with it.
         let rows = match project_filter {
             Some(pid) => {
                 sqlx::query(
@@ -3132,10 +3154,13 @@ impl Store {
                             d.promoted_at as promoted_at, d.promoted_by as promoted_by
                      FROM bug_drafts d
                      JOIN failure_clusters c ON c.id = d.failure_cluster_id
-                     WHERE COALESCE(c.project_id, 'default') = ?
-                     ORDER BY d.created_at DESC",
+                     WHERE c.project_id = ?1
+                        OR (c.project_id IS NULL AND ?1 = 'default')
+                     ORDER BY d.created_at DESC
+                     LIMIT ?2",
                 )
                 .bind(pid)
+                .bind(Self::BUG_DRAFTS_PAGE_MAX)
                 .fetch_all(&self.pool)
                 .await?
             }
@@ -3146,8 +3171,10 @@ impl Store {
                             d.review_state as review_state, d.created_at as created_at,
                             d.promoted_at as promoted_at, d.promoted_by as promoted_by
                      FROM bug_drafts d
-                     ORDER BY d.created_at DESC",
+                     ORDER BY d.created_at DESC
+                     LIMIT ?1",
                 )
+                .bind(Self::BUG_DRAFTS_PAGE_MAX)
                 .fetch_all(&self.pool)
                 .await?
             }
@@ -4064,6 +4091,61 @@ impl Store {
         .bind(&now_str)
         .execute(&self.pool)
         .await?;
+
+        Ok(res.rows_affected())
+    }
+
+    /// Deletes a project's own audit rows older than `older_than`, returning how
+    /// many went. `dry_run` counts without deleting, exactly as
+    /// `prune_execution_telemetry` does, so an operator can see the blast radius
+    /// before committing to it.
+    ///
+    /// `audit_log` had no retention of any kind: one row per audited action,
+    /// appended forever, on a table every state-changing handler writes to. The
+    /// existing retention pass deliberately did not touch it (see this crate's
+    /// `operations` module: it prunes telemetry while "preserving audit logs"),
+    /// which is the right default for a trail — but it leaves unbounded growth
+    /// with no operator control at all. This is that control, opt-in.
+    ///
+    /// Two deliberate limits on what it may delete:
+    ///
+    /// - **Project-scoped only, never global.** `audit_log.project_id` is
+    ///   nullable and rows written without a tenant (`auth.fail` on an
+    ///   unauthenticated attempt, and system actions) have `NULL` there. The
+    ///   predicate is an equality on a bound tenant, so those rows never match.
+    ///   A project admin pruning their own project cannot destroy shared audit
+    ///   history.
+    /// - **Nothing but this project.** There is no unscoped variant of this
+    ///   method on purpose.
+    ///
+    /// `occurred_at` is TEXT holding RFC3339, so the cutoff compares as a string
+    /// — the same assumption `prune_execution_telemetry` already makes about
+    /// `created_at`, and the same one that holds only while every writer goes
+    /// through `insert_audit`.
+    pub async fn prune_audit(
+        &self,
+        project_id: &str,
+        older_than: chrono::DateTime<chrono::Utc>,
+        dry_run: bool,
+    ) -> Result<u64> {
+        let older_str = older_than.to_rfc3339();
+
+        if dry_run {
+            let eligible: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM audit_log WHERE project_id = ? AND occurred_at < ?",
+            )
+            .bind(project_id)
+            .bind(&older_str)
+            .fetch_one(&self.pool)
+            .await?;
+            return Ok(eligible.max(0) as u64);
+        }
+
+        let res = sqlx::query("DELETE FROM audit_log WHERE project_id = ? AND occurred_at < ?")
+            .bind(project_id)
+            .bind(&older_str)
+            .execute(&self.pool)
+            .await?;
 
         Ok(res.rows_affected())
     }

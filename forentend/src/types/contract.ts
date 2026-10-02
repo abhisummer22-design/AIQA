@@ -2217,6 +2217,13 @@ export interface FailureInvestigation {
 export interface RetentionPolicy {
   retention_days: number;
   dry_run: boolean;
+  /** Also prune this project's audit log, not just telemetry.
+   *
+   *  Optional and defaulting to `false`, so an existing caller asking for
+   *  telemetry retention does not start destroying its audit trail because a
+   *  field was added. The dry-run and prune endpoints set `dry_run` themselves —
+   *  the client never chooses it. */
+  include_audit?: boolean;
 }
 
 export interface RetentionReport {
@@ -2226,6 +2233,13 @@ export interface RetentionReport {
   dry_run: boolean;
   executed_at: string;
   retention_days: number;
+  /** Audit rows this pass pruned, or would prune under `dry_run`.
+   *
+   *  Kept separate from `pruned_count` rather than folded into it, because the
+   *  two are different things and an operator has to be able to see which one
+   *  moved: `pruned_count` is telemetry, this is the audit trail. Always `0`
+   *  unless the request opted in with `include_audit`. */
+  audit_pruned_count: number;
 }
 
 // ---------------------------------------------------------- Phase 7: Autopilot

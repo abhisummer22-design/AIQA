@@ -56,6 +56,14 @@ pub fn router(state: AppState) -> Router {
             get(project_logs_ws_handler),
         )
         .merge(protected)
+        // Latency histogram, mounted over everything merged above plus the
+        // public routes declared above, so `/metrics` can answer "how slow is
+        // this right now" — which it cannot do from any DB count. Applied
+        // before the two fallbacks below, so a 404/405 is not timed; there is no
+        // handler behind those worth a latency sample.
+        .layer(axum::middleware::from_fn(
+            crate::metrics::record_request_duration,
+        ))
         // Without these, an unknown path or a wrong verb on a real path is
         // answered by Axum's default handlers: the correct status code, but
         // `content-length: 0` and no body at all. That bypasses the
@@ -294,8 +302,7 @@ fn protected_routes() -> Router<AppState> {
         )
         .route(
             "/api/v1/projects/:project_id/regression/schedules",
-            post(crate::regression_api::create_schedule)
-                .get(crate::regression_api::list_schedules),
+            post(crate::regression_api::create_schedule).get(crate::regression_api::list_schedules),
         )
         .route(
             "/api/v1/projects/:project_id/regression/schedules/:id",
@@ -3084,7 +3091,8 @@ async fn generate_ai_test_cases_scoped(
     let requirement_items = if body.requirement_document_ids.is_empty() {
         None
     } else {
-        let items = load_requirement_items(&state, project_id, &body.requirement_document_ids).await?;
+        let items =
+            load_requirement_items(&state, project_id, &body.requirement_document_ids).await?;
         Some(narrow_to_requirement_keys(items, &body.requirement_keys)?)
     };
     // What similar past cases/documents are looked up by: the request's own
@@ -3109,8 +3117,7 @@ async fn generate_ai_test_cases_scoped(
     // Phase 2 gap-closing — document-level RAG, same fails-open contract:
     // a project with nothing embedded yet, or no embedding provider
     // configured, generates exactly as it did before this feature existed.
-    feedback.similar_documents =
-        find_similar_documents(&state, project_id, &retrieval_query).await;
+    feedback.similar_documents = find_similar_documents(&state, project_id, &retrieval_query).await;
     let similar_documents_used = feedback.similar_documents.len();
 
     // Real, optional crawl grounding — resolved with the exact same
@@ -3150,7 +3157,9 @@ async fn generate_ai_test_cases_scoped(
     let (outcome, requirement_coverage) = match &requirement_items {
         Some(items) => {
             let budget = requirement_batch_budget(&state).await;
-            let planned = crate::requirement_generation::plan_calls(items, &skills, budget).calls.len();
+            let planned = crate::requirement_generation::plan_calls(items, &skills, budget)
+                .calls
+                .len();
             let max_calls = requirement_max_calls();
             if planned > max_calls {
                 return Err(ApiError::validation(format!(
@@ -3445,7 +3454,11 @@ fn narrow_to_requirement_keys(
         return Err(ApiError::validation(format!(
             "no requirement of the selected documents has the id {}{}",
             shown.join(", "),
-            if unknown.len() > shown.len() { " (and more)" } else { "" }
+            if unknown.len() > shown.len() {
+                " (and more)"
+            } else {
+                ""
+            }
         )));
     }
     Ok(items
@@ -4999,9 +5012,10 @@ async fn put_execution_settings_handler(
         .set_show_browser_window(body.show_browser_window)
         .await
         .map_err(to_500)?;
-    state
-        .show_browser_window
-        .store(body.show_browser_window, std::sync::atomic::Ordering::Relaxed);
+    state.show_browser_window.store(
+        body.show_browser_window,
+        std::sync::atomic::Ordering::Relaxed,
+    );
     audit(
         &state,
         &ctx,
@@ -5449,7 +5463,10 @@ pub(crate) async fn scoped_run_summary(
 /// `get_run_scoped` (embeds them in `RunDetail`) and BE-13's standalone
 /// §12.4/§12.5 task endpoints below, so there is exactly one place that
 /// knows how to fetch a run's tasks.
-pub(crate) async fn scoped_run_tasks(state: &AppState, run_id: Uuid) -> Result<Vec<TaskState>, ApiError> {
+pub(crate) async fn scoped_run_tasks(
+    state: &AppState,
+    run_id: Uuid,
+) -> Result<Vec<TaskState>, ApiError> {
     let mut tasks = if let Some(record) = state.runs.read().await.get(&run_id).cloned() {
         record.engine.read().await.tasks.values().cloned().collect()
     } else {
@@ -5748,27 +5765,23 @@ async fn get_project_dashboard(
         .map_err(to_500)?
         .ok_or_else(|| ApiError::not_found("project not found"))?;
 
-    let execution_counts: std::collections::BTreeMap<String, i64> = state
-        .store
-        .dashboard_run_counts(&pid)
-        .await
-        .map_err(to_500)?
-        .into_iter()
-        .collect();
-    let task_counts: std::collections::BTreeMap<String, i64> = state
-        .store
-        .dashboard_task_counts(&pid)
-        .await
-        .map_err(to_500)?
-        .into_iter()
-        .collect();
+    // Three independent aggregates over the same project, issued as one
+    // concurrent batch rather than three sequential round trips. None reads
+    // another's result, and this endpoint is polled, so the serial version paid
+    // three times the database latency for one response. `try_join!` so a failure
+    // in any one still surfaces as the same 500 the sequential awaits produced.
+    let (run_counts, task_counts_raw, test_count) = tokio::try_join!(
+        state.store.dashboard_run_counts(&pid),
+        state.store.dashboard_task_counts(&pid),
+        state.store.dashboard_test_count(&pid),
+    )
+    .map_err(to_500)?;
+    let execution_counts: std::collections::BTreeMap<String, i64> =
+        run_counts.into_iter().collect();
+    let task_counts: std::collections::BTreeMap<String, i64> =
+        task_counts_raw.into_iter().collect();
     let passed = *task_counts.get("PASSED").unwrap_or(&0);
     let failed = *task_counts.get("FAILED").unwrap_or(&0);
-    let test_count = state
-        .store
-        .dashboard_test_count(&pid)
-        .await
-        .map_err(to_500)?;
 
     Ok(Json(DashboardResponse {
         project_id,
@@ -5816,13 +5829,18 @@ async fn get_project_kpis(
     require_scoped_project(&state, &ctx, project_id).await?;
     let pid = project_id.to_string();
 
-    let task_counts: std::collections::BTreeMap<String, i64> = state
-        .store
-        .dashboard_task_counts(&pid)
-        .await
-        .map_err(to_500)?
-        .into_iter()
-        .collect();
+    // Same reasoning as `get_project_dashboard`: three independent aggregates, one
+    // concurrent batch. The reliability ratio below is derived from the counts,
+    // not an input to the queries, so nothing here has to wait on anything else.
+    let (task_counts_raw, execution_efficiency_ms, execution_avg_run_duration_ms) =
+        tokio::try_join!(
+            state.store.dashboard_task_counts(&pid),
+            state.store.dashboard_avg_task_duration_ms(&pid),
+            state.store.dashboard_avg_run_duration_ms(&pid),
+        )
+        .map_err(to_500)?;
+    let task_counts: std::collections::BTreeMap<String, i64> =
+        task_counts_raw.into_iter().collect();
     let passed = *task_counts.get("PASSED").unwrap_or(&0);
     let failed = *task_counts.get("FAILED").unwrap_or(&0);
     let timeout = *task_counts.get("TIMEOUT").unwrap_or(&0);
@@ -5832,17 +5850,6 @@ async fn get_project_kpis(
     } else {
         None
     };
-
-    let execution_efficiency_ms = state
-        .store
-        .dashboard_avg_task_duration_ms(&pid)
-        .await
-        .map_err(to_500)?;
-    let execution_avg_run_duration_ms = state
-        .store
-        .dashboard_avg_run_duration_ms(&pid)
-        .await
-        .map_err(to_500)?;
 
     Ok(Json(KpisResponse {
         project_id,
@@ -7015,7 +7022,10 @@ async fn latest_crawl_run(
         if !summary.name.starts_with("Crawl:") {
             continue;
         }
-        if gap_evidence_of_run(state, project_id, id, None).await.is_ok() {
+        if gap_evidence_of_run(state, project_id, id, None)
+            .await
+            .is_ok()
+        {
             let evidence = gap_evidence_of_run(state, project_id, id, role).await?;
             return Ok((id, evidence));
         }
@@ -7062,7 +7072,11 @@ async fn gap_check_scoped(
         })
         .collect();
 
-    let role = body.role.as_deref().map(str::trim).filter(|r| !r.is_empty());
+    let role = body
+        .role
+        .as_deref()
+        .map(str::trim)
+        .filter(|r| !r.is_empty());
     let (run_id, evidence) = match body.crawl_run_id {
         Some(run_id) => (
             run_id,
@@ -7242,7 +7256,8 @@ async fn login_suggestion_scoped(
     let mut alternatives = Vec::new();
     if body.use_ai {
         if suggestion.confidence == crate::login_suggest::Confidence::High {
-            ai.note = Some("the rules were sure of their answer, so the AI was not asked".to_string());
+            ai.note =
+                Some("the rules were sure of their answer, so the AI was not asked".to_string());
         } else {
             match crate::login_suggest::suggest_with_ai(&state.ai_infra, &grounding, role).await {
                 Ok(by_ai) => {
@@ -7337,7 +7352,8 @@ async fn estimate_server_for(
         .map(|r| est::Observed {
             calls: r.calls as u64,
             avg_ms: r.total_ms as f64 / r.calls as f64,
-            avg_prompt_tokens: (r.token_calls > 0).then(|| r.prompt_tokens as f64 / r.token_calls as f64),
+            avg_prompt_tokens: (r.token_calls > 0)
+                .then(|| r.prompt_tokens as f64 / r.token_calls as f64),
             avg_completion_tokens: (r.token_calls > 0)
                 .then(|| r.completion_tokens as f64 / r.token_calls as f64),
         });
@@ -7425,7 +7441,8 @@ pub(crate) async fn build_autopilot_estimate(
         })
         .collect();
     let skills = &request.skills;
-    let coverage_options = coverage_options_for(request.depth.as_deref(), request.coverage_top_up, true)?;
+    let coverage_options =
+        coverage_options_for(request.depth.as_deref(), request.coverage_top_up, true)?;
     let budget = requirement_batch_budget(state).await;
     let plan = crate::requirement_generation::plan_calls(&items, skills, budget);
     let (prompt_tokens, completion_tokens) =
@@ -8563,6 +8580,11 @@ async fn get_cluster_timeline_handler(
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct RetentionRequestPayload {
     pub retention_days: Option<u32>,
+    /// Also prune this project's audit log, not just telemetry. Absent means
+    /// `false` — an existing caller asking for telemetry retention does not
+    /// start destroying its audit trail because a field was added.
+    #[serde(default)]
+    pub include_audit: bool,
 }
 
 async fn retention_dry_run_handler(
@@ -8578,6 +8600,7 @@ async fn retention_dry_run_handler(
     let policy = crate::operations::RetentionPolicy {
         retention_days,
         dry_run: true,
+        include_audit: payload.include_audit,
     };
 
     let ops = crate::operations::OperationsService::new(state.store.clone());
@@ -8601,6 +8624,7 @@ async fn retention_prune_handler(
     let policy = crate::operations::RetentionPolicy {
         retention_days,
         dry_run: false,
+        include_audit: payload.include_audit,
     };
 
     let ops = crate::operations::OperationsService::new(state.store.clone());

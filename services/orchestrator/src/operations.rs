@@ -147,6 +147,16 @@ pub struct FailureInvestigation {
 pub struct RetentionPolicy {
     pub retention_days: u32,
     pub dry_run: bool,
+    /// Whether to also prune this project's `audit_log` rows.
+    ///
+    /// Defaults to `false`, and that default is the point. Telemetry is
+    /// operational data with a natural expiry; an audit trail is evidence of
+    /// who did what, and how long it must be kept is a compliance decision the
+    /// backend should not make on an operator's behalf. So the existing
+    /// behaviour — prune telemetry, preserve audit logs — is unchanged, and
+    /// pruning the trail is something an admin has to ask for by name.
+    #[serde(default)]
+    pub include_audit: bool,
 }
 
 impl Default for RetentionPolicy {
@@ -154,6 +164,7 @@ impl Default for RetentionPolicy {
         Self {
             retention_days: 30,
             dry_run: true,
+            include_audit: false,
         }
     }
 }
@@ -167,6 +178,14 @@ pub struct RetentionReport {
     pub dry_run: bool,
     pub executed_at: DateTime<Utc>,
     pub retention_days: u32,
+    /// Audit rows this pass pruned, or would prune under `dry_run`.
+    ///
+    /// Separate from `pruned_count` rather than folded into it because the two
+    /// are different things and an operator needs to be able to see which one
+    /// moved: `pruned_count` is telemetry, this is the audit trail. Always `0`
+    /// unless the request set `include_audit`.
+    #[serde(default)]
+    pub audit_pruned_count: u64,
 }
 
 // ============================================================================
@@ -382,20 +401,46 @@ impl OperationsService {
             .await
             .map_err(|e| format!("retention execution failed: {e}"))?;
 
+        // Opt-in, and after telemetry, so a failure here cannot leave telemetry
+        // pruned with no audit record of it.
+        let audit_count = if policy.include_audit {
+            self.store
+                .prune_audit(project_id, older_than, policy.dry_run)
+                .await
+                .map_err(|e| format!("audit retention execution failed: {e}"))?
+        } else {
+            0
+        };
+
         let now = Utc::now();
 
         if !policy.dry_run {
-            let detail = format!(
-                "Retention prune executed: pruned {} records older than {} days",
-                count, policy.retention_days
-            );
+            let detail = if policy.include_audit {
+                format!(
+                    "Retention prune executed: pruned {} telemetry records and {} audit rows older than {} days",
+                    count, audit_count, policy.retention_days
+                )
+            } else {
+                format!(
+                    "Retention prune executed: pruned {} records older than {} days",
+                    count, policy.retention_days
+                )
+            };
+            // Recorded *after* the prune, and scoped to this project, so the row
+            // documenting the prune is itself newer than the cutoff and survives
+            // it. The alternative — pruning the trail without leaving a trace of
+            // having pruned it — is the one outcome worth engineering against.
             let _ = self
                 .store
                 .insert_audit(
                     Some(actor),
                     Some("admin"),
                     Some(project_id),
-                    "telemetry.retention",
+                    if policy.include_audit {
+                        "audit.retention"
+                    } else {
+                        "telemetry.retention"
+                    },
                     None,
                     Some(&detail),
                     "allowed",
@@ -410,6 +455,7 @@ impl OperationsService {
             dry_run: policy.dry_run,
             executed_at: now,
             retention_days: policy.retention_days,
+            audit_pruned_count: if policy.dry_run { 0 } else { audit_count },
         })
     }
 

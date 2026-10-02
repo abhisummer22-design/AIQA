@@ -698,6 +698,7 @@ async fn test_10_retention_dry_run_preserves_data() {
     let policy = RetentionPolicy {
         retention_days: 30,
         dry_run: true,
+        include_audit: false,
     };
     let report = ops.execute_retention(pid, &policy, "admin").await.unwrap();
 
@@ -757,6 +758,7 @@ async fn test_11_retention_prune_deletes_eligible_records() {
     let policy = RetentionPolicy {
         retention_days: 30,
         dry_run: false,
+        include_audit: false,
     };
     let report = ops.execute_retention(pid, &policy, "admin").await.unwrap();
 
@@ -900,6 +902,7 @@ async fn test_12_retention_safety_guard_preserves_active_runs_and_pending_heals(
     let policy = RetentionPolicy {
         retention_days: 30,
         dry_run: false,
+        include_audit: false,
     };
     let report = ops.execute_retention(pid, &policy, "admin").await.unwrap();
 
@@ -998,6 +1001,7 @@ async fn test_12b_retention_stops_protecting_telemetry_once_its_pending_proposal
     let policy = RetentionPolicy {
         retention_days: 30,
         dry_run: false,
+        include_audit: false,
     };
     let report = ops.execute_retention(pid, &policy, "admin").await.unwrap();
 
@@ -1024,6 +1028,7 @@ async fn test_13_retention_zero_days_rejected() {
     let policy = RetentionPolicy {
         retention_days: 0,
         dry_run: true,
+        include_audit: false,
     };
     let res = ops.execute_retention(pid, &policy, "admin").await;
     assert!(res.is_err());

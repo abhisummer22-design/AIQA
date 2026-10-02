@@ -30,6 +30,7 @@ const MOCK_DRY_RUN_REPORT: RetentionReport = {
   dry_run: true,
   executed_at: '2026-09-16T12:00:00Z',
   retention_days: 30,
+  audit_pruned_count: 0,
 };
 
 const MOCK_PRUNE_REPORT: RetentionReport = {
@@ -39,6 +40,7 @@ const MOCK_PRUNE_REPORT: RetentionReport = {
   dry_run: false,
   executed_at: '2026-09-16T12:05:00Z',
   retention_days: 30,
+  audit_pruned_count: 0,
 };
 
 describe('TelemetryRetentionModal', () => {
@@ -112,7 +114,10 @@ describe('TelemetryRetentionModal', () => {
     fireEvent.click(screen.getByTestId('retention-dry-run-button'));
 
     await waitFor(() => {
-      expect(dryRunSpy).toHaveBeenCalledWith('proj-retention-test', { retention_days: 30 });
+      expect(dryRunSpy).toHaveBeenCalledWith('proj-retention-test', {
+        retention_days: 30,
+        include_audit: false,
+      });
       expect(screen.getByTestId('retention-report')).toBeDefined();
     });
 
@@ -138,12 +143,102 @@ describe('TelemetryRetentionModal', () => {
     fireEvent.click(screen.getByTestId('retention-prune-button'));
 
     await waitFor(() => {
-      expect(pruneSpy).toHaveBeenCalledWith('proj-retention-test', { retention_days: 30 });
+      expect(pruneSpy).toHaveBeenCalledWith('proj-retention-test', {
+        retention_days: 30,
+        include_audit: false,
+      });
       expect(screen.getByTestId('retention-report')).toBeDefined();
     });
 
     expect(screen.getByText(/PRUNE EXECUTED/i)).toBeDefined();
     expect(screen.getByText(/Selected historical telemetry rows have been permanently pruned/i)).toBeDefined();
+  });
+
+  // The audit trail is evidence of who did what, and how long it has to be kept
+  // is a compliance call. So it is never swept up by a routine telemetry
+  // cleanup: the flag is off unless an operator deliberately turns it on, and
+  // both the request and the on-screen safety claim follow it.
+  it('leaves audit pruning off by default, so a telemetry cleanup never touches the trail', async () => {
+    const dryRunSpy = vi
+      .spyOn(aiqaApi.intelligence, 'retentionDryRun')
+      .mockResolvedValue(MOCK_DRY_RUN_REPORT);
+
+    render(
+      <TelemetryRetentionModal
+        projectId="proj-retention-test"
+        isOpen={true}
+        onClose={vi.fn()}
+      />
+    );
+    await waitFor(() => expect(aiqaApi.rbac.whoami).toHaveBeenCalled());
+
+    const box = screen.getByTestId('retention-include-audit') as HTMLInputElement;
+    expect(box.checked).toBe(false);
+    expect(screen.getByText(/Audit logs and Quality Graph nodes are 100% preserved/i)).toBeDefined();
+
+    fireEvent.click(screen.getByTestId('retention-dry-run-button'));
+    await waitFor(() =>
+      expect(dryRunSpy).toHaveBeenCalledWith('proj-retention-test', {
+        retention_days: 30,
+        include_audit: false,
+      })
+    );
+  });
+
+  it('prunes the audit log only when the operator asks for it, and stops claiming it is preserved', async () => {
+    const dryRunSpy = vi
+      .spyOn(aiqaApi.intelligence, 'retentionDryRun')
+      .mockResolvedValue({ ...MOCK_DRY_RUN_REPORT, audit_pruned_count: 9 });
+
+    render(
+      <TelemetryRetentionModal
+        projectId="proj-retention-test"
+        isOpen={true}
+        onClose={vi.fn()}
+      />
+    );
+    await waitFor(() => expect(aiqaApi.rbac.whoami).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByTestId('retention-include-audit'));
+
+    // The safety panel must stop promising preservation the moment the operator
+    // has turned it off. A green "100% preserved" banner next to a checkbox that
+    // deletes the very thing it names would be the worst version of this.
+    expect(
+      screen.queryByText(/Audit logs and Quality Graph nodes are 100% preserved/i)
+    ).toBeNull();
+    expect(screen.getByText(/Audit logs are being pruned too/i)).toBeDefined();
+
+    fireEvent.click(screen.getByTestId('retention-dry-run-button'));
+    await waitFor(() =>
+      expect(dryRunSpy).toHaveBeenCalledWith('proj-retention-test', {
+        retention_days: 30,
+        include_audit: true,
+      })
+    );
+    expect(screen.getByText('Audit Rows Pruned:')).toBeDefined();
+  });
+
+  it('names the audit log in the irreversible-action confirmation when it is included', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    vi.spyOn(aiqaApi.intelligence, 'retentionPrune').mockResolvedValue(MOCK_PRUNE_REPORT);
+
+    render(
+      <TelemetryRetentionModal
+        projectId="proj-retention-test"
+        isOpen={true}
+        onClose={vi.fn()}
+      />
+    );
+    await waitFor(() => expect(aiqaApi.rbac.whoami).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByTestId('retention-include-audit'));
+    fireEvent.click(screen.getByTestId('retention-prune-button'));
+
+    await waitFor(() => expect(confirmSpy).toHaveBeenCalled());
+    const message = String(confirmSpy.mock.calls[0][0]);
+    expect(message).toMatch(/audit log entries/i);
+    expect(message).toMatch(/cannot be undone/i);
   });
 
   it('handles simulation errors gracefully', async () => {

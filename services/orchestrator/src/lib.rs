@@ -80,6 +80,8 @@ mod governed_healing_tests;
 #[cfg(test)]
 mod operations_tests;
 #[cfg(test)]
+mod retention_and_metrics_tests;
+#[cfg(test)]
 mod run_map_retention_tests;
 #[cfg(test)]
 mod store_tests;
