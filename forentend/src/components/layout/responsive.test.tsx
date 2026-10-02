@@ -33,14 +33,14 @@ const MOBILE = '(max-width: 767px)';
 
 /** Installs a `matchMedia` that reports one answer, and tracks its listeners. */
 function stubViewport(mobile: boolean) {
-  const listeners = new Set<() => void>();
+  const listeners = new Set<(e: MediaQueryListEvent) => void>();
   const list = {
     matches: mobile,
     media: MOBILE,
-    addEventListener: (_: string, cb: () => void) => listeners.add(cb),
-    removeEventListener: (_: string, cb: () => void) => listeners.delete(cb),
-    addListener: (cb: () => void) => listeners.add(cb),
-    removeListener: (cb: () => void) => listeners.delete(cb),
+    addEventListener: (_: string, cb: (e: MediaQueryListEvent) => void) => listeners.add(cb),
+    removeEventListener: (_: string, cb: (e: MediaQueryListEvent) => void) => listeners.delete(cb),
+    addListener: (cb: (e: MediaQueryListEvent) => void) => listeners.add(cb),
+    removeListener: (cb: (e: MediaQueryListEvent) => void) => listeners.delete(cb),
     onchange: null,
     dispatchEvent: () => false,
   };
