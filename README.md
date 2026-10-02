@@ -648,7 +648,7 @@ The codebase enforces strict test verification across both backend and frontend 
 ```cmd
 cd services\orchestrator
 
-# Run full test suite (1,611 tests passing, 2 ignored)
+# Run full test suite (1,631 tests passing, 2 ignored)
 cargo test -p aiqa-orchestrator
 
 # Verify compilation and lint integrity
@@ -915,7 +915,7 @@ Every one of these is registered inside `protected_routes()` and requires `Autho
 | **Phase 5** | Governed Self-Healing Service & Closed Action AST Diffing | **VERIFIED** | 42 governance tests |
 | **Phase 6** | Adaptive QA Intelligence & Production Observability Backend | **VERIFIED** | 40 intelligence tests |
 | **Phase 7** | QA Intelligence Dashboard & Observability UI (`forentend`) | **VERIFIED** | 19 UI tests (1,486 total frontend) |
-| **Total Backend** | Complete Rust Orchestrator Suite (`services/orchestrator`) | **VERIFIED** | **1,611 passed, 0 failed, 2 ignored** |
+| **Total Backend** | Complete Rust Orchestrator Suite (`services/orchestrator`) | **VERIFIED** | **1,631 passed, 0 failed, 2 ignored** |
 | **Total Frontend**| Complete Web Control Plane Suite (`forentend`) | **VERIFIED** | **1,486 tests across 70 test files** |
 
 ---

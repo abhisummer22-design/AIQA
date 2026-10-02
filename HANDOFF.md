@@ -92,7 +92,7 @@ page and `ai_usage.rs` report what the router actually did.
 
 | Suite | Where | Count |
 | :--- | :--- | :--- |
-| Backend | `services/orchestrator` | **1,611** passing (2 `#[ignore]`d; 1,613 total) |
+| Backend | `services/orchestrator` | **1,631** passing (2 `#[ignore]`d; 1,633 total) |
 | Frontend | `forentend` | **1,486** tests across **70** test files |
 
 ```cmd

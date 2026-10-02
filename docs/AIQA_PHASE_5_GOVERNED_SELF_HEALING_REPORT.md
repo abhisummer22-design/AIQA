@@ -5,7 +5,7 @@
 - **Baseline**: Branch `Demo`, Phases 1, 2, 3 & 4 Complete
 - **Test Suite Verification**: **658 passed, 0 failed, 2 ignored** (521 baseline + 20 Phase 1 + 32 Phase 2 + 10 Phase 3 + 33 Phase 4 + 42 Phase 5)
 - **Compiler Health**: `cargo check --tests -p aiqa-orchestrator` passed with 0 errors
-- **Code Format**: `cargo fmt --check` passed cleanly across entire workspace
+- **Code Format**: **NOT clean.** `cargo fmt --check` reports formatting differences in ~19 files of the orchestrator crate (verified this session). An earlier revision of this document claimed it "passed cleanly across entire workspace"; that claim was wrong. Files touched since are formatted, but the crate as a whole does not currently pass.
 
 ---
 
