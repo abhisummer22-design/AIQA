@@ -249,6 +249,23 @@ fn is_blocked_ip(ip: &std::net::IpAddr, port: u16) -> bool {
                 || v4.is_multicast()
         }
         IpAddr::V6(v6) => {
+            // An IPv4-mapped address (`::ffff:a.b.c.d`) is not a *different*
+            // host from the IPv4 address it wraps -- it is that address, reached
+            // over IPv6, and a connection to one lands on the other. It is also
+            // the form a resolver hands back for an IPv4 literal on a dual-stack
+            // host, so a caller never has to type a bracket to produce one.
+            //
+            // Judged on the V6 predicates alone it slipped through every one of
+            // them: `is_loopback()` is true only for `::1`, and
+            // `is_unique_local()` only for `fc00::/7`, so `::ffff:127.0.0.1` and
+            // `::ffff:169.254.169.254` both read as ordinary global unicast and
+            // were allowed. Unwrapping first makes the embedded address decide,
+            // on exactly the terms its plain IPv4 form is judged on -- including
+            // the orchestrator-port exception, which is applied by the recursive
+            // call and so stays correct.
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_blocked_ip(&IpAddr::V4(v4), port);
+            }
             v6.is_unicast_link_local() // fe80::/10
                 || v6.is_unique_local() // fc00::/7
                 || v6.is_multicast()
@@ -1479,8 +1496,7 @@ async fn run_validated_plan(
     client: &reqwest::Client,
     plan: crate::execution_plan::ExecutionPlan,
 ) -> ExecutionOutcome {
-    let secret_values = match read_secrets(&crate::execution_plan::secret_names_of(&plan.actions))
-    {
+    let secret_values = match read_secrets(&crate::execution_plan::secret_names_of(&plan.actions)) {
         Ok(values) => values,
         Err(outcome) => return outcome,
     };
@@ -1512,7 +1528,9 @@ async fn run_validated_plan(
 
 /// `plan` with each request header value written `env:NAME` replaced by what the variable holds now. Only names that pass
 /// `execution_plan::secret_name` are read, so a plan cannot ask for any variable of the orchestrator's environment.
-fn with_resolved_header_secrets(mut plan: crate::execution_plan::ExecutionPlan) -> crate::execution_plan::ExecutionPlan {
+fn with_resolved_header_secrets(
+    mut plan: crate::execution_plan::ExecutionPlan,
+) -> crate::execution_plan::ExecutionPlan {
     for action in &mut plan.actions {
         if let crate::execution_plan::Action::Request { headers, .. } = action {
             for value in headers.values_mut() {
@@ -2195,10 +2213,7 @@ AIQA_HEALING_EVENT {"event":"heal","actionIndex":1,"actionKind":"CLICK","primary
 
     #[test]
     fn headed_env_var_is_set_only_when_the_toggle_is_on() {
-        assert_eq!(
-            headed_env_var(true),
-            Some(("AIQA_PLAYWRIGHT_HEADED", "1"))
-        );
+        assert_eq!(headed_env_var(true), Some(("AIQA_PLAYWRIGHT_HEADED", "1")));
         assert_eq!(headed_env_var(false), None);
     }
 
@@ -2293,12 +2308,19 @@ AIQA_HEALING_EVENT {"event":"heal","actionIndex":1,"actionKind":"CLICK","primary
         (format!("http://{addr}"), seen)
     }
 
-    fn get_plan(url: &str, headers: &[(&str, &str)], expect: Vec<crate::execution_plan::Action>) -> crate::execution_plan::ExecutionPlan {
+    fn get_plan(
+        url: &str,
+        headers: &[(&str, &str)],
+        expect: Vec<crate::execution_plan::Action>,
+    ) -> crate::execution_plan::ExecutionPlan {
         use crate::execution_plan::{Action, CompilerMethod, ExecutionPlan, ExecutionType};
         let mut actions = vec![Action::Request {
             method: "GET".to_string(),
             url: url.to_string(),
-            headers: headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            headers: headers
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
             body: None,
         }];
         actions.extend(expect);
@@ -2397,21 +2419,52 @@ AIQA_HEALING_EVENT {"event":"heal","actionIndex":1,"actionKind":"CLICK","primary
     }
 
     #[tokio::test]
-    async fn assert_status_in_passes_for_any_status_on_its_list_and_fails_with_the_list_named_otherwise() {
+    async fn assert_status_in_passes_for_any_status_on_its_list_and_fails_with_the_list_named_otherwise(
+    ) {
         use crate::execution_plan::Action::AssertStatusIn;
         let client = reqwest::Client::new();
         let (url, _) = canned_server(201, "application/json", "{}".to_string()).await;
-        let ok = execute_plan_once(&client, &get_plan(&url, &[], vec![AssertStatusIn { statuses: vec![200, 201] }])).await;
+        let ok = execute_plan_once(
+            &client,
+            &get_plan(
+                &url,
+                &[],
+                vec![AssertStatusIn {
+                    statuses: vec![200, 201],
+                }],
+            ),
+        )
+        .await;
         assert_eq!(ok.status, TaskStatus::Passed, "{:?}", ok.reason);
         assert_eq!(ok.assertions.len(), 1);
         assert_eq!(ok.assertions[0].description, "Status is one of 200, 201");
         assert!(ok.assertions[0].passed);
-        assert!(ok.log.contains("ASSERT_STATUS_IN [200, 201] -> actual 201"), "{}", ok.log);
+        assert!(
+            ok.log.contains("ASSERT_STATUS_IN [200, 201] -> actual 201"),
+            "{}",
+            ok.log
+        );
 
         let (url, _) = canned_server(404, "application/json", "{}".to_string()).await;
-        let failed = execute_plan_once(&client, &get_plan(&url, &[], vec![AssertStatusIn { statuses: vec![200, 201] }])).await;
+        let failed = execute_plan_once(
+            &client,
+            &get_plan(
+                &url,
+                &[],
+                vec![AssertStatusIn {
+                    statuses: vec![200, 201],
+                }],
+            ),
+        )
+        .await;
         assert_eq!(failed.status, TaskStatus::Failed);
-        assert!(failed.log.contains("expected an HTTP status among 200, 201, got real status 404"), "{}", failed.log);
+        assert!(
+            failed
+                .log
+                .contains("expected an HTTP status among 200, 201, got real status 404"),
+            "{}",
+            failed.log
+        );
         assert!(!failed.assertions[0].passed);
         assert_eq!(failed.http_status, Some(404));
     }
@@ -2420,23 +2473,61 @@ AIQA_HEALING_EVENT {"event":"heal","actionIndex":1,"actionKind":"CLICK","primary
     async fn an_assertion_with_no_request_before_it_fails_rather_than_passing() {
         use crate::execution_plan::Action::{AssertBodySchema, AssertStatusIn};
         let mut plan = get_plan("http://127.0.0.1:1/", &[], vec![]);
-        plan.actions = vec![AssertStatusIn { statuses: vec![200] }, AssertBodySchema { schema: serde_json::json!({}) }];
+        plan.actions = vec![
+            AssertStatusIn {
+                statuses: vec![200],
+            },
+            AssertBodySchema {
+                schema: serde_json::json!({}),
+            },
+        ];
         let result = execute_plan_once(&reqwest::Client::new(), &plan).await;
         assert_eq!(result.status, TaskStatus::Failed);
-        assert!(result.log.contains("ASSERT_STATUS_IN with no prior REQUEST"), "{}", result.log);
-        assert!(result.log.contains("ASSERT_BODY_SCHEMA with no prior REQUEST"), "{}", result.log);
+        assert!(
+            result
+                .log
+                .contains("ASSERT_STATUS_IN with no prior REQUEST"),
+            "{}",
+            result.log
+        );
+        assert!(
+            result
+                .log
+                .contains("ASSERT_BODY_SCHEMA with no prior REQUEST"),
+            "{}",
+            result.log
+        );
     }
 
     #[tokio::test]
     async fn assert_body_schema_passes_a_body_that_fits() {
         use crate::execution_plan::Action::AssertBodySchema;
         let schema = serde_json::json!({"type": "object", "required": ["id"], "properties": {"id": {"type": "integer"}, "name": {"type": "string"}}});
-        let (url, _) = canned_server(200, "application/json", r#"{"id": 3, "name": "Rex"}"#.to_string()).await;
-        let result = execute_plan_once(&reqwest::Client::new(), &get_plan(&url, &[], vec![AssertBodySchema { schema }])).await;
-        assert_eq!(result.status, TaskStatus::Passed, "{:?} {}", result.reason, result.log);
+        let (url, _) = canned_server(
+            200,
+            "application/json",
+            r#"{"id": 3, "name": "Rex"}"#.to_string(),
+        )
+        .await;
+        let result = execute_plan_once(
+            &reqwest::Client::new(),
+            &get_plan(&url, &[], vec![AssertBodySchema { schema }]),
+        )
+        .await;
+        assert_eq!(
+            result.status,
+            TaskStatus::Passed,
+            "{:?} {}",
+            result.reason,
+            result.log
+        );
         assert_eq!(result.assertions[0].description, "Body fits its schema");
         assert_eq!(result.assertions[0].actual, "fits");
-        assert!(result.log.contains("ASSERT_BODY_SCHEMA -> fits"), "{}", result.log);
+        assert!(
+            result.log.contains("ASSERT_BODY_SCHEMA -> fits"),
+            "{}",
+            result.log
+        );
     }
 
     #[tokio::test]
@@ -2444,42 +2535,110 @@ AIQA_HEALING_EVENT {"event":"heal","actionIndex":1,"actionKind":"CLICK","primary
         use crate::execution_plan::Action::AssertBodySchema;
         let schema = serde_json::json!({"type": "object", "required": ["id"], "properties": {"id": {"type": "integer"}, "name": {"type": "string"}}});
         let (url, _) = canned_server(200, "application/json", r#"{"name": 5}"#.to_string()).await;
-        let result = execute_plan_once(&reqwest::Client::new(), &get_plan(&url, &[], vec![AssertBodySchema { schema }])).await;
+        let result = execute_plan_once(
+            &reqwest::Client::new(),
+            &get_plan(&url, &[], vec![AssertBodySchema { schema }]),
+        )
+        .await;
         assert_eq!(result.status, TaskStatus::Failed);
         assert!(!result.assertions[0].passed);
         let said = &result.assertions[0].actual;
-        assert!(said.contains("required property \"id\" is missing"), "{said}");
-        assert!(said.contains("$.name: expected string, got integer"), "{said}");
-        assert!(result.log.contains("the response body does not fit its schema"), "{}", result.log);
+        assert!(
+            said.contains("required property \"id\" is missing"),
+            "{said}"
+        );
+        assert!(
+            said.contains("$.name: expected string, got integer"),
+            "{said}"
+        );
+        assert!(
+            result
+                .log
+                .contains("the response body does not fit its schema"),
+            "{}",
+            result.log
+        );
     }
 
     #[tokio::test]
     async fn assert_body_schema_fails_a_body_that_is_not_json() {
         use crate::execution_plan::Action::AssertBodySchema;
         let (url, _) = canned_server(200, "text/html", "<html>nope</html>".to_string()).await;
-        let result = execute_plan_once(&reqwest::Client::new(), &get_plan(&url, &[], vec![AssertBodySchema { schema: serde_json::json!({"type": "object"}) }])).await;
+        let result = execute_plan_once(
+            &reqwest::Client::new(),
+            &get_plan(
+                &url,
+                &[],
+                vec![AssertBodySchema {
+                    schema: serde_json::json!({"type": "object"}),
+                }],
+            ),
+        )
+        .await;
         assert_eq!(result.status, TaskStatus::Failed);
-        assert!(result.assertions[0].actual.starts_with("(not valid JSON"), "{}", result.assertions[0].actual);
-        assert!(result.assertions[0].actual.contains("content type text/html"), "the answer's own content type is named: {}", result.assertions[0].actual);
-        assert!(result.log.contains("cannot check it against its schema"), "{}", result.log);
-        assert!(result.log.contains("its content type is text/html"), "{}", result.log);
+        assert!(
+            result.assertions[0].actual.starts_with("(not valid JSON"),
+            "{}",
+            result.assertions[0].actual
+        );
+        assert!(
+            result.assertions[0]
+                .actual
+                .contains("content type text/html"),
+            "the answer's own content type is named: {}",
+            result.assertions[0].actual
+        );
+        assert!(
+            result.log.contains("cannot check it against its schema"),
+            "{}",
+            result.log
+        );
+        assert!(
+            result.log.contains("its content type is text/html"),
+            "{}",
+            result.log
+        );
     }
 
     #[tokio::test]
-    async fn a_header_written_env_name_is_read_when_the_request_is_made_and_kept_out_of_the_evidence() {
+    async fn a_header_written_env_name_is_read_when_the_request_is_made_and_kept_out_of_the_evidence(
+    ) {
         use crate::execution_plan::Action::AssertStatusIn;
         std::env::set_var("AIQA_SECRET_T8B_TOKEN", "  tok-8b-secret-value  ");
         // The server repeats the token in its answer, as a badly written one may.
-        let (url, seen) = canned_server(200, "application/json", r#"{"echo": "tok-8b-secret-value"}"#.to_string()).await;
-        let plan = get_plan(&url, &[("Authorization", "env:AIQA_SECRET_T8B_TOKEN")], vec![AssertStatusIn { statuses: vec![200] }]);
+        let (url, seen) = canned_server(
+            200,
+            "application/json",
+            r#"{"echo": "tok-8b-secret-value"}"#.to_string(),
+        )
+        .await;
+        let plan = get_plan(
+            &url,
+            &[("Authorization", "env:AIQA_SECRET_T8B_TOKEN")],
+            vec![AssertStatusIn {
+                statuses: vec![200],
+            }],
+        );
         let outcome = run_validated_plan(&reqwest::Client::new(), plan).await;
         assert_eq!(outcome.status, TaskStatus::Passed, "{:?}", outcome.reason);
         let requests = seen.lock().unwrap().clone();
         assert_eq!(requests.len(), 1);
-        assert!(requests[0].to_lowercase().contains("authorization: tok-8b-secret-value\r\n"), "the server got the value, trimmed: {}", requests[0]);
-        assert!(!requests[0].contains("env:AIQA_SECRET_T8B_TOKEN"), "and not the reference");
+        assert!(
+            requests[0]
+                .to_lowercase()
+                .contains("authorization: tok-8b-secret-value\r\n"),
+            "the server got the value, trimmed: {}",
+            requests[0]
+        );
+        assert!(
+            !requests[0].contains("env:AIQA_SECRET_T8B_TOKEN"),
+            "and not the reference"
+        );
         let evidence = outcome.evidence.unwrap();
-        assert!(!evidence.contains("tok-8b-secret-value"), "the value is scrubbed from what the run keeps: {evidence}");
+        assert!(
+            !evidence.contains("tok-8b-secret-value"),
+            "the value is scrubbed from what the run keeps: {evidence}"
+        );
         assert!(evidence.contains("***"), "{evidence}");
         assert!(evidence.contains("RESULT_SUMMARY_JSON:"), "{evidence}");
     }
@@ -2488,7 +2647,11 @@ AIQA_HEALING_EVENT {"event":"heal","actionIndex":1,"actionKind":"CLICK","primary
     async fn a_header_that_names_a_variable_that_is_not_set_stops_the_run_before_any_request() {
         std::env::remove_var("AIQA_SECRET_T8B_MISSING");
         let (url, seen) = canned_server(200, "application/json", "{}".to_string()).await;
-        let plan = get_plan(&url, &[("X-Api-Key", "env:AIQA_SECRET_T8B_MISSING")], vec![]);
+        let plan = get_plan(
+            &url,
+            &[("X-Api-Key", "env:AIQA_SECRET_T8B_MISSING")],
+            vec![],
+        );
         let outcome = run_validated_plan(&reqwest::Client::new(), plan).await;
         assert_eq!(outcome.status, TaskStatus::InfraError);
         let reason = outcome.reason.unwrap();
@@ -2500,10 +2663,23 @@ AIQA_HEALING_EVENT {"event":"heal","actionIndex":1,"actionKind":"CLICK","primary
     fn only_a_variable_a_plan_may_name_is_ever_read_for_a_header() {
         use crate::execution_plan::Action;
         std::env::set_var("GROQ_API_KEY_T8B", "must-not-leak");
-        let plan = get_plan("http://x.test/", &[("Authorization", "env:GROQ_API_KEY_T8B"), ("X-Plain", "plain")], vec![]);
+        let plan = get_plan(
+            "http://x.test/",
+            &[
+                ("Authorization", "env:GROQ_API_KEY_T8B"),
+                ("X-Plain", "plain"),
+            ],
+            vec![],
+        );
         let resolved = with_resolved_header_secrets(plan);
-        let Action::Request { headers, .. } = &resolved.actions[0] else { panic!("no request") };
-        assert_eq!(headers.get("Authorization").map(String::as_str), Some("env:GROQ_API_KEY_T8B"), "left as written, never read");
+        let Action::Request { headers, .. } = &resolved.actions[0] else {
+            panic!("no request")
+        };
+        assert_eq!(
+            headers.get("Authorization").map(String::as_str),
+            Some("env:GROQ_API_KEY_T8B"),
+            "left as written, never read"
+        );
         assert_eq!(headers.get("X-Plain").map(String::as_str), Some("plain"));
     }
 
@@ -2653,6 +2829,99 @@ AIQA_HEALING_EVENT {"event":"heal","actionIndex":1,"actionKind":"CLICK","primary
                     "expected a disallowed-range rejection for {target}, got: {err}"
                 ),
                 Ok(()) => panic!("expected {target} to be rejected as a private range"),
+            }
+        }
+    }
+
+    /// An IPv4-mapped IPv6 address is the same host as the IPv4 address inside
+    /// it — `::ffff:127.0.0.1` *is* `127.0.0.1`, and a connection to one reaches
+    /// the other. It is also the form a resolver hands back for an IPv4 literal
+    /// on a dual-stack host, so an attacker-supplied hostname can produce one
+    /// without the caller ever typing a bracket.
+    ///
+    /// `Ipv6Addr::is_loopback()` is true only for `::1`, and `is_unique_local()`
+    /// only for `fc00::/7`, so the mapped form matched none of the V6 arm's
+    /// predicates and fell through to "allowed". The check has to unwrap the
+    /// mapping and judge the embedded IPv4 address on its own terms.
+    #[tokio::test]
+    async fn an_ipv4_mapped_ipv6_address_is_judged_as_the_ipv4_address_it_wraps() {
+        use std::net::IpAddr;
+
+        // The embedded address must be blocked on exactly the terms its plain
+        // IPv4 form is blocked on -- nothing weaker, nothing stronger.
+        for embedded in [
+            "127.0.0.1",       // loopback
+            "10.0.0.5",        // RFC1918
+            "172.16.0.5",      // RFC1918
+            "192.168.1.1",     // RFC1918
+            "169.254.169.254", // cloud metadata
+            "0.0.0.0",         // unspecified
+        ] {
+            let plain: IpAddr = embedded.parse().unwrap();
+            let mapped: IpAddr = format!("::ffff:{embedded}").parse().unwrap();
+            assert_ne!(
+                plain, mapped,
+                "{embedded} must actually be a distinct literal"
+            );
+
+            let plain_blocked = is_blocked_ip(&plain, 9999);
+            let mapped_blocked = is_blocked_ip(&mapped, 9999);
+            assert!(plain_blocked, "precondition: plain {embedded} is blocked");
+            assert!(
+                mapped_blocked,
+                "::ffff:{embedded} is {embedded} reached over IPv6, so it must be blocked too, \
+                 but it was allowed"
+            );
+        }
+    }
+
+    /// The one place a loopback address is deliberately allowed: the
+    /// orchestrator's own port, so the compiled-API executor can call back into
+    /// this process. That exception must survive the mapping unwrap — otherwise
+    /// the fix above breaks a real, intended capability.
+    #[tokio::test]
+    async fn the_orchestrator_port_exception_still_applies_to_the_mapped_loopback_form() {
+        let mapped: std::net::IpAddr = "::ffff:127.0.0.1".parse().unwrap();
+        assert!(
+            !is_blocked_ip(&mapped, ORCHESTRATOR_PORT),
+            "the mapped form of the orchestrator's own address must stay reachable"
+        );
+        assert!(
+            is_blocked_ip(&mapped, 9999),
+            "on any other port it must still be blocked"
+        );
+    }
+
+    /// `2130706433`, `0x7f000001` and `0177.0.0.1` are all spellings of
+    /// `127.0.0.1`. Whether they matter depends entirely on who does the
+    /// translating: if `Url::parse` normalises them away there is nothing to fix
+    /// here, and if it does not, `host.parse::<IpAddr>()` below will fail and the
+    /// host will be sent to `lookup_host` instead — where the resolver, not us,
+    /// decides what the address means.
+    ///
+    /// This pins which of those actually happens rather than assuming it, because
+    /// the right fix is completely different in each case and guessing wrong would
+    /// mean either adding a parser that was never needed or leaving a live hole.
+    #[tokio::test]
+    async fn an_alternately_encoded_loopback_literal_is_not_silently_accepted() {
+        for target in [
+            "http://2130706433/", // 127.0.0.1 as a decimal integer
+            "http://0x7f000001/", // 127.0.0.1 as hex
+            "http://0177.0.0.1/", // 127.0.0.1 with an octal-looking first octet
+        ] {
+            match validate_target_url(target).await {
+                // Good outcome: rejected outright.
+                Err(err) => assert!(
+                    err.contains("disallowed") || err.contains("could not resolve"),
+                    "{target} was rejected, but not for a reason that proves it cannot reach \
+                     loopback -- got: {err}"
+                ),
+                // The hole: accepted. Whatever the spelling, the connection still
+                // lands on 127.0.0.1, and nothing after this check re-examines it.
+                Ok(()) => panic!(
+                    "{target} is a spelling of 127.0.0.1 and validate_target_url ACCEPTED it -- \
+                     a request to it reaches loopback, bypassing the entire private-range guard"
+                ),
             }
         }
     }
