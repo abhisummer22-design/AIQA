@@ -25,9 +25,28 @@ REM 2. Load .env if present
 echo [2/5] Loading environment configurations...
 set "AIQA_ENVFILE=%~dp0.env"
 if exist "%AIQA_ENVFILE%" (
-    for /f "usebackq tokens=1,* delims==" %%A in (`type "%AIQA_ENVFILE%" ^| findstr /b /i /v "REM"`) do (
-        set "%%A=%%B"
+    REM This was setting every variable in .env to an EMPTY value, so no API key
+    REM ever reached the orchestrator and every provider reported NOT_CONFIGURED.
+    REM Two separate faults, both needed:
+    REM
+    REM   1. `tokens=1,*` does not do what it reads like. In cmd, the comma means
+    REM      "token 1, then the REST as token 2" -- but with `delims==` the whole
+    REM      `KEY=VALUE` line is a single token, so `%%A` never equals the bare
+    REM      variable name and `%%B` is always empty. `tokens=1,2*` is the form
+    REM      that actually yields name in %%A and value in %%B.
+    REM   2. `%AIQA_ENVFILE%` was a `%`-variable, which cmd expands BEFORE the
+    REM      `for /f` body runs -- inside a parenthesised block it saw nothing, and
+    REM      `type` failed on a blank path. `!AIQA_ENVFILE!` (delayed expansion) is
+    REM      the correct form for this scope.
+    REM
+    REM Lines with an empty value are skipped: `set "KEY="` is a no-op here, and
+    REM leaving it alone is what lets GROQ_REQUEST_TOKEN_LIMIT and friends stay
+    REM unset so the code's own defaults apply.
+    setlocal enabledelayedexpansion
+    for /f "usebackq tokens=1,2* delims==" %%A in (`type "!AIQA_ENVFILE!" ^| findstr /b /i /v "REM #"`) do (
+        if not "%%B"=="" set "%%A=%%B"
     )
+    endlocal
 )
 
 REM 3. Check frontend dependencies
