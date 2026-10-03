@@ -21,7 +21,7 @@
  * consumer of is removed too — see `types.ts` and `context/AIQAContext.tsx`.
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Settings as SettingsIcon, Key, Sparkles, Save, Loader2, RefreshCw, AlertTriangle, CircleHelp, Plus, Trash2, Video } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { renderAuthState } from '../state/StateViews';
@@ -84,6 +84,7 @@ const OrchestratorAuthPanel: React.FC = () => {
             type="password"
             autoComplete="off"
             spellCheck={false}
+            aria-label="AIQA Orchestrator API Key"
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             onKeyDown={(e) => {
@@ -334,7 +335,7 @@ const AiIntelligencePanel: React.FC = () => {
   return (
     <div id="ai-intelligence-panel" className="space-y-3">
       <div className="pb-2 border-b border-border-default">
-        <h3 className="text-xs font-bold text-content-primary uppercase font-mono">AI Intelligence</h3>
+        <h2 className="text-xs font-bold text-content-primary uppercase font-mono">AI Intelligence</h2>
         <p className="text-content-secondary text-xs mt-0.5">Provider discovery, model routing, and generation health — all real, live-checked state.</p>
       </div>
 
@@ -465,6 +466,7 @@ const AiIntelligencePanel: React.FC = () => {
           <input
             type="text"
             id="new-custom-provider-name"
+            aria-label="Provider name"
             value={newProviderName}
             onChange={(e) => setNewProviderName(e.target.value)}
             placeholder="Name (e.g. My Provider)"
@@ -473,6 +475,7 @@ const AiIntelligencePanel: React.FC = () => {
           <input
             type="text"
             id="new-custom-provider-base-url"
+            aria-label="Provider base URL"
             value={newProviderBaseUrl}
             onChange={(e) => setNewProviderBaseUrl(e.target.value)}
             placeholder="Base URL (https://...)"
@@ -481,6 +484,7 @@ const AiIntelligencePanel: React.FC = () => {
           <input
             type="password"
             id="new-custom-provider-api-key"
+            aria-label="Provider API key"
             value={newProviderApiKey}
             onChange={(e) => setNewProviderApiKey(e.target.value)}
             placeholder="API key, or env:NAME"
@@ -493,6 +497,7 @@ const AiIntelligencePanel: React.FC = () => {
             min="0"
             step="any"
             id="new-custom-provider-input-price"
+            aria-label="Input price, dollars per 1K tokens"
             value={newProviderInputPrice}
             onChange={(e) => setNewProviderInputPrice(e.target.value)}
             placeholder="Input price, $ per 1K tokens (optional)"
@@ -503,6 +508,7 @@ const AiIntelligencePanel: React.FC = () => {
             min="0"
             step="any"
             id="new-custom-provider-output-price"
+            aria-label="Output price, dollars per 1K tokens"
             value={newProviderOutputPrice}
             onChange={(e) => setNewProviderOutputPrice(e.target.value)}
             placeholder="Output price, $ per 1K tokens (optional)"
@@ -541,8 +547,9 @@ const AiIntelligencePanel: React.FC = () => {
       {/* Mode */}
       <div className="p-3 rounded-lg bg-surface-page border border-border-default space-y-2.5">
         <div>
-          <label className="block text-xs font-bold font-mono text-content-secondary mb-1">AI Mode</label>
+          <label htmlFor="settings-ai-mode" className="block text-xs font-bold font-mono text-content-secondary mb-1">AI Mode</label>
           <select
+            id="settings-ai-mode"
             value={draftMode}
             onChange={(e) => setDraftMode(e.target.value as AiSettings['mode'])}
             className="w-full px-2.5 py-1.5 rounded bg-surface-card border border-slate-700 text-xs font-mono text-content-primary focus:outline-none focus:border-violet-500 cursor-pointer"
@@ -555,8 +562,9 @@ const AiIntelligencePanel: React.FC = () => {
         {draftMode === 'MANUAL' && (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
             <div>
-              <label className="block text-[10px] font-mono text-content-secondary mb-1">Provider</label>
+              <label htmlFor="settings-ai-provider" className="block text-[10px] font-mono text-content-secondary mb-1">Provider</label>
               <select
+                id="settings-ai-provider"
                 value={draftProvider}
                 onChange={(e) => {
                   setDraftProvider(e.target.value);
@@ -573,8 +581,9 @@ const AiIntelligencePanel: React.FC = () => {
               </select>
             </div>
             <div>
-              <label className="block text-[10px] font-mono text-content-secondary mb-1">Model</label>
+              <label htmlFor="settings-ai-model" className="block text-[10px] font-mono text-content-secondary mb-1">Model</label>
               <select
+                id="settings-ai-model"
                 value={draftModel}
                 onChange={(e) => setDraftModel(e.target.value)}
                 disabled={!selectedProvider}
@@ -678,7 +687,7 @@ const TestExecutionPanel: React.FC = () => {
   return (
     <div id="test-execution-panel" className="space-y-3">
       <div className="pb-2 border-b border-border-default">
-        <h3 className="text-xs font-bold text-content-primary uppercase font-mono">Test Execution</h3>
+        <h2 className="text-xs font-bold text-content-primary uppercase font-mono">Test Execution</h2>
         <p className="text-content-secondary text-xs mt-0.5">Whether a real browser window is shown while a Playwright test runs</p>
       </div>
 
@@ -743,6 +752,24 @@ export const SettingsPage: React.FC = () => {
     { id: 'testExecution', label: 'Test Execution', icon: Video },
   ];
 
+  // WAI-ARIA tab pattern (APG): one tab stop for the whole strip, Arrow/Home/End
+  // move selection and focus together, so the relationship between the strip
+  // and the panel it swaps is announced rather than implied by styling.
+  const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const handleTabKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const current = tabs.findIndex((t) => t.id === activeTab);
+    if (current < 0) return;
+    let next = current;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = (current + 1) % tabs.length;
+    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = (current - 1 + tabs.length) % tabs.length;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = tabs.length - 1;
+    else return;
+    e.preventDefault();
+    setActiveTab(tabs[next].id);
+    tabRefs.current[tabs[next].id]?.focus();
+  };
+
   return (
     <div className="space-y-4 animate-in fade-in duration-150">
       <SectionHeader
@@ -755,7 +782,12 @@ export const SettingsPage: React.FC = () => {
       {/* Main Settings Grid: Tabs on left, Content on right */}
       <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
         {/* Settings Navigation Tabs (4 cols) */}
-        <div className="md:col-span-4 rounded-lg border border-border-default bg-surface-card p-2.5 space-y-1">
+        <div
+          role="tablist"
+          aria-label="Configuration Sections"
+          onKeyDown={handleTabKeyDown}
+          className="md:col-span-4 rounded-lg border border-border-default bg-surface-card p-2.5 space-y-1"
+        >
           <div className="text-[10px] font-mono uppercase tracking-wider text-content-muted px-2.5 py-1.5 font-bold">
             Configuration Sections
           </div>
@@ -766,6 +798,15 @@ export const SettingsPage: React.FC = () => {
             return (
               <button
                 key={tab.id}
+                type="button"
+                role="tab"
+                id={`settings-tab-${tab.id}`}
+                aria-selected={isActive}
+                aria-controls={`settings-panel-${tab.id}`}
+                tabIndex={isActive ? 0 : -1}
+                ref={(el) => {
+                  tabRefs.current[tab.id] = el;
+                }}
                 onClick={() => setActiveTab(tab.id)}
                 className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-xs font-medium transition-all text-left cursor-pointer ${
                   isActive
@@ -783,18 +824,26 @@ export const SettingsPage: React.FC = () => {
         {/* Settings Body (8 cols) */}
         <div className="md:col-span-8 rounded-lg border border-border-default bg-surface-card p-4 space-y-4 text-xs">
           {activeTab === 'authentication' && (
-            <div className="space-y-3">
+            <div role="tabpanel" id="settings-panel-authentication" aria-labelledby="settings-tab-authentication" className="space-y-3">
               <div className="pb-2 border-b border-border-default">
-                <h3 className="text-xs font-bold text-content-primary uppercase font-mono">Authentication</h3>
+                <h2 className="text-xs font-bold text-content-primary uppercase font-mono">Authentication</h2>
                 <p className="text-content-secondary text-xs mt-0.5">The real orchestrator API key this frontend authenticates with</p>
               </div>
               <OrchestratorAuthPanel />
             </div>
           )}
 
-          {activeTab === 'aiModels' && <AiIntelligencePanel />}
+          {activeTab === 'aiModels' && (
+            <div role="tabpanel" id="settings-panel-aiModels" aria-labelledby="settings-tab-aiModels">
+              <AiIntelligencePanel />
+            </div>
+          )}
 
-          {activeTab === 'testExecution' && <TestExecutionPanel />}
+          {activeTab === 'testExecution' && (
+            <div role="tabpanel" id="settings-panel-testExecution" aria-labelledby="settings-tab-testExecution">
+              <TestExecutionPanel />
+            </div>
+          )}
         </div>
       </div>
     </div>

@@ -263,6 +263,7 @@ export const PerformanceTestingPage: React.FC = () => {
               <div className="flex gap-2">
                 <select
                   id="perf-method"
+                  aria-label="HTTP method"
                   value={method}
                   onChange={(e) => setMethod(e.target.value as typeof method)}
                   disabled={isRunning}
@@ -277,6 +278,7 @@ export const PerformanceTestingPage: React.FC = () => {
                 <input
                   id="perf-url"
                   type="text"
+                  aria-label="Request URL"
                   value={url}
                   onChange={(e) => setUrl(e.target.value)}
                   placeholder="https://api.example.com/v1/health"

@@ -603,7 +603,7 @@ export const EvidencePage: React.FC = () => {
         </div>
       </header>
 
-      <section id="evidence-content" className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm" aria-live="polite">
+      <section id="evidence-content" className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm">
         {renderEvidenceBody()}
       </section>
     </div>

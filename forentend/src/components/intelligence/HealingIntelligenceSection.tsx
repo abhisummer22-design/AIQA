@@ -107,13 +107,13 @@ export const HealingIntelligenceSection: React.FC<HealingIntelligenceSectionProp
           <table className="w-full text-left text-xs text-content-secondary">
             <thead className="bg-slate-950/60 text-content-secondary uppercase font-mono text-[10px] border-b border-border-default">
               <tr>
-                <th className="py-2.5 px-3">Strategy Name</th>
-                <th className="py-2.5 px-3">Category</th>
-                <th className="py-2.5 px-3">Attempts</th>
-                <th className="py-2.5 px-3">Verified</th>
-                <th className="py-2.5 px-3">Not Verified</th>
-                <th className="py-2.5 px-3">Regressions</th>
-                <th className="py-2.5 px-3 text-right">Calibrated Confidence</th>
+                <th scope="col" className="py-2.5 px-3">Strategy Name</th>
+                <th scope="col" className="py-2.5 px-3">Category</th>
+                <th scope="col" className="py-2.5 px-3">Attempts</th>
+                <th scope="col" className="py-2.5 px-3">Verified</th>
+                <th scope="col" className="py-2.5 px-3">Not Verified</th>
+                <th scope="col" className="py-2.5 px-3">Regressions</th>
+                <th scope="col" className="py-2.5 px-3 text-right">Calibrated Confidence</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/60 font-mono">

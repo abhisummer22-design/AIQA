@@ -65,13 +65,13 @@ const TallyTable: React.FC<{ id: string; title: string; nameHeading: string; row
       <table aria-labelledby={`${id}-title`} className="w-full text-[11px] text-left">
         <thead className="text-content-muted">
           <tr>
-            <th className="py-1 pr-3 font-normal">{nameHeading}</th>
-            <th className="py-1 pr-3 font-normal text-right">Calls</th>
-            <th className="py-1 pr-3 font-normal text-right">Failed</th>
-            <th className="py-1 pr-3 font-normal text-right">Tokens in</th>
-            <th className="py-1 pr-3 font-normal text-right">Tokens out</th>
-            <th className="py-1 pr-3 font-normal text-right">Avg answer</th>
-            <th className="py-1 font-normal text-right">Cost</th>
+            <th scope="col" className="py-1 pr-3 font-normal">{nameHeading}</th>
+            <th scope="col" className="py-1 pr-3 font-normal text-right">Calls</th>
+            <th scope="col" className="py-1 pr-3 font-normal text-right">Failed</th>
+            <th scope="col" className="py-1 pr-3 font-normal text-right">Tokens in</th>
+            <th scope="col" className="py-1 pr-3 font-normal text-right">Tokens out</th>
+            <th scope="col" className="py-1 pr-3 font-normal text-right">Avg answer</th>
+            <th scope="col" className="py-1 font-normal text-right">Cost</th>
           </tr>
         </thead>
         <tbody>

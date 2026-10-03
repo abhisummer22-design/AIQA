@@ -246,7 +246,7 @@ export const AutopilotPage: React.FC = () => {
         </div>
       </header>
 
-      <div aria-live="polite">{renderBody()}</div>
+      <div>{renderBody()}</div>
     </div>
   );
 };

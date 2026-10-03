@@ -454,10 +454,11 @@ export const RBACTestingPage: React.FC = () => {
             {showCreateForm && (
               <div className="rounded-md bg-[#020617] border border-slate-800 p-3 space-y-2.5">
                 <div>
-                  <label className="block text-[10px] font-mono uppercase tracking-wider text-content-muted mb-1">
+                  <label htmlFor="rbac-create-key-name" className="block text-[10px] font-mono uppercase tracking-wider text-content-muted mb-1">
                     Name (whose key this is — shown in the audit log)
                   </label>
                   <input
+                    id="rbac-create-key-name"
                     type="text"
                     value={createName}
                     onChange={(e) => setCreateName(e.target.value)}
@@ -467,10 +468,11 @@ export const RBACTestingPage: React.FC = () => {
                 </div>
                 <div className="flex gap-2">
                   <div className="flex-1">
-                    <label className="block text-[10px] font-mono uppercase tracking-wider text-content-muted mb-1">
+                    <label htmlFor="rbac-create-key-role" className="block text-[10px] font-mono uppercase tracking-wider text-content-muted mb-1">
                       Role
                     </label>
                     <select
+                      id="rbac-create-key-role"
                       value={createRole}
                       onChange={(e) => setCreateRole(e.target.value as Role)}
                       className="w-full px-2.5 py-1.5 rounded bg-[#0B1120] border border-slate-700 text-xs font-mono text-slate-200 focus:outline-none focus:border-violet-500 cursor-pointer"
@@ -481,10 +483,11 @@ export const RBACTestingPage: React.FC = () => {
                     </select>
                   </div>
                   <div className="flex-1">
-                    <label className="block text-[10px] font-mono uppercase tracking-wider text-content-muted mb-1">
+                    <label htmlFor="rbac-create-key-project" className="block text-[10px] font-mono uppercase tracking-wider text-content-muted mb-1">
                       Project scope
                     </label>
                     <select
+                      id="rbac-create-key-project"
                       value={createProjectId}
                       onChange={(e) => setCreateProjectId(e.target.value)}
                       className="w-full px-2.5 py-1.5 rounded bg-[#0B1120] border border-slate-700 text-xs font-mono text-slate-200 focus:outline-none focus:border-violet-500 cursor-pointer"

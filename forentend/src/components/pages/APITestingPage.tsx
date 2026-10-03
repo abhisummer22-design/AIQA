@@ -231,6 +231,7 @@ export const APITestingPage: React.FC = () => {
               <div className="flex gap-2">
                 <select
                   id="api-testing-method"
+                  aria-label="HTTP method"
                   value={method}
                   onChange={(e) => setMethod(e.target.value as Method)}
                   disabled={isExecuting}
@@ -245,6 +246,7 @@ export const APITestingPage: React.FC = () => {
                 <input
                   id="api-testing-url"
                   type="text"
+                  aria-label="Request URL"
                   value={url}
                   onChange={(e) => setUrl(e.target.value)}
                   placeholder="https://api.example.com/v1/resource"
@@ -490,6 +492,7 @@ const KVListEditor: React.FC<{ label: string; rows: KVRow[]; setRows: (r: KVRow[
         <div key={i} className="flex gap-1.5">
           <input
             type="text"
+            aria-label={`${label} key`}
             value={row.key}
             onChange={(e) => {
               const next = [...rows];
@@ -502,6 +505,7 @@ const KVListEditor: React.FC<{ label: string; rows: KVRow[]; setRows: (r: KVRow[
           />
           <input
             type="text"
+            aria-label={`${label} value`}
             value={row.value}
             onChange={(e) => {
               const next = [...rows];
@@ -548,6 +552,7 @@ const AssertionsEditor: React.FC<{ assertions: AssertionRow[]; setAssertions: (a
               <span className="text-[11px] font-mono text-content-muted w-24 shrink-0">Status equals</span>
               <input
                 type="text"
+                aria-label="Status equals"
                 value={a.status}
                 onChange={(e) => {
                   const next = [...assertions];
@@ -565,6 +570,7 @@ const AssertionsEditor: React.FC<{ assertions: AssertionRow[]; setAssertions: (a
               <span className="text-[11px] font-mono text-content-muted w-24 shrink-0">Header</span>
               <input
                 type="text"
+                aria-label="Header name"
                 value={a.name}
                 onChange={(e) => {
                   const next = [...assertions];
@@ -578,6 +584,7 @@ const AssertionsEditor: React.FC<{ assertions: AssertionRow[]; setAssertions: (a
               <span className="text-[11px] font-mono text-content-muted">=</span>
               <input
                 type="text"
+                aria-label="Header value"
                 value={a.value}
                 onChange={(e) => {
                   const next = [...assertions];
@@ -595,6 +602,7 @@ const AssertionsEditor: React.FC<{ assertions: AssertionRow[]; setAssertions: (a
               <span className="text-[11px] font-mono text-content-muted w-24 shrink-0">Body field</span>
               <input
                 type="text"
+                aria-label="Body field path"
                 value={a.path}
                 onChange={(e) => {
                   const next = [...assertions];
@@ -608,6 +616,7 @@ const AssertionsEditor: React.FC<{ assertions: AssertionRow[]; setAssertions: (a
               <span className="text-[11px] font-mono text-content-muted">=</span>
               <input
                 type="text"
+                aria-label="Body field expected value"
                 value={a.equals}
                 onChange={(e) => {
                   const next = [...assertions];

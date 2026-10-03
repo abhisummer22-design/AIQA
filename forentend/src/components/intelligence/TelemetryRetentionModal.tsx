@@ -216,11 +216,12 @@ export const TelemetryRetentionModal: React.FC<TelemetryRetentionModalProps> = (
 
           {/* Retention Threshold Input */}
           <div className="space-y-2">
-            <label className="block text-xs font-medium text-content-primary">
+            <label htmlFor="telemetry-retention-days" className="block text-xs font-medium text-content-primary">
               Retention Window (Days)
             </label>
             <div className="flex items-center gap-3">
               <input
+                id="telemetry-retention-days"
                 type="number"
                 min="1"
                 max="365"

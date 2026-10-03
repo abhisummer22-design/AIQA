@@ -875,7 +875,7 @@ export const ReportsPage: React.FC = () => {
                         {Math.round(finding.confidence * 100)}% confidence
                       </span>
                     </div>
-                    <h4 className="text-xs font-bold text-slate-100 font-sans truncate">{finding.title}</h4>
+                    <h2 className="text-xs font-bold text-slate-100 font-sans truncate">{finding.title}</h2>
                     <p className="text-[10px] text-content-muted font-mono">Created {formatTimestamp(finding.created_at)}</p>
                   </div>
                 </div>
@@ -1156,7 +1156,7 @@ export const ReportsPage: React.FC = () => {
         </div>
       )}
 
-      <section id="findings-content" className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm" aria-live="polite">
+      <section id="findings-content" className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm">
         {renderBody()}
       </section>
 
@@ -1172,7 +1172,7 @@ export const ReportsPage: React.FC = () => {
           <p className="px-1 text-[11px] text-content-muted">
             Real, deterministic risk/value/flakiness scoring computed from this project's actual task execution history — not an AI prediction.
           </p>
-          <section id="test-intelligence-content" className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm" aria-live="polite">
+          <section id="test-intelligence-content" className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm">
             {renderTestIntelligenceBody()}
           </section>
         </div>

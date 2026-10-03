@@ -214,6 +214,7 @@ export const SkillManagerModal: React.FC<SkillManagerModalProps> = ({
               <input
                 ref={fileInputRef}
                 type="file"
+                aria-label="Upload a skill file"
                 accept=".txt,.md,.markdown,.json,.yaml,.yml"
                 className="hidden"
                 onChange={(e) => {

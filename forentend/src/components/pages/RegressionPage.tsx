@@ -531,7 +531,7 @@ export const RegressionPage: React.FC = () => {
         </div>
       </header>
 
-      <div aria-live="polite">{renderBody()}</div>
+      <div>{renderBody()}</div>
     </div>
   );
 };

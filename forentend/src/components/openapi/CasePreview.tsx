@@ -113,10 +113,10 @@ export const CasePreview: React.FC<{
                     <caption className="sr-only">Cases for {op.id}</caption>
                     <thead className="text-content-muted">
                       <tr>
-                        <th className="py-1 pr-3 font-normal">Kind</th>
-                        <th className="py-1 pr-3 font-normal">Case</th>
-                        <th className="py-1 pr-3 font-normal">Request</th>
-                        <th className="py-1 font-normal">Expects</th>
+                        <th scope="col" className="py-1 pr-3 font-normal">Kind</th>
+                        <th scope="col" className="py-1 pr-3 font-normal">Case</th>
+                        <th scope="col" className="py-1 pr-3 font-normal">Request</th>
+                        <th scope="col" className="py-1 font-normal">Expects</th>
                       </tr>
                     </thead>
                     <tbody>

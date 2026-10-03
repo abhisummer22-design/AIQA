@@ -93,6 +93,7 @@ export const TelemetryTableSection: React.FC<TelemetryTableSectionProps> = ({
             <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-content-secondary" />
             <input
               type="text"
+              aria-label="Search execution telemetry"
               placeholder="Search task, run, category..."
               value={search}
               onChange={(e) => {
@@ -106,6 +107,7 @@ export const TelemetryTableSection: React.FC<TelemetryTableSectionProps> = ({
 
           {/* Status Filter */}
           <select
+            aria-label="Filter telemetry by status"
             value={statusFilter}
             onChange={(e) => {
               setStatusFilter(e.target.value);
@@ -124,6 +126,7 @@ export const TelemetryTableSection: React.FC<TelemetryTableSectionProps> = ({
           {/* Env Filter */}
           {environments.length > 0 && (
             <select
+              aria-label="Filter telemetry by environment"
               value={envFilter}
               onChange={(e) => {
                 setEnvFilter(e.target.value);
@@ -153,13 +156,13 @@ export const TelemetryTableSection: React.FC<TelemetryTableSectionProps> = ({
           <table className="w-full text-left text-xs text-content-secondary">
             <thead className="bg-slate-950/60 text-content-secondary uppercase font-mono text-[10px] border-b border-border-default">
               <tr>
-                <th className="py-2.5 px-3">Task / ID</th>
-                <th className="py-2.5 px-3">Status</th>
-                <th className="py-2.5 px-3">Duration</th>
-                <th className="py-2.5 px-3">Environment</th>
-                <th className="py-2.5 px-3">Category</th>
-                <th className="py-2.5 px-3">Start Time</th>
-                <th className="py-2.5 px-3 text-right">Action</th>
+                <th scope="col" className="py-2.5 px-3">Task / ID</th>
+                <th scope="col" className="py-2.5 px-3">Status</th>
+                <th scope="col" className="py-2.5 px-3">Duration</th>
+                <th scope="col" className="py-2.5 px-3">Environment</th>
+                <th scope="col" className="py-2.5 px-3">Category</th>
+                <th scope="col" className="py-2.5 px-3">Start Time</th>
+                <th scope="col" className="py-2.5 px-3 text-right">Action</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/60 font-sans">

@@ -106,6 +106,7 @@ export const QualityGraphSection: React.FC<QualityGraphSectionProps> = ({ graph,
             <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-content-secondary" />
             <input
               type="text"
+              aria-label="Search quality graph nodes"
               placeholder="Search nodes..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
@@ -115,6 +116,7 @@ export const QualityGraphSection: React.FC<QualityGraphSectionProps> = ({ graph,
           </div>
 
           <select
+            aria-label="Filter quality graph by node type"
             value={typeFilter}
             onChange={(e) => {
               setTypeFilter(e.target.value);

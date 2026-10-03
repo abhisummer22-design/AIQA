@@ -436,7 +436,7 @@ export const AuditPage: React.FC = () => {
         </div>
       )}
 
-      <section id="audit-content" className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm" aria-live="polite">
+      <section id="audit-content" className="p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm">
         {renderBody()}
       </section>
 
@@ -445,7 +445,7 @@ export const AuditPage: React.FC = () => {
           id="audit-pagination"
           className="flex items-center justify-between gap-3 p-3 rounded-lg border border-slate-800 bg-[#0B1120] text-xs font-mono text-slate-400"
         >
-          <span>
+          <span role="status">
             Showing {offset + 1}-{Math.min(offset + limit, total)} of {total}
           </span>
           <div className="flex items-center gap-2">

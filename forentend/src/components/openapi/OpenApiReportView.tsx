@@ -140,7 +140,7 @@ export const OpenApiReportView: React.FC<{
           </button>
         )}
       </div>
-      {copyState === 'shown' && <textarea id="openapi-markdown" readOnly value={markdown} rows={8} className="w-full rounded border border-slate-800 bg-[#020617] p-2 text-[11px] font-mono text-slate-300" />}
+      {copyState === 'shown' && <textarea id="openapi-markdown" aria-label="OpenAPI test report in markdown" readOnly value={markdown} rows={8} className="w-full rounded border border-slate-800 bg-[#020617] p-2 text-[11px] font-mono text-slate-300" />}
 
       <div className={`grid grid-cols-2 md:grid-cols-6 gap-2 ${refreshing ? 'opacity-80' : ''}`}>
         <Tile id="openapi-tile-ran" label="Cases run" value={`${s.ran} of ${s.cases}`} />

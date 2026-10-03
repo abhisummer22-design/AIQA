@@ -186,6 +186,7 @@ export const EditTestCaseModal: React.FC<EditTestCaseModalProps> = ({ testCase, 
                   <div key={idx} id={`edit-precondition-${idx}`} className="flex items-center gap-1.5">
                     <input
                       type="text"
+                      aria-label={`Precondition ${idx + 1}`}
                       value={p}
                       onChange={(e) => updatePrecondition(idx, e.target.value)}
                       disabled={saving}
@@ -238,6 +239,7 @@ export const EditTestCaseModal: React.FC<EditTestCaseModalProps> = ({ testCase, 
                   </div>
                   <input
                     type="text"
+                    aria-label={`Step ${idx + 1} action`}
                     placeholder="Action"
                     value={step.action}
                     onChange={(e) => updateStep(idx, { action: e.target.value })}
@@ -246,6 +248,7 @@ export const EditTestCaseModal: React.FC<EditTestCaseModalProps> = ({ testCase, 
                   />
                   <input
                     type="text"
+                    aria-label={`Step ${idx + 1} expected result`}
                     placeholder="Expected result"
                     value={step.expectedResult}
                     onChange={(e) => updateStep(idx, { expectedResult: e.target.value })}

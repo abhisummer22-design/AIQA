@@ -893,7 +893,7 @@ export const RequirementCoveragePage: React.FC = () => {
         </div>
       </header>
 
-      <div aria-live="polite">{renderBody()}</div>
+      <div>{renderBody()}</div>
     </div>
   );
 };

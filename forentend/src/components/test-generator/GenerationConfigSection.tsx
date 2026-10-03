@@ -284,10 +284,11 @@ export const GenerationConfigSection: React.FC<GenerationConfigSectionProps> = (
       {/* Generation Settings — Exploration Depth */}
       <div className="p-3 rounded-lg bg-[#0B1120] border border-slate-800 space-y-2.5">
         <div>
-          <label className="block text-xs font-bold font-mono text-slate-300 mb-1">
+          <label htmlFor="generation-exploration-depth" className="block text-xs font-bold font-mono text-slate-300 mb-1">
             Exploration Depth
           </label>
           <select
+            id="generation-exploration-depth"
             value={depth}
             onChange={(e) => onDepthChange(e.target.value as any)}
             disabled={isGenerating}

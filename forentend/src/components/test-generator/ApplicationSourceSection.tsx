@@ -411,6 +411,7 @@ export const ApplicationSourceSection: React.FC<ApplicationSourceSectionProps> =
                     <div className="flex items-center gap-1.5">
                       <input
                         type="url"
+                        aria-label={meta.label}
                         placeholder={meta.placeholder}
                         value={inputUrls[meta.type]}
                         onChange={(e) => {

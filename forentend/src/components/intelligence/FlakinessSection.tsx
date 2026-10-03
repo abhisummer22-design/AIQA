@@ -56,12 +56,12 @@ export const FlakinessSection: React.FC<FlakinessSectionProps> = ({ flakiness, l
           <table className="w-full text-left text-xs text-content-secondary">
             <thead className="bg-slate-950/60 text-content-secondary uppercase font-mono text-[10px] border-b border-border-default">
               <tr>
-                <th className="py-2.5 px-3">Test Node ID</th>
-                <th className="py-2.5 px-3">Flakiness Score</th>
-                <th className="py-2.5 px-3">Window Runs</th>
-                <th className="py-2.5 px-3">Window Failures</th>
-                <th className="py-2.5 px-3">Environment Correlation</th>
-                <th className="py-2.5 px-3 text-right">Drill-down</th>
+                <th scope="col" className="py-2.5 px-3">Test Node ID</th>
+                <th scope="col" className="py-2.5 px-3">Flakiness Score</th>
+                <th scope="col" className="py-2.5 px-3">Window Runs</th>
+                <th scope="col" className="py-2.5 px-3">Window Failures</th>
+                <th scope="col" className="py-2.5 px-3">Environment Correlation</th>
+                <th scope="col" className="py-2.5 px-3 text-right">Drill-down</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/60 font-mono">

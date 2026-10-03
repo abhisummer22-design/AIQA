@@ -319,7 +319,7 @@ export const TelemetryPage: React.FC = () => {
         }
       />
 
-      <section id="telemetry-content" className="space-y-3" aria-live="polite">
+      <section id="telemetry-content" className="space-y-3">
         {renderBody()}
       </section>
     </div>

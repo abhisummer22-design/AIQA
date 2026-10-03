@@ -366,6 +366,7 @@ export const DocumentUploadSection: React.FC<DocumentUploadSectionProps> = ({
               <input
                 ref={(el) => (fileInputRefs.current[slot.id] = el)}
                 type="file"
+                aria-label={`Upload ${slot.label}`}
                 accept=".pdf,.docx,.doc,.md,.txt,.json,.yaml,.yml"
                 className="hidden"
                 onChange={(e) => {

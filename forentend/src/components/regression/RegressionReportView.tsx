@@ -99,7 +99,7 @@ export const RegressionReportView: React.FC<{
           </button>
         )}
       </div>
-      {copyState === 'shown' && <textarea id="regression-markdown" readOnly value={markdown} rows={8} className="w-full rounded border border-slate-800 bg-[#020617] p-2 text-[11px] font-mono text-slate-300" />}
+      {copyState === 'shown' && <textarea id="regression-markdown" aria-label="Regression report in markdown" readOnly value={markdown} rows={8} className="w-full rounded border border-slate-800 bg-[#020617] p-2 text-[11px] font-mono text-slate-300" />}
 
       <div className="grid grid-cols-2 md:grid-cols-6 gap-2">
         <Tile id="regression-tile-cases" label="Cases run" value={`${s.ran} of ${s.cases}`} note={s.pending > 0 ? `${s.pending} still waiting` : undefined} />

@@ -332,7 +332,7 @@ export const OpenApiTestsPage: React.FC = () => {
         </div>
       </header>
 
-      <div aria-live="polite">{renderBody()}</div>
+      <div>{renderBody()}</div>
     </div>
   );
 };

@@ -6,7 +6,7 @@
  * Test -> Task -> Failure -> Cluster -> Evidence -> Healing Proposal -> AST Diff -> Verification -> Quality Graph
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   X,
   Layers,
@@ -53,6 +53,23 @@ export const FailureInvestigationWorkspaceModal: React.FC<FailureInvestigationWo
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'matrix' | 'timeline' | 'healing' | 'recommendations'>('matrix');
+  // Left-to-right order of the four tabs below, so Arrow/Home/End can wrap.
+  const tabOrder = ['matrix', 'timeline', 'healing', 'recommendations'] as const;
+  const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  // WAI-ARIA tab pattern (APG): one tab stop for the strip, Arrow/Home/End move
+  // selection and focus together.
+  const handleTabKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const current = tabOrder.indexOf(activeTab);
+    let next = current;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = (current + 1) % tabOrder.length;
+    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = (current - 1 + tabOrder.length) % tabOrder.length;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = tabOrder.length - 1;
+    else return;
+    e.preventDefault();
+    setActiveTab(tabOrder[next]);
+    tabRefs.current[tabOrder[next]]?.focus();
+  };
   const [selectedAstDiff, setSelectedAstDiff] = useState<string | null>(null);
 
   useEffect(() => {
@@ -215,8 +232,22 @@ export const FailureInvestigationWorkspaceModal: React.FC<FailureInvestigationWo
               </div>
 
               {/* Navigation Tabs */}
-              <div className="flex items-center gap-2 border-b border-border-default pb-2">
+              <div
+                role="tablist"
+                aria-label="Failure investigation views"
+                onKeyDown={handleTabKeyDown}
+                className="flex items-center gap-2 border-b border-border-default pb-2"
+              >
                 <button
+                  type="button"
+                  role="tab"
+                  id="investigation-tab-matrix"
+                  aria-selected={activeTab === 'matrix'}
+                  aria-controls="investigation-panel-matrix"
+                  tabIndex={activeTab === 'matrix' ? 0 : -1}
+                  ref={(el) => {
+                    tabRefs.current.matrix = el;
+                  }}
                   onClick={() => setActiveTab('matrix')}
                   className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5 ${
                     activeTab === 'matrix'
@@ -229,6 +260,15 @@ export const FailureInvestigationWorkspaceModal: React.FC<FailureInvestigationWo
                   <span>Environment Matrix ({investigation.environment_matrix.environments.length})</span>
                 </button>
                 <button
+                  type="button"
+                  role="tab"
+                  id="investigation-tab-timeline"
+                  aria-selected={activeTab === 'timeline'}
+                  aria-controls="investigation-panel-timeline"
+                  tabIndex={activeTab === 'timeline' ? 0 : -1}
+                  ref={(el) => {
+                    tabRefs.current.timeline = el;
+                  }}
                   onClick={() => setActiveTab('timeline')}
                   className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5 ${
                     activeTab === 'timeline'
@@ -241,6 +281,15 @@ export const FailureInvestigationWorkspaceModal: React.FC<FailureInvestigationWo
                   <span>Timeline ({investigation.timeline.length})</span>
                 </button>
                 <button
+                  type="button"
+                  role="tab"
+                  id="investigation-tab-healing"
+                  aria-selected={activeTab === 'healing'}
+                  aria-controls="investigation-panel-healing"
+                  tabIndex={activeTab === 'healing' ? 0 : -1}
+                  ref={(el) => {
+                    tabRefs.current.healing = el;
+                  }}
                   onClick={() => setActiveTab('healing')}
                   className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5 ${
                     activeTab === 'healing'
@@ -253,6 +302,15 @@ export const FailureInvestigationWorkspaceModal: React.FC<FailureInvestigationWo
                   <span>Healing History ({investigation.healing_history.length})</span>
                 </button>
                 <button
+                  type="button"
+                  role="tab"
+                  id="investigation-tab-recommendations"
+                  aria-selected={activeTab === 'recommendations'}
+                  aria-controls="investigation-panel-recommendations"
+                  tabIndex={activeTab === 'recommendations' ? 0 : -1}
+                  ref={(el) => {
+                    tabRefs.current.recommendations = el;
+                  }}
                   onClick={() => setActiveTab('recommendations')}
                   className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5 ${
                     activeTab === 'recommendations'
@@ -268,7 +326,7 @@ export const FailureInvestigationWorkspaceModal: React.FC<FailureInvestigationWo
 
               {/* Tab 1: Cross-Environment Matrix */}
               {activeTab === 'matrix' && (
-                <div className="space-y-4" data-testid="investigation-matrix-view">
+                <div role="tabpanel" id="investigation-panel-matrix" aria-labelledby="investigation-tab-matrix" className="space-y-4" data-testid="investigation-matrix-view">
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div className="p-3 bg-slate-950/50 border border-border-default rounded-lg">
                       <span className="text-[11px] text-content-secondary font-medium">Total Occurrences</span>
@@ -298,13 +356,13 @@ export const FailureInvestigationWorkspaceModal: React.FC<FailureInvestigationWo
                     <table className="w-full text-left text-xs">
                       <thead className="bg-slate-950/70 border-b border-border-default font-mono text-content-secondary">
                         <tr>
-                          <th className="py-2.5 px-3">Environment</th>
-                          <th className="py-2.5 px-3">Failures</th>
-                          <th className="py-2.5 px-3">Failure Rate</th>
-                          <th className="py-2.5 px-3">Trend</th>
-                          <th className="py-2.5 px-3">Affected Tests</th>
-                          <th className="py-2.5 px-3">First Seen</th>
-                          <th className="py-2.5 px-3">Last Seen</th>
+                          <th scope="col" className="py-2.5 px-3">Environment</th>
+                          <th scope="col" className="py-2.5 px-3">Failures</th>
+                          <th scope="col" className="py-2.5 px-3">Failure Rate</th>
+                          <th scope="col" className="py-2.5 px-3">Trend</th>
+                          <th scope="col" className="py-2.5 px-3">Affected Tests</th>
+                          <th scope="col" className="py-2.5 px-3">First Seen</th>
+                          <th scope="col" className="py-2.5 px-3">Last Seen</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800/60 font-sans">
@@ -374,7 +432,7 @@ export const FailureInvestigationWorkspaceModal: React.FC<FailureInvestigationWo
 
               {/* Tab 2: Operational Timeline */}
               {activeTab === 'timeline' && (
-                <div className="space-y-4" data-testid="investigation-timeline-view">
+                <div role="tabpanel" id="investigation-panel-timeline" aria-labelledby="investigation-tab-timeline" className="space-y-4" data-testid="investigation-timeline-view">
                   <div className="relative pl-6 space-y-6 before:absolute before:left-2 before:top-2 before:bottom-2 before:w-0.5 before:bg-slate-800">
                     {investigation.timeline.map((event: InvestigationTimelineEvent) => (
                       <div key={event.id} className="relative group" data-testid={`timeline-event-${event.id}`}>
@@ -431,7 +489,7 @@ export const FailureInvestigationWorkspaceModal: React.FC<FailureInvestigationWo
 
               {/* Tab 3: Healing History & AST Diff */}
               {activeTab === 'healing' && (
-                <div className="space-y-4" data-testid="investigation-healing-view">
+                <div role="tabpanel" id="investigation-panel-healing" aria-labelledby="investigation-tab-healing" className="space-y-4" data-testid="investigation-healing-view">
                   {/* Regression status alert */}
                   <div
                     className={`p-4 rounded-xl border flex items-start gap-3 ${
@@ -444,9 +502,9 @@ export const FailureInvestigationWorkspaceModal: React.FC<FailureInvestigationWo
                   >
                     <AlertTriangle className="w-5 h-5 flex-shrink-0 mt-0.5" />
                     <div>
-                      <h4 className="text-xs font-bold font-mono uppercase tracking-wider">
+                      <h3 className="text-xs font-bold font-mono uppercase tracking-wider">
                         Regression Assessment: {investigation.regression_status}
-                      </h4>
+                      </h3>
                       <p className="text-xs mt-1 text-content-secondary">
                         {investigation.regression_status === 'Confirmed regression'
                           ? 'Automated verification confirmed a regression introduced by prior healing actions. Manual engineer sign-off required.'
@@ -544,14 +602,14 @@ export const FailureInvestigationWorkspaceModal: React.FC<FailureInvestigationWo
 
               {/* Tab 4: Recommendations & Change Observations */}
               {activeTab === 'recommendations' && (
-                <div className="space-y-4" data-testid="investigation-recommendations-view">
+                <div role="tabpanel" id="investigation-panel-recommendations" aria-labelledby="investigation-tab-recommendations" className="space-y-4" data-testid="investigation-recommendations-view">
                   {/* Non-Causal Change Observations */}
                   {investigation.non_causal_changes.length > 0 && (
                     <div className="p-4 rounded-xl bg-slate-950/60 border border-border-default space-y-2">
-                      <h4 className="text-xs font-semibold text-content-secondary flex items-center gap-1.5">
+                      <h3 className="text-xs font-semibold text-content-secondary flex items-center gap-1.5">
                         <Clock className="w-4 h-4 text-amber-400" />
                         Temporal Change Correlations (Non-Causal Observations)
-                      </h4>
+                      </h3>
                       <ul className="space-y-1.5 text-xs text-content-secondary list-disc list-inside">
                         {investigation.non_causal_changes.map((change, i) => (
                           <li key={i} className="leading-relaxed">
@@ -564,10 +622,10 @@ export const FailureInvestigationWorkspaceModal: React.FC<FailureInvestigationWo
 
                   {/* Prioritized Recommendations */}
                   <div className="p-4 rounded-xl bg-slate-950/60 border border-border-default space-y-3">
-                    <h4 className="text-xs font-semibold text-content-secondary flex items-center gap-1.5">
+                    <h3 className="text-xs font-semibold text-content-secondary flex items-center gap-1.5">
                       <ShieldAlert className="w-4 h-4 text-emerald-400" />
                       Prioritized Operational QA Recommendations
-                    </h4>
+                    </h3>
                     <div className="space-y-2">
                       {investigation.recommendations.map((rec, i) => (
                         <div

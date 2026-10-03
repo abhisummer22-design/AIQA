@@ -727,7 +727,7 @@ export const ExecutionHubPage: React.FC = () => {
         <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-slate-800/80">
           <div className="space-y-1">
             <div className="flex items-center gap-2 flex-wrap">
-              <h3 className="text-sm font-bold text-slate-100 font-sans">{detail.name}</h3>
+              <h2 className="text-sm font-bold text-slate-100 font-sans">{detail.name}</h2>
               <Badge label={formatStatusLabel(detail.state)} className={RUN_STATE_STYLE[detail.state]} />
             </div>
             <div className="flex items-center gap-3 text-[11px] font-mono text-slate-400 flex-wrap">
@@ -913,6 +913,7 @@ export const ExecutionHubPage: React.FC = () => {
           <div className="flex flex-wrap items-center gap-2">
             <input
               type="text"
+              aria-label="Task id"
               value={t.id}
               onChange={(e) => updateDraftTask(t.key, { id: e.target.value })}
               placeholder="task id"
@@ -920,12 +921,14 @@ export const ExecutionHubPage: React.FC = () => {
             />
             <input
               type="text"
+              aria-label="Task name"
               value={t.name}
               onChange={(e) => updateDraftTask(t.key, { name: e.target.value })}
               placeholder="task name"
               className="flex-1 min-w-[120px] px-2 py-1 rounded bg-[#0B1120] border border-slate-800 text-[11px] text-slate-200 outline-none focus:ring-1 focus:ring-violet-500"
             />
             <select
+              aria-label="Task executor"
               value={t.executor}
               onChange={(e) => updateDraftTask(t.key, { executor: e.target.value })}
               className="px-2 py-1 rounded bg-[#0B1120] border border-slate-800 text-[11px] text-slate-200 outline-none focus:ring-1 focus:ring-violet-500 cursor-pointer"
@@ -938,6 +941,7 @@ export const ExecutionHubPage: React.FC = () => {
             </select>
             {!t.executor && (
               <select
+                aria-label="Simulated outcome"
                 value={t.simulateOutcome}
                 onChange={(e) => updateDraftTask(t.key, { simulateOutcome: e.target.value as DraftTask['simulateOutcome'] })}
                 className="px-2 py-1 rounded bg-[#0B1120] border border-slate-800 text-[11px] text-slate-200 outline-none focus:ring-1 focus:ring-violet-500 cursor-pointer"
@@ -1099,7 +1103,7 @@ export const ExecutionHubPage: React.FC = () => {
             <section id="execution-list" className="lg:col-span-5 p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm">
               {renderRunList()}
             </section>
-            <section id="execution-detail" className="lg:col-span-7 p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm" aria-live="polite">
+            <section id="execution-detail" className="lg:col-span-7 p-4 rounded-lg bg-[#0B1120] border border-slate-800 shadow-sm">
               {renderDetail()}
             </section>
           </div>

@@ -61,10 +61,10 @@ export const EstimatePanel: React.FC<{ estimate: AutopilotEstimate }> = ({ estim
         <table id="estimate-steps" className="w-full text-[11px] text-left">
           <thead className="text-content-muted">
             <tr>
-              <th className="py-1 pr-3 font-normal">Step</th>
-              <th className="py-1 pr-3 font-normal">AI calls</th>
-              <th className="py-1 pr-3 font-normal">Time</th>
-              <th className="py-1 font-normal" />
+              <th scope="col" className="py-1 pr-3 font-normal">Step</th>
+              <th scope="col" className="py-1 pr-3 font-normal">AI calls</th>
+              <th scope="col" className="py-1 pr-3 font-normal">Time</th>
+              <th scope="col" className="py-1 font-normal">Note</th>
             </tr>
           </thead>
           <tbody>

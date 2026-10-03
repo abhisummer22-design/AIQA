@@ -201,7 +201,7 @@ export const ReportView: React.FC<Props> = ({ projectId, runId, autoLoad, versio
         </button>
       </div>
       {copy.state === 'shown' && (
-        <textarea id="report-markdown" readOnly value={copy.text} rows={8} className="w-full rounded border border-slate-800 bg-[#020617] p-2 text-[11px] font-mono text-slate-300" />
+        <textarea id="report-markdown" aria-label="Run report in markdown" readOnly value={copy.text} rows={8} className="w-full rounded border border-slate-800 bg-[#020617] p-2 text-[11px] font-mono text-slate-300" />
       )}
       {error && (
         <p role="alert" className="text-[11px] text-rose-300">
@@ -271,12 +271,12 @@ export const ReportView: React.FC<Props> = ({ projectId, runId, autoLoad, versio
             <table className="w-full text-[11px] text-left">
               <thead className="text-content-muted">
                 <tr>
-                  <th className="py-1 pr-3 font-normal">Requirement</th>
-                  <th className="py-1 pr-3 font-normal">Cases</th>
-                  <th className="py-1 pr-3 font-normal">Ran</th>
-                  <th className="py-1 pr-3 font-normal">Passed</th>
-                  <th className="py-1 pr-3 font-normal">Failed</th>
-                  <th className="py-1 font-normal">Verdict</th>
+                  <th scope="col" className="py-1 pr-3 font-normal">Requirement</th>
+                  <th scope="col" className="py-1 pr-3 font-normal">Cases</th>
+                  <th scope="col" className="py-1 pr-3 font-normal">Ran</th>
+                  <th scope="col" className="py-1 pr-3 font-normal">Passed</th>
+                  <th scope="col" className="py-1 pr-3 font-normal">Failed</th>
+                  <th scope="col" className="py-1 font-normal">Verdict</th>
                 </tr>
               </thead>
               <tbody id="report-coverage-rows">
@@ -327,6 +327,14 @@ export const ReportView: React.FC<Props> = ({ projectId, runId, autoLoad, versio
       <details id="report-steps" className="text-[11px] text-slate-400">
         <summary className="cursor-pointer text-slate-300">Steps</summary>
         <table className="mt-1 w-full text-left">
+          <thead className="text-content-muted">
+            <tr>
+              <th scope="col" className="py-1 pr-3 font-normal">Step</th>
+              <th scope="col" className="py-1 pr-3 font-normal">State</th>
+              <th scope="col" className="py-1 pr-3 font-normal">Attempts</th>
+              <th scope="col" className="py-1 font-normal">Seconds</th>
+            </tr>
+          </thead>
           <tbody>
             {report.steps.map((s) => (
               <tr key={s.name} className="border-t border-slate-800/70">

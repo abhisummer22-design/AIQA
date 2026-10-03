@@ -645,6 +645,7 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
               <Search className="w-4 h-4 text-content-muted absolute left-3 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
+                aria-label="Search generated test cases"
                 placeholder="Search by ID, title, objective..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
@@ -654,8 +655,9 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
 
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="block text-[10px] font-mono text-slate-400 mb-1">Status Filter</label>
+                <label htmlFor="test-cases-status-filter" className="block text-[10px] font-mono text-slate-400 mb-1">Status Filter</label>
                 <select
+                  id="test-cases-status-filter"
                   value={statusFilter}
                   onChange={(e) => setStatusFilter(e.target.value)}
                   className="w-full px-2 py-1.5 rounded bg-[#020617] border border-slate-700/80 text-xs font-mono text-slate-200 focus:outline-none focus:border-violet-500 cursor-pointer"
@@ -668,8 +670,9 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
               </div>
 
               <div>
-                <label className="block text-[10px] font-mono text-slate-400 mb-1">Priority Filter</label>
+                <label htmlFor="test-cases-priority-filter" className="block text-[10px] font-mono text-slate-400 mb-1">Priority Filter</label>
                 <select
+                  id="test-cases-priority-filter"
                   value={priorityFilter}
                   onChange={(e) => setPriorityFilter(e.target.value)}
                   className="w-full px-2 py-1.5 rounded bg-[#020617] border border-slate-700/80 text-xs font-mono text-slate-200 focus:outline-none focus:border-violet-500 cursor-pointer"
@@ -725,9 +728,9 @@ export const GeneratedTestCasesView: React.FC<GeneratedTestCasesViewProps> = ({
                       </div>
                     </div>
 
-                    <h4 className="text-xs font-bold font-sans text-slate-100 line-clamp-2 leading-snug">
+                    <h3 className="text-xs font-bold font-sans text-slate-100 line-clamp-2 leading-snug">
                       {tc.title}
-                    </h4>
+                    </h3>
 
                     {tc.objective && (
                       <p className="text-[11px] text-slate-400 font-sans line-clamp-1 mt-1">

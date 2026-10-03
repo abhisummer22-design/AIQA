@@ -206,8 +206,9 @@ const QuickLoginFields: React.FC<QuickLoginFieldsProps> = ({ role, updateStep, o
   return (
     <div className="space-y-2 pl-2 border-l border-slate-800">
       <div className="space-y-1">
-        <label className="text-[10px] font-mono text-content-muted uppercase tracking-wide">Login page URL</label>
+        <label htmlFor={`crawl-quick-login-url-${role.localId}`} className="text-[10px] font-mono text-content-muted uppercase tracking-wide">Login page URL</label>
         <input
+          id={`crawl-quick-login-url-${role.localId}`}
           type="text"
           placeholder="https://your-app.example.com/login"
           value={navigateStep.url}
@@ -217,8 +218,9 @@ const QuickLoginFields: React.FC<QuickLoginFieldsProps> = ({ role, updateStep, o
         />
       </div>
       <div className="space-y-1">
-        <label className="text-[10px] font-mono text-content-muted uppercase tracking-wide">Username / email</label>
+        <label htmlFor={`crawl-quick-login-username-${role.localId}`} className="text-[10px] font-mono text-content-muted uppercase tracking-wide">Username / email</label>
         <input
+          id={`crawl-quick-login-username-${role.localId}`}
           type="text"
           placeholder="you@example.com"
           value={usernameStep.value}
@@ -228,9 +230,10 @@ const QuickLoginFields: React.FC<QuickLoginFieldsProps> = ({ role, updateStep, o
         />
       </div>
       <div className="space-y-1">
-        <label className="text-[10px] font-mono text-content-muted uppercase tracking-wide">Password</label>
+        <label htmlFor={`crawl-quick-login-password-${role.localId}`} className="text-[10px] font-mono text-content-muted uppercase tracking-wide">Password</label>
         <div className="flex items-center gap-1">
           <input
+            id={`crawl-quick-login-password-${role.localId}`}
             type={passwordStep.isSecret ? 'password' : 'text'}
             placeholder="your password, or env:AIQA_LOGIN_ADMIN_PASSWORD"
             value={passwordStep.value}
@@ -541,6 +544,7 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
         <input
           id="crawl-target-url"
           type="url"
+          aria-label="Target URL to crawl"
           placeholder="https://your-app.example.com"
           value={targetUrl}
           onChange={(e) => setTargetUrl(e.target.value)}
@@ -611,6 +615,7 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
                   <KeyRound className="w-3.5 h-3.5 text-amber-400 shrink-0" />
                   <input
                     type="text"
+                    aria-label="Login role name"
                     placeholder="Role name (e.g. admin)"
                     value={role.name}
                     onChange={(e) => updateAuthRoleName(role.localId, e.target.value)}
@@ -649,6 +654,7 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
                     <div className="flex items-center gap-1.5">
                       <span className="text-[10px] font-mono text-content-muted w-4 text-right shrink-0">{idx + 1}.</span>
                       <select
+                        aria-label={`Login step ${idx + 1} type`}
                         value={step.type}
                         onChange={(e) =>
                           updateStep(role.localId, step.localId, { type: e.target.value as LoginStepType })
@@ -664,6 +670,7 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
                       {step.type === 'NAVIGATE' && (
                         <input
                           type="text"
+                          aria-label={`Login step ${idx + 1} URL`}
                           placeholder="https://your-app.example.com/login"
                           value={step.url}
                           onChange={(e) => updateStep(role.localId, step.localId, { url: e.target.value })}
@@ -675,6 +682,7 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
                       {(step.type === 'FILL' || step.type === 'CLICK') && (
                         <input
                           type="text"
+                          aria-label={`Login step ${idx + 1} selector`}
                           placeholder={selectorPlaceholder(caption)}
                           value={step.selector}
                           onChange={(e) => updateStep(role.localId, step.localId, { selector: e.target.value })}
@@ -687,6 +695,7 @@ export const CrawlGroundingSection: React.FC<CrawlGroundingSectionProps> = ({
                         <div className="flex-1 flex items-center gap-1 min-w-0">
                           <input
                             type={step.isSecret ? 'password' : 'text'}
+                            aria-label={`Login step ${idx + 1} value`}
                             placeholder="value"
                             value={step.value}
                             onChange={(e) => updateStep(role.localId, step.localId, { value: e.target.value })}

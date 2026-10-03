@@ -77,6 +77,10 @@ export const QaIntelligenceDashboardPage: React.FC = () => {
   const [retentionModalOpen, setRetentionModalOpen] = useState(false);
 
   const abortRef = useRef<AbortController | null>(null);
+  // Declared with the other hooks, not next to the tab strip below: this
+  // component returns early for the loading and error states, and a hook after
+  // an early return is "rendered fewer hooks than expected".
+  const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
 
   const loadData = useCallback(async (projectId: string, isRefresh: boolean) => {
     abortRef.current?.abort();
@@ -195,6 +199,24 @@ export const QaIntelligenceDashboardPage: React.FC = () => {
     { id: 'graph', label: 'Quality Graph', icon: Network },
   ];
 
+  // WAI-ARIA tab pattern (APG): only the selected tab is in the tab order, and
+  // Arrow/Home/End move selection and focus together. Without this the strip is
+  // five separate tab stops and a screen reader announces no relationship
+  // between the strip and the panel it swaps.
+  const handleTabKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const current = tabs.findIndex((t) => t.id === activeTab);
+    if (current < 0) return;
+    let next = current;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = (current + 1) % tabs.length;
+    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = (current - 1 + tabs.length) % tabs.length;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = tabs.length - 1;
+    else return;
+    e.preventDefault();
+    setActiveTab(tabs[next].id);
+    tabRefs.current[tabs[next].id]?.focus();
+  };
+
   return (
     <div className="p-4 sm:p-6 max-w-7xl mx-auto space-y-6" data-testid="aiqa-intelligence-dashboard">
       {/* Top Header Bar */}
@@ -242,13 +264,27 @@ export const QaIntelligenceDashboardPage: React.FC = () => {
       </div>
 
       {/* Tabs Navigation */}
-      <div className="flex items-center gap-1 border-b border-border-default pb-px overflow-x-auto">
+      <div
+        role="tablist"
+        aria-label="QA intelligence views"
+        onKeyDown={handleTabKeyDown}
+        className="flex items-center gap-1 border-b border-border-default pb-px overflow-x-auto"
+      >
         {tabs.map((tab) => {
           const Icon = tab.icon;
           const isActive = activeTab === tab.id;
           return (
             <button
               key={tab.id}
+              type="button"
+              role="tab"
+              id={`intelligence-tab-${tab.id}`}
+              aria-selected={isActive}
+              aria-controls={`intelligence-panel-${tab.id}`}
+              tabIndex={isActive ? 0 : -1}
+              ref={(el) => {
+                tabRefs.current[tab.id] = el;
+              }}
               onClick={() => setActiveTab(tab.id)}
               className={`flex items-center gap-2 px-3.5 py-2 text-xs font-medium rounded-t-lg transition-colors border-b-2 -mb-px whitespace-nowrap ${
                 isActive
@@ -266,7 +302,7 @@ export const QaIntelligenceDashboardPage: React.FC = () => {
 
       {/* Tab Contents */}
       {activeTab === 'overview' && (
-        <div className="space-y-6" data-testid="tab-content-overview">
+        <div role="tabpanel" id="intelligence-panel-overview" aria-labelledby="intelligence-tab-overview" className="space-y-6" data-testid="tab-content-overview">
           {/* Top Execution Health KPIs */}
           <ExecutionHealthSection
             telemetry={telemetry}
@@ -296,7 +332,7 @@ export const QaIntelligenceDashboardPage: React.FC = () => {
       )}
 
       {activeTab === 'telemetry' && (
-        <div className="space-y-6" data-testid="tab-content-telemetry">
+        <div role="tabpanel" id="intelligence-panel-telemetry" aria-labelledby="intelligence-tab-telemetry" className="space-y-6" data-testid="tab-content-telemetry">
           <TelemetryTableSection
             telemetry={telemetry}
             onSelectTelemetry={(row) => setSelectedTelemetry(row)}
@@ -306,7 +342,7 @@ export const QaIntelligenceDashboardPage: React.FC = () => {
       )}
 
       {activeTab === 'flakiness' && (
-        <div className="space-y-6" data-testid="tab-content-flakiness">
+        <div role="tabpanel" id="intelligence-panel-flakiness" aria-labelledby="intelligence-tab-flakiness" className="space-y-6" data-testid="tab-content-flakiness">
           <FlakinessSection flakiness={flakiness} loading={loading} />
           <RiskIntelligenceSection
             risk={risk}
@@ -316,13 +352,13 @@ export const QaIntelligenceDashboardPage: React.FC = () => {
       )}
 
       {activeTab === 'healing' && (
-        <div className="space-y-6" data-testid="tab-content-healing">
+        <div role="tabpanel" id="intelligence-panel-healing" aria-labelledby="intelligence-tab-healing" className="space-y-6" data-testid="tab-content-healing">
           <HealingIntelligenceSection strategies={strategies} loading={loading} />
         </div>
       )}
 
       {activeTab === 'graph' && (
-        <div className="space-y-6" data-testid="tab-content-graph">
+        <div role="tabpanel" id="intelligence-panel-graph" aria-labelledby="intelligence-tab-graph" className="space-y-6" data-testid="tab-content-graph">
           <QualityGraphSection graph={qualityGraph} loading={loading} />
         </div>
       )}

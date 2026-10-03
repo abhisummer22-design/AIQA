@@ -769,6 +769,7 @@ export const DashboardPage: React.FC = () => {
             <div className="relative mt-0.5">
               <select
                 id="project-selector-dropdown"
+                aria-label="Active Project Context"
                 value={selectedProjectId ?? ''}
                 onChange={(e) => selectProject(e.target.value)}
                 disabled={projects.length === 0}

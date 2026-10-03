@@ -413,6 +413,7 @@ export const OrchestratorLogsPanel: React.FC<OrchestratorLogsPanelProps> = ({ pr
 
         <input
           type="text"
+          aria-label="Filter orchestrator logs"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           placeholder="Filter logs…"

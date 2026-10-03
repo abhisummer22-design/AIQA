@@ -149,14 +149,14 @@ export const AiUsagePage: React.FC = () => {
             <RefreshCw className={`w-3.5 h-3.5 ${usage.refreshing ? 'animate-spin' : ''}`} /> Refresh
           </button>
           {usage.updatedAt && (
-            <span id="ai-usage-updated" className="text-[10px] text-content-muted font-mono">
+            <span id="ai-usage-updated" role="status" className="text-[10px] text-content-muted font-mono">
               read {formatTimestamp(usage.updatedAt)}
             </span>
           )}
         </div>
       </header>
 
-      <div aria-live="polite">{renderBody()}</div>
+      <div>{renderBody()}</div>
     </div>
   );
 };
