@@ -22,10 +22,68 @@
 use crate::domain::*;
 use anyhow::Result;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use sqlx::{Row, SqlitePool};
+use sqlx::{Row, Sqlite, SqlitePool};
 use std::path::Path;
 use std::str::FromStr;
 use uuid::Uuid;
+
+// ---------------------------------------------------------------------------
+// Read caps
+//
+// Every table read below this line that used to have no `LIMIT` is append-only
+// and grows on its own: `runs` gains a row every run, `execution_telemetry` and
+// `healing_proposals` gain rows per failing task, `quality_nodes` per ingested
+// task. Their list reads sit behind endpoints the UI polls, and a `.take(n)` in
+// the *handler* does not bound the query ? by then the whole result set has
+// already been materialised (this was already called out for `list_run_ids` at
+// `api.rs::list_runs_scoped`). So the bound belongs in the SQL, one named cap
+// per table, sized to a page the caller can actually use.
+//
+// Two of these caps are the *max page the endpoint already clamps to*
+// (`list_run_ids` -> `clamp(1, 1000)`), so bounding the query does not change
+// what any caller can observe. The rest are deliberately generous: they exist
+// to stop a read being unbounded, not to shape a response.
+// ---------------------------------------------------------------------------
+
+/// `list_run_ids` -- newest-first run ids. Exactly the ceiling
+/// `api.rs::list_runs_scoped` already clamps its `?limit=` to, so the query is
+/// bounded without shrinking the largest page that endpoint serves.
+const LIST_RUN_IDS_MAX: i64 = 1000;
+
+/// `list_test_cases` -- one project's whole test-case library. Bounded because
+/// it is append-only and the list route is polled; `regression_runner` reads
+/// `EXECUTED`/`APPROVED` out of it, so the cap is far above any real suite.
+const LIST_TEST_CASES_MAX: i64 = 5000;
+
+/// `list_requirements` -- append-only per uploaded document. Large, because
+/// these rows drive requirement-to-test-case generation: dropping some here
+
+/// `list_test_intelligence` -- one row per known test node, ordered by risk.
+const LIST_TEST_INTELLIGENCE_MAX: i64 = 1000;
+
+/// `list_failure_clusters` -- one row per distinct failure signature, ordered by
+/// occurrence count. Distinct signatures, not occurrences, so this is far
+/// smaller than `execution_telemetry` in practice.
+const LIST_FAILURE_CLUSTERS_MAX: i64 = 1000;
+
+/// `list_healing_proposals` -- append-only, one row per failed task. Note
+/// `list_healing_proposals_for_cluster` reads through this, so an investigation
+/// correlates against the newest page of proposals, not every proposal the
+/// project ever raised. Idempotency itself does NOT go through this read
+/// (`has_open_healing_proposal` counts), so the cap cannot cause a duplicate
+/// proposal to be raised.
+const LIST_HEALING_PROPOSALS_MAX: i64 = 500;
+
+/// `list_quality_nodes` -- one row per ingested task/module, append-only.
+const LIST_QUALITY_NODES_MAX: i64 = 5000;
+
+/// `list_quality_relations_for_project` -- the dependency edges between those
+/// nodes; grows with the square of them, so it needs a bound more than the
+/// nodes do.
+const LIST_QUALITY_RELATIONS_MAX: i64 = 20000;
+
+/// `list_test_case_embeddings` -- the brute-force candidate pool
+
 
 #[derive(Clone)]
 pub struct Store {
@@ -755,14 +813,22 @@ impl Store {
     /// that survives a restart, unlike the old in-memory-only `list_runs`.
     /// `project_filter`: `None` sees every project (admin/global keys);
     /// `Some(pid)` restricts to that project (SRD/PRD multi-tenancy gap).
+    ///
+    /// Bounded by `LIST_RUN_IDS_MAX`, which is the same ceiling
+    /// `api.rs::list_runs_scoped` clamps its `?limit=` to. The `ORDER BY
+    /// created_at DESC` is what makes the handler's `.take(limit)` and this cap
+    /// agree: both keep the newest ids, so a caller asking for the first 50 is
+    /// served the same 50 rows it always was.
     pub async fn list_run_ids(&self, project_filter: Option<&str>) -> Result<Vec<Uuid>> {
         let rows = if let Some(pid) = project_filter {
-            sqlx::query("SELECT id FROM runs WHERE project_id = ? ORDER BY created_at DESC")
+            sqlx::query("SELECT id FROM runs WHERE project_id = ? ORDER BY created_at DESC LIMIT ?")
                 .bind(pid)
+                .bind(LIST_RUN_IDS_MAX)
                 .fetch_all(&self.pool)
                 .await?
         } else {
-            sqlx::query("SELECT id FROM runs ORDER BY created_at DESC")
+            sqlx::query("SELECT id FROM runs ORDER BY created_at DESC LIMIT ?")
+                .bind(LIST_RUN_IDS_MAX)
                 .fetch_all(&self.pool)
                 .await?
         };
@@ -1474,11 +1540,12 @@ impl Store {
                      preconditions, steps, expected_result, assertions, test_data, source_document, \
                      requirement_reference, source_requirement, traceability, risk_factor, tags, source, status, \
                      validation_notes, executed_run_id, executed_task_id, created_by, created_at, updated_at, suite_id \
-                     FROM test_cases WHERE project_id = ? AND status = ? AND suite_id = ? ORDER BY created_at DESC",
+                     FROM test_cases WHERE project_id = ? AND status = ? AND suite_id = ? ORDER BY created_at DESC LIMIT ?",
                 )
                 .bind(project_id)
                 .bind(status)
                 .bind(suite_id.to_string())
+                .bind(LIST_TEST_CASES_MAX)
                 .fetch_all(&self.pool)
                 .await?
             }
@@ -1488,10 +1555,11 @@ impl Store {
                      preconditions, steps, expected_result, assertions, test_data, source_document, \
                      requirement_reference, source_requirement, traceability, risk_factor, tags, source, status, \
                      validation_notes, executed_run_id, executed_task_id, created_by, created_at, updated_at, suite_id \
-                     FROM test_cases WHERE project_id = ? AND status = ? ORDER BY created_at DESC",
+                     FROM test_cases WHERE project_id = ? AND status = ? ORDER BY created_at DESC LIMIT ?",
                 )
                 .bind(project_id)
                 .bind(status)
+                .bind(LIST_TEST_CASES_MAX)
                 .fetch_all(&self.pool)
                 .await?
             }
@@ -1501,10 +1569,11 @@ impl Store {
                      preconditions, steps, expected_result, assertions, test_data, source_document, \
                      requirement_reference, source_requirement, traceability, risk_factor, tags, source, status, \
                      validation_notes, executed_run_id, executed_task_id, created_by, created_at, updated_at, suite_id \
-                     FROM test_cases WHERE project_id = ? AND suite_id = ? ORDER BY created_at DESC",
+                     FROM test_cases WHERE project_id = ? AND suite_id = ? ORDER BY created_at DESC LIMIT ?",
                 )
                 .bind(project_id)
                 .bind(suite_id.to_string())
+                .bind(LIST_TEST_CASES_MAX)
                 .fetch_all(&self.pool)
                 .await?
             }
@@ -1514,9 +1583,10 @@ impl Store {
                      preconditions, steps, expected_result, assertions, test_data, source_document, \
                      requirement_reference, source_requirement, traceability, risk_factor, tags, source, status, \
                      validation_notes, executed_run_id, executed_task_id, created_by, created_at, updated_at, suite_id \
-                     FROM test_cases WHERE project_id = ? ORDER BY created_at DESC",
+                     FROM test_cases WHERE project_id = ? ORDER BY created_at DESC LIMIT ?",
                 )
                 .bind(project_id)
+                .bind(LIST_TEST_CASES_MAX)
                 .fetch_all(&self.pool)
                 .await?
             }
@@ -1638,7 +1708,8 @@ impl Store {
         project_id: &str,
     ) -> Result<Vec<TestCaseEmbeddingRow>> {
         let rows = sqlx::query(
-            "SELECT test_case_id, embedding FROM test_case_embeddings WHERE project_id = ?",
+            "SELECT test_case_id, embedding FROM test_case_embeddings WHERE project_id = ? \
+             ORDER BY test_case_id",
         )
         .bind(project_id)
         .fetch_all(&self.pool)
@@ -1752,7 +1823,8 @@ impl Store {
         project_id: &str,
     ) -> Result<Vec<DocumentEmbeddingRow>> {
         let rows = sqlx::query(
-            "SELECT id, embedding FROM documents WHERE project_id = ? AND embedding IS NOT NULL",
+            "SELECT id, embedding FROM documents WHERE project_id = ? AND embedding IS NOT NULL \
+             ORDER BY id",
         )
         .bind(project_id)
         .fetch_all(&self.pool)
@@ -1919,12 +1991,20 @@ impl Store {
     /// in document order); every document of the project, oldest first, when
     /// `document_ids` is empty. A document that belongs to another project
     /// simply contributes nothing.
+    ///
+    /// This used to issue one query *per* document id, so asking for a project's
+    /// N requirement documents cost N round trips. It is now a single
+    /// `IN (...)` query, with the caller's ordering expressed as a `CASE
+    /// document_id WHEN ... THEN <position>` sort key so each document's rows
+    /// still come back grouped in the order they were asked for and in document
+    /// order within it. `QueryBuilder` rather than a `format!`ed string, for the
+    /// reason `create_run`'s own bulk insert gives (see the note there): the
+    /// number of bind placeholders is only known at runtime here.
     pub async fn list_requirements(
         &self,
         project_id: &str,
         document_ids: &[Uuid],
     ) -> Result<Vec<RequirementRow>> {
-        let mut out = Vec::new();
         if document_ids.is_empty() {
             let rows = sqlx::query(
                 "SELECT r.document_id, r.req_key, r.ordinal, r.section, r.kind, r.text
@@ -1934,25 +2014,35 @@ impl Store {
             .bind(project_id)
             .fetch_all(&self.pool)
             .await?;
-            for row in rows {
-                out.push(requirement_from_row(row)?);
-            }
-            return Ok(out);
+            return rows.into_iter().map(requirement_from_row).collect();
         }
-        for id in document_ids {
-            let rows = sqlx::query(
-                "SELECT document_id, req_key, ordinal, section, kind, text
-                 FROM requirements WHERE project_id = ? AND document_id = ? ORDER BY ordinal",
-            )
-            .bind(project_id)
-            .bind(id.to_string())
-            .fetch_all(&self.pool)
-            .await?;
-            for row in rows {
-                out.push(requirement_from_row(row)?);
+        let ids: Vec<String> = document_ids.iter().map(|id| id.to_string()).collect();
+        let mut qb = sqlx::QueryBuilder::<Sqlite>::new(
+            "SELECT document_id, req_key, ordinal, section, kind, text
+             FROM requirements WHERE project_id = ",
+        );
+        qb.push_bind(project_id.to_string());
+        qb.push(" AND document_id IN (");
+        {
+            let mut separated = qb.separated(", ");
+            for id in &ids {
+                separated.push_bind(id.clone());
             }
         }
-        Ok(out)
+        qb.push(") ORDER BY CASE document_id");
+        for (position, id) in ids.iter().enumerate() {
+            qb.push(" WHEN ")
+                .push_bind(id.clone())
+                .push(" THEN ")
+                .push_bind(position as i64);
+        }
+        // No document in the table can fall outside the list above (the `IN`
+        // already restricted to it), so `ELSE` is unreachable; it exists only
+        // because `CASE` needs a final `ELSE` to be well-formed.
+        qb.push(" ELSE ").push_bind(ids.len() as i64);
+        qb.push(" END, ordinal");
+        let rows = qb.build().fetch_all(&self.pool).await?;
+        rows.into_iter().map(requirement_from_row).collect()
     }
 
     /// Phase 5 (Output maturity) — the one place a case's suite membership
@@ -2705,15 +2795,26 @@ impl Store {
         project_filter: Option<&str>,
         limit: i64,
     ) -> Result<Vec<TaskHistoryRow>> {
+        // Two literal statements rather than one built by `format!`: sqlx 0.9
+        // rejects runtime-constructed SQL at compile time.
+        //
+        // The project predicate was `COALESCE(r.project_id, 'default') = ?`,
+        // which is non-sargable: the column is wrapped in a function, so
+        // `idx_runs_project_created` (migration 0027) cannot be used and the
+        // join falls back to a full `SCAN runs`. Rewritten as the explicit
+        // disjunction that means exactly the same thing -- this project, or
+        // the untenanted bucket when the caller asked for it -- leaving both
+        // sides as plain column comparisons. Same fix as `list_bug_drafts`.
         let rows = match project_filter {
             Some(pid) => {
                 sqlx::query(
                     "SELECT t.status as status, t.finished_at as finished_at
                      FROM tasks t
                      JOIN runs r ON r.id = t.run_id
-                     WHERE t.name = ? AND t.finished_at IS NOT NULL
-                       AND COALESCE(r.project_id, 'default') = ?
-                     ORDER BY t.finished_at DESC LIMIT ?",
+                     WHERE t.name = ?1 AND t.finished_at IS NOT NULL
+                       AND (r.project_id = ?2
+                            OR (r.project_id IS NULL AND ?2 = 'default'))
+                     ORDER BY t.finished_at DESC LIMIT ?3",
                 )
                 .bind(name)
                 .bind(pid)
@@ -2725,8 +2826,8 @@ impl Store {
                 sqlx::query(
                     "SELECT t.status as status, t.finished_at as finished_at
                      FROM tasks t
-                     WHERE t.name = ? AND t.finished_at IS NOT NULL
-                     ORDER BY t.finished_at DESC LIMIT ?",
+                     WHERE t.name = ?1 AND t.finished_at IS NOT NULL
+                     ORDER BY t.finished_at DESC LIMIT ?2",
                 )
                 .bind(name)
                 .bind(limit)
@@ -2880,9 +2981,10 @@ impl Store {
              LEFT JOIN test_value_assessments v ON v.node_id = n.id
              LEFT JOIN flakiness_metrics f ON f.node_id = n.id
              WHERE n.node_type = 'test' AND n.project_id = ?
-             ORDER BY r.score DESC",
+             ORDER BY r.score DESC LIMIT ?",
         )
         .bind(pid)
+        .bind(LIST_TEST_INTELLIGENCE_MAX)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows
@@ -2955,6 +3057,9 @@ impl Store {
         Ok((id, 1))
     }
 
+    /// Bounded by `LIST_FAILURE_CLUSTERS_MAX` (see the read caps at the top of
+    /// this file): one row per distinct failure signature, but a long-lived
+    /// project keeps minting new signatures forever.
     pub async fn list_failure_clusters(
         &self,
         project_filter: Option<&str>,
@@ -2963,9 +3068,10 @@ impl Store {
         let rows = sqlx::query(
             "SELECT id, signature, first_seen_at, last_seen_at, occurrence_count, root_cause_hypothesis, confidence, reproducibility, review_state,
                     ai_hypothesis, ai_hypothesis_provider, ai_hypothesis_model, ai_hypothesis_generated_at
-             FROM failure_clusters WHERE project_id = ? ORDER BY occurrence_count DESC",
+             FROM failure_clusters WHERE project_id = ? ORDER BY occurrence_count DESC LIMIT ?",
         )
         .bind(pid)
+        .bind(LIST_FAILURE_CLUSTERS_MAX)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows
@@ -3506,6 +3612,11 @@ impl Store {
         row.map(healing_proposal_from_row).transpose()
     }
 
+    /// The proposals a project has raised, newest first. Bounded by
+    /// `LIST_HEALING_PROPOSALS_MAX`: `healing_proposals` is append-only and
+    /// gains a row for every failed task, so an unbounded read grew with every
+    /// failure the project ever had. Note `list_healing_proposals_for_cluster`
+    /// reads through this, so it now correlates against the newest page too.
     pub async fn list_healing_proposals(
         &self,
         project_id: &str,
@@ -3513,17 +3624,19 @@ impl Store {
     ) -> Result<Vec<HealingProposalRow>> {
         let rows = if let Some(s) = state {
             sqlx::query(
-                "SELECT * FROM healing_proposals WHERE project_id = ? AND state = ? ORDER BY created_at DESC",
+                "SELECT * FROM healing_proposals WHERE project_id = ? AND state = ? ORDER BY created_at DESC LIMIT ?",
             )
             .bind(project_id)
             .bind(s)
+            .bind(LIST_HEALING_PROPOSALS_MAX)
             .fetch_all(&self.pool)
             .await?
         } else {
             sqlx::query(
-                "SELECT * FROM healing_proposals WHERE project_id = ? ORDER BY created_at DESC",
+                "SELECT * FROM healing_proposals WHERE project_id = ? ORDER BY created_at DESC LIMIT ?",
             )
             .bind(project_id)
+            .bind(LIST_HEALING_PROPOSALS_MAX)
             .fetch_all(&self.pool)
             .await?
         };
@@ -3868,10 +3981,13 @@ impl Store {
     }
 
     pub async fn list_quality_nodes(&self, project_id: &str) -> Result<Vec<QualityNodeRow>> {
-        let rows = sqlx::query("SELECT * FROM quality_nodes WHERE project_id = ?")
-            .bind(project_id)
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = sqlx::query(
+            "SELECT * FROM quality_nodes WHERE project_id = ? ORDER BY created_at, id LIMIT ?",
+        )
+        .bind(project_id)
+        .bind(LIST_QUALITY_NODES_MAX)
+        .fetch_all(&self.pool)
+        .await?;
         let mut out = Vec::new();
         for r in rows {
             out.push(QualityNodeRow {
@@ -3894,9 +4010,11 @@ impl Store {
         project_id: &str,
     ) -> Result<Vec<QualityRelationRow>> {
         let rows = sqlx::query(
-            "SELECT qr.* FROM quality_relations qr JOIN quality_nodes qn ON qr.from_node_id = qn.id WHERE qn.project_id = ?",
+            "SELECT qr.* FROM quality_relations qr JOIN quality_nodes qn ON qr.from_node_id = qn.id
+             WHERE qn.project_id = ? ORDER BY qr.created_at, qr.id LIMIT ?",
         )
         .bind(project_id)
+        .bind(LIST_QUALITY_RELATIONS_MAX)
         .fetch_all(&self.pool)
         .await?;
         let mut out = Vec::new();
@@ -4568,4 +4686,152 @@ pub struct QualityRelationRow {
     pub relation_type: String,
     pub metadata: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[cfg(test)]
+mod history_tenant_tests {
+    //! The tenant half of `task_history_by_name`'s project predicate.
+    //!
+    //! This lives inline here rather than in `store_tests.rs` only because of
+    //! file ownership, not because it belongs to this file more: `store.rs` is
+    //! where the SQL it pins lives, and the defect it guards (the non-sargable
+    //! `COALESCE` rewrite) is invisible to `store_tests.rs::b3_task_history_
+    //! does_not_cross_projects`, which only ever uses two *named* tenants.
+
+    use super::*;
+    use crate::domain::{RunPlan, SimOutcome, SimSpec, TaskDef};
+
+    const SHARED: &str = "shared-task-name";
+
+    /// A real on-disk store: the predicate under test is part of the SQL the
+    /// file-backed store actually executes.
+    async fn temp_store() -> (Store, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test.sqlite3");
+        let store = Store::connect(&path).await.expect("connect");
+        (store, dir)
+    }
+
+    fn plan(name: &str) -> RunPlan {
+        RunPlan {
+            name: name.into(),
+            tasks: vec![TaskDef {
+                id: "t1".into(),
+                name: SHARED.into(),
+                prerequisites: Vec::new(),
+                simulate: Some(SimSpec {
+                    outcome: SimOutcome::Pass,
+                    delay_ms: 0,
+                }),
+                ..Default::default()
+            }],
+            concurrency: 1,
+        }
+    }
+
+    /// One run of `SHARED` in `project`, started and finished at `status` ?
+    /// the two writes have to be separate, because `set_task_status` treats
+    /// `set_started`/`set_finished` as mutually exclusive and a combined call
+    /// would never set `finished_at`, which history reads filter on.
+    async fn run_once(store: &Store, name: &str, project: Option<&str>, status: TaskStatus) {
+        let rid = Uuid::new_v4();
+        store
+            .insert_run(
+                rid,
+                &plan(name),
+                project,
+                Some("tester"),
+                RunState::Running,
+                None,
+            )
+            .await
+            .expect("insert run");
+        store
+            .set_task_status(rid, "t1", TaskStatus::Running, None, true, false)
+            .await
+            .expect("start task");
+        store
+            .set_task_status(rid, "t1", status, Some("because"), false, true)
+            .await
+            .expect("finish task");
+    }
+
+    fn count(rows: &[TaskHistoryRow], status: TaskStatus) -> usize {
+        rows.iter().filter(|r| r.status == status).count()
+    }
+
+    /// The project predicate used to be `COALESCE(r.project_id, 'default') = ?`,
+    /// which is non-sargable and had to be rewritten as an explicit disjunction
+    /// to let `idx_runs_project_created` be used. That rewrite has to mean
+    /// *exactly* the same thing, and the interesting half of "exactly" is the
+    /// untenanted bucket: `runs.project_id IS NULL` belongs to the tenant
+    /// `"default"`, and to no other. A rewrite that dropped the `IS NULL` arm
+    /// would silently stop counting pre-tenant data; one that dropped the
+    /// equality arm would hand `"default"` every untenanted run *and* every
+    /// run explicitly filed under `"default"`, double-counting the former.
+    #[tokio::test]
+    async fn task_history_project_predicate_keeps_the_untenanted_bucket_scoped_to_default() {
+        let (store, _dir) = temp_store().await;
+
+        for i in 0..3 {
+            run_once(&store, &format!("a{i}"), Some("alpha"), TaskStatus::Failed).await;
+        }
+        // The untenanted bucket: a run written before the tenant existed, whose
+        // `project_id` really is NULL rather than the string "default".
+        run_once(&store, "untenanted", None, TaskStatus::Passed).await;
+        // A tenant that is literally named "default".
+        run_once(&store, "named-default", Some("default"), TaskStatus::Passed).await;
+
+        let as_default = store
+            .task_history_by_name(SHARED, Some("default"), 20)
+            .await
+            .expect("default history");
+        assert_eq!(
+            as_default.len(),
+            2,
+            "the untenanted run and the run filed under \"default\" are both the \
+             \"default\" tenant's, and neither may be counted twice"
+        );
+        assert_eq!(count(&as_default, TaskStatus::Passed), 2);
+
+        let as_alpha = store
+            .task_history_by_name(SHARED, Some("alpha"), 20)
+            .await
+            .expect("alpha history");
+        assert_eq!(
+            as_alpha.len(),
+            3,
+            "alpha owns three executions and must not see the untenanted one"
+        );
+        assert_eq!(count(&as_alpha, TaskStatus::Failed), 3);
+
+        let unscoped = store
+            .task_history_by_name(SHARED, None, 20)
+            .await
+            .expect("unscoped history");
+        assert_eq!(
+            unscoped.len(),
+            5,
+            "an unscoped caller is a global key and still sees every tenant"
+        );
+    }
+
+    /// The `?2 = 'default'` arm is a literal comparison against a bind value, so
+    /// it is worth pinning that a *named* tenant does not get the NULL bucket
+    /// through the back door when that bind happens to be compared as NULL
+    /// rather than as its own text.
+    #[tokio::test]
+    async fn task_history_of_a_named_tenant_never_includes_untenanted_runs() {
+        let (store, _dir) = temp_store().await;
+
+        run_once(&store, "untenanted", None, TaskStatus::Failed).await;
+        run_once(&store, "beta", Some("beta"), TaskStatus::Passed).await;
+
+        let beta = store
+            .task_history_by_name(SHARED, Some("beta"), 20)
+            .await
+            .expect("beta history");
+        assert_eq!(beta.len(), 1, "beta ran it once");
+        assert_eq!(beta[0].status, TaskStatus::Passed);
+    }
 }

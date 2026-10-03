@@ -332,6 +332,26 @@ impl OperationsService {
         }))
     }
 
+    /// How many clusters `list_investigations` builds a full investigation for.
+    ///
+    /// Each iteration is not cheap: `get_investigation` issues ~4 queries, two
+    /// of which (`list_execution_telemetry(project_id, 1000)` and the
+    /// project-wide read behind `list_healing_proposals_for_cluster`) are
+    /// *identical for every cluster* and re-fetched each time. So this endpoint
+    /// used to cost `4 x N_clusters` queries and grew without bound.
+    ///
+    /// The obvious fix — hoist those two reads out of the loop and pass them
+    /// into `get_investigation` — would mean changing the signature of a public
+    /// method that four other handlers call directly (and that its own tests
+    /// call), for a saving of exactly 2 queries per cluster. Capping the loop
+    /// instead removes the unbounded growth outright, costs nothing to the
+    /// single-cluster path, and keeps the response a size a UI can render.
+    /// `list_failure_clusters` orders by occurrence_count DESC and the results
+    /// are re-sorted by total occurrences DESC, so this keeps the clusters the
+    /// caller most likely wanted; the full set stays one call away on
+    /// `GET /failure-clusters`.
+    const INVESTIGATIONS_MAX_CLUSTERS: usize = 25;
+
     /// Lists all failure investigations for a project.
     pub async fn list_investigations(
         &self,
@@ -344,7 +364,7 @@ impl OperationsService {
             .map_err(|e| format!("failed to list clusters for investigations: {e}"))?;
 
         let mut investigations = Vec::new();
-        for c in clusters {
+        for c in clusters.into_iter().take(Self::INVESTIGATIONS_MAX_CLUSTERS) {
             if let Ok(Some(inv)) = self.get_investigation(project_id, &c.id.to_string()).await {
                 investigations.push(inv);
             }

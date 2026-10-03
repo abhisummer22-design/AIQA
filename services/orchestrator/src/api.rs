@@ -5422,7 +5422,12 @@ async fn list_runs_scoped(
         .list_run_ids(Some(&pid_str))
         .await
         .map_err(to_500)?;
-    let limit = q.limit.unwrap_or(50).max(1) as usize;
+    // Clamped, like every other list endpoint in this file (`clamp(1, 1000)`).
+    // This one was `max(1)` with no ceiling, and the loop below costs 3 database
+    // queries per run row, so `?limit=100000` asked for ~300,000 queries in a
+    // single request from any authenticated key. The `.take(limit)` on the ids
+    // does not help: `list_run_ids` has already materialised every row by then.
+    let limit = q.limit.unwrap_or(50).clamp(1, 1000) as usize;
 
     let mut items = Vec::new();
     for id in ids.into_iter().take(limit) {
@@ -6981,22 +6986,18 @@ struct GapCheckResponse {
     method: GapMethod,
 }
 
-/// A run's crawl output: the grounding file when the crawl recorded one (links, buttons and form fields), the older
-/// result (links and buttons) when not. The `Err` says what is wrong and what to do.
-async fn gap_evidence_of_run(
-    state: &AppState,
-    project_id: Uuid,
-    run_id: Uuid,
+/// A run's crawl output for one role (all of them when `role` is `None`): the grounding file when the crawl recorded one
+/// (links, buttons and form fields), the older result (links and buttons) when not. The `Err` says what is wrong and what
+/// to do. Split from the run lookup so a caller that needs two views of the same crawl (`latest_crawl_run` asks both "did
+/// this crawl leave anything at all" and "what does it show for this role") reads the grounding file off disk once instead
+/// of once per view.
+fn gap_evidence_of_task(
+    task_id: &str,
     role: Option<&str>,
 ) -> Result<crate::gap_check::CrawlEvidence, ApiError> {
-    scoped_run_summary(state, run_id, project_id).await?;
-    let tasks = scoped_run_tasks(state, run_id).await?;
-    let task = tasks
-        .first()
-        .ok_or_else(|| ApiError::not_found("crawl run has no tasks"))?;
-    let evidence = match crate::grounding::read_crawl_grounding(&task.id) {
+    let evidence = match crate::grounding::read_crawl_grounding(task_id) {
         Ok(grounding) => crate::gap_check::evidence_from_grounding(&grounding, role),
-        Err(_) => match crate::crawler::read_crawl_result(&task.id) {
+        Err(_) => match crate::crawler::read_crawl_result(task_id) {
             Ok(output) => crate::gap_check::evidence_from_result(&output, role),
             Err(_) => {
                 return Err(ApiError::not_found(
@@ -7012,6 +7013,31 @@ async fn gap_evidence_of_run(
         ));
     }
     Ok(evidence)
+}
+
+/// The id of a run's own task — the key its grounding file and result file are
+/// written under. Does NOT confirm the run belongs to `project_id`: callers
+/// that have not already done so via `scoped_run_summary` must, exactly as
+/// they had to before this was split out.
+async fn crawl_task_id_of_run(state: &AppState, run_id: Uuid) -> Result<String, ApiError> {
+    let tasks = scoped_run_tasks(state, run_id).await?;
+    tasks
+        .first()
+        .map(|t| t.id.clone())
+        .ok_or_else(|| ApiError::not_found("crawl run has no tasks"))
+}
+
+/// A run's crawl output: the grounding file when the crawl recorded one (links, buttons and form fields), the older
+/// result (links and buttons) when not. The `Err` says what is wrong and what to do.
+async fn gap_evidence_of_run(
+    state: &AppState,
+    project_id: Uuid,
+    run_id: Uuid,
+    role: Option<&str>,
+) -> Result<crate::gap_check::CrawlEvidence, ApiError> {
+    scoped_run_summary(state, run_id, project_id).await?;
+    let task_id = crawl_task_id_of_run(state, run_id).await?;
+    gap_evidence_of_task(&task_id, role)
 }
 
 /// The project's most recent crawl that left something to read (a crawl writes its result only when it has finished, so
@@ -7034,13 +7060,22 @@ async fn latest_crawl_run(
         if !summary.name.starts_with("Crawl:") {
             continue;
         }
-        if gap_evidence_of_run(state, project_id, id, None)
-            .await
-            .is_ok()
-        {
-            let evidence = gap_evidence_of_run(state, project_id, id, role).await?;
-            return Ok((id, evidence));
+        // Ownership is already confirmed above, so only the task id is needed
+        // now. This used to call `gap_evidence_of_run` twice — once with `None`
+        // purely to probe whether the crawl left anything readable, then again
+        // with the role asked for — and each call re-read the run's summary,
+        // its tasks and its grounding file off disk. One task id, two views.
+        let Ok(task_id) = crawl_task_id_of_run(state, id).await else {
+            continue;
+        };
+        if gap_evidence_of_task(&task_id, None).is_err() {
+            continue;
         }
+        // A crawl that left something to read but not this role is reported by
+        // the crawl the check would have used, not passed over for an older
+        // one, so this error propagates rather than continuing the loop.
+        let evidence = gap_evidence_of_task(&task_id, role)?;
+        return Ok((id, evidence));
     }
     Err(ApiError::not_found(
         "this project has no finished crawl yet: crawl the application first (Test Case Generator, Crawl This Application)",
@@ -7189,11 +7224,8 @@ async fn grounding_of_run(
     run_id: Uuid,
 ) -> Result<crate::grounding::CrawlGrounding, ApiError> {
     scoped_run_summary(state, run_id, project_id).await?;
-    let tasks = scoped_run_tasks(state, run_id).await?;
-    let task = tasks
-        .first()
-        .ok_or_else(|| ApiError::not_found("crawl run has no tasks"))?;
-    crate::grounding::read_crawl_grounding(&task.id).map_err(ApiError::not_found)
+    let task_id = crawl_task_id_of_run(state, run_id).await?;
+    crate::grounding::read_crawl_grounding(&task_id).map_err(ApiError::not_found)
 }
 
 /// The project's newest crawl that has a page with a password field.
@@ -7215,7 +7247,14 @@ async fn newest_crawl_with_login_page(
         if !summary.name.starts_with("Crawl:") {
             continue;
         }
-        let Ok(grounding) = grounding_of_run(state, project_id, id).await else {
+        // Ownership of the run is already confirmed by `scoped_run_summary`
+        // above, so read the task id directly rather than going back through
+        // `grounding_of_run`, which confirmed the very same thing a second time
+        // (one extra query per candidate crawl) before returning the grounding
+        // the same task id would have given.
+        let Ok(grounding) = crawl_task_id_of_run(state, id).await.and_then(|task_id| {
+            crate::grounding::read_crawl_grounding(&task_id).map_err(ApiError::not_found)
+        }) else {
             continue;
         };
         match crate::login_suggest::suggest_by_rules(&grounding, role) {
