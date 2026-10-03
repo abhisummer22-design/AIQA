@@ -34,7 +34,7 @@ use uuid::Uuid;
 // and grows on its own: `runs` gains a row every run, `execution_telemetry` and
 // `healing_proposals` gain rows per failing task, `quality_nodes` per ingested
 // task. Their list reads sit behind endpoints the UI polls, and a `.take(n)` in
-// the *handler* does not bound the query ? by then the whole result set has
+// the *handler* does not bound the query — by then the whole result set has
 // already been materialised (this was already called out for `list_run_ids` at
 // `api.rs::list_runs_scoped`). So the bound belongs in the SQL, one named cap
 // per table, sized to a page the caller can actually use.
@@ -4729,7 +4729,7 @@ mod history_tenant_tests {
         }
     }
 
-    /// One run of `SHARED` in `project`, started and finished at `status` ?
+    /// One run of `SHARED` in `project`, started and finished at `status` —
     /// the two writes have to be separate, because `set_task_status` treats
     /// `set_started`/`set_finished` as mutually exclusive and a combined call
     /// would never set `finished_at`, which history reads filter on.
