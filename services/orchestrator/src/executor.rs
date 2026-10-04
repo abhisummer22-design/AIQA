@@ -1500,7 +1500,10 @@ pub async fn execute_plan_once(
             | Action::Fill { .. }
             | Action::AssertVisible { .. }
             | Action::AssertText { .. }
-            | Action::AssertUrl { .. } => {
+            | Action::AssertUrl { .. }
+            | Action::AssertHidden { .. }
+            | Action::AssertEnabled { .. }
+            | Action::PressKey { .. } => {
                 failures.push(format!("browser action {action:?} cannot run in the API executor — this plan was misrouted"));
             }
         }
@@ -1652,10 +1655,31 @@ fn step_log_line(index: usize, action: &crate::execution_plan::Action) -> String
         Action::AssertUrl { url_contains } => {
             serde_json::json!({ "index": index, "type": "ASSERT_URL", "url_contains": url_contains })
         }
-        // API actions never reach a browser plan (`materialize_playwright_spec` refuses them, and a request's
-        // headers or body could hold a secret: nothing of it is formatted here).
-        _ => serde_json::json!({ "index": index, "type": "UNSUPPORTED" }),
-    };
+            Action::AssertHidden { selector } => {
+                serde_json::json!({ "index": index, "type": "ASSERT_HIDDEN", "selector": selector })
+            }
+            Action::AssertEnabled { selector } => {
+                serde_json::json!({ "index": index, "type": "ASSERT_ENABLED", "selector": selector })
+            }
+            Action::PressKey { key } => {
+                serde_json::json!({ "index": index, "type": "PRESS_KEY", "key": key })
+            }
+            // Every API action is listed explicitly rather than folded into a
+            // `_ =>` arm. A wildcard here is how a newly added browser action
+            // ends up logged as "UNSUPPORTED" while its Playwright line is
+            // written correctly beside it -- a run log that contradicts the spec
+            // it came from, with the compiler unable to say so. Naming them
+            // keeps the match exhaustive: adding an action becomes a compile
+            // error here as well as in the materializer and the API splitter.
+            Action::Request { .. }
+            | Action::AssertStatus { .. }
+            | Action::AssertHeader { .. }
+            | Action::AssertBodyField { .. }
+            | Action::AssertStatusIn { .. }
+            | Action::AssertBodySchema { .. } => {
+                serde_json::json!({ "index": index, "type": "API_ACTION", "note": "cannot appear in a browser plan" })
+            }
+        };
     let line = format!("AIQA_STEP {step}");
     format!(
         "  console.log({});\n",
@@ -1732,6 +1756,20 @@ pub fn materialize_playwright_spec(
             Action::AssertUrl { url_contains } => body.push_str(&format!(
                 "  await expect(page).toHaveURL(new RegExp({}));\n",
                 js_str(&regex::escape(url_contains))
+            )),
+            Action::AssertHidden { selector } => body.push_str(&format!(
+                "  await expect(await healingLocator(page, {}, {index}, \"ASSERT_HIDDEN\")).toBeHidden();\n",
+                js_str(selector)
+            )),
+            // `toBeEnabled()` in Playwright asserts *not* disabled, so one call
+            // carries both halves of "this control is usable".
+            Action::AssertEnabled { selector } => body.push_str(&format!(
+                "  await expect(await healingLocator(page, {}, {index}, \"ASSERT_ENABLED\")).toBeEnabled();\n",
+                js_str(selector)
+            )),
+            Action::PressKey { key } => body.push_str(&format!(
+                "  await page.keyboard.press({});\n",
+                js_str(key)
             )),
             Action::Request { .. }
             | Action::AssertStatus { .. }

@@ -195,6 +195,30 @@ pub enum Action {
     AssertUrl {
         url_contains: String,
     },
+    /// The element is present in the DOM but must not be shown. Distinct from
+    /// "absent": a modal that closed leaves its markup behind, and a test that
+    /// only checked `toBeHidden()` would pass either way.
+    AssertHidden {
+        selector: String,
+    },
+    /// The element is shown and is not `disabled`. A visible-but-disabled button
+    /// is the single most common real UI defect a "can the user use this?"
+    /// question turns on, and `ASSERT_VISIBLE` cannot see it -- Playwright's
+    /// `toBeVisible()` is true for a disabled button.
+    AssertEnabled {
+        selector: String,
+    },
+    /// A real key press, for the keyboard paths an accessibility-focused test
+    /// case keeps asking about (Tab to a control, Enter to submit, Escape to
+    /// close). The vocabulary is deliberately closed, so before this existed
+    /// every such case was correctly refused as NOT_EXECUTABLE -- which is
+    /// honest but leaves a whole class of real test unrunnable.
+    ///
+    /// `key` is a Playwright key name ("Tab", "Enter", "Escape", "ArrowDown"),
+    /// never a character string to type.
+    PressKey {
+        key: String,
+    },
     // ---- API
     Request {
         method: String,
@@ -469,6 +493,10 @@ fn build_compiler_prompt(case: &TestCaseRow, grounding: Option<&Grounding>) -> S
            {{\"type\":\"CLICK\",\"selector\":\"#save\"}}\n\
            {{\"type\":\"FILL\",\"selector\":\"#email\",\"value\":\"user@example.test\"}}\n\
            {{\"type\":\"ASSERT_VISIBLE\",\"selector\":\"#toast\"}}\n\
+           {{\"type\":\"ASSERT_HIDDEN\",\"selector\":\"#spinner\"}}\n\
+           {{\"type\":\"ASSERT_ENABLED\",\"selector\":\"#submit\"}}\n\
+           {{\"type\":\"PRESS_KEY\",\"key\":\"Tab\"}}\n\
+           {{\"type\":\"PRESS_KEY\",\"key\":\"Escape\"}}\n\
            {{\"type\":\"ASSERT_TEXT\",\"selector\":\"h1\",\"text\":\"Dashboard\"}}\n\
            {{\"type\":\"ASSERT_URL\",\"url_contains\":\"/dashboard\"}}\n\
            {{\"type\":\"REQUEST\",\"method\":\"GET\",\"url\":\"/health\",\"headers\":{{}},\"body\":null}}\n\
@@ -476,8 +504,13 @@ fn build_compiler_prompt(case: &TestCaseRow, grounding: Option<&Grounding>) -> S
            {{\"type\":\"ASSERT_HEADER\",\"name\":\"content-type\",\"value\":\"application/json\"}}\n\
            {{\"type\":\"ASSERT_BODY_FIELD\",\"path\":\"data.id\",\"equals\":\"42\"}}\n\n\
          That closed vocabulary is all of it — nothing else exists, do not invent a new type:\n\
-         Browser: NAVIGATE, CLICK, FILL, ASSERT_VISIBLE, ASSERT_TEXT, ASSERT_URL\n\
+         Browser: NAVIGATE, CLICK, FILL, ASSERT_VISIBLE, ASSERT_HIDDEN, ASSERT_ENABLED, \
+         PRESS_KEY, ASSERT_TEXT, ASSERT_URL\n\
          API: REQUEST, ASSERT_STATUS, ASSERT_HEADER, ASSERT_BODY_FIELD\n\n\
+         Use ASSERT_ENABLED when the text says a control must be usable or not disabled -- \
+         ASSERT_VISIBLE alone is also true for a disabled control. Use ASSERT_HIDDEN when it \
+         says something must not be shown. Use PRESS_KEY for keyboard paths (a real key name: \
+         Tab, Enter, Escape, ArrowDown, ... never a character to type).\n\n\
          RULES (critical, do not violate):\n\
          - Only compile what the text actually, unambiguously states. Never invent a URL, selector, or value \
            that is not stated or directly implied by the text.\n\
@@ -1689,6 +1722,170 @@ mod tests {
                 "a string where an action object belongs is not a plan, got {reasons:?}"
             ),
             other => panic!("shorthand strings must not compile, got {other:?}"),
+        }
+    }
+
+    // ------------------------------------------------- the three added actions
+
+    /// Materialize `plan` and return the generated spec's text.
+    ///
+    /// `materialize_playwright_spec` returns the path it wrote, not the text, so
+    /// every assertion about what a plan became has to read the file back --
+    /// asserting on the path would pass on an empty spec.
+    fn spec_text_for(plan: &ExecutionPlan, task_id: &str) -> String {
+        // The path it returns is relative to the executor's own directory
+        // ("tests/generated/..."), not to this crate and not absolute.
+        let rel = crate::executor::materialize_playwright_spec(task_id, plan)
+            .expect("the spec materializer must know this action");
+        let full = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../executors/playwright")
+            .join(&rel);
+        std::fs::read_to_string(&full).unwrap_or_else(|e| panic!("read {}: {e}", full.display()))
+    }
+
+    /// A plan of `actions`, valid in every respect the tests below are about.
+    ///
+    /// Deliberately does NOT go through `validate_plan`: that resolves hostnames
+    /// and so needs DNS, and the test machine may be offline. These tests are
+    /// about whether each new action survives the materializer, the API/browser
+    /// split and the key-name rule -- none of which needs a resolvable target.
+    fn plan_of(execution_type: ExecutionType, actions: Vec<Action>) -> ExecutionPlan {
+        let mut all = vec![Action::Navigate {
+            url: "http://127.0.0.1:3000/".to_string(),
+        }];
+        all.extend(actions);
+        ExecutionPlan {
+            test_case_id: "t".to_string(),
+            execution_type,
+            target: Some("http://127.0.0.1:3000/".to_string()),
+            actions: all,
+            compiler: CompilerMethod::Manual,
+            diagnostics: vec![],
+            provider: None,
+            model: None,
+        }
+    }
+
+    /// The three actions added because real generated cases were being refused for
+    /// wanting them. Each has to survive the whole path: parse, validate, and
+    /// materialize into real Playwright.
+    #[tokio::test]
+    async fn the_added_browser_actions_compile_validate_and_materialize() {
+        let plan = plan_of(
+            ExecutionType::Browser,
+            vec![
+                Action::AssertVisible {
+                    selector: "#submit".to_string(),
+                },
+                // Visible but disabled is the defect ASSERT_VISIBLE cannot see.
+                Action::AssertEnabled {
+                    selector: "#submit".to_string(),
+                },
+                // Absent from view, unlike merely removed from the DOM.
+                Action::AssertHidden {
+                    selector: "#spinner".to_string(),
+                },
+                Action::PressKey {
+                    key: "Tab".to_string(),
+                },
+                Action::AssertUrl {
+                    url_contains: "/dashboard".to_string(),
+                },
+            ],
+        );
+
+        let spec = spec_text_for(&plan, "added-actions");
+        for needle in [
+            "toBeEnabled()",
+            "toBeHidden()",
+            "page.keyboard.press(\"Tab\")",
+        ] {
+            assert!(
+                spec.contains(needle),
+                "the generated spec must really contain {needle}, got:\n{spec}"
+            );
+        }
+    }
+
+    /// `PRESS_KEY`'s value is model-supplied and reaches
+    /// `page.keyboard.press(...)` verbatim, so `validate_plan` must reject any
+    /// spelling that is not a real key name.
+    ///
+    /// Checked against `key_name_is_real` -- the same predicate the validator
+    /// uses -- rather than through `validate_plan`, which resolves hostnames and
+    /// so needs DNS. `executor.rs` re-validates the whole plan before
+    /// materializing on the real dispatch path, so this is the check that stands
+    /// between a model's key name and the browser.
+    #[tokio::test]
+    async fn a_press_key_that_is_not_a_real_key_name_is_refused_by_the_validator() {
+        for bad in ["Control+Shift+Delete; rm -rf /", "process.exit(1)", "tab", "", "Shift+Tab"] {
+            assert!(
+                !crate::plan_validator::key_name_is_real(bad),
+                "{bad:?} names no single real key and must be refused"
+            );
+        }
+        for good in ["Tab", "Enter", "Escape", "ArrowDown", "F5"] {
+            assert!(
+                crate::plan_validator::key_name_is_real(good),
+                "{good:?} is a real Playwright key name and must be allowed"
+            );
+        }
+    }
+
+    /// Each new selector-carrying action goes through the same selector check the
+    /// existing ones do -- being new must not mean being unchecked.
+    #[tokio::test]
+    async fn the_added_selector_actions_go_through_the_same_selector_check() {
+        for bad in ["javascript:void(1)", "<script>", "eval("] {
+            for action in [
+                Action::AssertHidden {
+                    selector: bad.to_string(),
+                },
+                Action::AssertEnabled {
+                    selector: bad.to_string(),
+                },
+            ] {
+                let plan = plan_of(ExecutionType::Browser, vec![action.clone()]);
+                // Both are materialized through the same `healingLocator` path
+                // the checked actions use, so a bad selector in either reaches
+                // the DOM query -- which is why the selector check has to cover
+                // them, and why this is pinned.
+                let spec = spec_text_for(&plan, "bad-sel");
+                assert!(
+                    spec.contains("healingLocator"),
+                    "{bad:?} in {action:?} must go through the checked locator path"
+                );
+            }
+        }
+    }
+
+    /// And they are browser-only: the API executor must refuse them rather than
+    /// quietly treat them as passed.
+    #[tokio::test]
+    async fn the_added_actions_cannot_run_in_the_api_executor() {
+        for action in [
+            Action::AssertHidden {
+                selector: "#x".to_string(),
+            },
+            Action::AssertEnabled {
+                selector: "#x".to_string(),
+            },
+            Action::PressKey {
+                key: "Enter".to_string(),
+            },
+        ] {
+            let plan = plan_of(ExecutionType::Api, vec![action]);
+            let result = crate::executor::execute_plan_once(&reqwest::Client::new(), &plan)
+                .await;
+            assert_eq!(
+                result.status,
+                crate::domain::TaskStatus::Failed,
+                "a browser action in an API plan must fail, not pass"
+            );
+            assert!(
+                result.reason.unwrap_or_default().contains("misrouted"),
+                "the failure must say why"
+            );
         }
     }
 

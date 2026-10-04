@@ -495,7 +495,10 @@ impl PlanValidator {
                             ));
                         }
                     }
-                    Action::Click { selector } | Action::AssertVisible { selector } => {
+                    Action::Click { selector }
+                    | Action::AssertVisible { selector }
+                    | Action::AssertHidden { selector }
+                    | Action::AssertEnabled { selector } => {
                         if let Err(err) = validate_selector_string(selector) {
                             errors.push(PlanValidationError::new(
                                 "MALFORMED_SELECTOR",
@@ -525,6 +528,24 @@ impl PlanValidator {
                             errors.push(PlanValidationError::new(
                                 "MALFORMED_SELECTOR",
                                 err,
+                                Some(action_field),
+                            ));
+                        }
+                    }
+                    Action::PressKey { key } => {
+                        // The key name is model-supplied and reaches
+                        // `page.keyboard.press(...)` verbatim, so it is checked
+                        // against the real Playwright key names rather than only
+                        // for length. A `key` of "Control+Shift+Delete" or a
+                        // shell fragment is not a key.
+                        if !key_name_is_real(key) {
+                            errors.push(PlanValidationError::new(
+                                "UNKNOWN_KEY_NAME",
+                                format!(
+                                    "PRESS_KEY '{key}' is not one of the {} supported key names ({})",
+                                    PRESS_KEY_NAMES.len(),
+                                    PRESS_KEY_NAMES.join(", ")
+                                ),
                                 Some(action_field),
                             ));
                         }
@@ -580,6 +601,25 @@ impl PlanValidator {
             Err(errors)
         }
     }
+}
+
+/// The key names `PRESS_KEY` accepts: one unmodified key, by its Playwright
+/// name. Deliberately single-key, so a chord like "Shift+Tab" is not accepted
+/// -- a model that means two keys should emit two `PRESS_KEY` actions, which
+/// keeps each step independently meaningful in the run log.
+const PRESS_KEY_NAMES: &[&str] = &[
+    "Enter", "Tab", "Escape", "Backspace", "Delete", "Space", "Shift", "Control", "Alt", "Meta",
+    "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown",
+    "Insert", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
+];
+
+/// Whether `key` names one real key, i.e. something `page.keyboard.press` will
+/// accept. The value is model-supplied and reaches Playwright verbatim, so this
+/// is an allow-list and not a denylist: an unknown spelling is refused rather
+/// than passed through to be discovered as a runtime failure inside the
+/// browser.
+pub fn key_name_is_real(key: &str) -> bool {
+    PRESS_KEY_NAMES.contains(&key)
 }
 
 /// Checks CSS selectors to prevent script injection or dangerous directives.
