@@ -484,6 +484,10 @@ impl PerfVerdict {
 /// Real, documented threshold evaluation — only evaluated when at least one
 /// threshold field is `Some`; each violation is reported with the actual
 /// measured value alongside the configured limit, never a bare true/false.
+///
+/// A verdict of `Passed` additionally requires that at least one request
+/// actually succeeded: a run whose every sample failed or errored cannot pass
+/// on latency grounds alone.
 pub fn evaluate_verdict(
     config: &PerformanceTestConfig,
     metrics: &PerformanceMetrics,
@@ -502,6 +506,30 @@ pub fn evaluate_verdict(
         return (PerfVerdict::Completed, vec!["no thresholds were configured — reporting real measured metrics only, no pass/fail judgement".to_string()]);
     }
     let mut violations = Vec::new();
+    // Request correctness is judged before any latency/throughput threshold.
+    // `expected_status` decides each sample's outcome (`SampleOutcome` comes
+    // straight from the request's `TaskStatus`), so a run where not one sample
+    // succeeded is a run in which nothing worked. Without this check such a run
+    // could still be reported `Passed` on the strength of a latency threshold
+    // alone — 200 requests, 0 successes, 100% error rate, verdict PASSED.
+    //
+    // Gated on `successful == 0` rather than on any failure at all, because
+    // there is no configured success tolerance to judge a partial failure
+    // against, and inventing one would invent a policy. "Not one request
+    // worked" needs no policy.
+    if metrics.total_requests > 0 && metrics.successful == 0 {
+        violations.push(format!(
+            "no request succeeded: all {} of {} samples failed or errored ({} failed, {} errored){}",
+            metrics.total_requests,
+            metrics.total_requests,
+            metrics.failed,
+            metrics.errored,
+            match config.expected_status {
+                Some(code) => format!(", none returned the expected status {code}"),
+                None => String::new(),
+            }
+        ));
+    }
     if let Some(max_p95) = config.max_p95_ms {
         if metrics.p95_ms > max_p95 {
             violations.push(format!(
@@ -1263,6 +1291,81 @@ mod tests {
         let (verdict, reasons) = evaluate_verdict(&cfg, &m, false);
         assert_eq!(verdict, PerfVerdict::Failed);
         assert!(reasons[0].contains("100ms"), "reasons={reasons:?}");
+    }
+
+    /// The regression this guards: a latency threshold alone used to be able
+    /// to carry a run in which *every* request failed. 200 samples, 0
+    /// successes, and the verdict still came back `Passed` with the reason
+    /// "all configured thresholds were met".
+    #[test]
+    fn a_run_where_every_request_failed_is_never_passed_on_latency_grounds_alone() {
+        let mut cfg = base_config(WorkloadSchedule::Load {
+            concurrency: 4,
+            duration_secs: 6,
+            max_requests: Some(200),
+        });
+        cfg.expected_status = Some(200);
+        cfg.max_p95_ms = Some(2000); // the measured p95 was 13ms, so this passed
+        let m = compute_metrics(
+            &[
+                sample(13, SampleOutcome::Failed),
+                sample(13, SampleOutcome::Failed),
+                sample(13, SampleOutcome::Failed),
+            ],
+            502,
+        );
+        assert_eq!(m.successful, 0);
+        assert_eq!(m.total_requests, 3);
+        let (verdict, reasons) = evaluate_verdict(&cfg, &m, false);
+        assert_eq!(verdict, PerfVerdict::Failed);
+        assert!(
+            reasons.iter().any(|r| r.contains("no request succeeded")),
+            "reasons={reasons:?}"
+        );
+        // The reason must carry the real measured numbers, not a bare flag.
+        assert!(reasons[0].contains("3 of 3"), "reasons={reasons:?}");
+        assert!(reasons[0].contains("200"), "reasons={reasons:?}");
+    }
+
+    /// A run that did work stays `Passed` — the new check must not turn every
+    /// threshold-meeting run into a failure.
+    #[test]
+    fn a_run_where_requests_succeeded_is_still_passed() {
+        let mut cfg = base_config(WorkloadSchedule::Load {
+            concurrency: 1,
+            duration_secs: 1,
+            max_requests: None,
+        });
+        cfg.expected_status = Some(200);
+        cfg.max_p95_ms = Some(1000);
+        let m = compute_metrics(
+            &[
+                sample(10, SampleOutcome::Success),
+                sample(20, SampleOutcome::Success),
+                sample(30, SampleOutcome::Failed),
+            ],
+            1000,
+        );
+        let (verdict, reasons) = evaluate_verdict(&cfg, &m, false);
+        assert_eq!(verdict, PerfVerdict::Passed);
+        assert!(!reasons.iter().any(|r| r.contains("no request succeeded")));
+    }
+
+    /// No requests at all is not "every request failed" — nothing ran, so
+    /// there is no failure to report and the thresholds stand alone.
+    #[test]
+    fn a_run_that_never_made_a_request_is_not_reported_as_a_total_failure() {
+        let mut cfg = base_config(WorkloadSchedule::Load {
+            concurrency: 1,
+            duration_secs: 1,
+            max_requests: None,
+        });
+        cfg.max_p95_ms = Some(1000);
+        let m = compute_metrics(&[], 1000);
+        assert_eq!(m.total_requests, 0);
+        let (verdict, reasons) = evaluate_verdict(&cfg, &m, false);
+        assert_eq!(verdict, PerfVerdict::Passed);
+        assert!(!reasons.iter().any(|r| r.contains("no request succeeded")));
     }
 
     #[test]

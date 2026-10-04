@@ -134,21 +134,52 @@ fn ws_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"\s+").unwrap())
 }
 
+/// An id glued to a label by `_` or `-`, where the id itself carries a digit:
+/// `req_cf1fe4bafdc8b`, `trace-9f2b1c`. The trailing digit requirement is what
+/// keeps ordinary prose out — `no_route_matches_api` is all letters and stays
+/// readable, while a version like `v1` is too short to match at all.
+fn labelled_id_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?:[a-z]{2,10}[_-])+[0-9a-z]*[0-9][0-9a-z]{2,}").unwrap())
+}
+
 /// Collapse a failure `reason` string down to a normalized signature so
 /// repeated occurrences of "the same" failure (differing only in
 /// timestamps, ports, request ids, line numbers, ...) cluster together
 /// instead of each counting as a brand-new failure_cluster row.
 pub fn normalize_signature(reason: &str) -> String {
     let lower = reason.to_lowercase();
-    let no_hex = hexlike_re().replace_all(&lower, "#");
+    // Labelled ids first: `hexlike_re`'s `\b` cannot match `req_cf1fe4bafdc8b`
+    // at all, because `_` is itself a word character so the leading boundary
+    // never falls where the hex run starts. Left alone, a per-request id
+    // survived verbatim and gave every repeat of one failure its own cluster —
+    // `occurrence_count` could then never rise above 1, which is the number
+    // the bug-draft threshold is gated on.
+    let no_labelled = labelled_id_re().replace_all(&lower, "#");
+    let no_hex = hexlike_re().replace_all(&no_labelled, "#");
     let no_digits = digits_re().replace_all(&no_hex, "#");
     let collapsed = ws_re().replace_all(&no_digits, " ");
-    let trimmed = collapsed.trim();
-    // Cap length: a full stack trace shouldn't produce an unbounded-length
-    // "signature" — first line plus a short tail is enough to disambiguate
-    // the common cases (assertion text, connection errors, HTTP codes)
-    // without the signature drifting on every stray log line.
-    trimmed.chars().take(200).collect()
+    cap_signature(collapsed.trim(), 200)
+}
+
+/// Cap the signature at `cap` characters by keeping the head *and* the tail.
+///
+/// A flat `chars().take(cap)` did the opposite of what it needed to: it kept
+/// the volatile opening and discarded the end, which is normally what tells two
+/// failures apart, so two genuinely different failures whose first 200
+/// normalized characters matched collapsed into a single cluster row. The head
+/// carries the verb (`request get ... not found`); the tail carries the
+/// discriminator. The middle is what can go.
+fn cap_signature(trimmed: &str, cap: usize) -> String {
+    let len = trimmed.chars().count();
+    if len <= cap {
+        return trimmed.to_string();
+    }
+    let head_len = cap * 3 / 5;
+    let tail_len = cap - head_len - 3; // the " … " separator
+    let head: String = trimmed.chars().take(head_len).collect();
+    let tail: String = trimmed.chars().skip(len - tail_len).collect();
+    format!("{head} … {tail}")
 }
 
 /// Rule-based root-cause hypothesis. Returns (hypothesis, confidence in
@@ -785,6 +816,60 @@ mod tests {
         let a = "playwright exited with Some(1)\nexpected \"200\" got \"404\" at line 42 (req abcdef1234567890)";
         let b = "playwright exited with Some(1)\nexpected \"200\" got \"404\" at line 99 (req 1122334455667788)";
         assert_eq!(normalize_signature(a), normalize_signature(b));
+    }
+
+    /// The regression this guards: `hexlike_re`'s `\b` cannot match an id that
+    /// is glued to its label by `_` (because `_` is a word character), so a
+    /// per-request `request_id` survived normalization verbatim. Every repeat of
+    /// one failure then hashed to a different signature and got its own cluster,
+    /// which pinned `occurrence_count` at 1 — and that is the number the
+    /// bug-draft threshold is gated on.
+    #[test]
+    fn normalize_signature_collapses_an_id_glued_to_its_label_by_underscore() {
+        let a = r#"REQUEST GET http://localhost:8080/api/v1/tickets
+RESPONSE 404 Not Found
+{"error":{"code":"RESOURCE_NOT_FOUND","message":"no route matches /api/v1/tickets","details":{},"request_id":"req_cf1fe4bafdc8b"}}"#;
+        let b = r#"REQUEST GET http://localhost:8080/api/v1/tickets
+RESPONSE 404 Not Found
+{"error":{"code":"RESOURCE_NOT_FOUND","message":"no route matches /api/v1/tickets","details":{},"request_id":"req_a91b30cc7e4f12"}}"#;
+        assert_eq!(normalize_signature(a), normalize_signature(b));
+        assert!(!normalize_signature(a).contains("cf1fe4bafdc8b"));
+    }
+
+    /// The labelled-id rule must not eat ordinary words: a message whose text
+    /// is all letters has nothing volatile in it to collapse.
+    #[test]
+    fn normalize_signature_leaves_all_letter_prose_readable() {
+        let sig = normalize_signature("no route matches the requested resource");
+        assert!(sig.contains("no route matches"), "sig={sig}");
+        assert!(!sig.contains('#'), "sig={sig}");
+    }
+
+    /// Two failures that differ only *late* in a long message must not collapse
+    /// into one cluster: the old flat 200-char prefix cut threw away exactly the
+    /// part that told them apart.
+    #[test]
+    fn normalize_signature_keeps_the_tail_so_long_failures_stay_distinct() {
+        let filler = "x".repeat(400);
+        let a = format!("assertion mismatch on the checkout page {filler} expected value alpha");
+        let b = format!("assertion mismatch on the checkout page {filler} expected value omega");
+        let sa = normalize_signature(&a);
+        let sb = normalize_signature(&b);
+        assert_ne!(
+            sa, sb,
+            "two different failures collapsed into one signature"
+        );
+        assert!(sa.chars().count() <= 200, "len={}", sa.chars().count());
+        assert!(sa.contains("alpha"), "the tail was dropped: {sa}");
+        assert!(sa.contains("…"), "the head/tail separator is missing: {sa}");
+    }
+
+    /// A short reason is returned untouched rather than gaining a separator.
+    #[test]
+    fn normalize_signature_leaves_a_short_reason_intact() {
+        let a = "connect ECONNREFUSED 127.0.0.1:8080";
+        assert_eq!(normalize_signature(a), normalize_signature(a));
+        assert!(!normalize_signature(a).contains('…'));
     }
 
     #[test]
