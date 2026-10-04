@@ -231,20 +231,48 @@ describe('matchesMedia is safe where the API does not exist', () => {
   });
 });
 
-describe('header overflow is never silently clipped', () => {
+describe('the header never becomes a horizontal scroll strip', () => {
   /**
-   * The harmful part of a too-wide header was not cosmetic. `body` sets
-   * `overflow-x: hidden` and the app shell sets `overflow-hidden`, so anything
-   * past the right edge was clipped with no way to scroll to it -- the controls
-   * were genuinely unreachable. This pins the safety net.
+   * This test used to assert the opposite -- that the header carried
+   * `overflow-x-auto`. That was wrong, and it pinned the wrong thing.
    *
-   * It cannot pin a pixel width, because jsdom has no layout and Tailwind has not
-   * run. So it pins the mechanism that makes overflow reachable instead.
+   * The reasoning behind it was that the app shell clips (`body` sets
+   * `overflow-x: hidden`, the shell sets `overflow-hidden`), so a too-wide
+   * header would have its controls clipped and unreachable. True. But the fix
+   * traded a rare problem for a constant one: `overflow-x: auto` on a
+   * `position: sticky` element reserves a horizontal scrollbar gutter whether or
+   * not anything overflows, so at every width the header rendered with its
+   * content shifted and a second copy of the right-hand controls showing at the
+   * edge.
+   *
+   * Reachability does not require it, because the header already responds to
+   * width: the environment and project selectors are `hidden` below `md`, the
+   * search field is `hidden md:flex`, and the Launch Run label collapses below
+   * `sm`. Narrow widths hold *fewer* controls, not wider ones.
+   *
+   * So the assertion is now the absence of the scroll strip, plus the shrinking
+   * that replaces it. It still cannot pin a pixel width -- jsdom has no layout
+   * and Tailwind has not run -- so it pins the mechanism.
    */
-  it('the header can be scrolled horizontally rather than clipping its overflow', () => {
+  it('the header does not scroll horizontally', () => {
     stubViewport(true);
     renderShell(<Header />);
     const header = document.querySelector('header');
-    expect(header?.className).toMatch(/overflow-x-auto/);
+    expect(header).toBeTruthy();
+    expect(header?.className ?? '').not.toMatch(/overflow-x-(auto|scroll)/);
+  });
+
+  it('the header lets its flexible middle group shrink instead of pushing wider', () => {
+    stubViewport(true);
+    renderShell(<Header />);
+    // A flex item defaults to `min-width: auto`, so without `min-w-0` the search
+    // field's placeholder sets the header's minimum width at every viewport.
+    const search = document.querySelector('#global-search-button');
+    const group = search?.parentElement;
+    expect(group?.className ?? '').toMatch(/min-w-0/);
+    // And the placeholder itself must be allowed to truncate rather than hold
+    // the row open.
+    const placeholder = search?.querySelector('span.truncate');
+    expect(placeholder).toBeTruthy();
   });
 });

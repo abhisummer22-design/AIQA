@@ -167,20 +167,33 @@ export const Header: React.FC = () => {
   }, [anyPopoverOpen, closeAllPopovers]);
 
   /**
-   * `overflow-x-auto` on the `<header>` below is a safety net, not a layout
-   * strategy. Both `body { overflow-x: hidden }` (`index.css`) and the app shell's
-   * own `overflow-hidden` clip anything wider than the viewport with no way to
-   * scroll to it -- so a header that overflows at a narrow width does not merely
-   * look wrong, the controls past the right edge become *unreachable*. With this
-   * they stay reachable by scrolling. The environment selector is additionally
-   * hidden under `md`, where the sidebar drawer is the navigation surface anyway.
+   * No `overflow-x` on this header, deliberately -- it was `overflow-x-auto`
+   * before, and that is worse than it looks.
    *
-   * What is NOT claimed here: the exact overflowing width. No browser was
-   * attached when this was written, so no pixel figure is asserted. What was fixed
-   * is the part provable from the source alone.
+   * `overflow-x: auto` on a `position: sticky` element reserves a horizontal
+   * scrollbar gutter whether or not anything overflows, so the header renders
+   * with its content visibly shifted and a second copy of the right-hand
+   * controls peeking in at the edge. That is what the earlier fix produced: it
+   * made an overflow *reachable* at the cost of looking wrong at every width.
+   *
+   * Reachability does not need it here. The header's contents already respond
+   * to width -- the environment selector and project selector are `hidden`
+   * below `md`, the search field is `hidden md:flex`, and the Launch Run label
+   * collapses to its icon below `sm`. So at narrow widths the header holds
+   * fewer controls rather than wider ones, and `min-w-0` on the flexible group
+   * lets the search field shrink instead of pushing the rest past the edge.
+   *
+   * The app shell clips with `overflow-hidden` either way (`index.css`
+   * `body { overflow-x: hidden }`), so a regression that somehow reintroduced a
+   * too-wide element would clip rather than silently scroll -- and
+   * `headerMustNotScrollHorizontally` below fails if `overflow-x` ever comes
+   * back, which is the part this comment cannot enforce on its own.
    */
   return (
-    <header className="h-13 border-b border-border-default/90 bg-surface-card px-3 sm:px-4 flex items-center justify-between gap-3 sticky top-0 z-30 select-none overflow-x-auto">
+    <header
+      data-testid="app-header"
+      className="h-13 border-b border-border-default/90 bg-surface-card px-3 sm:px-4 flex items-center justify-between gap-3 sticky top-0 z-30 select-none"
+    >
       {/* Left: Hamburger & Brand */}
       <div className="flex items-center gap-2.5">
         <button
@@ -294,16 +307,23 @@ export const Header: React.FC = () => {
         <div className="hidden md:block"><ProjectSelector /></div>
       </div>
 
-      {/* Center: Command Palette Trigger */}
-      <div className="hidden md:flex items-center flex-1 max-w-md mx-2">
+      {/* Center: Command Palette Trigger.
+          `min-w-0`: a flex item's default `min-width: auto` stops it shrinking
+          below its content, so the search button's placeholder text would hold
+          the whole row open and push the right-hand controls past the edge
+          instead of the search field giving way. */}
+      <div className="hidden md:flex items-center flex-1 max-w-md mx-2 min-w-0">
         <button
           id="global-search-button"
           onClick={() => setCommandPaletteOpen(true)}
           className="w-full flex items-center justify-between px-3 py-1.5 rounded-md bg-surface-page hover:bg-slate-900 border border-border-default/90 text-xs text-content-secondary transition-all group cursor-pointer"
         >
-          <div className="flex items-center gap-2">
-            <Search className="w-3.5 h-3.5 text-content-muted group-hover:text-content-secondary" />
-            <span className="group-hover:text-content-secondary text-xs">Quick search runs, tests, RBAC rules...</span>
+          <div className="flex items-center gap-2 min-w-0">
+            <Search className="w-3.5 h-3.5 shrink-0 text-content-muted group-hover:text-content-secondary" />
+            {/* `truncate` so the placeholder gives way before the row can be
+                pushed wider than the header. Without it this one span sets the
+                header's minimum width at every viewport size. */}
+            <span className="truncate group-hover:text-content-secondary text-xs">Quick search runs, tests, RBAC rules...</span>
           </div>
           <div className="flex items-center gap-1 font-mono text-[10px] text-content-secondary bg-slate-800/90 px-1.5 py-0.5 rounded border border-slate-700">
             <span>⌘</span>
