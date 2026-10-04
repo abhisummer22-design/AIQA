@@ -14,7 +14,7 @@ use axum::{
     // scope). Every other handler below uses `ApiPath`/`ApiQuery`/`ApiJson`
     // instead.
     extract::{Extension, Path, Query, State},
-    http::{HeaderValue, StatusCode},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Json, Response},
     routing::{delete, get, patch, post, put},
     Router,
@@ -668,6 +668,11 @@ fn protected_routes() -> Router<AppState> {
         )
         .route("/admin/api-keys/:id", delete(revoke_api_key_handler))
         .route("/admin/audit-log", get(get_audit_log))
+    // RBAC testing that measures rather than asserts: the targets a QA person
+    // probes, and the probe that sends a real request with a real key. See
+    // `rbac_probe`'s doc comment for why this is not a declared matrix.
+    .route("/api/v1/rbac/targets", get(list_rbac_probe_targets))
+    .route("/api/v1/rbac/probe", post(run_rbac_probe))
         // Central Real-time Orchestrator Logs endpoints
         .route("/api/v1/logs", get(list_logs_handler))
         .route(
@@ -737,6 +742,65 @@ async fn health() -> &'static str {
 
 pub(crate) fn to_500<E: std::fmt::Display>(e: E) -> ApiError {
     ApiError::internal(e)
+}
+
+/// The routes worth probing, with the capability each one covers.
+///
+/// Deliberately no "required role" column. A column like that is a claim, and
+/// every attempt to derive one here produced a false answer -- `rbac_probe`'s doc
+/// comment names three, including a hand-written matrix whose methods disagreed
+/// with the router on 18 rows and an `ai-usage` row that was admin-only when the
+/// route answers a viewer. The page instead sends a real request per role and
+/// shows what came back, so the matrix a QA person ends up with is the one they
+/// observed rather than one they were told.
+///
+/// Operator and above: probing needs a key, and key administration is the
+/// surface most worth probing.
+async fn list_rbac_probe_targets(
+    Extension(ctx): Extension<AuthContext>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    Ok(Json(serde_json::json!({
+        "targets": crate::rbac_probe::TARGETS,
+        "roles": crate::rbac_probe::roles_weakest_first(),
+        "note": "There is no required-role column, on purpose. Probe each target per \
+                 role and read the real answer: a 403 means the gate refused, and \
+                 any other answer means that role got past the gate.",
+    })))
+}
+
+/// Sends one probe and returns the server's own answer, classified.
+///
+/// The host comes from this request rather than from the caller, and only
+/// loopback is accepted. Letting the caller name the host would turn this into a
+/// way to make the server send authenticated requests to whatever else it can
+/// reach, which is a far more interesting capability than the one on offer.
+async fn run_rbac_probe(
+    Extension(ctx): Extension<AuthContext>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    auth::require_role(&ctx, Role::Operator)?;
+    let req: crate::rbac_probe::ProbeRequest = serde_json::from_value(body)
+        .map_err(|e| ApiError::validation(format!("the probe request is not readable: {e}")))?;
+    let host = headers.get(header::HOST).and_then(|v| v.to_str().ok());
+    let base = crate::rbac_probe::loopback_base(host).ok_or_else(|| {
+        ApiError::validation(
+            "probing is only allowed against this server over loopback; the Host \
+             header was missing or named something else",
+        )
+    })?;
+    let client = reqwest::Client::new();
+    // A client per probe rather than a shared one on `AppState`. That throws away
+    // connection pooling, which would be the wrong trade for a hot path -- but this
+    // is a manual testing endpoint a person clicks, not something a test run
+    // drives thousands of times, and a probe must never reuse a pooled connection
+    // that some other request is holding. If this ever gets a high rate, the fix
+    // is a client on `AppState`, not a per-call one.
+    let result = crate::rbac_probe::run_probe(&base, &client, &req)
+        .await
+        .map_err(ApiError::validation)?;
+    Ok(Json(serde_json::json!(result)))
 }
 
 pub(crate) async fn audit(

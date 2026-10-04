@@ -72,6 +72,11 @@ import type {
   ResolvedSkillInstruction,
   OrchestratorStateResponse,
   WhoAmIResponse,
+  RbacProbeTarget,
+  RbacProbeTargetsResponse,
+  RbacProbeRequest,
+  RbacProbeResult,
+  RbacGate,
   CreateExecutionResponse,
   CreateProjectRequest,
   CompilationOutcome,
@@ -941,6 +946,28 @@ export const aiqaApi = {
       requestJson<CreateApiKeyResponse>('/admin/api-keys', { method: 'POST', body, signal, skipBase: true }),
     revokeApiKey: (id: string, signal?: AbortSignal) =>
       requestVoid(`/admin/api-keys/${id}`, { method: 'DELETE', signal, skipBase: true }),
+
+    /** The routes worth probing, for `POST /api/v1/rbac/probe` (Operator+).
+     *
+     *  There is deliberately no "required role" field on a target. A column like
+     *  that is a claim, and this repo has a documented history of such claims
+     *  being wrong: FE-11 removed a hardcoded matrix of invented roles, a
+     *  hand-written replacement had 18 rows whose methods disagreed with the
+     *  router, and one source parser claimed 66 routes had no role gate where
+     *  another claimed 8. `rbac_probe` measures instead -- it sends a real
+     *  request with a real key and reports what came back. See the module's doc
+     *  comment. */
+    probeTargets: (signal?: AbortSignal) =>
+      requestJson<RbacProbeTargetsResponse>('/rbac/targets', { signal }),
+
+    /** Sends one probe. The backend makes the request to itself over loopback
+     *  with `apiKey`, so the answer is the real gate's answer rather than
+     *  something assembled here.
+     *
+     *  `apiKey` is the key to probe *with*, which is not the key this page is
+     *  authenticated as: probing is how you try a role you are not. */
+    probe: (body: RbacProbeRequest, signal?: AbortSignal) =>
+      requestJson<RbacProbeResult>('/rbac/probe', { method: 'POST', body, signal }),
   },
 
   /** Real mobile device fleet (`mobile.rs`) — real `adb devices -l`, real

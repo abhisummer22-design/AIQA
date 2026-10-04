@@ -63,6 +63,7 @@ import {
 import { SectionHeader } from '../common/SectionHeader';
 import { OrchestratorLogsPanel } from '../dashboard/OrchestratorLogsPanel';
 import { aiqaApi, ApiError } from '../../services/aiqaApi';
+import { RbacProbeMatrix } from './RbacProbeMatrix';
 import { useAuth } from '../../context/AuthContext';
 import { useProject } from '../../context/ProjectContext';
 import { renderAuthState, renderResourceErrorState } from '../state/StateViews';
@@ -321,6 +322,27 @@ export const RBACTestingPage: React.FC = () => {
 
       <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_400px] gap-4 items-start">
         <div className="space-y-4 min-w-0">
+          {/* --------------------------------------- measured role matrix */}
+          {/*
+           * The measured matrix sits above the identity and inventory panels
+           * because it is the answer to the question those two only set up: you
+           * mint a key there, and here you find out what it can actually reach.
+           * Every cell is filled by sending a real request with that role's key,
+           * so nothing on it is a claim about the code.
+           *
+           * There is deliberately no "required role" column. See
+           * `RbacProbeMatrix`'s header comment: this repo has three separate
+           * documented attempts at a declared role matrix and all three were
+           * wrong, so this one measures instead.
+           */}
+          <PanelCard
+            icon={ShieldCheck}
+            iconClassName="text-sky-400"
+            title="Measured Role-Permission Matrix"
+            subtitle="Every cell is a real request sent with that role's key, not a table of what should be true"
+          >
+            <RbacProbeMatrix />
+          </PanelCard>
           {/* ------------------------------------------- your real identity */}
           <PanelCard
             icon={UserCheck}

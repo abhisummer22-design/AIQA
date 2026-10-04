@@ -1848,6 +1848,80 @@ export interface WhoAmIResponse {
   role_hierarchy: Role[];
 }
 
+/* RBAC testing that measures rather than declares.
+ *
+ * The absence of a `required_role` anywhere in these types is deliberate, and it
+ * is the whole design. See `services/orchestrator/src/rbac_probe.rs`: this repo
+ * has a documented history of role claims being wrong (FE-11 removed a hardcoded
+ * matrix of invented roles; a hand-written replacement had 18 rows whose methods
+ * disagreed with the router; two source parsers disagreed with each other about
+ * how many routes had no role gate at all -- 66 versus 8). So the backend sends
+ * a real request with a real key and reports what came back. Nothing is claimed
+ * here that was not observed. */
+
+/** One route worth probing. */
+export interface RbacProbeTarget {
+  id: string;
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+  /** The registered path template, e.g. `/api/v1/projects/:project_id/crawl`. */
+  path: string;
+  capability: string;
+  category: string;
+  /** True when reaching the handler could change something. The page warns
+   *  first, and every id in such a target is a non-existent uuid so that a probe
+   *  which *is* let through still cannot touch anything real. */
+  mutating: boolean;
+}
+
+export interface RbacProbeTargetsResponse {
+  targets: RbacProbeTarget[];
+  /** Weakest first, served by the backend so the order is never the client's. */
+  roles: Role[];
+  note: string;
+}
+
+export interface RbacProbeRequest {
+  target_id?: string;
+  method?: string;
+  path?: string;
+  /** The key to probe *with*. Not the key the page is authenticated as: probing
+   *  is how you try a role you are not. */
+  api_key: string;
+  project_id?: string;
+  body?: unknown;
+}
+
+/** Why the request was refused, or not. Named rather than boolean because "the
+ *  gate said no" and "the gate said yes and then something else did" are different
+ *  results, and collapsing them would overclaim in a softer voice. */
+export type RbacGate =
+  | 'role_refused'
+  | 'scope_refused'
+  | 'refused_unknown'
+  | 'allowed_succeeded'
+  | 'allowed_then_refused'
+  | 'verb_not_served'
+  | 'key_rejected'
+  | 'probe_failed';
+
+export interface RbacProbeResult {
+  target_id: string | null;
+  method: string;
+  /** The path actually requested, with ids filled in. */
+  path: string;
+  status: number;
+  gate: RbacGate;
+  gate_label: string;
+  /** The gate did not refuse. Deliberately not called `success`. */
+  allowed: boolean;
+  /** True when the measurement itself was unsound (a rejected key, a verb the
+   *  router does not serve), so the row must not be read as a result. */
+  inconclusive: boolean;
+  /** The server's own words, trimmed. */
+  message: string;
+  mutating: boolean;
+}
+
 /** `store.rs::ApiKeyListRow` — `GET /admin/api-keys` (Admin only). Only the
  *  key's metadata is ever returned; the key itself is shown exactly once at
  *  creation and only its SHA-256 hash is stored. */

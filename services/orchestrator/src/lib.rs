@@ -85,6 +85,14 @@ mod operations_tests;
 mod process_lifetime_maps_tests;
 #[cfg(test)]
 mod retention_and_metrics_tests;
+/// RBAC testing that measures the server instead of describing it: `run_probe`
+/// sends a real request with a real key and reports the real answer. See
+/// `rbac_probe`'s doc comment for why this is not a declared matrix.
+pub mod rbac_probe;
+
+#[cfg(test)]
+mod rbac_probe_tests;
+
 #[cfg(test)]
 mod rbac_matrix_tests;
 #[cfg(test)]
