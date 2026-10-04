@@ -42,11 +42,22 @@ if exist "%AIQA_ENVFILE%" (
     REM Lines with an empty value are skipped: `set "KEY="` is a no-op here, and
     REM leaving it alone is what lets GROQ_REQUEST_TOKEN_LIMIT and friends stay
     REM unset so the code's own defaults apply.
-    setlocal enabledelayedexpansion
+    REM
+    REM THIRD fault, and the one that kept the first two fixes from mattering:
+    REM this block used to open its OWN `setlocal enabledelayedexpansion` and
+    REM close it with `endlocal` right after the loop. `endlocal` DISCARDS
+    REM everything set inside the scope, so every variable was parsed correctly
+    REM and then thrown away one line later -- and line 63 launches the
+    REM orchestrator as a separate process, which inherits only what is still in
+    REM scope by then. Symptom: the log said "GROQ_API_KEY not set - not
+    REM configured" even with a valid key in .env.
+    REM
+    REM No `setlocal` here is correct: line 2 already opened one for the whole
+    REM script, which is exactly the scope the orchestrator should inherit, and
+    REM it is released automatically when the script exits.
     for /f "usebackq tokens=1,2* delims==" %%A in (`type "!AIQA_ENVFILE!" ^| findstr /b /i /v "REM #"`) do (
         if not "%%B"=="" set "%%A=%%B"
     )
-    endlocal
 )
 
 REM 3. Check frontend dependencies
