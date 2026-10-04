@@ -12,7 +12,7 @@ use crate::agent_tools::ToolError;
 use crate::api::{
     audit, create_run_core, require_scoped_project, scoped_run_summary, scoped_run_tasks, to_500,
 };
-use crate::auth::{self, AuthContext, Role};
+use crate::auth::{self, AuthContext, RequireAdmin, RequireOperator, RequireViewer, Role};
 use crate::domain::{RunPlan, TaskStatus};
 use crate::errors::{ApiError, ApiJson, ApiPath, ApiQuery};
 use crate::openapi_cases::{self, Case, CaseKind, Derived, Options};
@@ -180,12 +180,13 @@ fn operation_view(spec: &Spec) -> Vec<Value> {
 /// POST /api/v1/projects/:project_id/openapi/plan — what would be tested, and nothing is done: the operations of the document and
 /// the cases that would be made for them, with the request and the answer each expects (Operator role: an address is fetched).
 pub(crate) async fn plan(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<OpenApiBody>,
 ) -> Result<Json<Value>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
     let spec = read_spec(&body).await?;
     let options = options_of(&body, &spec)?;
@@ -225,12 +226,13 @@ fn stored_operations(spec: &Spec, options: &Options, derived: &Derived) -> Vec<S
 /// POST /api/v1/projects/:project_id/openapi/runs — makes the cases and runs them as one execution (Operator role). Answers at once
 /// with the run's id; the report (`GET .../openapi/runs/:id`) fills in as the tasks finish.
 pub(crate) async fn create_run(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<OpenApiBody>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
     let spec = read_spec(&body).await?;
     let options = options_of(&body, &spec)?;

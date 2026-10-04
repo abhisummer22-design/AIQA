@@ -9276,7 +9276,11 @@ fn ai_infra_with_executor(executor: Arc<dyn AiExecutor>) -> Arc<AiInfrastructure
     ))
 }
 
-const PASSWORD_FRD: &str = "## 2 Passwords\n\nA password must be at least 8 characters long.\n\nUsers shall sign in with an email address.\n";
+/// A requirements document whose whole point is the roles it names, so a test can
+/// check that generation reads roles out of the stored requirements rather than out
+/// of whatever text the caller happened to paste alongside them.
+const RBAC_ROLES_FRD: &str = "## Roles\n\nCustomer: can create a ticket and view their own tickets. A customer cannot delete a ticket.\n\nAgent: can view every ticket and change ticket status. An agent cannot see billing invoices.\n\nAdministrator: everything an agent can do, plus creating a user account.\n";
+    const PASSWORD_FRD: &str = "## 2 Passwords\n\nA password must be at least 8 characters long.\n\nUsers shall sign in with an email address.\n";
 
 fn generate_ai_body(document_ids: &[&str], skills: &[&str]) -> Value {
     serde_json::json!({
@@ -9303,6 +9307,109 @@ async fn post_generate(
     )
     .await
 }
+
+    /// The document path has to stand on its own.
+    ///
+    /// It could not. `requirement_text` was a plain `String` with no
+    /// `#[serde(default)]` while every field beside it in the same struct had one,
+    /// so a request naming `requirement_document_ids` was rejected at
+    /// deserialization -- before the handler that knows documents are enough could
+    /// run. A caller who worked around that by sending `""` met a second guard that
+    /// refused empty text unconditionally. The net effect: the upload-a-document
+    /// flow could only be used if the document text was pasted back in as well, which
+    /// is the one input it was meant to replace.
+    ///
+    /// This drives the real router with a real uploaded document and no pasted text
+    /// at all. It matters beyond convenience: the prompt is built from the stored
+    /// requirements, so pasting the text back in is what puts a caller on the less
+    /// accurate of the two paths -- roles read from whatever was typed rather than
+    /// from what was uploaded, which for RBAC work is the whole question.
+    #[tokio::test]
+    async fn a_documents_requirements_can_be_used_without_pasting_its_text_back_in() {
+        let _env = REQUIREMENT_ENV.lock().await;
+        let executor = Arc::new(RecordingExecutor::ok_sequence(vec![valid_ai_response()]));
+        let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
+        let project = make_project(&state, "ReqGen - DocumentOnly").await;
+        let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+        let (_, uploaded) = upload_document(
+            &state,
+            &owner,
+            project,
+            "RBAC-FRD.md",
+            RBAC_ROLES_FRD.as_bytes(),
+            Some("RBAC"),
+        )
+        .await;
+        let doc_id = uploaded["requirements_document"]["document_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            uploaded["requirements_document"]["requirements_count"]
+                .as_u64()
+                .unwrap_or(0)
+                > 0,
+            "the document must have produced requirements to generate from: {uploaded}"
+        );
+
+        // No `requirement_text` key at all -- which is what a client that uploaded a
+        // document and wanted cases from it would send.
+        let (status, body) = post_generate(
+            &state,
+            &owner,
+            project,
+            serde_json::json!({
+                "requirement_document_ids": [doc_id],
+                "skills": [{
+                    "id": "skill-rbac-testing",
+                    "name": "RBAC Testing",
+                }],
+            }),
+        )
+        .await;
+
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "a document alone must be enough to generate from; the pasted text was \
+             only ever meant to be the fallback. body={body}"
+        );
+        assert_eq!(body["generation_method"], "ai", "body={body}");
+        assert!(
+            !body["test_cases"].as_array().map(Vec::is_empty).unwrap_or(true),
+            "cases must come from the document's requirements: {body}"
+        );
+    }
+
+    /// And the other half: with no documents named, empty text is still refused. The
+    /// relaxation must not turn "you must say what to test" into "you may say
+    /// nothing".
+    #[tokio::test]
+    async fn naming_no_document_still_requires_something_to_generate_from() {
+        let _env = REQUIREMENT_ENV.lock().await;
+        let executor = Arc::new(RecordingExecutor::ok_sequence(vec![valid_ai_response()]));
+        let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
+        let project = make_project(&state, "ReqGen - Empty").await;
+        let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+        for body in [
+            serde_json::json!({"skills": []}),
+            serde_json::json!({"requirement_text": "   ", "skills": []}),
+            serde_json::json!({"requirement_document_ids": [], "skills": []}),
+        ] {
+            let (status, response) = post_generate(&state, &owner, project, body.clone()).await;
+            assert_eq!(
+                status,
+                StatusCode::BAD_REQUEST,
+                "with no document and nothing to test, {body} must still be refused: {response}"
+            );
+            let message = response["error"]["message"].as_str().unwrap_or_default();
+            assert!(
+                message.contains("requirement_document_ids"),
+                "the refusal should say how to supply requirements instead: {response}"
+            );
+        }
+    }
 
 #[tokio::test]
 async fn generating_from_a_documents_requirements_shows_the_model_them_and_ties_the_cases_to_them()

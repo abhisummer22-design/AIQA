@@ -6,7 +6,7 @@
 use crate::api::{
     audit, require_scoped_project, scoped_run_summary, scoped_run_tasks, scoped_test_suite, to_500,
 };
-use crate::auth::{self, AuthContext, Role};
+use crate::auth::{self, AuthContext, RequireAdmin, RequireOperator, RequireViewer, Role};
 use crate::ci;
 use crate::domain::TaskStatus;
 use crate::errors::{ApiError, ApiJson, ApiPath, ApiQuery};
@@ -83,12 +83,13 @@ async fn checked_suite(
 
 /// POST /api/v1/projects/:project_id/regression/schedules (Operator role).
 pub(crate) async fn create_schedule(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<ScheduleBody>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
     let name = check_name(
         body.name
@@ -157,12 +158,13 @@ pub(crate) async fn create_schedule(
 /// PATCH /api/v1/projects/:project_id/regression/schedules/:id (Operator role): only what is given changes. Turning a schedule on, or
 /// changing its interval or start, puts its next run on the next slot of its grid.
 pub(crate) async fn update_schedule(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
     ApiJson(body): ApiJson<ScheduleBody>,
 ) -> Result<Json<Value>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
     let mut row = scoped_schedule(&state, project_id, id).await?;
     let now = Utc::now();
@@ -217,11 +219,12 @@ pub(crate) async fn update_schedule(
 
 /// DELETE /api/v1/projects/:project_id/regression/schedules/:id (Operator role): the schedule and its history; the executions stay.
 pub(crate) async fn delete_schedule(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<StatusCode, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
     let row = scoped_schedule(&state, project_id, id).await?;
     state
@@ -244,11 +247,12 @@ pub(crate) async fn delete_schedule(
 /// POST /api/v1/projects/:project_id/regression/schedules/:id/run (Operator role): a run now, as the person asking. A schedule keeps
 /// its slots. Answers at once; the report fills in as the tasks finish.
 pub(crate) async fn run_schedule_now(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
     let schedule = scoped_schedule(&state, project_id, id).await?;
     match regression_runner::run_now(&state, &schedule, &ctx, Utc::now()).await {

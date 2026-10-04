@@ -266,8 +266,12 @@ pub async fn require_auth(
     }
 }
 
-/// Returns `Err(403)` if `ctx.role` doesn't meet `min` — call at the top of
-/// any handler that needs more than viewer-level access.
+/// Returns `Err(403)` if `ctx.role` doesn't meet `min`.
+///
+/// Prefer `RequireOperator` / `RequireAdmin` as a handler *argument* over calling
+/// this in the handler body. See the extractor definitions below for why; this
+/// function stays for the callers that genuinely cannot take an argument (helpers,
+/// closures, and the tests that call it directly).
 pub fn require_role(ctx: &AuthContext, min: Role) -> Result<(), ApiError> {
     if ctx.role.at_least(min) {
         Ok(())
@@ -279,6 +283,74 @@ pub fn require_role(ctx: &AuthContext, min: Role) -> Result<(), ApiError> {
         )))
     }
 }
+
+/// Role gates that run **before the request body is read**.
+///
+/// ## Why this exists
+///
+/// `require_role` used to be called inside handler bodies, which meant it ran
+/// after every argument extractor. `Json<T>` is a `FromRequest` extractor, so a
+/// request whose body failed to deserialize was rejected with 422 *without the
+/// role ever being checked*. Three consequences, all measured against the running
+/// server rather than reasoned about:
+///
+///  - An authenticated caller with too weak a role could read the request schema
+///    of any route they may not call. `POST /api/v1/projects/:id/test-cases` with
+///    `{}` answers a viewer `"missing field 'title'"`, and so answers an admin.
+///  - `healing/approve` and `healing/execute` look the proposal up before the
+///    role check, so they answer 404 rather than 403 -- which tells an unauthorized
+///    caller whether a proposal id exists.
+///  - The 422 and the 404 were indistinguishable, to a client, from the refusals
+///    they were meant to be.
+///
+/// ## How it is fixed
+///
+/// These types implement `FromRequestParts`, which axum runs for *all* arguments
+/// before it runs the single `FromRequest` (body) argument. So a handler that
+/// takes `RequireOperator` refuses an under-privileged caller before axum looks at
+/// a single byte of the body, and the 403 always wins over the 422.
+///
+/// The role is declared at the handler's own signature, next to the code it
+/// protects, so there is no separate table that can drift out of agreement with
+/// what the code does -- which is the failure mode that killed the earlier
+/// attempts at an RBAC matrix in this repo (see `rbac_probe`).
+macro_rules! role_gate {
+    ($name:ident, $role:expr, $what:literal) => {
+        #[doc = concat!("Refuses the request unless the caller is ", $what, " or above,",
+                        " before the body is read. See `auth`'s module notes.")]
+        #[derive(Debug, Clone, Copy)]
+        pub struct $name;
+
+        #[async_trait::async_trait]
+        impl<S> axum::extract::FromRequestParts<S> for $name
+        where
+            S: Send + Sync,
+        {
+            type Rejection = ApiError;
+
+            async fn from_request_parts(
+                parts: &mut axum::http::request::Parts,
+                _state: &S,
+            ) -> Result<Self, Self::Rejection> {
+                let ctx = parts
+                    .extensions
+                    .get::<AuthContext>()
+                    .ok_or_else(|| {
+                        ApiError::unauthenticated(
+                            "no authenticated context on this request -- the auth \
+                             middleware did not run",
+                        )
+                    })?;
+                require_role(ctx, $role)?;
+                Ok($name)
+            }
+        }
+    };
+}
+
+role_gate!(RequireViewer, Role::Viewer, "a viewer");
+role_gate!(RequireOperator, Role::Operator, "an operator");
+role_gate!(RequireAdmin, Role::Admin, "an admin");
 
 /// Multi-tenancy gate: an `Admin`/global key (`project_id: None`) may act on
 /// anything; a scoped key may only act on its own project. `resource_pid`

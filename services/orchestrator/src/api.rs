@@ -1,4 +1,4 @@
-use crate::auth::{self, AuthContext, Role};
+use crate::auth::{self, AuthContext, RequireAdmin, RequireOperator, RequireViewer, Role};
 use crate::domain::*;
 use crate::engine::{self, RunRecord};
 use crate::errors::{ApiError, ApiJson, ApiPath, ApiQuery};
@@ -757,9 +757,10 @@ pub(crate) fn to_500<E: std::fmt::Display>(e: E) -> ApiError {
 /// Operator and above: probing needs a key, and key administration is the
 /// surface most worth probing.
 async fn list_rbac_probe_targets(
+    _authz: RequireOperator,
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     Ok(Json(serde_json::json!({
         "targets": crate::rbac_probe::TARGETS,
         "roles": crate::rbac_probe::roles_weakest_first(),
@@ -776,11 +777,12 @@ async fn list_rbac_probe_targets(
 /// way to make the server send authenticated requests to whatever else it can
 /// reach, which is a far more interesting capability than the one on offer.
 async fn run_rbac_probe(
+    _authz: RequireOperator,
     Extension(ctx): Extension<AuthContext>,
     headers: HeaderMap,
     ApiJson(body): ApiJson<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     let req: crate::rbac_probe::ProbeRequest = serde_json::from_value(body)
         .map_err(|e| ApiError::validation(format!("the probe request is not readable: {e}")))?;
     let host = headers.get(header::HOST).and_then(|v| v.to_str().ok());
@@ -946,11 +948,12 @@ struct BootSimulatorBody {
 /// pretending: Apple ships no Simulator runtime off macOS, so there is
 /// nothing here that installing a tool would fix.
 async fn boot_ios_simulator_handler(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiJson(body): ApiJson<BootSimulatorBody>,
 ) -> Result<Json<BootAvdResponse>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     let message = crate::mobile::boot_ios_simulator(&body.udid)
         .await
         .map_err(ApiError::validation)?;
@@ -987,11 +990,12 @@ struct BootAvdResponse {
 /// tens of seconds, and only `adb` can prove readiness, so the caller
 /// re-reads `/mobile/fleet` and watches the device appear for real.
 async fn boot_mobile_emulator(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiJson(body): ApiJson<BootAvdBody>,
 ) -> Result<Json<BootAvdResponse>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     let message = crate::mobile::boot_avd(&body.avd)
         .await
         .map_err(ApiError::validation)?;
@@ -1370,11 +1374,12 @@ fn validate_skill_name(name: &str) -> Result<&str, ApiError> {
 /// like `create_project` — a skill is a generation input, not a new
 /// isolation boundary.
 async fn create_custom_skill(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiJson(body): ApiJson<CreateCustomSkillBody>,
 ) -> Result<(StatusCode, Json<crate::store::CustomSkillRow>), ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     let name = validate_skill_name(&body.name)?;
     let id = format!("custom-skill-{}", Uuid::new_v4());
 
@@ -1446,11 +1451,12 @@ async fn list_file_skills_handler() -> Json<crate::skill_files::FileSkillScan> {
 
 /// DELETE /api/v1/skills/:id — Operator+, matching `create_custom_skill`.
 async fn delete_custom_skill_handler(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath(id): ApiPath<String>,
 ) -> Result<StatusCode, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     let deleted = state.store.delete_custom_skill(&id).await.map_err(to_500)?;
     if !deleted {
         return Err(ApiError::not_found("skill not found"));
@@ -1594,11 +1600,12 @@ fn validate_custom_provider_fields(
 /// matching `create_custom_skill`'s own bar for a real configuration-value
 /// write.
 async fn create_custom_ai_provider(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiJson(body): ApiJson<CreateCustomAiProviderBody>,
 ) -> Result<(StatusCode, Json<CustomAiProviderView>), ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     let name = body.name.trim();
     let base_url = body.base_url.trim().trim_end_matches('/');
     let api_key = body.api_key.trim();
@@ -1665,11 +1672,12 @@ async fn list_custom_ai_providers_handler(
 /// DELETE /api/v1/ai/providers/custom/:id — Operator+, matching
 /// `create_custom_ai_provider`.
 async fn delete_custom_ai_provider_handler(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath(id): ApiPath<String>,
 ) -> Result<StatusCode, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     let deleted = state
         .store
         .delete_custom_ai_provider(&id)
@@ -1709,11 +1717,12 @@ fn validate_project_name(name: &str) -> Result<&str, ApiError> {
 /// `project_id` scope, since an admin key (scoped or global) can already
 /// mint keys for any project.
 async fn create_project(
+    _authz: RequireAdmin,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiJson(body): ApiJson<CreateProjectBody>,
 ) -> Result<(StatusCode, Json<crate::store::Project>), ApiError> {
-    auth::require_role(&ctx, Role::Admin)?;
+
     let name = validate_project_name(&body.name)?;
 
     let id = Uuid::new_v4();
@@ -1796,12 +1805,13 @@ struct UpdateProjectBody {
 /// own project. A `None` field is left unchanged (partial update); an
 /// absent body updates nothing but still refreshes `updated_at`.
 async fn update_project_handler(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath(id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<UpdateProjectBody>,
 ) -> Result<Json<crate::store::Project>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     let existing = state
         .store
         .get_project(id)
@@ -1849,11 +1859,12 @@ async fn update_project_handler(
 /// caller's project scope (if the admin key is project-scoped), deletes the project
 /// and its associated scoped data atomically, and records an audit log entry.
 async fn delete_project_handler(
+    _authz: RequireAdmin,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath(id): ApiPath<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    auth::require_role(&ctx, Role::Admin)?;
+
     let existing = state
         .store
         .get_project(id)
@@ -1928,12 +1939,13 @@ fn validate_test_case_request(req: &CreateTestCaseRequest) -> Result<(), ApiErro
 /// one at a time already, and a single, uniform create contract is simpler
 /// than inventing a second batch shape nothing else in this API uses.
 async fn create_test_case_scoped(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<CreateTestCaseRequest>,
 ) -> Result<(StatusCode, Json<crate::store::TestCaseRow>), ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
     validate_test_case_request(&body)?;
 
@@ -2076,12 +2088,13 @@ struct UpdateTestCaseBody {
 /// the still-editable descriptive fields (never `status`; that only moves
 /// through `/validate`, `/approve`, `/reject`, `/handoff` below).
 async fn update_test_case_scoped(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
     ApiJson(body): ApiJson<UpdateTestCaseBody>,
 ) -> Result<Json<crate::store::TestCaseRow>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
     scoped_test_case(&state, &ctx, project_id, id).await?;
 
@@ -2128,11 +2141,12 @@ async fn update_test_case_scoped(
 }
 
 async fn delete_test_case_scoped(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<StatusCode, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
     scoped_test_case(&state, &ctx, project_id, id).await?;
     let deleted = state.store.delete_test_case(id).await.map_err(to_500)?;
@@ -2160,12 +2174,13 @@ async fn delete_test_case_scoped(
 /// rejects cross-project access everywhere else in this file, not left as
 /// a silent dangling reference.
 async fn set_test_case_suite_scoped(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
     ApiJson(body): ApiJson<SetTestCaseSuiteRequest>,
 ) -> Result<Json<crate::store::TestCaseRow>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
     scoped_test_case(&state, &ctx, project_id, id).await?;
     if let Some(suite_id) = body.suite_id {
@@ -2217,11 +2232,12 @@ async fn set_test_case_suite_scoped(
 /// anything beyond structure. A case that fails stays `GENERATED`, with
 /// the failure reason returned as a real 409, never silently advanced.
 async fn validate_test_case_scoped(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<Json<crate::store::TestCaseRow>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
     let row = scoped_test_case(&state, &ctx, project_id, id).await?;
 
@@ -2313,11 +2329,12 @@ async fn validate_test_case_scoped(
 /// may later convert into a schedulable task. Requires `VALIDATED` first —
 /// generation alone is never enough (FRD-AGT-04).
 async fn approve_test_case_scoped(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<Json<crate::store::TestCaseRow>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
     let row = scoped_test_case(&state, &ctx, project_id, id).await?;
     let ok = state.store.approve_test_case(id).await.map_err(to_500)?;
@@ -2358,11 +2375,12 @@ async fn approve_test_case_scoped(
 /// `VALIDATED`, not from `APPROVED`/`EXECUTED` (see `store.rs::
 /// reject_test_case`'s own doc comment for why).
 async fn reject_test_case_scoped(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<Json<crate::store::TestCaseRow>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
     let row = scoped_test_case(&state, &ctx, project_id, id).await?;
     let ok = state.store.reject_test_case(id).await.map_err(to_500)?;
@@ -2405,12 +2423,13 @@ async fn reject_test_case_scoped(
 /// COMPILATION_UNAVAILABLE (and why) before a user commits to approving
 /// and handing it off.
 async fn compile_test_case_scoped(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
     body: Option<ApiJson<CompileRequestBody>>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
     let row = scoped_test_case(&state, &ctx, project_id, id).await?;
     let body = body.map(|ApiJson(b)| b).unwrap_or_default();
@@ -2497,12 +2516,13 @@ async fn grounding_for(
 /// no default here that would silently report a fabricated "passed" result
 /// for steps nothing has actually run.
 async fn handoff_test_case_scoped(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
     body: Option<ApiJson<TestCaseHandoffRequest>>,
 ) -> Result<(StatusCode, Json<CreateExecutionResponse>), ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
     let row = scoped_test_case(&state, &ctx, project_id, id).await?;
 
@@ -2643,6 +2663,11 @@ struct SkillInputBody {
 
 #[derive(Debug, Deserialize)]
 struct GenerateAiTestCasesBody {
+    /// Optional when `requirement_document_ids` is given, because the stored
+    /// requirements of those documents are then the source and this is only the
+    /// fallback. Every field below already had `#[serde(default)]` and this one
+    /// did not, which made the document path unusable on its own.
+    #[serde(default)]
     requirement_text: String,
     #[serde(default)]
     skills: Vec<SkillInputBody>,
@@ -3119,16 +3144,36 @@ async fn find_similar_documents(
 /// what actually produces a result in that case, honestly labeled as such,
 /// never silently presented as AI output.
 async fn generate_ai_test_cases_scoped(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<GenerateAiTestCasesBody>,
 ) -> Result<Json<GenerateAiTestCasesResponse>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
 
-    if body.requirement_text.trim().is_empty() {
-        return Err(ApiError::validation("requirement_text must not be empty"));
+    // Pasted text is one way to say what to test; an uploaded document's stored
+    // requirements are the other, and the second is the one the PRD describes
+    // ("Requirement Intelligence: understands FRD/SRD/PRD ... context"). It used to
+    // be impossible to use the second on its own: `requirement_text` was a plain
+    // `String` with no `#[serde(default)]` while every field beside it had one, so a
+    // request naming `requirement_document_ids` was rejected at deserialization
+    // before this handler ran -- and a caller who then sent empty text was refused
+    // here. The upload-a-document flow therefore could not stand alone; the text
+    // always had to be pasted back in as well.
+    //
+    // The text is genuinely only the fallback: `requirement_generation::
+    // build_requirement_prompt` builds the prompt from the stored `items`. Treating
+    // "documents, no pasted blob" as an error pushed callers into the less accurate
+    // of the two paths, where roles come from whatever was pasted rather than from
+    // what was uploaded.
+    let has_documents = !body.requirement_document_ids.is_empty();
+    if !has_documents && body.requirement_text.trim().is_empty() {
+        return Err(ApiError::validation(
+            "requirement_text must not be empty, or name the documents whose stored \
+             requirements should be used instead (requirement_document_ids)",
+        ));
     }
 
     let skills: Vec<crate::ai_generation::SkillInput> = body
@@ -3678,12 +3723,13 @@ struct GeneratePlanResponse {
 /// do, worked out by the same planning the run uses and without calling any
 /// model. Operator+, like the generation it previews.
 async fn plan_generate_ai_scoped(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<GeneratePlanBody>,
 ) -> Result<Json<GeneratePlanResponse>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
     if body.requirement_document_ids.is_empty() {
         return Err(ApiError::validation(
@@ -3791,12 +3837,13 @@ struct CustomTestingGenerateResponse {
 /// indistinguishable from any other — it automatically gets the existing
 /// validate/approve/handoff/compile pipeline with no new backend code.
 async fn generate_custom_testing_scoped(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<CustomTestingGenerateBody>,
 ) -> Result<Json<CustomTestingGenerateResponse>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
 
     if body.requirement_text.trim().is_empty() {
@@ -3921,12 +3968,13 @@ struct ApiTestExecutionResponse {
 /// in-memory run record; the frontend receives one real, complete result,
 /// not a second polling contract to implement.
 async fn execute_api_test_scoped(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<crate::api_testing::AdHocApiRequest>,
 ) -> Result<Json<ApiTestExecutionResponse>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
 
     let task_id = Uuid::new_v4().to_string();
@@ -4075,12 +4123,13 @@ struct VerifyApplicationSourceBody {
 /// `start`) already requires — never left open to a lower role just because
 /// nothing is persisted.
 async fn verify_application_source_scoped(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<VerifyApplicationSourceBody>,
 ) -> Result<Json<crate::app_source::VerifyApplicationSourceResponse>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
 
     let result = crate::app_source::verify(&body.url).await;
@@ -4168,12 +4217,13 @@ const MAX_DOCUMENT_BASE64_LEN: usize = 20_000_000;
 /// every other endpoint that does real, non-trivial server-side work on
 /// caller-supplied content in this project.
 async fn extract_document_text_scoped(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<ExtractDocumentTextBody>,
 ) -> Result<Json<ExtractDocumentTextResponse>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
 
     if body.content_base64.len() > MAX_DOCUMENT_BASE64_LEN {
@@ -4413,12 +4463,13 @@ struct PerformanceRunStatusResponse {
 /// (`status: RUNNING`) — the real workload runs in a background task;
 /// progress is polled via the `.../status` endpoint below, never faked.
 async fn start_performance_test_scoped(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<crate::performance_testing::PerformanceTestConfig>,
 ) -> Result<Json<PerformanceTestStartResponse>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
 
     let limits = crate::performance_testing::SafetyLimits::from_env();
@@ -4884,11 +4935,12 @@ struct PerformanceTestCancelResponse {
 /// same class of in-memory-only limitation `engine.rs`'s own run
 /// cancellation already has.
 async fn cancel_performance_run_scoped(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, run_id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<Json<PerformanceTestCancelResponse>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
     let row = state
         .store
@@ -4994,11 +5046,12 @@ async fn get_ai_settings_handler(
 /// already reflects the new mode/preference — never a setting that "looks"
 /// saved but doesn't actually change routing behavior.
 async fn put_ai_settings_handler(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiJson(body): ApiJson<crate::ai_router::AiSettings>,
 ) -> Result<Json<crate::ai_router::AiSettings>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     const MAX_TASK_CHAIN: usize = 8;
     for (task, preference) in &body.task_overrides {
         if preference.chain.len() > MAX_TASK_CHAIN {
@@ -5079,11 +5132,12 @@ async fn get_execution_settings_handler(
 /// `PlaywrightExecutor` the registry holds actually reads, in the same request — never a
 /// setting that "looks" saved but does not change what the very next Playwright run does.
 async fn put_execution_settings_handler(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiJson(body): ApiJson<ExecutionSettings>,
 ) -> Result<Json<ExecutionSettings>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     state
         .store
         .set_show_browser_window(body.show_browser_window)
@@ -5113,10 +5167,11 @@ async fn put_execution_settings_handler(
 /// §15 calls for ("Manual refresh"), distinct from the TTL-bounded lazy
 /// refresh `generate` itself uses.
 async fn refresh_ai_providers(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<Vec<crate::ai_router::AiProviderInfo>>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     let providers = state.ai_infra.discover_all().await;
     audit(
         &state,
@@ -5181,11 +5236,12 @@ async fn get_ai_usage_scoped(
 /// The AI providers are shared by the whole deployment and so is what they cost: an admin's view, on a key that is not tied
 /// to one project.
 async fn get_ai_usage(
+    _authz: RequireAdmin,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiQuery(q): ApiQuery<AiUsageQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    auth::require_role(&ctx, Role::Admin)?;
+
     if ctx.project_id.is_some() {
         return Err(ApiError::forbidden(
             "the usage of every project is for a key that is not tied to one project; ask for the project's own",
@@ -5633,12 +5689,13 @@ struct CancelRunResponse {
 /// and every other state is already terminal. See `RunState::is_terminal`'s
 /// doc comment for the full reasoning.
 async fn cancel_run_scoped(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, run_id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<Json<CancelRunResponse>, ApiError> {
     require_scoped_project(&state, &ctx, project_id).await?;
-    auth::require_role(&ctx, Role::Operator)?;
+
     let summary = scoped_run_summary(&state, run_id, project_id).await?;
 
     if summary.state == RunState::PendingApproval {
@@ -5716,12 +5773,13 @@ struct RetryFailedTasksResponse {
 /// real policy-gate/scheduling/executor pipeline every other run already
 /// does, no new dispatch machinery.
 async fn retry_failed_tasks_scoped(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, run_id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<(StatusCode, Json<RetryFailedTasksResponse>), ApiError> {
     require_scoped_project(&state, &ctx, project_id).await?;
-    auth::require_role(&ctx, Role::Operator)?;
+
     let summary = scoped_run_summary(&state, run_id, project_id).await?;
 
     if !summary.state.is_terminal() {
@@ -5973,11 +6031,12 @@ async fn get_events_scoped(
 
 /// POST /api/v1/projects/:project_id/executions/:run_id/approve
 async fn approve_run_scoped(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, run_id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<Json<RunSummary>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
     let record = find_or_rehydrate_run(&state, run_id).await?;
     require_resource_in_project(record.project_id.as_deref(), project_id)?;
@@ -6016,12 +6075,13 @@ async fn approve_run_scoped(
 
 /// POST /api/v1/projects/:project_id/executions/:run_id/reject
 async fn reject_run_scoped(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, run_id)): ApiPath<(Uuid, Uuid)>,
     body: Option<ApiJson<RejectBody>>,
 ) -> Result<Json<RunSummary>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
     let record = find_or_rehydrate_run(&state, run_id).await?;
     require_resource_in_project(record.project_id.as_deref(), project_id)?;
@@ -6276,12 +6336,13 @@ struct FindingAiHypothesisResponse {
 }
 
 async fn generate_finding_ai_hypothesis_scoped(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, finding_id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<Json<FindingAiHypothesisResponse>, ApiError> {
     require_scoped_project(&state, &ctx, project_id).await?;
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_finding_in_project(&state, finding_id, project_id).await?;
 
     let finding = state
@@ -6382,13 +6443,14 @@ async fn generate_finding_ai_hypothesis_scoped(
 /// (Contract §2.1: "non-breaking additions may remain within the current
 /// version"). Reuses `review_bug_draft`'s exact logic, not a second copy.
 async fn review_finding_scoped(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, finding_id)): ApiPath<(Uuid, Uuid)>,
     ApiJson(body): ApiJson<ReviewBody>,
 ) -> Result<StatusCode, ApiError> {
     require_scoped_project(&state, &ctx, project_id).await?;
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_finding_in_project(&state, finding_id, project_id).await?;
     let new_state = match body.action.as_str() {
         "confirm" => "CONFIRMED",
@@ -6446,13 +6508,14 @@ struct AuditLogResponse {
 /// per-endpoint role, so this is a resolved (documented, not blocking)
 /// scope decision — see the BE-15 report.
 async fn get_audit_log_scoped(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath(project_id): ApiPath<Uuid>,
     ApiQuery(q): ApiQuery<AuditQuery>,
 ) -> Result<Json<AuditLogResponse>, ApiError> {
     require_scoped_project(&state, &ctx, project_id).await?;
-    auth::require_role(&ctx, Role::Operator)?;
+
     let pid = project_id.to_string();
     let limit = q.limit.unwrap_or(100).clamp(1, 1000);
     let offset = q.offset.unwrap_or(0).max(0);
@@ -6527,12 +6590,13 @@ fn validate_test_plan_status(status: &Option<String>) -> Result<(), ApiError> {
 }
 
 async fn create_test_plan_scoped(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<CreateTestPlanRequest>,
 ) -> Result<(StatusCode, Json<crate::store::TestPlanRow>), ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
     if body.name.trim().is_empty() {
         return Err(ApiError::validation("name must not be empty"));
@@ -6586,12 +6650,13 @@ async fn get_test_plan_scoped(
 }
 
 async fn update_test_plan_scoped(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
     ApiJson(body): ApiJson<UpdateTestPlanRequest>,
 ) -> Result<Json<crate::store::TestPlanRow>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
     scoped_test_plan(&state, &ctx, project_id, id).await?;
     if let Some(name) = &body.name {
@@ -6635,11 +6700,12 @@ async fn update_test_plan_scoped(
 }
 
 async fn delete_test_plan_scoped(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<StatusCode, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
     scoped_test_plan(&state, &ctx, project_id, id).await?;
     let deleted = state.store.delete_test_plan(id).await.map_err(to_500)?;
@@ -6659,12 +6725,13 @@ async fn delete_test_plan_scoped(
 }
 
 async fn create_test_suite_scoped(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<CreateTestSuiteRequest>,
 ) -> Result<(StatusCode, Json<crate::store::TestSuiteRow>), ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
     if body.name.trim().is_empty() {
         return Err(ApiError::validation("name must not be empty"));
@@ -6730,12 +6797,13 @@ async fn get_test_suite_scoped(
 }
 
 async fn update_test_suite_scoped(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
     ApiJson(body): ApiJson<UpdateTestSuiteRequest>,
 ) -> Result<Json<crate::store::TestSuiteRow>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
     scoped_test_suite(&state, &ctx, project_id, id).await?;
     if let Some(name) = &body.name {
@@ -6775,12 +6843,13 @@ async fn update_test_suite_scoped(
 /// belonging to a different project is rejected the same way
 /// `set_test_case_suite_scoped` rejects a cross-project suite.
 async fn set_test_suite_plan_scoped(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
     ApiJson(body): ApiJson<SetTestSuitePlanRequest>,
 ) -> Result<Json<crate::store::TestSuiteRow>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
     scoped_test_suite(&state, &ctx, project_id, id).await?;
     if let Some(plan_id) = body.plan_id {
@@ -6813,11 +6882,12 @@ async fn set_test_suite_plan_scoped(
 }
 
 async fn delete_test_suite_scoped(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<StatusCode, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
     scoped_test_suite(&state, &ctx, project_id, id).await?;
     let deleted = state.store.delete_test_suite(id).await.map_err(to_500)?;
@@ -6866,12 +6936,13 @@ struct CrawlStartedResponse {
 /// polled, then fetches the real result via
 /// `GET .../crawl/:run_id/result` below once it completes.
 async fn start_crawl_scoped(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<CrawlRequestBody>,
 ) -> Result<(StatusCode, Json<CrawlStartedResponse>), ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
 
     let plan = crate::crawler::CrawlPlan {
@@ -7158,6 +7229,14 @@ async fn gap_check_scoped(
     require_scoped_project(&state, &ctx, project_id).await?;
     let body = body.map(|ApiJson(b)| b).unwrap_or_default();
     // The words check reads only; the embedder and the AI are provider calls.
+    //
+    // Deliberately *not* a `RequireOperator` argument. Hoisting this to the
+    // signature makes the free words-only check Operator-only as well, which is a
+    // different product -- `api_tests::phase6a` and `phase6b` caught exactly that
+    // when an earlier sweep of this file moved every guard to the signature. The
+    // condition is in the body, so the gate has to be too. What is given up is
+    // recorded rather than hidden: a viewer can still read this route's request
+    // schema, because `Json<T>` is read before the handler runs at all.
     if body.use_embeddings || body.verify {
         auth::require_role(&ctx, Role::Operator)?;
     }
@@ -7347,6 +7426,9 @@ async fn login_suggestion_scoped(
     ApiJson(body): ApiJson<LoginSuggestionBody>,
 ) -> Result<Json<LoginSuggestionResponse>, ApiError> {
     require_scoped_project(&state, &ctx, project_id).await?;
+    // Same shape as `gap_check_scoped`: the AI path costs tokens and needs an
+    // operator, the local suggestion does not. A gate in the signature cannot
+    // express "only when the body says so", so this one stays in the body.
     if body.use_ai {
         auth::require_role(&ctx, Role::Operator)?;
     }
@@ -7499,12 +7581,13 @@ async fn estimate_server_for(
 /// started: AI calls, tokens, time and dollars, as ranges, per step and per task, each provider named with what it charges
 /// and how its speed is known, and every assumption written down. Reads only and calls no AI.
 async fn autopilot_estimate_scoped(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<AutopilotEstimateBody>,
 ) -> Result<Json<crate::autopilot_estimate::Estimate>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
     let request = crate::autopilot::EstimateRequest {
         requirement_document_ids: body.requirement_document_ids,
@@ -7737,11 +7820,12 @@ struct CreateApiKeyResponse {
 /// the caller, and refusing them would break any client that simply has no project
 /// selector to offer.
 async fn create_api_key(
+    _authz: RequireAdmin,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiJson(body): ApiJson<CreateApiKeyBody>,
 ) -> Result<Json<CreateApiKeyResponse>, ApiError> {
-    auth::require_role(&ctx, Role::Admin)?;
+
     let role = match body.role.as_str() {
         "admin" | "operator" | "viewer" => body.role.as_str(),
         other => return Err(ApiError::validation(format!("unknown role '{other}'"))),
@@ -7815,20 +7899,22 @@ async fn create_api_key(
 }
 
 async fn list_api_keys_handler(
+    _authz: RequireAdmin,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<Vec<crate::store::ApiKeyListRow>>, ApiError> {
-    auth::require_role(&ctx, Role::Admin)?;
+
     let rows = state.store.list_api_keys().await.map_err(to_500)?;
     Ok(Json(rows))
 }
 
 async fn revoke_api_key_handler(
+    _authz: RequireAdmin,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath(id): ApiPath<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    auth::require_role(&ctx, Role::Admin)?;
+
     // The row count decides both the status code and whether an audit row is
     // written. Previously the count was discarded, so revoking a key that did
     // not exist (or was already revoked) answered `204 No Content` and recorded
@@ -7872,11 +7958,12 @@ struct AuditQuery {
 }
 
 async fn get_audit_log(
+    _authz: RequireAdmin,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiQuery(q): ApiQuery<AuditQuery>,
 ) -> Result<Json<Vec<crate::store::AuditRow>>, ApiError> {
-    auth::require_role(&ctx, Role::Admin)?;
+
     let rows = state
         .store
         .list_audit(
@@ -7892,6 +7979,7 @@ async fn get_audit_log(
 // ----------------------------------------------------------- observability
 
 async fn get_metrics(
+    _authz: RequireAdmin,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Response, ApiError> {
@@ -7905,7 +7993,7 @@ async fn get_metrics(
     //
     // Prometheus scrapers are unaffected in any real deployment: they are given an
     // Admin key, the same as every other Admin-only endpoint here.
-    auth::require_role(&ctx, Role::Admin)?;
+
     let body = crate::metrics::render(&state.store.pool).await;
     Ok((
         StatusCode::OK,
@@ -8049,11 +8137,12 @@ pub struct LogsWsQuery {
 
 /// GET /api/v1/logs — List recent orchestrator log events (authenticated, role >= Viewer).
 async fn list_logs_handler(
+    _authz: RequireViewer,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiQuery(q): ApiQuery<ListLogsQuery>,
 ) -> Result<Json<Vec<OrchestratorLogEntry>>, ApiError> {
-    auth::require_role(&ctx, Role::Viewer)?;
+
 
     let effective_project = match (&ctx.project_id, &q.project_id) {
         (Some(scoped), Some(requested)) => {
@@ -8076,12 +8165,13 @@ async fn list_logs_handler(
 
 /// GET /api/v1/projects/:project_id/logs — List recent orchestrator log events for a project.
 async fn list_project_logs_handler(
+    _authz: RequireViewer,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath(project_id): ApiPath<Uuid>,
     ApiQuery(q): ApiQuery<ListLogsQuery>,
 ) -> Result<Json<Vec<OrchestratorLogEntry>>, ApiError> {
-    auth::require_role(&ctx, Role::Viewer)?;
+
     auth::require_project_access(&ctx, Some(project_id.to_string().as_str()))?;
 
     let limit = q.limit.unwrap_or(100).min(300);
@@ -8268,7 +8358,14 @@ fn make_healing_service(state: &AppState) -> crate::governed_healing::GovernedHe
 }
 
 async fn create_healing_proposal_scoped(
-    State(state): State<AppState>,
+    // The gate that used to live inside the healing service, hoisted here so it
+    // runs before this handler looks anything up. A caller whose role is too weak
+    // used to learn whether a proposal id existed, from getting 404 where an
+    // allowed caller would get 200 -- an existence oracle. A request that does
+    // reach the service is refused there with exactly this 403 anyway, so nothing
+    // is lost by asking first.
+    _authz: RequireOperator,
+State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(mut req): ApiJson<crate::governed_healing::HealingProposalRequest>,
@@ -8297,12 +8394,13 @@ async fn create_healing_proposal_scoped(
 /// own disk, so it is confined to `AIQA_SCHEMA_ROOT` before anything else
 /// runs — see `confine_schema_file_path`.
 async fn generate_test_plan_scoped(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(mut req): ApiJson<crate::agents::planning::PlanningRequest>,
 ) -> Result<Json<crate::agents::planning::TestPlanOutput>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
     confine_schema_file_path(&mut req, schema_root_from_env().as_deref())?;
 
@@ -8474,7 +8572,14 @@ async fn load_scoped_proposal(
 }
 
 async fn approve_healing_proposal_scoped(
-    State(state): State<AppState>,
+    // The gate that used to live inside the healing service, hoisted here so it
+    // runs before this handler looks anything up. A caller whose role is too weak
+    // used to learn whether a proposal id existed, from getting 404 where an
+    // allowed caller would get 200 -- an existence oracle. A request that does
+    // reach the service is refused there with exactly this 403 anyway, so nothing
+    // is lost by asking first.
+    _authz: RequireOperator,
+State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, proposal_id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<Json<crate::governed_healing::HealingProposal>, ApiError> {
@@ -8488,7 +8593,14 @@ async fn approve_healing_proposal_scoped(
 }
 
 async fn reject_healing_proposal_scoped(
-    State(state): State<AppState>,
+    // The gate that used to live inside the healing service, hoisted here so it
+    // runs before this handler looks anything up. A caller whose role is too weak
+    // used to learn whether a proposal id existed, from getting 404 where an
+    // allowed caller would get 200 -- an existence oracle. A request that does
+    // reach the service is refused there with exactly this 403 anyway, so nothing
+    // is lost by asking first.
+    _authz: RequireOperator,
+State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, proposal_id)): ApiPath<(Uuid, Uuid)>,
     ApiJson(req): ApiJson<HealingRejectRequest>,
@@ -8503,7 +8615,14 @@ async fn reject_healing_proposal_scoped(
 }
 
 async fn execute_healing_proposal_scoped(
-    State(state): State<AppState>,
+    // The gate that used to live inside the healing service, hoisted here so it
+    // runs before this handler looks anything up. A caller whose role is too weak
+    // used to learn whether a proposal id existed, from getting 404 where an
+    // allowed caller would get 200 -- an existence oracle. A request that does
+    // reach the service is refused there with exactly this 403 anyway, so nothing
+    // is lost by asking first.
+    _authz: RequireOperator,
+State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, proposal_id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<Json<crate::governed_healing::HealingProposal>, ApiError> {
@@ -8816,13 +8935,14 @@ pub struct RetentionRequestPayload {
 }
 
 async fn retention_dry_run_handler(
+    _authz: RequireAdmin,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(payload): ApiJson<RetentionRequestPayload>,
 ) -> Result<Json<crate::operations::RetentionReport>, ApiError> {
     require_scoped_project(&state, &ctx, project_id).await?;
-    auth::require_role(&ctx, Role::Admin)?;
+
 
     let retention_days = payload.retention_days.unwrap_or(30);
     let policy = crate::operations::RetentionPolicy {
@@ -8840,13 +8960,14 @@ async fn retention_dry_run_handler(
 }
 
 async fn retention_prune_handler(
+    _authz: RequireAdmin,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(payload): ApiJson<RetentionRequestPayload>,
 ) -> Result<Json<crate::operations::RetentionReport>, ApiError> {
     require_scoped_project(&state, &ctx, project_id).await?;
-    auth::require_role(&ctx, Role::Admin)?;
+
 
     let retention_days = payload.retention_days.unwrap_or(30);
     let policy = crate::operations::RetentionPolicy {

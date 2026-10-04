@@ -8,7 +8,7 @@
 use crate::api::{
     audit, build_autopilot_estimate, require_scoped_project, scoped_run_summary, to_500,
 };
-use crate::auth::{self, AuthContext, Role};
+use crate::auth::{self, AuthContext, RequireAdmin, RequireOperator, RequireViewer, Role};
 use crate::autopilot::{check_acceptance, event, AutopilotConfig, RunState};
 use crate::autopilot_store::{
     AutopilotEventRow, AutopilotRunRow, AutopilotStepRow, CancelOutcome, NewAutopilotRun,
@@ -87,12 +87,13 @@ async fn detail_of(state: &AppState, run: AutopilotRunRow) -> Result<RunDetail, 
 /// POST /api/v1/projects/:project_id/autopilot/runs — makes a run from what a person asks for, with its estimate, and
 /// starts nothing. Operator. A project has one run that has not ended at a time.
 pub(crate) async fn create_run(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(mut config): ApiJson<AutopilotConfig>,
 ) -> Result<(StatusCode, Json<RunDetail>), ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
     config.base_url = config.base_url.trim().to_string();
     config
@@ -229,12 +230,13 @@ pub(crate) struct StartBody {
 /// POST /api/v1/projects/:project_id/autopilot/runs/:run_id/start — the person accepts the run's estimate, and the run
 /// starts. Operator. Nothing is charged for making a run; this is where the cost is accepted.
 pub(crate) async fn start_run(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, run_id)): ApiPath<(Uuid, Uuid)>,
     body: Option<ApiJson<StartBody>>,
 ) -> Result<Json<RunDetail>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
     let body = body.map(|ApiJson(b)| b).unwrap_or_default();
     let run = load_run(&state, project_id, run_id).await?;
@@ -297,11 +299,12 @@ pub(crate) struct CancelResponse {
 
 /// POST /api/v1/projects/:project_id/autopilot/runs/:run_id/cancel — stops a run. Operator.
 pub(crate) async fn cancel_run(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, run_id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<Json<CancelResponse>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
     load_run(&state, project_id, run_id).await?;
     let outcome = match state
@@ -343,11 +346,12 @@ pub(crate) async fn cancel_run(
 /// POST /api/v1/projects/:project_id/autopilot/runs/:run_id/continue — a person lets a run that waits at a gate go on
 /// (the cases they left undecided are not run). Operator.
 pub(crate) async fn continue_run(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, run_id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<Json<RunDetail>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
     let run = load_run(&state, project_id, run_id).await?;
     if run.state != RunState::Waiting.as_str() {
@@ -394,11 +398,12 @@ pub(crate) async fn continue_run(
 /// the step that failed, keeping what was done before it (the groups of cases already saved, a crawl already made). The run
 /// acts as the person from then on. Operator.
 pub(crate) async fn resume_run(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, run_id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<Json<RunDetail>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
     let run = load_run(&state, project_id, run_id).await?;
     match state
@@ -477,12 +482,13 @@ pub(crate) struct ApproveCasesBody {
 /// (each is an ordinary approval: audited under their name, and the case joins what similar cases are drawn from). A case
 /// that cannot be approved (it is not validated yet, or was already decided) is listed with why. Operator.
 pub(crate) async fn approve_cases(
+    _authz: RequireOperator,
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, run_id)): ApiPath<(Uuid, Uuid)>,
     body: Option<ApiJson<ApproveCasesBody>>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    auth::require_role(&ctx, Role::Operator)?;
+
     require_scoped_project(&state, &ctx, project_id).await?;
     let body = body.map(|ApiJson(b)| b).unwrap_or_default();
     load_run(&state, project_id, run_id).await?;
