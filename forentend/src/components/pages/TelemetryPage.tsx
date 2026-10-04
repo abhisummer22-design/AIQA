@@ -10,19 +10,33 @@
  * emitting Prometheus text, not JSON.
  *
  * What `/metrics` actually contains, confirmed by reading `metrics.rs` in
- * full before writing this file: **six pure state/status COUNT
- * gauges/counter — `aiqa_runs_total{state=...}`, `aiqa_tasks_total{status=...}`,
+ * full before writing this file: the pure state/status COUNT
+ * gauges/counters -- `aiqa_runs_total{state=...}`, `aiqa_tasks_total{status=...}`,
  * `aiqa_bug_drafts_total{review_state=...}`, `aiqa_failure_clusters_total`,
- * `aiqa_api_keys_active`, `aiqa_audit_log_total`. There is no latency, no
- * response-time, no duration, no histogram of any kind — not even a sum
- * that could yield an average, let alone buckets a real p95/p99 could be
- * computed from.** ACC-013's own Acceptance Criteria ask for "latency,
- * response time, p95, p99, errors, timeouts" — of those six, only
- * `timeouts` maps precisely (a real, named `aiqa_tasks_total{status="TIMEOUT"}`
- * series) and `errors` maps loosely (task-level `FAILED`/`INFRA_ERROR`
- * counts, not HTTP-request-level errors). Latency/response-time/p95/p99
- * are not fabricated here — this page says so explicitly, in its own UI
- * copy, rather than inventing a number.
+ * `aiqa_api_keys_active`, `aiqa_audit_log_total`.
+ *
+ * CORRECTION. What follows used to say there was "no latency, no response-time, no
+ * duration, no histogram of any kind - not even a sum that could yield an average,
+ * let alone buckets a real p95/p99 could be computed from", and the page repeated
+ * that in its own UI copy. It was accurate when written and is now false:
+ * `metrics.rs` grew `http_request_duration_seconds`, a full Prometheus latency
+ * histogram with cumulative buckets, `_sum` and `_count`, in commit 6f1efa6
+ * ("Phase G, part 2: audit retention, latency histogram, ..."). So a healthy
+ * orchestrator was being told it had no latency data while `/metrics` was serving
+ * hundreds of observations. `summariseLatency` now reads it.
+ *
+ * A percentile still cannot be recovered exactly from a histogram, and the page
+ * does not pretend otherwise: p50/p95/p99 are rendered as the bucket range each
+ * falls into. The mean (`_sum / _count`) is exact and is labelled as the one figure
+ * here that is not a bound.
+ *
+ * ACC-013's own Acceptance Criteria ask for "latency, response time, p95, p99,
+ * errors, timeouts". Of those, latency/p50/p95/p99 now come from the real histogram;
+ * `timeouts` maps precisely to `aiqa_tasks_total{status="TIMEOUT"}`; and `errors`
+ * maps only loosely, to task-level `FAILED`/`INFRA_ERROR` counts rather than
+ * HTTP-request-level ones. What remains genuinely absent is latency *broken down
+ * by route, status code or project*: the histogram is one platform-wide series, so
+ * a slow endpoint cannot be told from a fast one here. The page says that too.
  *
  * Real run/task *duration* data does exist elsewhere in this system
  * (`execution_avg_run_duration_ms`/`execution_efficiency_ms`, BE-12b, real
@@ -92,6 +106,101 @@ function scalarFor(samples: MetricSample[], name: string): number | null {
   const s = samples.find((sample) => sample.name === name);
   return s ? s.value : null;
 }
+
+  /**
+   * A percentile read off a histogram, as a *range* rather than a point.
+   *
+   * `http_request_duration_seconds` is a Prometheus histogram: cumulative bucket
+   * counts, a `_sum` and a `_count`, and nothing else. No percentile is stored, so
+   * one can only be bounded by the bucket it falls in. Reporting the bucket's upper
+   * bound as "the p95" would claim the request was faster than it might have been;
+   * reporting a midpoint would claim precision the data does not carry. So both
+   * ends are kept and the UI shows the range the observation is actually in.
+   */
+  export interface QuantileRange {
+    /** Lower bound, exclusive, in seconds. 0 means "under the first bucket". */
+    lowerSeconds: number;
+    /** Upper bound, inclusive, in seconds. `null` is the `+Inf` bucket, which means
+     *  "above the last real bound" and cannot be quantified any further. */
+    upperSeconds: number | null;
+    /** Observations at or below the upper bound -- the whole point of a bucket. */
+    observations: number;
+  }
+
+  export interface LatencySummary {
+    count: number;
+    sumSeconds: number;
+    /** Exact, not estimated: `_sum / _count`. A mean is the one figure a histogram
+     *  does give outright. */
+    meanMs: number | null;
+    p50: QuantileRange | null;
+    p95: QuantileRange | null;
+    p99: QuantileRange | null;
+  }
+
+  /**
+   * Reads the real histogram out of a `/metrics` scrape.
+   *
+   * `null` means there is no histogram at all; a summary with `count: 0` means the
+   * histogram exists but nothing has been observed. Those are different situations
+   * and the page distinguishes them rather than showing one blank panel for both.
+   */
+  export function summariseLatency(samples: MetricSample[]): LatencySummary | null {
+    const buckets = samples
+      .filter((s) => s.name === 'http_request_duration_seconds_bucket')
+      .map((s) => ({ le: s.labels.le, cumulative: s.value }))
+      // `+Inf` has to be handled explicitly: Number('+Inf') is NaN, so a plain
+      // numeric sort would drop it to an arbitrary position.
+      .sort((a, b) => {
+        if (a.le === '+Inf') return 1;
+        if (b.le === '+Inf') return -1;
+        return Number(a.le) - Number(b.le);
+      });
+    if (buckets.length === 0) return null;
+
+    const countSample = samples.find((s) => s.name === 'http_request_duration_seconds_count');
+    const sumSample = samples.find((s) => s.name === 'http_request_duration_seconds_sum');
+    const count = countSample?.value ?? buckets[buckets.length - 1].cumulative;
+    const sumSeconds = sumSample?.value ?? 0;
+
+    const quantile = (q: number): QuantileRange | null => {
+      if (count <= 0) return null;
+      // First bucket whose cumulative count reaches the target. Prometheus buckets
+      // are cumulative, so the preceding bound is the exclusive lower one.
+      const at = buckets.find((b) => b.cumulative >= q * count);
+      if (!at) return null;
+      const index = buckets.indexOf(at);
+      const previous = index > 0 ? Number(buckets[index - 1].le) : 0;
+      return {
+        lowerSeconds: Number.isFinite(previous) ? previous : 0,
+        upperSeconds: at.le === '+Inf' ? null : Number(at.le),
+        observations: at.cumulative,
+      };
+    };
+
+    return {
+      count,
+      sumSeconds,
+      meanMs: count > 0 ? (sumSeconds / count) * 1000 : null,
+      p50: quantile(0.5),
+      p95: quantile(0.95),
+      p99: quantile(0.99),
+    };
+  }
+
+  /** `≤ 25 ms`, `100–250 ms`, `> 2.5 s` -- the bounds a histogram really gives. */
+  export function formatSeconds(s: number): string {
+    if (s >= 1) return `${s} s`;
+    if (s >= 0.001) return `${Math.round(s * 1000)} ms`;
+    return `${Math.round(s * 1e6)} µs`;
+  }
+
+  export function formatQuantile(q: QuantileRange | null): string {
+    if (!q) return '—';
+    if (q.upperSeconds === null) return `> ${formatSeconds(q.lowerSeconds)}`;
+    if (q.lowerSeconds === 0) return `≤ ${formatSeconds(q.upperSeconds)}`;
+    return `${formatSeconds(q.lowerSeconds)}–${formatSeconds(q.upperSeconds)}`;
+  }
 
 // -------------------------------------------------------------------- UI bits
 
@@ -214,10 +323,15 @@ export const TelemetryPage: React.FC = () => {
     const failureClusters = scalarFor(samples, 'aiqa_failure_clusters_total');
     const activeApiKeys = scalarFor(samples, 'aiqa_api_keys_active');
     const auditLogTotal = scalarFor(samples, 'aiqa_audit_log_total');
+    const latency = summariseLatency(samples);
 
     const hasAnyData =
       runsByState.length > 0 || tasksByStatus.length > 0 || bugDraftsByReviewState.length > 0 ||
-      (failureClusters ?? 0) > 0 || (activeApiKeys ?? 0) > 0 || (auditLogTotal ?? 0) > 0;
+      (failureClusters ?? 0) > 0 || (activeApiKeys ?? 0) > 0 || (auditLogTotal ?? 0) > 0 ||
+      // A process that has served a request has latency, even if no run, task
+      // or audit row exists yet. Treating the histogram as data is what stops this
+      // page reporting "nothing recorded" on a busy orchestrator.
+      (latency?.count ?? 0) > 0;
 
     /** Which of ACC-013's real "timeouts"/"errors" task statuses actually
      *  appear in this snapshot — used so the note below can only name series
@@ -244,16 +358,72 @@ export const TelemetryPage: React.FC = () => {
             prominent element on a healthy page looked like an error. The
             content is unchanged and just as explicit; only the severity
             signal was wrong. */}
+        {latency && latency.count > 0 && (
+          <div className="p-3.5 rounded-lg bg-[#0B1120] border border-slate-800 space-y-2.5">
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="text-[10px] font-mono uppercase tracking-wider text-content-muted font-semibold">
+                Request Latency
+              </span>
+              <span className="text-[10px] font-mono text-content-muted">
+                {latency.count.toLocaleString()} request{latency.count === 1 ? '' : 's'}
+              </span>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              {([
+                ['mean', latency.meanMs === null ? '—' : `${latency.meanMs.toFixed(1)} ms`],
+                ['p50', formatQuantile(latency.p50)],
+                ['p95', formatQuantile(latency.p95)],
+                ['p99', formatQuantile(latency.p99)],
+              ] as Array<[string, string]>).map(([label, value]) => (
+                <div key={label} className="rounded border border-slate-800 bg-slate-900/40 px-2 py-1.5">
+                  <div className="text-[10px] font-mono uppercase text-content-muted">{label}</div>
+                  <div className="text-sm font-bold font-mono text-slate-100">{value}</div>
+                </div>
+              ))}
+            </div>
+            <p className="text-[10px] font-mono text-content-muted">
+              {/*
+               * The percentiles are bucket ranges, not point values, and saying so
+               * is the whole point. `http_request_duration_seconds` stores cumulative
+               * bucket counts; it does not store a percentile, so the only honest
+               * figure is the bucket a request actually fell into. The mean is exact
+               * (`_sum / _count`) and is the only single number here that is not a
+               * bound. Platform-wide, and counting every route this process serves
+               * including `/metrics` itself.
+               */}
+              Percentiles are the bucket each request fell into, read from the real
+              <code> http_request_duration_seconds</code> histogram — bounded, not a stored
+              value. Mean is exact. Platform-wide, all routes.
+            </p>
+          </div>
+        )}
+
+
         <div id="telemetry-disclosure" className="p-3 rounded-lg bg-[#0B1120] border border-slate-800 text-[11px] font-mono text-slate-400 flex items-start gap-2">
           <Info className="w-3.5 h-3.5 shrink-0 mt-0.5 text-content-muted" />
           <span>
-            <strong className="text-slate-300">What this does not show:</strong> latency, response time, p95, or p99 — the real{' '}
-            <code>/metrics</code> endpoint has no timing data of any kind today, only state/status counts. Real
-            average run/task duration exists on the{' '}
-            <button type="button" onClick={() => navigate('/dashboard')} className="underline text-violet-400 hover:text-violet-300 cursor-pointer">
-              Dashboard
-            </button>{' '}
-            (project-scoped, a different real endpoint) — not repeated here.
+            {latency && latency.count > 0 ? (
+              <>
+                <strong className="text-slate-300">What this does not show:</strong> latency
+                split by route, status code or project. The histogram above is one
+                platform-wide series over every request this process has served, so a
+                slow endpoint cannot be told from a fast one here. Real average run and
+                task duration is per project on the{' '}
+                <button type="button" onClick={() => navigate('/dashboard')} className="underline text-violet-400 hover:text-violet-300 cursor-pointer">
+                  Dashboard
+                </button>{' '}
+                — a different real endpoint, not repeated here.
+              </>
+            ) : (
+              <>
+                <strong className="text-slate-300">What this does not show:</strong> latency,
+                response time, p95, or p99 <em>for this process</em> — the real{' '}
+                <code>/metrics</code> endpoint does carry an{' '}
+                <code>http_request_duration_seconds</code> histogram, but this process has not
+                served a request through it yet, so there is no real figure to show rather
+                than an invented one.
+              </>
+            )}
           </span>
         </div>
 
@@ -302,7 +472,7 @@ export const TelemetryPage: React.FC = () => {
     <div id="telemetry-page" className="space-y-4 animate-in fade-in duration-150">
       <SectionHeader
         title="System Telemetry"
-        subtitle="Real /metrics counts — platform-wide, not project-scoped. No latency/response-time data exists yet."
+          subtitle="Real /metrics — platform-wide, not project-scoped: state counts plus the real request-latency histogram."
         badge="LIVE METRICS"
         icon={Activity}
         actions={
