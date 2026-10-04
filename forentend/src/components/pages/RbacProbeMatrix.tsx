@@ -8,34 +8,32 @@
  * and this page used to be asked for it. It is also the single easiest thing in
  * this codebase to get wrong, and it has been got wrong three separate ways:
  *
- *  - FE-11 removed a hardcoded matrix of invented roles (`BillingManager`, ...)
- *    and an invented "Evaluate Authorization Matrix" button, because it was
- *    fabricated.
+ *  - FE-11 removed a hardcoded matrix of invented roles (`BillingManager`, ...) and
+ *    an invented "Evaluate Authorization Matrix" button, because it was fabricated.
  *  - A hand-written replacement had 18 rows whose methods disagreed with the
  *    router -- `/executions` registers POST, the table claimed GET.
- *  - Two independent source parsers disagreed with each other about how many
- *    routes had no role gate at all: 66 versus 8. One of them reported
- *    `ai-usage` as admin-only, which is false -- it answers 200 to a viewer.
+ *  - Two independent source parsers disagreed with each other about how many routes
+ *    had no role gate at all: 66 versus 8. One of them reported `ai-usage` as
+ *    admin-only, which is false -- it answers 200 to a viewer.
  *
  * So nothing here declares a permission. Each cell is filled by sending a real
  * request to the server with a real key of that role and showing what came back
- * (`POST /api/v1/rbac/probe`). A grid that has been filled in this way is a
- * record of what was observed, on this deployment, at this moment -- which is
- * the only kind of matrix a QA report can actually stand behind.
+ * (`POST /api/v1/rbac/probe`). A grid filled in this way is a record of what was
+ * observed, on this deployment, at this moment -- which is the only kind of matrix
+ * a QA report can actually stand behind.
  *
  * Two consequences are visible in the UI and worth understanding before reading
  * any result:
  *
  *  1. **A cell is blank until you probe it.** An unprobed row is not "allowed".
- *     Blank means nobody has asked.
- *  2. **"Allowed" does not mean "worked."** Authorization runs inside the
- *     handler, so a request can be allowed and then refused with 400 or 404.
- *     Those cells say so explicitly (`allowed_then_refused`) rather than
- *     reporting a green tick, because "the gate let you in and the input was
- *     wrong" and "you may do this" are different claims.
+ *     It says "not probed", because nobody has asked yet.
+ *  2. **"Allowed" does not mean "worked."** Authorization runs inside the handler,
+ *     so a request can be allowed and then refused with 400 or 404. Those cells say
+ *     so explicitly rather than reporting a green tick, because "the gate let you in
+ *     and the input was wrong" and "you may do this" are different claims.
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { aiqaApi, ApiError } from '../../services/aiqaApi';
 import { renderResourceErrorState } from '../state/StateViews';
 import type {
@@ -48,58 +46,44 @@ import type {
 
 /* ------------------------------------------------------------------ styles */
 
-const cell: React.CSSProperties = {
-  padding: '0.4rem 0.5rem',
-  borderBottom: '1px solid var(--border-subtle, #e5e7eb)',
-  verticalAlign: 'top',
+/** One pill per outcome. The colours follow this app's existing dark palette
+ *  (`RBACTestingPage`'s role pills) rather than inventing a second one: rose for
+ *  refused-by-role, amber for refused-by-scope, emerald for genuinely done, sky for
+ *  "the gate let you in and something else refused", slate for a measurement that
+ *  proves nothing. */
+const GATE_TONE: Record<RbacGate, string> = {
+  role_refused: 'text-rose-300 bg-rose-950/70 border border-rose-800',
+  scope_refused: 'text-amber-300 bg-amber-950/70 border border-amber-800',
+  refused_unknown: 'text-yellow-200 bg-yellow-950/70 border border-yellow-800',
+  allowed_succeeded: 'text-emerald-300 bg-emerald-950/70 border border-emerald-800',
+  allowed_then_refused: 'text-sky-300 bg-sky-950/70 border border-sky-800',
+  verb_not_served: 'text-slate-400 bg-slate-800/60 border border-slate-700',
+  key_rejected: 'text-slate-400 bg-slate-800/60 border border-slate-700',
+  probe_failed: 'text-slate-400 bg-slate-800/60 border border-slate-700',
 };
 
-const headCell: React.CSSProperties = { ...cell, textAlign: 'left', fontWeight: 600 };
-
-const GATE_TONE: Record<RbacGate, { bg: string; fg: string }> = {
-  // Refused. The result you are looking for.
-  role_refused: { bg: '#fee2e2', fg: '#991b1b' },
-  scope_refused: { bg: '#ffedd5', fg: '#9a3412' },
-  refused_unknown: { bg: '#fef3c7', fg: '#92400e' },
-  // The gate did not object.
-  allowed_succeeded: { bg: '#dcfce7', fg: '#166534' },
-  allowed_then_refused: { bg: '#e0e7ff', fg: '#3730a3' },
-  // The measurement itself was unsound.
-  verb_not_served: { bg: '#f3f4f6', fg: '#4b5563' },
-  key_rejected: { bg: '#f3f4f6', fg: '#4b5563' },
-  probe_failed: { bg: '#f3f4f6', fg: '#4b5563' },
-};
+const TH = 'px-2 py-1.5 text-left text-[10px] font-mono uppercase tracking-wider text-content-muted';
+const TD = 'px-2 py-1.5 align-top text-[11px] text-slate-300 border-t border-slate-800';
 
 const GateCell: React.FC<{ r: RbacProbeResult | undefined }> = ({ r }) => {
   if (!r) {
     return (
-      <td style={cell}>
-        <span style={{ color: '#9ca3af', fontStyle: 'italic' }}>not probed</span>
+      <td className={TD}>
+        <span className="text-slate-500 italic">not probed</span>
       </td>
     );
   }
-  const tone = GATE_TONE[r.gate];
   return (
-    <td style={cell}>
+    <td className={TD}>
       <span
-        style={{
-          display: 'inline-block',
-          background: tone.bg,
-          color: tone.fg,
-          borderRadius: 4,
-          padding: '0.1rem 0.4rem',
-          fontWeight: 600,
-          whiteSpace: 'nowrap',
-        }}
+        className={`inline-block rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold ${GATE_TONE[r.gate]}`}
       >
         {r.status}
       </span>
-      <div style={{ fontSize: '0.75rem', color: '#4b5563', marginTop: '0.15rem' }}>
-        {r.gate_label}
-      </div>
+      <div className="mt-0.5 text-[10px] leading-snug text-content-muted">{r.gate_label}</div>
     </td>
   );
-}
+};
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -124,10 +108,10 @@ function parseKeys(raw: string): Keys {
 const KEY_PLACEHOLDER =
   'Paste one key per line, in the form role=value:\n' +
   'viewer=aiqa_...\noperator=aiqa_...\nadmin=aiqa_...\n\n' +
-  'Mint them from the Key inventory above. A key you do not have simply leaves\n' +
- 'that column blank -- nothing is inferred for a role you cannot test.';
+  'Mint them from the Key inventory below. A role you have no key for simply\n' +
+  'leaves that column unprobed -- nothing is inferred for a role you cannot test.';
 
-/* ------------------------------------------------------------------- page */
+/* -------------------------------------------------------------------- page */
 
 export const RbacProbeMatrix: React.FC = () => {
   const [targets, setTargets] = useState<RbacProbeTarget[] | null>(null);
@@ -138,19 +122,27 @@ export const RbacProbeMatrix: React.FC = () => {
   const [keysRaw, setKeysRaw] = useState('');
   const [projectId, setProjectId] = useState('');
   const [results, setResults] = useState<Record<string, RbacProbeResult>>({});
-  const rows = useMemo(
-    () => Object.entries(results) as Array<[string, RbacProbeResult]>,
-    [results],
-  );
   const [running, setRunning] = useState<string | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
+  /**
+   * Off by default, and deliberately not remembered: probing a target that creates
+   * a record is a thing you do on purpose, once, having read what it will create.
+   *
+   * This flag exists because the sweep got it wrong first time. The original claim
+   * was that every mutating target addresses a non-existent id, so a probe that got
+   * past the gate could not touch anything real. That was true of every route with
+   * an id in its path and false of `POST /admin/api-keys` and
+   * `POST /api/v1/projects`, which have none -- so running "probe every route" with
+   * an admin key minted four API keys and created four projects. The backend now
+   * refuses those two unless a request opts in; this is the opt-in.
+   */
+  const [allowCreation, setAllowCreation] = useState(false);
 
   const keys = useMemo(() => parseKeys(keysRaw), [keysRaw]);
-  // Used so the effect re-runs when the project changes, not just the keys.
-  const keySig = useMemo(
-    () => `${Object.keys(keys).sort().map((r) => `${r}:${(keys as any)[r]?.length ?? 0}`).join(',')}|${projectId}`,
-    [keys, projectId],
+  const rows = useMemo(
+    () => Object.entries(results) as Array<[string, RbacProbeResult]>,
+    [results],
   );
 
   const load = useCallback((signal?: AbortSignal) => {
@@ -158,11 +150,22 @@ export const RbacProbeMatrix: React.FC = () => {
     aiqaApi.rbac
       .probeTargets(signal)
       .then((r: RbacProbeTargetsResponse) => {
+        // Ignore a response whose request was already superseded. StrictMode mounts,
+        // unmounts and mounts again, so the first request is aborted and its
+        // rejection can land after the second has already succeeded.
+        if (signal?.aborted) return;
         setTargets(r.targets);
         setRoles(r.roles);
         setNote(r.note);
       })
-      .catch((e: ApiError) => setLoadError(e));
+      .catch((e: ApiError) => {
+        // An abort is this component tidying up, not a failure to report. Without
+        // this the panel reads "Couldn't load this data -- signal is aborted without
+        // reason" over a grid that loaded perfectly well. There is no `ApiErrorKind`
+        // for a cancellation, so the signal itself is the only honest test.
+        if (signal?.aborted) return;
+        setLoadError(e);
+      });
   }, []);
 
   useEffect(() => {
@@ -172,7 +175,7 @@ export const RbacProbeMatrix: React.FC = () => {
   }, [load]);
 
   const probe = useCallback(
-    async (target: RbacProbeTarget, role: Role) => {
+    async (target: RbacProbeTarget, role: Role, optInToCreation: boolean) => {
       const key = keys[role];
       if (!key) return;
       setRunning(`${target.id}:${role}`);
@@ -182,6 +185,7 @@ export const RbacProbeMatrix: React.FC = () => {
           target_id: target.id,
           api_key: key,
           ...(projectId.trim() ? { project_id: projectId.trim() } : {}),
+          ...(optInToCreation ? { allow_creation: true } : {}),
         });
         setResults((prev) => ({ ...prev, [`${target.id}:${role}`]: r }));
       } catch (e) {
@@ -195,9 +199,12 @@ export const RbacProbeMatrix: React.FC = () => {
   );
 
   const probeRow = useCallback(
-    async (target: RbacProbeTarget) => {
+    async (target: RbacProbeTarget, optInToCreation: boolean) => {
+      // Sequentially, not in parallel: a probe is a real request at a real handler,
+      // and a row that fires three at once against `/crawl` would be testing
+      // concurrency rather than permissions.
       for (const role of roles) {
-        if (keys[role]) await probe(target, role);
+        if (keys[role]) await probe(target, role, optInToCreation);
       }
     },
     [probe, keys, roles],
@@ -205,7 +212,10 @@ export const RbacProbeMatrix: React.FC = () => {
 
   const probeAll = useCallback(async () => {
     if (!targets) return;
-    for (const t of targets) await probeRow(t);
+    // Never opts in: a sweep must not mint keys or create projects as a side effect.
+    // Rows that create are refused by the backend and their cells stay empty, which
+    // is the honest outcome -- a refusal is a result, and "not run" is not one.
+    for (const t of targets) await probeRow(t, false);
   }, [targets, probeRow]);
 
   if (loadError) {
@@ -214,14 +224,18 @@ export const RbacProbeMatrix: React.FC = () => {
         {renderResourceErrorState(loadError, () => load(), {
           forbiddenTitle: 'Not permitted to probe roles',
           forbiddenDescription:
-            'Probing needs a key of each role you want to test, so it is Operator and ' +
-            'above. The targets could not be listed at this role, which means there is ' +
-            'nothing to test yet.',
+            "Probing needs a key of each role you want to test, so it is Operator and above. The targets could not be listed at this role, which means there is nothing to test yet.",
         })}
       </>
     );
   }
-  if (!targets) return <p style={{ color: '#6b7280' }}>Loading the routes worth probing…</p>;
+  if (!targets) {
+    return (
+      <p className="py-2 font-mono text-xs text-slate-400">
+        Loading the routes worth probing…
+      </p>
+    );
+  }
 
   const filtered = targets.filter((t) => {
     if (!filter.trim()) return true;
@@ -239,17 +253,17 @@ export const RbacProbeMatrix: React.FC = () => {
   }
 
   const anyKey = Object.keys(keys).length > 0;
-  const probed = Object.keys(results).length;
+  const probed = rows.length;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-      <p style={{ margin: 0, color: '#374151' }}>{note}</p>
+    <div className="flex flex-col gap-3">
+      <p className="text-[11px] leading-relaxed text-slate-400">{note}</p>
 
-      <fieldset style={{ border: '1px solid #d1d5db', borderRadius: 6, padding: '0.75rem' }}>
-        <legend style={{ fontWeight: 600, padding: '0 0.35rem' }}>
+      <fieldset className="rounded-md border border-slate-800 bg-[#020617] p-3">
+        <legend className="px-1 text-[10px] font-mono uppercase tracking-wider text-content-muted">
           Keys to probe with
         </legend>
-        <p style={{ margin: '0 0 0.5rem', fontSize: '0.8rem', color: '#6b7280' }}>
+        <p className="mb-2 text-[11px] leading-relaxed text-slate-400">
           Held in memory for this page only, never written to storage. Probing needs a
           key for each role you want to test; a role with no key leaves its column
           unprobed rather than being assumed either way.
@@ -260,38 +274,61 @@ export const RbacProbeMatrix: React.FC = () => {
           onChange={(e) => setKeysRaw(e.target.value)}
           placeholder={KEY_PLACEHOLDER}
           rows={5}
-          style={{ width: '100%', fontFamily: 'monospace', fontSize: '0.8rem' }}
+          spellCheck={false}
+          className="w-full rounded border border-slate-800 bg-slate-900/60 p-2 font-mono text-[11px] text-slate-200 placeholder:text-slate-600"
         />
-        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', marginTop: '0.5rem', flexWrap: 'wrap' }}>
-          <label style={{ fontSize: '0.85rem' }}>
-            Project id{' '}
+        <div className="mt-2 flex flex-wrap items-center gap-3">
+          <label className="text-[11px] text-slate-400">
+            Project id
             <input
               aria-label="Project id to substitute into the route"
               value={projectId}
               onChange={(e) => setProjectId(e.target.value)}
               placeholder="uuid (optional)"
-              style={{ marginLeft: '0.35rem', width: '22rem' }}
+              className="ml-2 w-80 rounded border border-slate-800 bg-slate-900/60 px-2 py-1 font-mono text-[11px] text-slate-200 placeholder:text-slate-600"
             />
           </label>
           <button
             type="button"
             onClick={probeAll}
             disabled={!anyKey || running !== null}
-            style={{ padding: '0.3rem 0.7rem' }}
+            className="rounded-md border border-violet-600 bg-[#020617] px-3 py-1.5 font-mono text-xs font-semibold text-slate-300 transition-colors hover:border-violet-600 hover:text-violet-300 disabled:opacity-50"
           >
             {running ? 'Probing…' : `Probe every route (${probed} results so far)`}
           </button>
-          <span style={{ fontSize: '0.8rem', color: '#6b7280' }}>
+          <span className="font-mono text-[10px] text-content-muted">
             {anyKey
-              ? `keys for: ${Object.keys(keys).join(', ')}`
+              ? `keys for: ${Object.keys(keys).sort().join(', ')}`
               : 'no keys yet -- nothing can be probed'}
           </span>
         </div>
         {runError && (
-          <p role="alert" style={{ color: '#991b1b', fontSize: '0.85rem' }}>
+          <p role="alert" className="mt-2 text-[11px] text-rose-300">
             {runError}
           </p>
         )}
+        {/*
+         * Off by default and not persisted. Only the per-row button consults it; the
+         * sweep above never does, so this cannot become a switch that quietly makes
+         * "probe everything" create records.
+         */}
+        <label className="mt-2 flex items-start gap-2 text-[11px] text-slate-400">
+          <input
+            type="checkbox"
+            checked={allowCreation}
+            onChange={(e) => setAllowCreation(e.target.checked)}
+            className="mt-0.5"
+          />
+          <span>
+            Allow a single-row probe to create a real record
+            <span className="block text-[10px] text-slate-500">
+              Applies only to <code className="font-mono">POST /admin/api-keys</code> and{' '}
+              <code className="font-mono">POST /api/v1/projects</code>, which have no id in
+              their path for a probe to substitute. A successful probe will mint a real API
+              key or create a real project. The sweep above ignores this.
+            </span>
+          </span>
+        </label>
       </fieldset>
 
       <input
@@ -299,61 +336,68 @@ export const RbacProbeMatrix: React.FC = () => {
         placeholder="Filter by path, capability or category"
         value={filter}
         onChange={(e) => setFilter(e.target.value)}
-        style={{ padding: '0.35rem 0.5rem', width: '100%' }}
+        className="rounded border border-slate-800 bg-[#020617] px-2 py-1.5 text-[11px] text-slate-200 placeholder:text-slate-500"
       />
 
-      {Object.entries(grouped).map(([category, rows]) => (
+      {Object.entries(grouped).map(([category, list]) => (
         <div key={category}>
-          <h3 style={{ margin: '0 0 0.35rem', fontSize: '0.95rem' }}>{category}</h3>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+          <h3 className="mb-1 font-mono text-[10px] font-semibold uppercase tracking-wider text-content-muted">
+            {category}
+          </h3>
+          <table className="w-full border-collapse">
             {/*
-             * `scope` is what makes each cell's header announced by a screen
-             * reader, and here it is not decoration: this grid is read one role at
-             * a time, so "403" on its own means nothing without knowing it is the
-             * viewer column.
+             * `scope` is not decoration here: the grid is read one role at a time, so
+             * a bare "403" means nothing without knowing it is the viewer column.
              */}
-            <caption style={{ captionSide: 'top', textAlign: 'left', fontSize: '0.78rem', color: '#6b7280' }}>
-              Measured access for {category}. Cells are blank until probed.
+            <caption className="caption-top py-1 text-left text-[10px] text-slate-500">
+              Measured access for {category}. Cells stay blank until probed.
             </caption>
             <thead>
               <tr>
-                <th scope="col" style={headCell}>Route</th>
-                <th scope="col" style={headCell}>What it does</th>
+                <th scope="col" className={TH}>Route</th>
+                <th scope="col" className={TH}>What it does</th>
                 {roles.map((r) => (
-                  <th key={r} scope="col" style={headCell}>
+                  <th key={r} scope="col" className={TH}>
                     {r}
                   </th>
                 ))}
-                <th scope="col" style={headCell}>
+                <th scope="col" className={TH}>
                   <span className="sr-only">Probe this route</span>
                 </th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((t) => (
+              {list.map((t) => (
                 <tr key={t.id}>
-                  <td style={cell}>
-                    <code style={{ fontSize: '0.8rem' }}>
+                  <td className={TD}>
+                    <code className="font-mono text-[11px] text-violet-300">
                       {t.method} {t.path}
                     </code>
                     {t.mutating && (
-                      <div style={{ fontSize: '0.72rem', color: '#9a3412', marginTop: '0.15rem' }}>
-                        can change something -- every id is a non-existent uuid, so a
-                        probe that gets through still touches nothing real
+                      <div className="mt-0.5 text-[10px] leading-snug text-amber-300/90">
+                        {t.creates
+                          ? 'creates a real record if it gets past the gate -- needs the box above'
+                          : 'can change something -- every id is a non-existent uuid, so a probe that gets through still touches nothing real'}
                       </div>
                     )}
                   </td>
-                  <td style={cell}>{t.capability}</td>
+                  <td className={TD}>{t.capability}</td>
                   {roles.map((role) => (
                     <GateCell key={role} r={results[`${t.id}:${role}`]} />
                   ))}
-                  <td style={cell}>
+                  <td className={TD}>
                     <button
                       type="button"
                       onClick={() => probeRow(t)}
                       disabled={!anyKey || running !== null}
-                      title={t.mutating ? 'Sends real requests; ids are non-existent' : undefined}
-                      style={{ fontSize: '0.78rem', padding: '0.15rem 0.45rem' }}
+                      title={
+                        t.mutating
+                          ? t.creates
+                            ? 'This probe mints a real key or creates a real project'
+                            : 'Sends real requests; every id is a non-existent uuid'
+                          : undefined
+                      }
+                      className="rounded border border-slate-700 px-2 py-0.5 font-mono text-[10px] text-slate-300 transition-colors hover:border-violet-600 hover:text-violet-300 disabled:opacity-50"
                     >
                       {running?.startsWith(`${t.id}:`) ? '…' : 'Probe'}
                     </button>
@@ -366,19 +410,20 @@ export const RbacProbeMatrix: React.FC = () => {
       ))}
 
       {probed > 0 && (
-        <details>
-          <summary style={{ cursor: 'pointer', fontSize: '0.85rem' }}>
+        <details className="rounded border border-slate-800 bg-[#020617] p-2">
+          <summary className="cursor-pointer font-mono text-[11px] text-slate-300">
             What the server actually said ({probed} probes)
           </summary>
-          <ul style={{ fontSize: '0.78rem', color: '#374151', marginTop: '0.5rem' }}>
+          <ul className="mt-2 space-y-1.5 text-[10px] text-slate-400">
             {rows.map(([k, r]) => (
-              <li key={k} style={{ marginBottom: '0.3rem' }}>
-                <code>
+              <li key={k}>
+                <code className="font-mono text-violet-300">
                   {r.method} {r.path}
                 </code>{' '}
-                → <strong>{r.status}</strong> {r.gate_label}
+                → <strong className="font-mono text-slate-200">{r.status}</strong>{' '}
+                {r.gate_label}
                 {r.message && (
-                  <div style={{ color: '#6b7280', fontFamily: 'monospace' }}>
+                  <div className="font-mono text-slate-500 break-all">
                     {r.message.slice(0, 200)}
                   </div>
                 )}

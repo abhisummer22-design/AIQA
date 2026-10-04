@@ -67,10 +67,21 @@ pub struct ProbeTarget {
     pub capability: &'static str,
     /// Which part of the RBAC surface it belongs to.
     pub category: &'static str,
-    /// True when reaching the handler could change something. The page warns, and
-    /// every id in a mutating target is a non-existent uuid so that if the gate
-    /// does its job nothing real is touched.
+    /// True when reaching the handler could change something. The page warns.
     pub mutating: bool,
+    /// True when a probe that gets *past* the gate would leave a real record
+    /// behind -- because the route has no id in its path for `concrete_path` to
+    /// substitute a non-existent one into.
+    ///
+    /// This is a separate flag from `mutating` because the two fail differently,
+    /// and only this one actually bites. Every other mutating target names some
+    /// `:run_id` or `:proposal_id`, and `concrete_path` fills those with an id
+    /// that cannot exist, so a probe that slips through finds nothing to act on.
+    /// `POST /admin/api-keys` and `POST /api/v1/projects` name no id at all: they
+    /// create a row out of the request body. Probing one with a real admin key
+    /// genuinely mints a key or a project -- which is exactly what happened here
+    /// during development, four keys and four projects, before this flag existed.
+    pub creates: bool,
     /// A minimal body that gets past extraction so the gate is reached. `None`
     /// for methods that take no body.
     pub body: Option<&'static str>,
@@ -102,6 +113,7 @@ pub const TARGETS: &[ProbeTarget] = &[
         capability: "Report your own key's identity, role and project scope",
         category: "Identity",
         mutating: false,
+        creates: false,
         body: None,
     },
     // ---- keys: the highest blast radius in the app ------------------------
@@ -112,6 +124,7 @@ pub const TARGETS: &[ProbeTarget] = &[
         capability: "List every API key in the deployment",
         category: "Keys",
         mutating: false,
+        creates: false,
         body: None,
     },
     ProbeTarget {
@@ -121,6 +134,7 @@ pub const TARGETS: &[ProbeTarget] = &[
         capability: "Mint a new API key",
         category: "Keys",
         mutating: true,
+        creates: true,
         body: Some(r#"{"name":"rbac-probe","role":"viewer"}"#),
     },
     ProbeTarget {
@@ -130,6 +144,7 @@ pub const TARGETS: &[ProbeTarget] = &[
         capability: "Revoke an API key",
         category: "Keys",
         mutating: true,
+        creates: false,
         body: None,
     },
     ProbeTarget {
@@ -139,6 +154,7 @@ pub const TARGETS: &[ProbeTarget] = &[
         capability: "Read the deployment-wide audit trail",
         category: "Keys",
         mutating: false,
+        creates: false,
         body: None,
     },
     // ---- projects ---------------------------------------------------------
@@ -149,6 +165,7 @@ pub const TARGETS: &[ProbeTarget] = &[
         capability: "List every project in the deployment",
         category: "Projects",
         mutating: false,
+        creates: false,
         body: None,
     },
     ProbeTarget {
@@ -158,6 +175,7 @@ pub const TARGETS: &[ProbeTarget] = &[
         capability: "Create a project",
         category: "Projects",
         mutating: true,
+        creates: true,
         body: Some(r#"{"name":"rbac-probe"}"#),
     },
     // ---- test design ------------------------------------------------------
@@ -168,6 +186,7 @@ pub const TARGETS: &[ProbeTarget] = &[
         capability: "List a project's test cases",
         category: "Test design",
         mutating: false,
+        creates: false,
         body: None,
     },
     ProbeTarget {
@@ -177,6 +196,7 @@ pub const TARGETS: &[ProbeTarget] = &[
         capability: "Create a test case by hand",
         category: "Test design",
         mutating: true,
+        creates: false,
         body: Some(CASE_BODY),
     },
     ProbeTarget {
@@ -186,6 +206,7 @@ pub const TARGETS: &[ProbeTarget] = &[
         capability: "Generate test cases with AI (spends tokens)",
         category: "Test design",
         mutating: true,
+        creates: false,
         body: Some(GENERATE_BODY),
     },
     ProbeTarget {
@@ -195,6 +216,7 @@ pub const TARGETS: &[ProbeTarget] = &[
         capability: "Compile a test case into an executable plan",
         category: "Test design",
         mutating: true,
+        creates: false,
         body: None,
     },
     // ---- execution --------------------------------------------------------
@@ -205,6 +227,7 @@ pub const TARGETS: &[ProbeTarget] = &[
         capability: "List execution runs",
         category: "Execution",
         mutating: false,
+        creates: false,
         body: None,
     },
     ProbeTarget {
@@ -214,6 +237,7 @@ pub const TARGETS: &[ProbeTarget] = &[
         capability: "Start an execution run",
         category: "Execution",
         mutating: true,
+        creates: false,
         body: Some(RUN_BODY),
     },
     ProbeTarget {
@@ -223,6 +247,7 @@ pub const TARGETS: &[ProbeTarget] = &[
         capability: "Approve a run for dispatch",
         category: "Execution",
         mutating: true,
+        creates: false,
         body: None,
     },
     // ---- the live application --------------------------------------------
@@ -233,6 +258,7 @@ pub const TARGETS: &[ProbeTarget] = &[
         capability: "Crawl a running application (drives a real browser)",
         category: "Live application",
         mutating: true,
+        creates: false,
         body: Some(CRAWL_BODY),
     },
     // ---- records that write to the repository -----------------------------
@@ -243,6 +269,7 @@ pub const TARGETS: &[ProbeTarget] = &[
         capability: "Approve a code change (writes to the repository)",
         category: "Repository writes",
         mutating: true,
+        creates: false,
         body: None,
     },
     ProbeTarget {
@@ -252,6 +279,7 @@ pub const TARGETS: &[ProbeTarget] = &[
         capability: "Execute an approved healing change (writes to the repository)",
         category: "Repository writes",
         mutating: true,
+        creates: false,
         body: None,
     },
     ProbeTarget {
@@ -261,6 +289,7 @@ pub const TARGETS: &[ProbeTarget] = &[
         capability: "Run an audit retention prune (deletes rows)",
         category: "Repository writes",
         mutating: true,
+        creates: false,
         body: None,
     },
     // ---- analysis ---------------------------------------------------------
@@ -271,6 +300,7 @@ pub const TARGETS: &[ProbeTarget] = &[
         capability: "Read a project's audit trail (holds who-did-what)",
         category: "Analysis",
         mutating: false,
+        creates: false,
         body: None,
     },
     ProbeTarget {
@@ -280,6 +310,7 @@ pub const TARGETS: &[ProbeTarget] = &[
         capability: "Read one project's AI token usage and cost",
         category: "Analysis",
         mutating: false,
+        creates: false,
         body: None,
     },
     ProbeTarget {
@@ -289,6 +320,7 @@ pub const TARGETS: &[ProbeTarget] = &[
         capability: "Read the project dashboard",
         category: "Analysis",
         mutating: false,
+        creates: false,
         body: None,
     },
     // ---- deployment-wide --------------------------------------------------
@@ -299,6 +331,7 @@ pub const TARGETS: &[ProbeTarget] = &[
         capability: "Prometheus metrics (deployment-wide counters)",
         category: "Deployment",
         mutating: false,
+        creates: false,
         body: None,
     },
     ProbeTarget {
@@ -308,6 +341,7 @@ pub const TARGETS: &[ProbeTarget] = &[
         capability: "Read deployment-wide AI usage and cost",
         category: "Deployment",
         mutating: false,
+        creates: false,
         body: None,
     },
     // ---- what a viewer is meant to reach ----------------------------------
@@ -318,6 +352,7 @@ pub const TARGETS: &[ProbeTarget] = &[
         capability: "Read orchestrator logs",
         category: "Read-only",
         mutating: false,
+        creates: false,
         body: None,
     },
     ProbeTarget {
@@ -327,6 +362,7 @@ pub const TARGETS: &[ProbeTarget] = &[
         capability: "Read a project's run logs",
         category: "Read-only",
         mutating: false,
+        creates: false,
         body: None,
     },
 ];
@@ -448,6 +484,11 @@ pub struct ProbeRequest {
     pub project_id: Option<Uuid>,
     #[serde(default)]
     pub body: Option<serde_json::Value>,
+    /// Set only by a deliberate single-row probe. A sweep leaves it false, so
+    /// running the whole matrix cannot mint keys or create projects as a side
+    /// effect -- which is what it did before this existed.
+    #[serde(default)]
+    pub allow_creation: bool,
 }
 
 /// What the probe returns: the server's own answer, classified, and nothing more.
@@ -468,6 +509,9 @@ pub struct ProbeResult {
     pub message: String,
     /// True when this target could change something.
     pub mutating: bool,
+    /// True when this target would have left a real record behind if the gate had
+    /// let it through. Only ever true alongside `mutating`.
+    pub creates: bool,
 }
 
 /// The host the probe is allowed to talk to.
@@ -526,6 +570,19 @@ pub async fn run_probe(
         None => template.clone(),
     };
 
+    // A target that would leave a real record behind is refused unless the caller
+    // said so deliberately. The sweep on the page does not say so, so running the
+    // whole matrix cannot mint keys or create projects on the side -- which is
+    // precisely what it did before this check, and the reason the check exists
+    // rather than a warning.
+    if listed.is_some_and(|t| t.creates) && !req.allow_creation {
+        return Err(format!(
+            "{} creates a real record when it gets past the gate, so this probe was \
+             not sent. Probe it deliberately to allow that.",
+            listed.map(|t| t.path).unwrap_or(&template)
+        ));
+    }
+
     // An absolute URL in `path` would send the probe somewhere the host check
     // does not cover, so only the path and query part is honoured.
     let relative = path
@@ -581,6 +638,7 @@ pub async fn run_probe(
         inconclusive: gate.inconclusive(),
         message,
         mutating: listed.map(|t| t.mutating).unwrap_or(req.method.is_some()),
+        creates: listed.map(|t| t.creates).unwrap_or(false),
     })
 }
 

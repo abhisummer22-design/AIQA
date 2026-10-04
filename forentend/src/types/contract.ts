@@ -1867,10 +1867,20 @@ export interface RbacProbeTarget {
   path: string;
   capability: string;
   category: string;
-  /** True when reaching the handler could change something. The page warns
-   *  first, and every id in such a target is a non-existent uuid so that a probe
-   *  which *is* let through still cannot touch anything real. */
+  /** True when reaching the handler could change something. */
   mutating: boolean;
+  /**
+   * True when a probe that got *past* the gate would leave a real record behind.
+   *
+   * Separate from `mutating` because only this one bites, and the distinction was
+   * learned the expensive way. `mutating` targets address an id that cannot exist,
+   * so a probe that slips through finds nothing to act on. These two name no id at
+   * all -- `POST /admin/api-keys` and `POST /api/v1/projects` build a row out of
+   * the request body -- so a sweep with an admin key really did mint four API keys
+   * and create four projects before this flag existed and the backend started
+   * refusing them without a deliberate opt-in.
+   */
+  creates: boolean;
 }
 
 export interface RbacProbeTargetsResponse {

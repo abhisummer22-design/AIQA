@@ -404,6 +404,103 @@ async fn every_post_target_reaches_its_gate_rather_than_the_extractor() {
     }
 }
 
+/// A sweep must not be able to leave anything behind.
+///
+/// This is a regression test for something that actually happened: the page's
+/// "probe every route" ran `POST /admin/api-keys` and `POST /api/v1/projects` with
+/// a real admin key, and each one succeeded, so a full sweep quietly minted API
+/// keys and created projects. The earlier claim -- that every mutating target
+/// addresses a non-existent id, so a probe that gets through cannot touch anything
+/// real -- was true of every target *with* an id in its path and false of the two
+/// that create a row out of the request body.
+///
+/// So this asserts the two halves separately: that the claim still holds for the
+/// targets it holds for, and that the ones it does not hold for are refused unless
+/// the caller opted in.
+#[tokio::test]
+async fn a_probe_that_gets_past_the_gate_cannot_leave_a_record_behind() {
+    // Every target whose path names an id must still resolve to an id that cannot
+    // exist. This is the half of the old claim that was true.
+    let pid = Uuid::new_v4();
+    for t in TARGETS.iter().filter(|t| t.mutating && !t.creates) {
+        let path = concrete_path(t.path, pid);
+        assert!(
+            !path.contains(':'),
+            "{} is mutating without creating, so it must address an id that cannot exist: {path}",
+            t.path
+        );
+        assert!(
+            !t.body.unwrap_or("").contains(GHOST_ID),
+            "{} should not need to hand a ghost id in its body -- it has none in its path either",
+            t.path
+        );
+    }
+
+    // And the two that genuinely create are refused without a deliberate opt-in.
+    let creating: Vec<&str> = TARGETS
+        .iter()
+        .filter(|t| t.creates)
+        .map(|t| t.path)
+        .collect();
+    assert_eq!(
+        creating.len(),
+        2,
+        "expected exactly the two create-a-row routes, found {creating:?}"
+    );
+    for path in &creating {
+        // By id, not by path: `/admin/api-keys` is registered for both GET and
+        // POST, so looking it up by path finds the GET row, which creates nothing.
+        let row = TARGETS
+            .iter()
+            .find(|t| t.path == *path && t.creates)
+            .unwrap_or_else(|| panic!("{path} is listed as creating but has no such row"));
+        assert!(
+            row.mutating,
+            "{path} creates something, so it is certainly mutating"
+        );
+    }
+}
+
+/// The refusal itself is checked in `run_probe`, which needs no store, so it is
+/// cheap to assert directly rather than only through the HTTP route.
+#[tokio::test]
+async fn a_creating_target_is_refused_unless_the_caller_asked_for_it() {
+    let client = reqwest::Client::new();
+    // A port nothing listens on: if the request were ever sent it would fail to
+    // connect rather than quietly succeeding against a real server.
+    let base = "http://127.0.0.1:1";
+
+    for target in TARGETS.iter().filter(|t| t.creates) {
+        let mut req = crate::rbac_probe::ProbeRequest {
+            target_id: Some(target.id.to_string()),
+            method: None,
+            path: None,
+            api_key: "irrelevant".to_string(),
+            project_id: None,
+            body: None,
+            allow_creation: false,
+        };
+        let err = crate::rbac_probe::run_probe(base, &client, &req)
+            .await
+            .expect_err("a creating target must be refused by default");
+        assert!(
+            err.contains("creates a real record"),
+            "{path} should refuse for the right reason, got: {err}",
+            path = target.path
+        );
+
+        // With the opt-in it is allowed through, and here it fails to connect --
+        // which is the point: the refusal was the check, not the network.
+        req.allow_creation = true;
+        let outcome = crate::rbac_probe::run_probe(base, &client, &req).await;
+        assert!(
+            outcome.is_err(),
+            "{} with the opt-in should be attempted, not refused again",
+            target.path
+        );
+    }
+}
+
 /// The property a QA person is really testing, now that it can be measured: the
 /// weakest role is never allowed something a stronger role is refused.
 #[tokio::test]
