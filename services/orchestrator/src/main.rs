@@ -55,6 +55,21 @@ async fn main() {
         tracing::warn!("minted bootstrap admin API key (printed to stderr once)");
     }
 
+    // Said out loud at startup, not just at each use: a deployment that has
+    // quietly opened itself to its own private network should never be able to
+    // claim afterwards that nobody knew.
+    if matches!(
+        std::env::var("AIQA_ALLOW_PRIVATE_TARGETS").ok().as_deref(),
+        Some("1") | Some("true") | Some("TRUE") | Some("yes") | Some("YES")
+    ) {
+        tracing::warn!(
+            "AIQA_ALLOW_PRIVATE_TARGETS is set: crawls and executions may target \
+             loopback and RFC1918/fc00::/7 addresses. Link-local (169.254.0.0/16, \
+             the cloud metadata address), multicast, broadcast and unspecified \
+             addresses remain blocked."
+        );
+    }
+
     match aiqa_orchestrator::skill_files::ensure_skills_dir() {
         Ok(dir) => tracing::info!(
             "real filesystem skills folder ready at {} — drop SKILL.md files there to use them in generation",

@@ -226,6 +226,42 @@ fn shell_command(program: &str, args: &[&str], cwd: &Path) -> tokio::process::Co
 /// probe some other service quietly listening on 127.0.0.1).
 const ORCHESTRATOR_PORT: u16 = 8080;
 
+/// Operator opt-in that lets THIS deployment point at its own private network:
+/// a dev server on `localhost:4200`, a device on `192.168.x.x`, a Docker
+/// service on `172.17.x.x`. Without it every one of those is rejected, and for
+/// a tool whose entire purpose is testing the applications you are building,
+/// that means the app in front of you cannot be tested.
+///
+/// Deliberately NOT unlocked by this flag, because none of them is a QA target
+/// and each is a real SSRF payoff:
+///
+///   * link-local (`169.254.0.0/16`, `fe80::/10`) — where the cloud metadata
+///     endpoint lives, and the single most valuable thing to reach from inside
+///     a cloud VPC.
+///   * multicast, broadcast, unspecified (`0.0.0.0`, `::`) — not a destination
+///     any test run means to address.
+///   * the documentation ranges (`192.0.2.0/24` and friends) — TEST-NET, so
+///     nothing legitimately runs there.
+///
+/// Unset, or set to anything that is not a clear yes, means OFF: the default
+/// behaviour is identical to having no flag at all.
+/// The opt-in's own parsing, kept pure so it can be tested without touching the
+/// process environment (tests here run in parallel threads, and a `set_var` in
+/// one of them would be visible to every other test in the binary).
+///
+/// Unset, empty, or anything that is not a clear yes means OFF — a typo must
+/// fail closed, not open.
+fn private_target_opt_in(value: Option<&str>) -> bool {
+    matches!(
+        value,
+        Some("1") | Some("true") | Some("TRUE") | Some("yes") | Some("YES")
+    )
+}
+
+fn private_targets_allowed() -> bool {
+    private_target_opt_in(std::env::var("AIQA_ALLOW_PRIVATE_TARGETS").ok().as_deref())
+}
+
 /// Real destination classification, not a string/prefix match — an IP is
 /// what a request actually reaches, regardless of what hostname a caller
 /// wrote. `is_link_local` alone would already reject the cloud metadata
@@ -233,14 +269,25 @@ const ORCHESTRATOR_PORT: u16 = 8080;
 /// private/internal ranges the M2 finding's own fix direction named
 /// ("allow-list schemes and hosts").
 fn is_blocked_ip(ip: &std::net::IpAddr, port: u16) -> bool {
+    is_blocked_ip_with(ip, port, private_targets_allowed())
+}
+
+/// The actual rule, with the opt-in passed in rather than read, so every case
+/// below is decided by a pure function.
+fn is_blocked_ip_with(ip: &std::net::IpAddr, port: u16, allow_private: bool) -> bool {
     use std::net::IpAddr;
     if ip.is_loopback() {
         // The one explicit allowed exception — and only on the real port,
-        // so this never becomes a general "any local port" allowance.
-        return port != ORCHESTRATOR_PORT;
+        // so this never becomes a general "any local port" allowance — plus
+        // the operator opt-in above, which is what makes a local dev server
+        // testable at all.
+        return !(allow_private || port == ORCHESTRATOR_PORT);
     }
     match ip {
         IpAddr::V4(v4) => {
+            if allow_private && v4.is_private() {
+                return false;
+            }
             v4.is_link_local() // 169.254.0.0/16 — includes the cloud metadata address
                 || v4.is_private() // 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
                 || v4.is_unspecified() // 0.0.0.0
@@ -264,7 +311,17 @@ fn is_blocked_ip(ip: &std::net::IpAddr, port: u16) -> bool {
             // the orchestrator-port exception, which is applied by the recursive
             // call and so stays correct.
             if let Some(v4) = v6.to_ipv4_mapped() {
-                return is_blocked_ip(&IpAddr::V4(v4), port);
+                // `is_blocked_ip_with`, not `is_blocked_ip`: re-reading the
+                // environment here would discard the caller's opt-in, so
+                // `::ffff:192.168.1.50` would stay blocked even with the flag
+                // on while `192.168.1.50` was allowed -- the same address
+                // judged two different ways depending only on its spelling.
+                return is_blocked_ip_with(&IpAddr::V4(v4), port, allow_private);
+            }
+            if allow_private && v6.is_unique_local() {
+                // fc00::/7 is the IPv6 counterpart of RFC1918, so it is the
+                // same "my own network" case the IPv4 branch just allowed.
+                return false;
             }
             v6.is_unicast_link_local() // fe80::/10
                 || v6.is_unique_local() // fc00::/7
@@ -299,6 +356,7 @@ pub(crate) async fn validate_target_url(raw: &str) -> Result<(), String> {
         return if is_blocked_ip(&ip, port) {
             Err(format!("rejected target {host}:{port}: address is in a disallowed private/internal/link-local range"))
         } else {
+            note_private_target(&ip, port);
             Ok(())
         };
     }
@@ -319,8 +377,30 @@ pub(crate) async fn validate_target_url(raw: &str) -> Result<(), String> {
                 addr.ip()
             ));
         }
+        note_private_target(&addr.ip(), port);
     }
     Ok(())
+}
+
+/// Records that a private address was allowed *because the operator asked for
+/// it*, so a deployment with `AIQA_ALLOW_PRIVATE_TARGETS=1` leaves a visible
+/// trail of every internal address it reached. Silently allowing internal
+/// targets is indistinguishable, in a log, from being open to SSRF — which is
+/// exactly what makes a flag like this dangerous if it is used carelessly.
+///
+/// Only fires for an address the opt-in actually opened: loopback on a
+/// non-orchestrator port, or an RFC1918/fc00::/7 address.
+fn note_private_target(ip: &std::net::IpAddr, port: u16) {
+    use std::net::IpAddr;
+    let opened_by_opt_in = match ip {
+        IpAddr::V4(v4) => v4.is_private(),
+        IpAddr::V6(v6) => v6.is_unique_local(),
+    } || (ip.is_loopback() && port != ORCHESTRATOR_PORT);
+    if opened_by_opt_in && private_targets_allowed() {
+        tracing::warn!(
+            "AIQA_ALLOW_PRIVATE_TARGETS is set: allowing a private target {ip}:{port}"
+        );
+    }
 }
 
 // --- Critical-finding remediation: executor process containment ----------
@@ -2957,6 +3037,127 @@ AIQA_HEALING_EVENT {"event":"heal","actionIndex":1,"actionKind":"CLICK","primary
         validate_target_url("http://localhost:8080")
             .await
             .expect("localhost resolves to loopback and must remain allowed");
+    }
+
+    // --- AIQA_ALLOW_PRIVATE_TARGETS -------------------------------------
+    //
+    // The rule is exercised through `is_blocked_ip_with`, which takes the
+    // opt-in as an argument, so none of this mutates the process environment:
+    // these tests share a binary with every other test in the crate and those
+    // run in parallel threads.
+
+    #[test]
+    fn the_private_target_opt_in_fails_closed_on_anything_unclear() {
+        // A typo must not open the private network.
+        for v in [
+            None,
+            Some(""),
+            Some("0"),
+            Some("false"),
+            Some("no"),
+            Some("maybe"),
+            Some("enabled"),
+            Some(" true"),   // leading space is not a clear yes
+            Some("true "),
+            Some("TrUe"),
+        ] {
+            assert!(
+                !private_target_opt_in(v),
+                "{v:?} must be read as OFF, not as consent"
+            );
+        }
+        for v in [Some("1"), Some("true"), Some("TRUE"), Some("yes"), Some("YES")] {
+            assert!(
+                private_target_opt_in(v),
+                "{v:?} is a clear yes and must read as ON"
+            );
+        }
+    }
+
+    #[test]
+    fn without_the_opt_in_every_private_range_is_still_rejected() {
+        // The default must be exactly what it was before this flag existed.
+        for ip in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "172.17.0.3",      // Docker's default bridge
+            "192.168.1.50",    // a device on the LAN
+            "169.254.169.254", // cloud metadata
+            "fe80::1",
+            "fd00::1",
+        ] {
+            assert!(
+                is_blocked_ip_with(&ip.parse().unwrap(), 4200, false),
+                "{ip} must be rejected when the opt-in is off"
+            );
+        }
+    }
+
+    #[test]
+    fn the_opt_in_unlocks_the_ranges_a_developer_actually_targets() {
+        for ip in [
+            "127.0.0.1",   // a dev server
+            "10.1.2.3",
+            "172.17.0.3",  // a Docker service
+            "192.168.1.50", // a device on the LAN
+            "fd00::1",      // fc00::/7, the IPv6 counterpart of RFC1918
+        ] {
+            assert!(
+                !is_blocked_ip_with(&ip.parse().unwrap(), 4200, true),
+                "{ip} must be reachable once the operator opts in -- testing the app \
+                 in front of you is the product"
+            );
+        }
+    }
+
+    #[test]
+    fn the_opt_in_never_unlocks_the_addresses_that_are_actually_dangerous() {
+        // This is the whole point of carving the flag down instead of turning
+        // the guard off. Each of these stays rejected with the flag ON.
+        for ip in [
+            "169.254.169.254", // cloud instance metadata -- the real SSRF prize
+            "169.254.1.1",
+            "fe80::1",      // IPv6 link-local
+            "224.0.0.1",    // multicast
+            "255.255.255.255", // broadcast
+            "0.0.0.0",      // unspecified
+            "::",
+            "192.0.2.1",    // TEST-NET documentation range
+            "198.51.100.1",
+            "203.0.113.1",
+        ] {
+            assert!(
+                is_blocked_ip_with(&ip.parse().unwrap(), 4200, true),
+                "{ip} must stay blocked even with AIQA_ALLOW_PRIVATE_TARGETS on"
+            );
+        }
+    }
+
+    #[test]
+    fn the_opt_in_reaches_the_addresses_the_ipv4_mapped_form_wraps() {
+        // ::ffff:a.b.c.d is that address, so the flag has to mean the same thing
+        // in both spellings -- and the mapped form must not become a way to
+        // reach metadata.
+        let dev = "::ffff:192.168.1.50".parse().unwrap();
+        assert!(is_blocked_ip_with(&dev, 4200, false));
+        assert!(!is_blocked_ip_with(&dev, 4200, true));
+
+        let metadata = "::ffff:169.254.169.254".parse().unwrap();
+        assert!(
+            is_blocked_ip_with(&metadata, 4200, true),
+            "the mapped spelling must not be a way around the link-local block"
+        );
+    }
+
+    #[test]
+    fn the_orchestrator_port_exception_survives_the_opt_in_becoming_available() {
+        // It was never a consequence of the flag, and turning the flag on must
+        // not be the only reason the orchestrator can target itself.
+        let localhost: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+        assert!(!is_blocked_ip_with(&localhost, ORCHESTRATOR_PORT, false));
+        assert!(!is_blocked_ip_with(&localhost, ORCHESTRATOR_PORT, true));
+        // And the "only on the real port" half still holds.
+        assert!(is_blocked_ip_with(&localhost, 9999, false));
     }
 
     /// End-to-end proof, not just the isolated guard function: a real

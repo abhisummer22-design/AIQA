@@ -565,6 +565,25 @@ OLLAMA_DISCOVERY_TIMEOUT_SECS=5
 # (Ollama's own 4096) they send the short one-sentence form, so the prompt still fits.
 OLLAMA_NUM_CTX=
 
+# --- Target network -----------------------------------------------------
+# Where crawls and test executions are allowed to go.
+#
+# By default every private/internal address is refused, so a scoped API key
+# cannot be used to probe the network the orchestrator runs in. That also means
+# you cannot test an app running on your own machine or LAN -- which, for a QA
+# tool, is usually the app you actually want to test.
+#
+# Set this to 1 to allow loopback and RFC1918/fc00::/7: a dev server on
+# localhost:4200, a device on 192.168.x.x, a Docker service on 172.17.x.x.
+#
+# It does NOT unlock link-local (169.254.0.0/16 and fe80::/10), which is where
+# the cloud metadata endpoint lives, nor multicast, broadcast, unspecified, or
+# the documentation ranges. Those stay refused either way.
+#
+# Any value other than 1/true/TRUE/yes/YES reads as OFF, so a typo fails
+# closed. Unset = OFF. Every private target reached under this flag is logged.
+# AIQA_ALLOW_PRIVATE_TARGETS=1
+
 # Groq Cloud Configuration
 GROQ_BASE_URL=https://api.groq.com/openai/v1
 GROQ_API_KEY=<configure-this-value>
