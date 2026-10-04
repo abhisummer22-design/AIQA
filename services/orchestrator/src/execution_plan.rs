@@ -514,6 +514,12 @@ fn build_compiler_prompt(case: &TestCaseRow, grounding: Option<&Grounding>) -> S
          RULES (critical, do not violate):\n\
          - Only compile what the text actually, unambiguously states. Never invent a URL, selector, or value \
            that is not stated or directly implied by the text.\n\
+         - Read the case for POLARITY before you pick an assertion. A case that says an element must NOT be \
+           hidden, must NOT be enabled, or must be absent is asking for ASSERT_HIDDEN, or for a refusal -- not \
+           for ASSERT_VISIBLE or ASSERT_ENABLED. If a case's own title and steps assert the opposite of what its \
+           expected result says, that is a contradiction you cannot compile: return \
+           {{\"executable\": false, \"reasons\": [\"the case asserts both ... and ...\"]}} naming both halves, \
+           rather than compiling one of them.\n\
          - A relative API path (e.g. \"/health\") is allowed as \"url\" — it will be resolved against a safe, \
            pre-configured default target; never invent an absolute external hostname that is not in the text.\n\
          - Never propose a non-http/https scheme, and never propose a private/internal/link-local address.\n\
@@ -1887,6 +1893,40 @@ mod tests {
                 "the failure must say why"
             );
         }
+    }
+
+    /// A real generation failure, not a hypothetical: a requirement saying an
+    /// element "must not be hidden" produced a case whose title and steps read
+    /// "IS VISIBLE" and whose own steps asked to observe the element -- the
+    /// model asserted the opposite of the requirement. Compiling that yields a
+    /// plan asserting visibility for a case that demands hiddenness, which would
+    /// be a test that cannot both pass and be right.
+    ///
+    /// The compiler sees the whole case, so it is the one place that can catch
+    /// the contradiction, and the one that must refuse rather than pick a side.
+    #[test]
+    fn the_prompt_requires_the_compiler_to_read_polarity_not_just_pick_an_assertion() {
+        let c = case(
+            "Sidebar toggle button is visible on load",
+            "UI",
+            vec![("Observe the element with id #sidebar-toggle-button", "It is visible")],
+            "It is visible",
+            vec![],
+        );
+        let prompt = build_compiler_prompt(&c, None);
+        assert!(
+            prompt.contains("POLARITY"),
+            "the compiler must be told to read polarity before choosing an assertion:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("must NOT be") && prompt.contains("ASSERT_HIDDEN"),
+            "it must be given the concrete failure: 'must NOT be hidden' wants \
+             ASSERT_HIDDEN, not ASSERT_VISIBLE:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("contradict"),
+            "a case whose own halves disagree must be refused, not compiled on one side:\n{prompt}"
+        );
     }
 
     /// A plan that is genuinely not JSON must still fail — the fence handling is

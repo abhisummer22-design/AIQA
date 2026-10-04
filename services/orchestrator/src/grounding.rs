@@ -306,11 +306,36 @@ impl Grounding {
                 .map(|(order, e)| (element_score(e, &wanted), order, e))
                 .collect();
             elements.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+
+            // Relevance is the one signal that says "this element is what the
+            // case is about", so anything scoring above zero is offered before
+            // the score-zero remainder and the cap only ever trims the
+            // incidental. On a crawl whose elements score above zero this
+            // changes nothing -- those already sort first -- but it makes that
+            // true by construction rather than by the accident of the scores
+            // happening to separate, which a future change to `element_score`
+            // would remove.
+            //
+            // The budget check used to `break` on the first element it could not
+            // afford, so one long element ended the page and hid every later
+            // one, including short relevant ones. It now skips that element and
+            // keeps going.
+            let (relevant, incidental): (Vec<_>, Vec<_>) = elements
+                .into_iter()
+                .partition(|(score, _, _)| *score > 0);
+
             let mut shown = Vec::new();
-            for (_, _, element) in elements.into_iter().take(MAX_ELEMENTS_PER_PAGE) {
+            let mut incidental = incidental.into_iter();
+            for (_, _, element) in relevant
+                .into_iter()
+                .chain(std::iter::from_fn(|| incidental.next()))
+                .take(MAX_ELEMENTS_PER_PAGE)
+            {
                 let cost = element_line(element).len();
                 if budget < cost {
-                    break;
+                    // Skip it rather than stop: a single long element must not
+                    // hide the short, relevant ones behind it.
+                    continue;
                 }
                 budget -= cost;
                 shown.push(element.clone());
@@ -370,9 +395,12 @@ pub fn prompt_block(grounding: &Grounding) -> String {
     }
     block.push_str(
         "GROUNDING RULES (critical): use ONLY a locator copied exactly from the list above as the \"selector\" of \
-         CLICK, FILL, ASSERT_VISIBLE and ASSERT_TEXT. If the case needs an element that is not in the list, do not \
-         guess one: return {\"executable\": false, \"reasons\": [...]} naming what is missing. Never write a \
-         password or another credential as a FILL value.\n\n",
+         CLICK, FILL, ASSERT_VISIBLE, ASSERT_HIDDEN, ASSERT_ENABLED and ASSERT_TEXT. If the case needs an element \
+         that is not in the list, do not guess one: return {\"executable\": false, \"reasons\": [...]} naming what is \
+         missing. Never write a password or another credential as a FILL value.\n\n\
+         Your reasons are read as fact by the user, so check them against the list above before writing one. An \
+         element that IS on a page above is not missing -- if you cannot see why you need something, name the \
+         thing you actually lack (a URL, a locator, a value) instead of claiming a locator is absent.\n\n",
     );
     block
 }
