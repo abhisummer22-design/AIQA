@@ -281,9 +281,10 @@ describe('no dialog is left hand-rolled', () => {
   it('no component renders its own fixed-inset overlay with role="dialog"', async () => {
     const { readdirSync, readFileSync } = await import('node:fs');
     const { join } = await import('node:path');
-    const { globSync } = await import('node:fs');
 
-    const files = globSync('src/components/**/*.tsx', { exclude: ['**/*.test.tsx'] });
+    // `fs.globSync` is Node 22+; CI is Node 20 and failed on it.
+    const { isTestFile, listTsxFiles } = await import('../../utils/listTsxFiles');
+    const files = listTsxFiles('src/components', isTestFile);
     const offenders: string[] = [];
     for (const file of files) {
       const source = readFileSync(file, 'utf8');

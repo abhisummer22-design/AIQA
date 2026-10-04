@@ -33,10 +33,14 @@
  * false positives.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
-import { readFileSync, globSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import ts from 'typescript';
+import { isTestFile, listTsxFiles } from '../../utils/listTsxFiles';
 
-const SOURCES = globSync('src/components/**/*.tsx', { exclude: ['**/*.test.tsx'] });
+// Not `fs.globSync`: that is Node 22+, and CI is on Node 20, where all three of
+// these audits failed with `TypeError: globSync is not a function`. See
+// `utils/listTsxFiles` for why the walk is done by hand instead.
+const SOURCES = listTsxFiles('src/components', isTestFile);
 
 /** Tags that take a label and therefore need an accessible name. */
 const FORM_CONTROLS = new Set(['input', 'select', 'textarea']);

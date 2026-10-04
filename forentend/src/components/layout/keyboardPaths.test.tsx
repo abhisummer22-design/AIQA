@@ -184,10 +184,12 @@ describe('focus is always visible', () => {
    * changed nothing.
    */
   it('no control removes its outline without providing a replacement', async () => {
-    const { readFileSync, globSync } = await import('node:fs');
+    const { readFileSync } = await import('node:fs');
+    // `fs.globSync` is Node 22+; CI is Node 20 and failed on it.
+    const { isTestFile, listTsxFiles } = await import('../../utils/listTsxFiles');
 
     const offenders: string[] = [];
-    for (const file of globSync('src/**/*.tsx', { exclude: ['**/*.test.tsx'] })) {
+    for (const file of listTsxFiles('src', isTestFile)) {
       const source = readFileSync(file, 'utf8');
       for (const match of source.matchAll(/className="([^"]*outline-none[^"]*)"/g)) {
         if (!/focus(-visible)?:(ring|border|bg|shadow)/.test(match[1])) {
