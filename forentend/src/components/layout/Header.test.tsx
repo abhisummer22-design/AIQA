@@ -391,3 +391,54 @@ describe('Header — Phase 6 gap-closing real theme toggle', () => {
     expect(document.getElementById('theme-toggle-button')!.getAttribute('title')).toBe('Switch to dark mode');
   });
 });
+
+  describe("Header - exactly one project selector per breakpoint", () => {
+    // The regression this guards: `ProjectSelector` was rendered twice, with
+    // only the second copy wrapped in `hidden md:block`. An unwrapped first
+    // copy stays visible at every width, so a desktop window showed the same
+    // project in two identical dropdowns side by side.
+    it("never leaves two visible copies: the mobile copy is hidden from md up and the desktop copy below it", async () => {
+      localStorage.setItem("aiqa.orchestrator.apiKey", RAW_KEY);
+      mockBackend({ projects: [PROJECT_A] });
+      renderApp();
+      await verifyKey();
+
+      await waitFor(() => expect(document.getElementById("project-selector-button")).toBeTruthy());
+
+      // The button sits several divs deep inside `ProjectSelector`, so the
+      // breakpoint wrapper is somewhere up its ancestor chain, not on the
+      // nearest one.
+      const ancestorClasses = Array.from(
+        document.querySelectorAll("#project-selector-button"),
+      ).map((button) => {
+        const classes: string[] = [];
+        for (let node = button.parentElement; node; node = node.parentElement) {
+          classes.push(node.className ?? "");
+        }
+        return classes.join(" ");
+      });
+      expect(ancestorClasses).toHaveLength(2);
+      // Complementary, so exactly one is visible at any width. Without the
+      // `md:hidden` on the first copy these two checks are what fails.
+      expect(ancestorClasses.some((c) => c.includes("md:hidden"))).toBe(true);
+      expect(ancestorClasses.some((c) => c.includes("hidden md:block"))).toBe(true);
+    });
+
+    it("the environment selector is a different control, not a second project picker", async () => {
+      localStorage.setItem("aiqa.orchestrator.apiKey", RAW_KEY);
+      mockBackend({ projects: [PROJECT_A] });
+      renderApp();
+      await verifyKey();
+
+      await waitFor(() => expect(document.getElementById("project-selector-button")).toBeTruthy());
+      // DEMO / UAT / LIVE is the environment scope; it must not carry the
+      // project selector's id, which is how the two were told apart.
+      const environmentButtons = Array.from(document.querySelectorAll("button")).filter(
+        (b) => (b.textContent ?? "").includes("DEMO"),
+      );
+      expect(environmentButtons.length).toBeGreaterThan(0);
+      for (const button of environmentButtons) {
+        expect(button.getAttribute("id")).not.toBe("project-selector-button");
+      }
+    });
+  });

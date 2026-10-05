@@ -303,7 +303,13 @@ export const Header: React.FC = () => {
             "prefer integrating into an existing header/sidebar area already
             intended for contextual controls" — least invasive, no layout
             redesign. */}
-        <ProjectSelector />
+        {/* One selector per breakpoint, never two. The mobile copy has to be
+            hidden from `md` up and the desktop copy hidden below it; rendering
+            the mobile copy unwrapped showed both side by side on a desktop
+            window, so the same project appeared in two identical dropdowns. */}
+        <div className="md:hidden">
+          <ProjectSelector />
+        </div>
         <div className="hidden md:block"><ProjectSelector /></div>
       </div>
 
