@@ -592,7 +592,40 @@ async fn compile_with_ai(
     };
 
     match parsed {
-        AiPlanResponse::NotExecutable { executable: _, reasons } => {
+        AiPlanResponse::NotExecutable {
+            executable: _,
+            reasons,
+        } => {
+            // These reasons are the *model's* words, not this compiler's
+            // verdict. The deterministic `ungrounded()` check further down only
+            // runs on the Executable branch, because a refusal carries no
+            // actions to check -- so on a grounded case the model can decline
+            // on its own judgement alone, and an unmarked pass-through reads in
+            // the UI as a compiler error the user cannot act on. That is
+            // exactly what it was: a refusal to compile a `.sr-only` skip link,
+            // which is genuinely not visible until it takes focus.
+            //
+            // Marked as the model's, and paired with what the crawl actually
+            // offered -- stated factually rather than as `grounded_note`'s
+            // "every selector was found by the crawl", which is not knowable
+            // here: no plan was produced to check.
+            let reasons = match grounding {
+                Some(g) if !reasons.is_empty() => {
+                    let report = g.report();
+                    let mut marked: Vec<String> = reasons
+                        .into_iter()
+                        .map(|r| {
+                            format!("the AI compiler declined to compile this case, in its own words: {r}")
+                        })
+                        .collect();
+                    marked.push(format!(
+                        "the crawl offered it {} of {} pages and {} elements; this refusal is the model's judgement, not a check this compiler made",
+                        report.pages_offered, report.pages_in_crawl, report.elements_offered
+                    ));
+                    marked
+                }
+                _ => reasons,
+            };
             CompilationOutcome::NotExecutable { reasons }
         }
         AiPlanResponse::Executable {
@@ -2201,10 +2234,41 @@ mod tests {
         let g = grounding_as(Some("admin"), &c);
         match compile_grounded(&infra, &c, Some(&g)).await.outcome {
             CompilationOutcome::NotExecutable { reasons } => {
+                // The model's own words are still there -- nothing is dropped
+                // or rewritten -- but they are now attributed, because no
+                // compiler check produced them and an unattributed pass-through
+                // reads as this compiler's verdict.
+                assert!(
+                    reasons[0].contains("there is no Billing link in the crawl"),
+                    "the model's own reason was lost: {reasons:?}"
+                );
+                assert!(
+                    reasons[0].contains("the AI compiler declined"),
+                    "the refusal is not attributed to the model: {reasons:?}"
+                );
+                assert!(
+                    reasons.last().unwrap().contains("the model's judgement"),
+                    "the crawl context is missing: {reasons:?}"
+                );
+            }
+            other => panic!("expected NotExecutable, got {other:?}"),
+        }
+    }
+
+    /// An ungrounded case has no crawl to blame, so the model's words are
+    /// passed through unmarked -- there is nothing that misleads about them.
+    #[tokio::test]
+    async fn an_ai_that_declines_an_ungrounded_case_is_not_annotated() {
+        let c = open_settings();
+        let (infra, _) =
+            infra_recording(r#"{"executable":false,"reasons":["the plan would be a guess"]}"#);
+        match compile_grounded(&infra, &c, None).await.outcome {
+            CompilationOutcome::NotExecutable { reasons } => {
                 assert_eq!(
                     reasons,
-                    vec!["there is no Billing link in the crawl".to_string()]
-                )
+                    vec!["the plan would be a guess".to_string()],
+                    "an ungrounded refusal must be reported exactly as the model wrote it"
+                );
             }
             other => panic!("expected NotExecutable, got {other:?}"),
         }
