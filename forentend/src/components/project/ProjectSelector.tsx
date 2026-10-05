@@ -37,7 +37,6 @@ export const ProjectSelector: React.FC = () => {
   // `aiqaApi.projects.create` → real `POST /api/v1/projects`).
   const [isCreating, setIsCreating] = useState(false);
   const [createName, setCreateName] = useState('');
-  const [createDescription, setCreateDescription] = useState('');
   const [createNameError, setCreateNameError] = useState<string | null>(null);
   const [createSubmitting, setCreateSubmitting] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
@@ -49,7 +48,6 @@ export const ProjectSelector: React.FC = () => {
 
   function openCreateForm(): void {
     setCreateName('');
-    setCreateDescription('');
     setCreateNameError(null);
     setCreateError(null);
     setIsCreating(true);
@@ -58,7 +56,6 @@ export const ProjectSelector: React.FC = () => {
   function closeCreateForm(): void {
     setIsCreating(false);
     setCreateName('');
-    setCreateDescription('');
     setCreateNameError(null);
     setCreateError(null);
   }
@@ -82,11 +79,11 @@ export const ProjectSelector: React.FC = () => {
     setCreateError(null);
     setCreateSubmitting(true);
     try {
-      const trimmedDescription = createDescription.trim();
-      await createProject({
-        name: trimmedName,
-        description: trimmedDescription ? trimmedDescription : undefined,
-      });
+      // One field, one value. The backend's `description` is optional
+      // (`CreateProjectRequest.description: Option<String>`), so a project is
+      // named and nothing else -- no second input to fill in before the
+      // project exists.
+      await createProject({ name: trimmedName });
       // Real backend confirmed success — safe to close the form and the
       // dropdown (mirrors the existing behavior when selecting a project).
       closeCreateForm();
@@ -221,21 +218,6 @@ export const ProjectSelector: React.FC = () => {
                   className="w-full px-2 py-1.5 rounded-md bg-[#020617] border border-slate-700 text-slate-200 text-xs placeholder:text-content-muted focus:outline-none focus:border-violet-600 disabled:opacity-60"
                 />
                 {createNameError && <p className="mt-1 text-[11px] text-rose-400">{createNameError}</p>}
-              </div>
-
-              <div>
-                <label htmlFor="create-project-description" className="block text-[10px] text-slate-400 mb-1">
-                  Description <span className="text-content-muted">(optional)</span>
-                </label>
-                <textarea
-                  id="create-project-description"
-                  value={createDescription}
-                  onChange={(e) => setCreateDescription(e.target.value)}
-                  disabled={createSubmitting}
-                  rows={2}
-                  placeholder="What is this project for?"
-                  className="w-full px-2 py-1.5 rounded-md bg-[#020617] border border-slate-700 text-slate-200 text-xs placeholder:text-content-muted resize-none focus:outline-none focus:border-violet-600 disabled:opacity-60"
-                />
               </div>
 
               {createError && (
