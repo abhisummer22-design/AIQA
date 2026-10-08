@@ -89,7 +89,6 @@ pub(crate) async fn create_schedule(
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<ScheduleBody>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
     let name = check_name(
         body.name
@@ -164,7 +163,6 @@ pub(crate) async fn update_schedule(
     ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
     ApiJson(body): ApiJson<ScheduleBody>,
 ) -> Result<Json<Value>, ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
     let mut row = scoped_schedule(&state, project_id, id).await?;
     let now = Utc::now();
@@ -224,7 +222,6 @@ pub(crate) async fn delete_schedule(
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<StatusCode, ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
     let row = scoped_schedule(&state, project_id, id).await?;
     state
@@ -252,7 +249,6 @@ pub(crate) async fn run_schedule_now(
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
     let schedule = scoped_schedule(&state, project_id, id).await?;
     match regression_runner::run_now(&state, &schedule, &ctx, Utc::now()).await {

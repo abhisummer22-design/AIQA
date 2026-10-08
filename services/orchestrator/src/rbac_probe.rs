@@ -616,7 +616,10 @@ pub async fn run_probe(
         builder = builder.json(&body);
     }
 
-    let response = builder.send().await.map_err(|e| format!("probe failed: {e}"))?;
+    let response = builder
+        .send()
+        .await
+        .map_err(|e| format!("probe failed: {e}"))?;
     let status = response.status().as_u16();
     let text = response.text().await.unwrap_or_default();
     let trimmed = text.trim();

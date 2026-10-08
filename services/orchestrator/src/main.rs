@@ -108,7 +108,9 @@ async fn main() {
             .get_show_browser_window()
             .await
             .unwrap_or_else(|e| {
-                tracing::error!("could not read the execution display setting, defaulting to headless: {e}");
+                tracing::error!(
+                    "could not read the execution display setting, defaulting to headless: {e}"
+                );
                 None
             })
             .unwrap_or(false),
@@ -250,7 +252,9 @@ async fn main() {
     // Phase 7 — autopilot runs that were going when the process stopped carry on where they were.
     match aiqa_orchestrator::autopilot_runner::resume_runs(&state).await {
         Ok(0) => {}
-        Ok(n) => tracing::info!("picked up {n} autopilot run(s) that were going when the service stopped"),
+        Ok(n) => tracing::info!(
+            "picked up {n} autopilot run(s) that were going when the service stopped"
+        ),
         Err(e) => tracing::error!("startup autopilot-resume pass failed: {e}"),
     }
     // Phase 8C — the schedules of regression runs are looked at every half minute.

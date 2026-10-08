@@ -828,7 +828,15 @@ impl std::fmt::Display for GovernedHealingError {
 
 impl std::error::Error for GovernedHealingError {}
 
-/// Computes a deterministic SHA-256 fingerprint of a failure.
+/// **Retired in Phase 2 - do not call.** This hashed `run_id` and `task_id` into
+/// the value, which made it both unable to match
+/// `execution_telemetry.failure_fingerprint` and unable to group the same defect
+/// across runs. Use [`crate::adaptive_intelligence::canonical_failure_fingerprint`],
+/// which every fingerprint writer now shares.
+///
+/// Kept, and marked dead, so the removal shows up in a diff instead of happening
+/// silently: a compile error would name the caller, which is the point.
+#[allow(dead_code)]
 pub fn compute_failure_fingerprint(
     run_id: &Uuid,
     task_id: &str,
@@ -1224,12 +1232,29 @@ impl GovernedHealingService {
         }
 
         // 2. Failure Fingerprint & Idempotency Key
-        let fingerprint = compute_failure_fingerprint(
-            &req.run_id,
-            &req.task_id,
-            req.failed_selector.as_deref(),
-            &req.failure_reason,
-        );
+        // Phase 2 fix. This used to be `compute_failure_fingerprint(&run_id, &task_id,
+        // selector, reason)`, which hashed **`run_id` and `task_id`**. Two consequences,
+        // both silent:
+        //
+        //   1. It could never equal `execution_telemetry.failure_fingerprint`, which is
+        //      derived from category + masked message + selector. So the join the whole
+        //      Failure -> Bug -> Fix -> Retest chain depends on found nothing, and the
+        //      walk reported "no fix exists" for failures that had one.
+        //   2. Hashing the run id makes the value unique *per run*, so it cannot group two
+        //      occurrences of the same defect across runs - which is the entire purpose
+        //      of a failure fingerprint. `list_healing_proposals_for_cluster` matches on
+        //      it against the cluster's fingerprint, so that correlation only ever
+        //      worked through its `task_ids` fallback.
+        //
+        // Idempotency is **not** affected: the key below already carries `run_id` and
+        // `task_id` itself, so "one proposal per failed task per run" still holds.
+        let (_sanitized, _category, fingerprint) =
+            crate::adaptive_intelligence::canonical_failure_fingerprint(
+                &req.failure_reason,
+                req.failed_selector.as_deref(),
+                None,
+                None,
+            );
         let idempotency_key = format!("heal:{}:{}:{}", req.run_id, req.task_id, &fingerprint[..12]);
 
         // Idempotency check: if an identical proposal already exists, return it!
@@ -1856,16 +1881,42 @@ impl GovernedHealingService {
             )
             .await
         {
-            if let Ok(task_node_id) = self
+            // Phase 1 (Trace Graph): the subject vertex for the `healed_by` /
+            // `regressed_by` edge. This used to be keyed on `proposal.task_name`
+            // unconditionally, which put a name into `TEST_NODE_TYPE` — the
+            // namespace readers join on `external_ref = test_cases.id`
+            // (see `Store::list_test_cases_for_requirement`). It now resolves the
+            // task's stable `test_case_id` (migration 0028) and keys on that, so a
+            // healed test case's `healed_by` edge lands on the same vertex the
+            // `validates`, `covers` and `fails_with` edges use — which is what makes
+            // the `fix` hop in `trace::TraceReader::healing_side_of_trace` joinable.
+            //
+            // With no case behind the task the name is kept, routed through
+            // `unambiguous_task_ref` so a name that parses as a UUID cannot claim a
+            // real case's vertex.
+            let subject_node_id = match self
                 .store
-                .upsert_quality_node(
-                    &proposal.project_id,
-                    "test",
-                    &proposal.task_name,
-                    &proposal.task_name,
-                )
+                .get_task_test_case_id(&proposal.project_id, &proposal.run_id, &proposal.task_id)
                 .await
+                .unwrap_or(None)
             {
+                Some(case_id) => self
+                    .store
+                    .upsert_test_case_node(&proposal.project_id, &case_id, &proposal.task_name)
+                    .await
+                    .ok(),
+                None => self
+                    .store
+                    .upsert_quality_node(
+                        &proposal.project_id,
+                        crate::store::TEST_NODE_TYPE,
+                        &crate::store::unambiguous_task_ref(&proposal.task_name),
+                        &proposal.task_name,
+                    )
+                    .await
+                    .ok(),
+            };
+            if let Some(task_node_id) = subject_node_id {
                 let relation = match outcome {
                     VerificationOutcome::Verified => "healed_by",
                     VerificationOutcome::RegressionIntroduced => "regressed_by",

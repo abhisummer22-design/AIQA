@@ -20,7 +20,7 @@
 
 use std::path::{Path, PathBuf};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct LocalEvidenceStore {
     root: PathBuf,
 }

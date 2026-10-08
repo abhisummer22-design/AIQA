@@ -17,7 +17,7 @@ use crate::auth::{AuthContext, Role};
 use crate::evidence::LocalEvidenceStore;
 use crate::executor::{ExecutorRegistry, SimulatedExecutor};
 use crate::policy::PolicyConfig;
-use crate::rbac_probe::{classify, concrete_path, loopback_base, Gate, TARGETS, GHOST_ID};
+use crate::rbac_probe::{classify, concrete_path, loopback_base, Gate, GHOST_ID, TARGETS};
 use crate::state::AppState;
 use crate::store::Store;
 use axum::body::Body;
@@ -34,12 +34,18 @@ use uuid::Uuid;
 #[test]
 fn a_403_is_told_apart_by_which_gate_said_it() {
     assert_eq!(
-        classify(403, r#"{"error":{"message":"role 'viewer' cannot perform this action (requires 'operator')"}}"#),
+        classify(
+            403,
+            r#"{"error":{"message":"role 'viewer' cannot perform this action (requires 'operator')"}}"#
+        ),
         Gate::RoleRefused,
         "the role gate's own wording must be recognised"
     );
     assert_eq!(
-        classify(403, r#"{"error":{"message":"key is scoped to project abc and cannot act on def"}}"#),
+        classify(
+            403,
+            r#"{"error":{"message":"key is scoped to project abc and cannot act on def"}}"#
+        ),
         Gate::ScopeRefused,
         "the scope gate's own wording must be recognised, not lumped in with the role gate"
     );
@@ -57,7 +63,10 @@ fn a_body_rejected_before_the_gate_counts_as_allowed_not_as_a_refusal() {
     // extractor. So a malformed body never reaches the gate and comes back 422 for
     // every role. Reading that as "allowed" is correct -- the gate did not object --
     // and reading it as a schema probe is exactly what it is.
-    assert_eq!(classify(422, "missing field `title`"), Gate::AllowedThenRefused);
+    assert_eq!(
+        classify(422, "missing field `title`"),
+        Gate::AllowedThenRefused
+    );
     assert!(!Gate::AllowedThenRefused.blocked());
     assert!(!Gate::AllowedThenRefused.inconclusive());
 }
@@ -72,7 +81,10 @@ fn only_a_403_counts_as_blocked() {
     }
     for status in [401, 405] {
         let g = classify(status, "");
-        assert!(g.inconclusive(), "{status} must read as an unsound measurement");
+        assert!(
+            g.inconclusive(),
+            "{status} must read as an unsound measurement"
+        );
         assert!(
             !g.blocked(),
             "{status} is not a permission finding, so it must not read as one either"
@@ -85,7 +97,10 @@ fn only_a_403_counts_as_blocked() {
 fn a_rejected_key_is_inconclusive_rather_than_a_finding() {
     let g = classify(401, "unauthorized");
     assert!(g.inconclusive());
-    assert!(!g.blocked(), "a bad key is not evidence that the route is open");
+    assert!(
+        !g.blocked(),
+        "a bad key is not evidence that the route is open"
+    );
 }
 
 // ------------------------------------------------------------- loopback
@@ -96,7 +111,12 @@ fn a_rejected_key_is_inconclusive_rather_than_a_finding() {
 /// offer. So the host is checked, not trusted.
 #[test]
 fn the_probe_may_only_address_this_server_over_loopback() {
-    for good in ["127.0.0.1:8080", "localhost:8080", "[::1]:8080", "localhost"] {
+    for good in [
+        "127.0.0.1:8080",
+        "localhost:8080",
+        "[::1]:8080",
+        "localhost",
+    ] {
         assert!(
             loopback_base(Some(good)).is_some(),
             "{good} is this server and should be allowed"
@@ -105,7 +125,7 @@ fn the_probe_may_only_address_this_server_over_loopback() {
     for bad in [
         "evil.example.com",
         "10.0.0.5:8080",
-        "169.254.169.254",        // cloud metadata
+        "169.254.169.254",         // cloud metadata
         "localhost.evil.com:8080", // suffix trick
         "127.0.0.1.evil.com:8080",
         "[::ffff:127.0.0.1]:8080",
@@ -115,7 +135,10 @@ fn the_probe_may_only_address_this_server_over_loopback() {
             "{bad} is not loopback and must be refused"
         );
     }
-    assert!(loopback_base(None).is_none(), "a missing Host must be refused");
+    assert!(
+        loopback_base(None).is_none(),
+        "a missing Host must be refused"
+    );
 }
 
 /// The port comes from the request that arrived, so a non-default port still works.
@@ -192,7 +215,13 @@ fn a_mutating_probe_can_only_address_ids_that_do_not_exist() {
             "{} is mutating but still carries an unresolved parameter: {path}",
             t.path
         );
-        for named in [":run_id", ":proposal_id", ":task_id", ":evidence_id", ":finding_id"] {
+        for named in [
+            ":run_id",
+            ":proposal_id",
+            ":task_id",
+            ":evidence_id",
+            ":finding_id",
+        ] {
             if t.path.contains(named) {
                 assert!(
                     path.contains(GHOST_ID),
@@ -259,10 +288,7 @@ async fn harness() -> Harness {
         inert_ai_router(),
         Arc::new(crate::ai_router::test_support::FakeEmbedder::unconfigured()),
     );
-    Harness {
-        state,
-        _dir: dir,
-    }
+    Harness { state, _dir: dir }
 }
 
 async fn mint(state: &AppState, role: &str) -> String {
@@ -282,7 +308,13 @@ async fn mint(state: &AppState, role: &str) -> String {
 }
 
 /// Drives the real router, so the middleware the guards sit in is part of the answer.
-async fn send(state: &AppState, method: &str, path: &str, key: &str, body: Option<&str>) -> (u16, String) {
+async fn send(
+    state: &AppState,
+    method: &str,
+    path: &str,
+    key: &str,
+    body: Option<&str>,
+) -> (u16, String) {
     let app = crate::api::router(state.clone());
     let b = match body {
         Some(t) => Body::from(t.to_string()),
@@ -330,8 +362,7 @@ async fn every_target_is_probed_for_real_and_its_answer_classified_correctly() {
     for target in TARGETS {
         let path = concrete_path(target.path, pid);
         for (role, key) in &keys {
-            let (status, body) =
-                send(&h.state, target.method, &path, key, target.body).await;
+            let (status, body) = send(&h.state, target.method, &path, key, target.body).await;
             let gate = classify(status, &body);
             assert!(
                 !gate.inconclusive(),
@@ -387,14 +418,22 @@ async fn every_target_is_probed_for_real_and_its_answer_classified_correctly() {
 async fn every_post_target_reaches_its_gate_rather_than_the_extractor() {
     let h = harness().await;
     let pid = Uuid::new_v4();
-    h.state.store.insert_project(pid, "extractor", None).await.unwrap();
+    h.state
+        .store
+        .insert_project(pid, "extractor", None)
+        .await
+        .unwrap();
     let viewer = mint(&h.state, "viewer").await;
 
-    for target in TARGETS.iter().filter(|t| matches!(t.method, "POST" | "PUT" | "PATCH")) {
+    for target in TARGETS
+        .iter()
+        .filter(|t| matches!(t.method, "POST" | "PUT" | "PATCH"))
+    {
         let path = concrete_path(target.path, pid);
         let (status, body) = send(&h.state, target.method, &path, &viewer, target.body).await;
         assert_ne!(
-            status, 422,
+            status,
+            422,
             "{} as a viewer answered 422, so the extractor answered before the gate \
              ran and the probe would report that the viewer got past a gate it never \
              reached. The recorded body needs a field it is missing: {}",
@@ -524,15 +563,17 @@ async fn no_role_is_allowed_something_a_weaker_role_was_refused() {
         let mut blocked = [false; 3];
         let mut statuses = [0u16; 3];
         for (i, (_, key)) in keys.iter().enumerate() {
-            let (status, body) =
-                send(&h.state, target.method, &path, key, target.body).await;
+            let (status, body) = send(&h.state, target.method, &path, key, target.body).await;
             statuses[i] = status;
             blocked[i] = classify(status, &body).blocked();
         }
         let (viewer, operator, admin) = (blocked[0], blocked[1], blocked[2]);
         // The statuses travel with every message: an inversion is only diagnosable
         // if you can see what actually came back.
-        let seen = format!("viewer/operator/admin = {}/{}/{}", statuses[0], statuses[1], statuses[2]);
+        let seen = format!(
+            "viewer/operator/admin = {}/{}/{}",
+            statuses[0], statuses[1], statuses[2]
+        );
         let at = |what: &str| format!("{} {}: {} ({seen})", target.method, target.path, what);
 
         // `blocked` means *refused*, so the ladder must hold as:

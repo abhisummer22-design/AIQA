@@ -1712,7 +1712,8 @@ mod tests {
     /// not a model failure, and it is pinned here so the vocabulary can never
     /// again be shown without its object form.
     #[test]
-    fn the_prompt_shows_a_complete_action_object_so_the_model_cannot_answer_with_shorthand_strings() {
+    fn the_prompt_shows_a_complete_action_object_so_the_model_cannot_answer_with_shorthand_strings()
+    {
         let c = case(
             "Click save",
             "UI",
@@ -1764,7 +1765,9 @@ mod tests {
         let infra = infra_with_ai(Ok(shorthand));
         match compile(&infra, &c).await {
             CompilationOutcome::CompilationFailed { reasons } => assert!(
-                reasons.iter().any(|r| r.contains("did not match the required structured schema")),
+                reasons
+                    .iter()
+                    .any(|r| r.contains("did not match the required structured schema")),
                 "a string where an action object belongs is not a plan, got {reasons:?}"
             ),
             other => panic!("shorthand strings must not compile, got {other:?}"),
@@ -1864,7 +1867,13 @@ mod tests {
     /// between a model's key name and the browser.
     #[tokio::test]
     async fn a_press_key_that_is_not_a_real_key_name_is_refused_by_the_validator() {
-        for bad in ["Control+Shift+Delete; rm -rf /", "process.exit(1)", "tab", "", "Shift+Tab"] {
+        for bad in [
+            "Control+Shift+Delete; rm -rf /",
+            "process.exit(1)",
+            "tab",
+            "",
+            "Shift+Tab",
+        ] {
             assert!(
                 !crate::plan_validator::key_name_is_real(bad),
                 "{bad:?} names no single real key and must be refused"
@@ -1921,8 +1930,7 @@ mod tests {
             },
         ] {
             let plan = plan_of(ExecutionType::Api, vec![action]);
-            let result = crate::executor::execute_plan_once(&reqwest::Client::new(), &plan)
-                .await;
+            let result = crate::executor::execute_plan_once(&reqwest::Client::new(), &plan).await;
             assert_eq!(
                 result.status,
                 crate::domain::TaskStatus::Failed,
@@ -1949,7 +1957,10 @@ mod tests {
         let c = case(
             "Sidebar toggle button is visible on load",
             "UI",
-            vec![("Observe the element with id #sidebar-toggle-button", "It is visible")],
+            vec![(
+                "Observe the element with id #sidebar-toggle-button",
+                "It is visible",
+            )],
             "It is visible",
             vec![],
         );
@@ -1984,13 +1995,17 @@ mod tests {
         match compile(&infra, &c).await {
             CompilationOutcome::CompilationFailed { reasons } => {
                 assert!(
-                    reasons.iter().any(|r| r.contains("did not match the required structured schema")),
+                    reasons
+                        .iter()
+                        .any(|r| r.contains("did not match the required structured schema")),
                     "reasons={reasons:?}"
                 );
                 // And the message must show what actually came back, so this is
                 // diagnosable rather than just "it didn't match".
                 assert!(
-                    reasons.iter().any(|r| r.contains("I am not able to produce")),
+                    reasons
+                        .iter()
+                        .any(|r| r.contains("I am not able to produce")),
                     "the error must quote the reply, got {reasons:?}"
                 );
             }
@@ -2009,7 +2024,10 @@ mod tests {
             "a 5000-char reply must not be quoted in full, got {} chars",
             s.len()
         );
-        assert!(s.contains("5000 chars total"), "it must say how much there was: {s}");
+        assert!(
+            s.contains("5000 chars total"),
+            "it must say how much there was: {s}"
+        );
         assert_eq!(summarize_for_error("short reply"), "short reply");
     }
 

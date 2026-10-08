@@ -1149,7 +1149,14 @@ fn crawl_selector_hint_is_safe(hint: &str) -> bool {
         .split(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '$')
         .filter(|s| !s.is_empty())
         .collect();
-    for bad in ["document", "window", "fetch", "xmlhttprequest", "location", "cookie"] {
+    for bad in [
+        "document",
+        "window",
+        "fetch",
+        "xmlhttprequest",
+        "location",
+        "cookie",
+    ] {
         if idents.iter().any(|i| *i == bad) {
             return false;
         }
@@ -3710,7 +3717,9 @@ mod tests {
             }]);
             let block = build_crawl_context_block(Some(&crawl));
             assert!(
-                !block.contains("javascript:") && !block.contains("<script") && !block.contains("eval("),
+                !block.contains("javascript:")
+                    && !block.contains("<script")
+                    && !block.contains("eval("),
                 "{hint:?} leaked into the prompt:\n{block}"
             );
             assert!(

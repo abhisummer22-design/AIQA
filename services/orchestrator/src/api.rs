@@ -332,6 +332,42 @@ fn protected_routes() -> Router<AppState> {
             "/api/v1/projects/:project_id/requirement-impact",
             get(get_requirement_impact_scoped),
         )
+        // Phase 1 (Trace Graph Completion) — the trace walk. Exactly one retrieval
+        // surface, mounted beside the requirement-impact query it shares a graph
+        // with. See `get_trace_scoped`'s doc comment for what it walks and, more
+        // importantly, for what it refuses to invent.
+        .route("/api/v1/projects/:project_id/trace", get(get_trace_scoped))
+        // Phase 3 (Change Impact Intelligence + Smart Regression) - one capability with a
+        // write side (declare a change, resolve it, persist the records) and a read side
+        // (the project's impact history). See `post_change_impact_scoped`'s doc comment
+        // for why a change is *declared* rather than ingested from git: the backend has no
+        // VCS integration at all, so a true impact record could not be produced any other
+        // way.
+        .route(
+            "/api/v1/projects/:project_id/change-impact",
+            post(post_change_impact_scoped).get(list_change_impact_scoped),
+        )
+        // Phase 4 (AI Risk-Based Testing) - risk-based prioritisation. One route, shaped
+        // like the trace endpoint: omit `test_case_id` for the project's whole order,
+        // supply it for one case's reasons. See `get_test_risk_scoped`.
+        .route(
+            "/api/v1/projects/:project_id/test-risk",
+            get(get_test_risk_scoped),
+        )
+        // Phase 5 (AI Exploratory Testing) - what exploration recorded and which
+        // techniques the Action AST can actually express. Read-only: starting a session is
+        // a bounded, executor-dispatching operation, so it stays on the service rather than
+        // on a GET.
+        .route(
+            "/api/v1/projects/:project_id/exploration",
+            get(get_exploration_scoped),
+        )
+        // Phase 6 (Data Integrity) - read-only cross-layer verification of one run. Read-only
+        // because the verifier itself is: it holds a &Store and calls existing readers only.
+        .route(
+            "/api/v1/projects/:project_id/integrity/:run_id",
+            get(get_run_integrity_scoped),
+        )
         // Gap-closing — real TestPlanningAgent (Phase 3) wiring, grounded in
         // real Phase 5 healing-strategy calibration and Phase 6 adaptive
         // intelligence risk signals. See `generate_test_plan_scoped`'s doc
@@ -668,11 +704,11 @@ fn protected_routes() -> Router<AppState> {
         )
         .route("/admin/api-keys/:id", delete(revoke_api_key_handler))
         .route("/admin/audit-log", get(get_audit_log))
-    // RBAC testing that measures rather than asserts: the targets a QA person
-    // probes, and the probe that sends a real request with a real key. See
-    // `rbac_probe`'s doc comment for why this is not a declared matrix.
-    .route("/api/v1/rbac/targets", get(list_rbac_probe_targets))
-    .route("/api/v1/rbac/probe", post(run_rbac_probe))
+        // RBAC testing that measures rather than asserts: the targets a QA person
+        // probes, and the probe that sends a real request with a real key. See
+        // `rbac_probe`'s doc comment for why this is not a declared matrix.
+        .route("/api/v1/rbac/targets", get(list_rbac_probe_targets))
+        .route("/api/v1/rbac/probe", post(run_rbac_probe))
         // Central Real-time Orchestrator Logs endpoints
         .route("/api/v1/logs", get(list_logs_handler))
         .route(
@@ -760,7 +796,6 @@ async fn list_rbac_probe_targets(
     _authz: RequireOperator,
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-
     Ok(Json(serde_json::json!({
         "targets": crate::rbac_probe::TARGETS,
         "roles": crate::rbac_probe::roles_weakest_first(),
@@ -782,7 +817,6 @@ async fn run_rbac_probe(
     headers: HeaderMap,
     ApiJson(body): ApiJson<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-
     let req: crate::rbac_probe::ProbeRequest = serde_json::from_value(body)
         .map_err(|e| ApiError::validation(format!("the probe request is not readable: {e}")))?;
     let host = headers.get(header::HOST).and_then(|v| v.to_str().ok());
@@ -953,7 +987,6 @@ async fn boot_ios_simulator_handler(
     Extension(ctx): Extension<AuthContext>,
     ApiJson(body): ApiJson<BootSimulatorBody>,
 ) -> Result<Json<BootAvdResponse>, ApiError> {
-
     let message = crate::mobile::boot_ios_simulator(&body.udid)
         .await
         .map_err(ApiError::validation)?;
@@ -995,7 +1028,6 @@ async fn boot_mobile_emulator(
     Extension(ctx): Extension<AuthContext>,
     ApiJson(body): ApiJson<BootAvdBody>,
 ) -> Result<Json<BootAvdResponse>, ApiError> {
-
     let message = crate::mobile::boot_avd(&body.avd)
         .await
         .map_err(ApiError::validation)?;
@@ -1379,7 +1411,6 @@ async fn create_custom_skill(
     Extension(ctx): Extension<AuthContext>,
     ApiJson(body): ApiJson<CreateCustomSkillBody>,
 ) -> Result<(StatusCode, Json<crate::store::CustomSkillRow>), ApiError> {
-
     let name = validate_skill_name(&body.name)?;
     let id = format!("custom-skill-{}", Uuid::new_v4());
 
@@ -1456,7 +1487,6 @@ async fn delete_custom_skill_handler(
     Extension(ctx): Extension<AuthContext>,
     ApiPath(id): ApiPath<String>,
 ) -> Result<StatusCode, ApiError> {
-
     let deleted = state.store.delete_custom_skill(&id).await.map_err(to_500)?;
     if !deleted {
         return Err(ApiError::not_found("skill not found"));
@@ -1605,7 +1635,6 @@ async fn create_custom_ai_provider(
     Extension(ctx): Extension<AuthContext>,
     ApiJson(body): ApiJson<CreateCustomAiProviderBody>,
 ) -> Result<(StatusCode, Json<CustomAiProviderView>), ApiError> {
-
     let name = body.name.trim();
     let base_url = body.base_url.trim().trim_end_matches('/');
     let api_key = body.api_key.trim();
@@ -1677,7 +1706,6 @@ async fn delete_custom_ai_provider_handler(
     Extension(ctx): Extension<AuthContext>,
     ApiPath(id): ApiPath<String>,
 ) -> Result<StatusCode, ApiError> {
-
     let deleted = state
         .store
         .delete_custom_ai_provider(&id)
@@ -1722,7 +1750,6 @@ async fn create_project(
     Extension(ctx): Extension<AuthContext>,
     ApiJson(body): ApiJson<CreateProjectBody>,
 ) -> Result<(StatusCode, Json<crate::store::Project>), ApiError> {
-
     let name = validate_project_name(&body.name)?;
 
     let id = Uuid::new_v4();
@@ -1811,7 +1838,6 @@ async fn update_project_handler(
     ApiPath(id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<UpdateProjectBody>,
 ) -> Result<Json<crate::store::Project>, ApiError> {
-
     let existing = state
         .store
         .get_project(id)
@@ -1864,7 +1890,6 @@ async fn delete_project_handler(
     Extension(ctx): Extension<AuthContext>,
     ApiPath(id): ApiPath<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-
     let existing = state
         .store
         .get_project(id)
@@ -1945,7 +1970,6 @@ async fn create_test_case_scoped(
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<CreateTestCaseRequest>,
 ) -> Result<(StatusCode, Json<crate::store::TestCaseRow>), ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
     validate_test_case_request(&body)?;
 
@@ -2094,7 +2118,6 @@ async fn update_test_case_scoped(
     ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
     ApiJson(body): ApiJson<UpdateTestCaseBody>,
 ) -> Result<Json<crate::store::TestCaseRow>, ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
     scoped_test_case(&state, &ctx, project_id, id).await?;
 
@@ -2146,7 +2169,6 @@ async fn delete_test_case_scoped(
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<StatusCode, ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
     scoped_test_case(&state, &ctx, project_id, id).await?;
     let deleted = state.store.delete_test_case(id).await.map_err(to_500)?;
@@ -2180,7 +2202,6 @@ async fn set_test_case_suite_scoped(
     ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
     ApiJson(body): ApiJson<SetTestCaseSuiteRequest>,
 ) -> Result<Json<crate::store::TestCaseRow>, ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
     scoped_test_case(&state, &ctx, project_id, id).await?;
     if let Some(suite_id) = body.suite_id {
@@ -2237,7 +2258,6 @@ async fn validate_test_case_scoped(
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<Json<crate::store::TestCaseRow>, ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
     let row = scoped_test_case(&state, &ctx, project_id, id).await?;
 
@@ -2334,7 +2354,6 @@ async fn approve_test_case_scoped(
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<Json<crate::store::TestCaseRow>, ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
     let row = scoped_test_case(&state, &ctx, project_id, id).await?;
     let ok = state.store.approve_test_case(id).await.map_err(to_500)?;
@@ -2380,7 +2399,6 @@ async fn reject_test_case_scoped(
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<Json<crate::store::TestCaseRow>, ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
     let row = scoped_test_case(&state, &ctx, project_id, id).await?;
     let ok = state.store.reject_test_case(id).await.map_err(to_500)?;
@@ -2429,7 +2447,6 @@ async fn compile_test_case_scoped(
     ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
     body: Option<ApiJson<CompileRequestBody>>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
     let row = scoped_test_case(&state, &ctx, project_id, id).await?;
     let body = body.map(|ApiJson(b)| b).unwrap_or_default();
@@ -2522,7 +2539,6 @@ async fn handoff_test_case_scoped(
     ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
     body: Option<ApiJson<TestCaseHandoffRequest>>,
 ) -> Result<(StatusCode, Json<CreateExecutionResponse>), ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
     let row = scoped_test_case(&state, &ctx, project_id, id).await?;
 
@@ -3154,7 +3170,6 @@ async fn generate_ai_test_cases_scoped(
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<GenerateAiTestCasesBody>,
 ) -> Result<Json<GenerateAiTestCasesResponse>, ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
 
     // Pasted text is one way to say what to test; an uploaded document's stored
@@ -3733,7 +3748,6 @@ async fn plan_generate_ai_scoped(
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<GeneratePlanBody>,
 ) -> Result<Json<GeneratePlanResponse>, ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
     if body.requirement_document_ids.is_empty() {
         return Err(ApiError::validation(
@@ -3847,7 +3861,6 @@ async fn generate_custom_testing_scoped(
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<CustomTestingGenerateBody>,
 ) -> Result<Json<CustomTestingGenerateResponse>, ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
 
     if body.requirement_text.trim().is_empty() {
@@ -3978,7 +3991,6 @@ async fn execute_api_test_scoped(
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<crate::api_testing::AdHocApiRequest>,
 ) -> Result<Json<ApiTestExecutionResponse>, ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
 
     let task_id = Uuid::new_v4().to_string();
@@ -4133,7 +4145,6 @@ async fn verify_application_source_scoped(
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<VerifyApplicationSourceBody>,
 ) -> Result<Json<crate::app_source::VerifyApplicationSourceResponse>, ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
 
     let result = crate::app_source::verify(&body.url).await;
@@ -4227,7 +4238,6 @@ async fn extract_document_text_scoped(
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<ExtractDocumentTextBody>,
 ) -> Result<Json<ExtractDocumentTextResponse>, ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
 
     if body.content_base64.len() > MAX_DOCUMENT_BASE64_LEN {
@@ -4473,7 +4483,6 @@ async fn start_performance_test_scoped(
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<crate::performance_testing::PerformanceTestConfig>,
 ) -> Result<Json<PerformanceTestStartResponse>, ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
 
     let limits = crate::performance_testing::SafetyLimits::from_env();
@@ -4944,7 +4953,6 @@ async fn cancel_performance_run_scoped(
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, run_id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<Json<PerformanceTestCancelResponse>, ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
     let row = state
         .store
@@ -5055,7 +5063,6 @@ async fn put_ai_settings_handler(
     Extension(ctx): Extension<AuthContext>,
     ApiJson(body): ApiJson<crate::ai_router::AiSettings>,
 ) -> Result<Json<crate::ai_router::AiSettings>, ApiError> {
-
     const MAX_TASK_CHAIN: usize = 8;
     for (task, preference) in &body.task_overrides {
         if preference.chain.len() > MAX_TASK_CHAIN {
@@ -5141,7 +5148,6 @@ async fn put_execution_settings_handler(
     Extension(ctx): Extension<AuthContext>,
     ApiJson(body): ApiJson<ExecutionSettings>,
 ) -> Result<Json<ExecutionSettings>, ApiError> {
-
     state
         .store
         .set_show_browser_window(body.show_browser_window)
@@ -5175,7 +5181,6 @@ async fn refresh_ai_providers(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<Vec<crate::ai_router::AiProviderInfo>>, ApiError> {
-
     let providers = state.ai_infra.discover_all().await;
     audit(
         &state,
@@ -5245,7 +5250,6 @@ async fn get_ai_usage(
     Extension(ctx): Extension<AuthContext>,
     ApiQuery(q): ApiQuery<AiUsageQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-
     if ctx.project_id.is_some() {
         return Err(ApiError::forbidden(
             "the usage of every project is for a key that is not tied to one project; ask for the project's own",
@@ -6040,7 +6044,6 @@ async fn approve_run_scoped(
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, run_id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<Json<RunSummary>, ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
     let record = find_or_rehydrate_run(&state, run_id).await?;
     require_resource_in_project(record.project_id.as_deref(), project_id)?;
@@ -6085,7 +6088,6 @@ async fn reject_run_scoped(
     ApiPath((project_id, run_id)): ApiPath<(Uuid, Uuid)>,
     body: Option<ApiJson<RejectBody>>,
 ) -> Result<Json<RunSummary>, ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
     let record = find_or_rehydrate_run(&state, run_id).await?;
     require_resource_in_project(record.project_id.as_deref(), project_id)?;
@@ -6600,7 +6602,6 @@ async fn create_test_plan_scoped(
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<CreateTestPlanRequest>,
 ) -> Result<(StatusCode, Json<crate::store::TestPlanRow>), ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
     if body.name.trim().is_empty() {
         return Err(ApiError::validation("name must not be empty"));
@@ -6660,7 +6661,6 @@ async fn update_test_plan_scoped(
     ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
     ApiJson(body): ApiJson<UpdateTestPlanRequest>,
 ) -> Result<Json<crate::store::TestPlanRow>, ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
     scoped_test_plan(&state, &ctx, project_id, id).await?;
     if let Some(name) = &body.name {
@@ -6709,7 +6709,6 @@ async fn delete_test_plan_scoped(
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<StatusCode, ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
     scoped_test_plan(&state, &ctx, project_id, id).await?;
     let deleted = state.store.delete_test_plan(id).await.map_err(to_500)?;
@@ -6735,7 +6734,6 @@ async fn create_test_suite_scoped(
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<CreateTestSuiteRequest>,
 ) -> Result<(StatusCode, Json<crate::store::TestSuiteRow>), ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
     if body.name.trim().is_empty() {
         return Err(ApiError::validation("name must not be empty"));
@@ -6807,7 +6805,6 @@ async fn update_test_suite_scoped(
     ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
     ApiJson(body): ApiJson<UpdateTestSuiteRequest>,
 ) -> Result<Json<crate::store::TestSuiteRow>, ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
     scoped_test_suite(&state, &ctx, project_id, id).await?;
     if let Some(name) = &body.name {
@@ -6853,7 +6850,6 @@ async fn set_test_suite_plan_scoped(
     ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
     ApiJson(body): ApiJson<SetTestSuitePlanRequest>,
 ) -> Result<Json<crate::store::TestSuiteRow>, ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
     scoped_test_suite(&state, &ctx, project_id, id).await?;
     if let Some(plan_id) = body.plan_id {
@@ -6891,7 +6887,6 @@ async fn delete_test_suite_scoped(
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<StatusCode, ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
     scoped_test_suite(&state, &ctx, project_id, id).await?;
     let deleted = state.store.delete_test_suite(id).await.map_err(to_500)?;
@@ -6946,7 +6941,6 @@ async fn start_crawl_scoped(
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<CrawlRequestBody>,
 ) -> Result<(StatusCode, Json<CrawlStartedResponse>), ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
 
     let plan = crate::crawler::CrawlPlan {
@@ -7594,7 +7588,6 @@ async fn autopilot_estimate_scoped(
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<AutopilotEstimateBody>,
 ) -> Result<Json<crate::autopilot_estimate::Estimate>, ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
     let request = crate::autopilot::EstimateRequest {
         requirement_document_ids: body.requirement_document_ids,
@@ -7777,6 +7770,434 @@ async fn get_requirement_impact_scoped(
 }
 
 #[derive(Deserialize)]
+struct TestRiskQuery {
+    /// Order the whole project relative to one declared change. Names a `change_ref`
+    /// recorded by Phase 3; the cases it impacted are promoted into the `changed` band.
+    change_ref: Option<String>,
+    /// Explain one case instead of ordering them all.
+    test_case_id: Option<String>,
+}
+
+/// GET /api/v1/projects/:project_id/test-risk[?change_ref=&test_case_id=]
+///
+/// Phase 4. Risk-based prioritisation, answering *"why is this test high priority?"*
+/// with structured facts.
+///
+/// ## What this returns, and what it deliberately does not
+///
+/// `priority` is a band from a documented total order over named conditions, and every
+/// applicable condition is reported with its own line of `reasons`. There is **no risk
+/// score**, because `calibrate_or_none` cannot produce one: two of
+/// `calibrate_risk`'s six factors have no column anywhere in this schema
+/// (`dependency_count`, `security_sensitivity`), and passing 0.0 for them would claim
+/// "no dependency risk" and "no security risk" — assertions nobody made. The response
+/// carries `measured_weight` / `unmeasured_weight` instead, so a caller can see exactly
+/// how much of the existing model the stored rows backed.
+///
+/// ## Safety
+///
+/// This endpoint **orders**; it never excludes. Every case with recorded executions
+/// appears, and the safety floor is reported separately as `mandatory_floor` so a caller
+/// can audit what would not be dropped. Narrowing an actual run is Phase 3's
+/// `Scope::restricted_to`, which is where retention is enforced.
+///
+/// ## Scope
+///
+/// `require_scoped_project` runs first, and every read inside is project-scoped — one
+/// tenant's history cannot reach another's case, including when two tenants share an
+/// identical failure fingerprint.
+async fn get_test_risk_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiQuery(q): ApiQuery<TestRiskQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let reader = crate::qa_memory::QaMemoryReader::new(state.store.clone());
+    let pid = project_id.to_string();
+
+    // One case, with its reasons.
+    if let Some(case_id) = q
+        .test_case_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let result = reader.test_risk(&pid, case_id).await;
+        return Ok(Json(serde_json::json!({
+            "project_id": pid,
+            "scope": "test_case",
+            "insufficient_data": result.insufficient_data.as_ref().map(|i| i.as_str()),
+            "reason": result.insufficient_data.as_ref().map(|i| i.reason()),
+            "risk": result.view,
+        })));
+    }
+
+    // The whole project, ordered.
+    let change_ref = q
+        .change_ref
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let result = reader.prioritise_tests(&pid, change_ref).await;
+    Ok(Json(serde_json::json!({
+        "project_id": pid,
+        "scope": "project",
+        "insufficient_data": result.insufficient_data.as_ref().map(|i| i.as_str()),
+        "reason": result.insufficient_data.as_ref().map(|i| i.reason()),
+        "prioritisation": result.view,
+    })))
+}
+
+/// GET /api/v1/projects/:project_id/integrity/:run_id[?crawl_task_id=]
+///
+/// Phase 6. Cross-layer consistency for one run, across whichever of the five layers have
+/// real evidence for it.
+///
+/// ## Read-only, and that is the verifier's type, not a claim
+///
+/// `IntegrityVerifier` holds a `&Store` and calls only existing readers, so it holds no
+/// statement it could execute and no handle it could write through. A caller cannot turn this
+/// endpoint into a write, because there is nothing here to turn.
+///
+/// ## What a `200` with `INCONSISTENT` inside means — and does not
+///
+/// `INCONSISTENT` is a disagreement between two layers that both recorded a **measurement**.
+/// It is not on its own a product defect. `defects_established` is the separate, stricter
+/// count, and it requires both sides to be measurements; `defect_caveat` says why it is not,
+/// on every finding that is not one.
+///
+/// **`INSUFFICIENT_DATA` is the common answer and is not a failure.** It means a layer had
+/// nothing to say, or that identity could not be resolved unambiguously, or that the two
+/// observations fell outside the stated comparison window. A caller that counts
+/// `INCONSISTENT` as "broken" and `INSUFFICIENT_DATA` as "fine" will invert the meaning.
+///
+/// ## Scope
+///
+/// `require_scoped_project` runs first, and the verifier's own reads are project-scoped, so
+/// asking about another tenant's run yields an empty report rather than another tenant's
+/// facts.
+async fn get_run_integrity_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath((project_id, run_id)): ApiPath<(Uuid, Uuid)>,
+    ApiQuery(q): ApiQuery<IntegrityQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let pid = project_id.to_string();
+
+    let verifier = crate::integrity::IntegrityVerifier::new(&state.store);
+    // The UI layer is optional and only present when a real crawl exists for this project, so
+    // its absence degrades the report rather than failing it.
+    let crawl = match q
+        .crawl_task_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        None => None,
+        Some(task_id) => match crate::crawler::read_crawl_result(task_id) {
+            Ok(output) => Some(output),
+            Err(reason) => {
+                return Ok(Json(serde_json::json!({
+                    "project_id": pid,
+                    "run_id": run_id.to_string(),
+                    "insufficient_data": "CRAWL_UNREADABLE",
+                    "reason": reason,
+                    "basis": "a crawl_task_id was supplied but no readable crawl result exists \
+                              for it, so the UI layer cannot be compared at all",
+                })))
+            }
+        },
+    };
+
+    let report = verifier.verify_run(&pid, run_id, crawl.as_ref()).await;
+    Ok(Json(serde_json::json!({
+        "project_id": pid,
+        "run_id": run_id.to_string(),
+        "report": report,
+        "ui_layer": match &crawl {
+            Some(_) => "compared",
+            None => "unavailable: no crawl_task_id supplied",
+        },
+        "read_only": true,
+        "basis": "every comparison is made from existing Store readers; the verifier holds a \
+                  &Store and exposes no mutating method",
+    })))
+}
+
+#[derive(Deserialize)]
+struct IntegrityQuery {
+    /// A crawl task whose recorded `CrawlOutput` supplies the UI layer.
+    crawl_task_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ExplorationQuery {
+    /// Restrict to one classification. Omit for every finding.
+    classification: Option<String>,
+    limit: Option<i64>,
+}
+
+/// GET /api/v1/projects/:project_id/exploration[?classification=&limit=]
+///
+/// Phase 5. What exploratory sessions have recorded for this project.
+///
+/// ## Read-only, deliberately
+///
+/// Starting an exploration dispatches probes to a real executor, so it is not something a
+/// `GET` should start. This route only reports what already happened.
+///
+/// ## What it refuses to imply
+///
+/// A finding's `classification` is the agent's verdict and its `basis` is the evidence for
+/// that verdict; both are returned together, because a `CONFIRMED_DEFECT` without its basis
+/// is a claim a caller has to take on trust. Findings whose classification is
+/// `INSUFFICIENT_EVIDENCE` are reported like any other, and are not filtered out — the count
+/// of inconclusive probes is itself information.
+///
+/// The response also carries `behaviour_support`, which states which exploratory techniques
+/// the Action AST can express and which it cannot. That is included because "can you test
+/// back/forward navigation?" deserves an explicit `UNSUPPORTED` rather than silence.
+async fn get_exploration_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiQuery(q): ApiQuery<ExplorationQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let pid = project_id.to_string();
+    let limit = q.limit.unwrap_or(100).clamp(1, 1000);
+
+    // An unknown classification is refused rather than silently returning nothing: a typo
+    // that looks like "no findings of that kind" is exactly the kind of quiet wrong answer
+    // this codebase keeps refusing to give.
+    if let Some(c) = q
+        .classification
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if crate::agents::exploration::FindingClass::parse(c).is_none() {
+            return Err(ApiError::validation(format!(
+                "unknown classification {c:?}; expected one of \
+                 CONFIRMED_DEFECT, POTENTIAL_DEFECT, OBSERVED_ANOMALY, INSUFFICIENT_EVIDENCE"
+            )));
+        }
+    }
+
+    let sessions = state
+        .store
+        .list_exploration_sessions(&pid, limit)
+        .await
+        .map_err(|e| ApiError::internal(format!("could not read exploration sessions: {e}")))?;
+    let findings = state
+        .store
+        .list_exploration_findings(
+            &pid,
+            q.classification
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
+            limit,
+        )
+        .await
+        .map_err(|e| ApiError::internal(format!("could not read exploration findings: {e}")))?;
+    let counts = state
+        .store
+        .exploration_finding_counts(&pid)
+        .await
+        .map_err(|e| ApiError::internal(format!("could not count findings: {e}")))?;
+
+    Ok(Json(serde_json::json!({
+        "project_id": pid,
+        "sessions": sessions,
+        "findings": findings,
+        "finding_counts": counts,
+        "behaviour_support": crate::agents::exploration::behaviour_support_report(),
+        "basis": "exploration_sessions and exploration_findings for this project; every \
+                  finding carries the evidence key and the basis for its classification",
+    })))
+}
+
+#[derive(Deserialize)]
+struct ChangeImpactBody {
+    /// The change's stable reference - a commit, a PR, a document revision, whatever the
+    /// caller uses to name it. Free text on purpose: the backend has no VCS to validate it
+    /// against, and pretending to would be a guess.
+    change_ref: String,
+    /// `code` | `requirement` | `config` | `dependency` | `api_contract` | `page`. Recorded
+    /// with the record; it does not by itself make a target resolvable.
+    #[serde(default = "default_change_type")]
+    change_type: String,
+    /// What changed. Every entry is resolved against the graph or refused with a reason.
+    targets: Vec<crate::change_impact::ChangeTarget>,
+}
+
+fn default_change_type() -> String {
+    "code".to_string()
+}
+
+/// POST /api/v1/projects/:project_id/change-impact
+///
+/// Phase 3. Declares a change, resolves it against the stored graph, records the results,
+/// and returns the regression selection the change implies.
+///
+/// ## Why the change is declared
+///
+/// The plan lists git, API-contract, requirement, configuration and dependency changes as
+/// inputs. This backend implements **none** of the first, fourth or fifth sources: there
+/// is no `git2`, no commit or branch concept, no diff parser, no manifest reader. Only
+/// *requirements* exist as a first-class stored entity. So a change is declared by the
+/// caller and this handler's job is to resolve it — which is where the honesty matters.
+/// `INSUFFICIENT_DATA` is returned per target, with a stated reason, for anything the
+/// schema cannot ground; nothing is matched by substring.
+///
+/// ## What it will not do
+///
+/// * **No weak string heuristics.** A target resolves only on an exact `external_ref`
+///   match inside the project. A near miss is reported as unresolved rather than
+///   guessed, because a requirement key that resembles another is exactly where a
+///   heuristic invents impact.
+/// * **No cross-tenant reads.** `require_scoped_project` runs first and `project_id`
+///   reaches every query inside the reader.
+/// * **No reduction below the safety floor.** Selection is additive: a case with recorded
+///   failure evidence is retained even when nothing links it to the change.
+async fn post_change_impact_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiJson(body): ApiJson<ChangeImpactBody>,
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
+    // Declaring a change writes durable impact records and implies a regression plan, so it
+    // is an operator action, not a viewer one. `require_scoped_project` alone would let a
+    // viewer create records.
+    auth::require_role(&ctx, Role::Operator)
+        .map_err(|_| ApiError::forbidden("declaring a change requires operator or admin"))?;
+    require_scoped_project(&state, &ctx, project_id).await?;
+
+    let change_ref = body.change_ref.trim().to_string();
+    if change_ref.is_empty() {
+        return Err(ApiError::validation("change_ref must not be empty"));
+    }
+    if body.targets.is_empty() {
+        return Err(ApiError::validation("at least one target must be declared"));
+    }
+
+    let reader = crate::change_impact::ChangeImpactReader::new(state.store.clone());
+    let analysis = reader
+        .analyse(
+            &project_id.to_string(),
+            &change_ref,
+            body.change_type.trim(),
+            &body.targets,
+        )
+        .await;
+
+    // 201 when this call wrote something, 200 when it only confirmed what was already
+    // recorded - so a caller can tell a new finding from a re-run.
+    let status = if analysis.recorded > 0 {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+    Ok((
+        status,
+        Json(serde_json::to_value(analysis).map_err(to_500)?),
+    ))
+}
+
+/// GET /api/v1/projects/:project_id/change-impact
+///
+/// The project's recorded impact history, newest first. Scoped by `project_id` directly,
+/// which is why migration 0031 added the column.
+async fn list_change_impact_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let rows = state
+        .store
+        .list_change_impacts(
+            &project_id.to_string(),
+            crate::change_impact::CHANGE_IMPACT_LIST_MAX,
+        )
+        .await
+        .map_err(to_500)?;
+    Ok(Json(serde_json::json!({
+        "project_id": project_id.to_string(),
+        "records": rows,
+        "count": rows.len(),
+    })))
+}
+
+#[derive(Deserialize)]
+struct TraceQuery {
+    /// The `test_cases.id` to walk. Omitted, the endpoint returns the project's
+    /// trace *index* instead: which cases exist in the graph and how far each one
+    /// traces. Both come from the same reader, so they cannot disagree.
+    test_case_id: Option<String>,
+}
+
+/// GET /api/v1/projects/:project_id/trace[?test_case_id=<uuid>]
+///
+/// Phase 1 (Trace Graph Completion) - the trace walk, one retrieval capability
+/// over the graph that already existed:
+///
+/// ```text
+/// Requirement -> Test -> Execution -> Failure -> Bug -> Fix -> Retest -> Release
+/// ```
+///
+/// ## Why this endpoint matters
+///
+/// The graph had three writers and **zero rows** in the live database. The causes
+/// were code facts, not data problems, and are recorded on
+/// [`crate::store::upsert_test_case_node`]: two `node_type` values for one concept,
+/// a task *name* used where an *identity* belonged, and a `covers` writer with no
+/// production caller. An endpoint that reports a chain is what makes "did that
+/// actually persist?" answerable by something other than a fixture.
+///
+/// ## What it will not do
+///
+/// * **No invented links.** Every hop joins on a stored id. A hop with no evidence
+///   is absent from `steps` and named in `incomplete`, in words - the same honesty
+///   rule `qa_memory` already applies with `INSUFFICIENT_DATA`.
+/// * **No cross-tenant reads.** `require_scoped_project` runs first, and
+///   `project_id` reaches every query inside the reader.
+/// * **No unbounded read.** Every list is ordered and capped, matching the
+///   existing `store::LIST_*_MAX` convention.
+///
+/// A project with no cases yields an empty index, and a case with no history
+/// yields a trace whose `incomplete` names every missing hop. Both are correct
+/// answers about a real database; neither is a fabricated chain.
+async fn get_trace_scoped(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    ApiPath(project_id): ApiPath<Uuid>,
+    ApiQuery(q): ApiQuery<TraceQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    require_scoped_project(&state, &ctx, project_id).await?;
+    let reader = crate::trace::TraceReader::new(state.store.clone());
+    let pid = project_id.to_string();
+
+    let body = match q.test_case_id.as_deref().map(str::trim) {
+        None | Some("") => {
+            // No case named: report what the graph actually holds.
+            serde_json::to_value(reader.index(&pid).await).map_err(to_500)?
+        }
+        Some(raw) => {
+            // A malformed id is a client error, reported as such rather than
+            // silently walked as "no such case".
+            let case_id = Uuid::parse_str(raw)
+                .map_err(|_| ApiError::validation("test_case_id must be a valid UUID"))?;
+            serde_json::to_value(reader.walk_test_case(&pid, &case_id).await).map_err(to_500)?
+        }
+    };
+    Ok(Json(body))
+}
+
+#[derive(Deserialize)]
 struct ReviewBody {
     action: String, // "confirm" | "dismiss"
 }
@@ -7832,7 +8253,6 @@ async fn create_api_key(
     Extension(ctx): Extension<AuthContext>,
     ApiJson(body): ApiJson<CreateApiKeyBody>,
 ) -> Result<Json<CreateApiKeyResponse>, ApiError> {
-
     let role = match body.role.as_str() {
         "admin" | "operator" | "viewer" => body.role.as_str(),
         other => return Err(ApiError::validation(format!("unknown role '{other}'"))),
@@ -7910,7 +8330,6 @@ async fn list_api_keys_handler(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<Vec<crate::store::ApiKeyListRow>>, ApiError> {
-
     let rows = state.store.list_api_keys().await.map_err(to_500)?;
     Ok(Json(rows))
 }
@@ -7921,7 +8340,6 @@ async fn revoke_api_key_handler(
     Extension(ctx): Extension<AuthContext>,
     ApiPath(id): ApiPath<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-
     // The row count decides both the status code and whether an audit row is
     // written. Previously the count was discarded, so revoking a key that did
     // not exist (or was already revoked) answered `204 No Content` and recorded
@@ -7970,7 +8388,6 @@ async fn get_audit_log(
     Extension(ctx): Extension<AuthContext>,
     ApiQuery(q): ApiQuery<AuditQuery>,
 ) -> Result<Json<Vec<crate::store::AuditRow>>, ApiError> {
-
     let rows = state
         .store
         .list_audit(
@@ -8149,8 +8566,6 @@ async fn list_logs_handler(
     Extension(ctx): Extension<AuthContext>,
     ApiQuery(q): ApiQuery<ListLogsQuery>,
 ) -> Result<Json<Vec<OrchestratorLogEntry>>, ApiError> {
-
-
     let effective_project = match (&ctx.project_id, &q.project_id) {
         (Some(scoped), Some(requested)) => {
             if scoped != requested {
@@ -8178,7 +8593,6 @@ async fn list_project_logs_handler(
     ApiPath(project_id): ApiPath<Uuid>,
     ApiQuery(q): ApiQuery<ListLogsQuery>,
 ) -> Result<Json<Vec<OrchestratorLogEntry>>, ApiError> {
-
     auth::require_project_access(&ctx, Some(project_id.to_string().as_str()))?;
 
     let limit = q.limit.unwrap_or(100).min(300);
@@ -8372,7 +8786,7 @@ async fn create_healing_proposal_scoped(
     // reach the service is refused there with exactly this 403 anyway, so nothing
     // is lost by asking first.
     _authz: RequireOperator,
-State(state): State<AppState>,
+    State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(mut req): ApiJson<crate::governed_healing::HealingProposalRequest>,
@@ -8407,7 +8821,6 @@ async fn generate_test_plan_scoped(
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(mut req): ApiJson<crate::agents::planning::PlanningRequest>,
 ) -> Result<Json<crate::agents::planning::TestPlanOutput>, ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
     confine_schema_file_path(&mut req, schema_root_from_env().as_deref())?;
 
@@ -8586,7 +8999,7 @@ async fn approve_healing_proposal_scoped(
     // reach the service is refused there with exactly this 403 anyway, so nothing
     // is lost by asking first.
     _authz: RequireOperator,
-State(state): State<AppState>,
+    State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, proposal_id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<Json<crate::governed_healing::HealingProposal>, ApiError> {
@@ -8607,7 +9020,7 @@ async fn reject_healing_proposal_scoped(
     // reach the service is refused there with exactly this 403 anyway, so nothing
     // is lost by asking first.
     _authz: RequireOperator,
-State(state): State<AppState>,
+    State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, proposal_id)): ApiPath<(Uuid, Uuid)>,
     ApiJson(req): ApiJson<HealingRejectRequest>,
@@ -8629,7 +9042,7 @@ async fn execute_healing_proposal_scoped(
     // reach the service is refused there with exactly this 403 anyway, so nothing
     // is lost by asking first.
     _authz: RequireOperator,
-State(state): State<AppState>,
+    State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, proposal_id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<Json<crate::governed_healing::HealingProposal>, ApiError> {
@@ -8724,7 +9137,7 @@ async fn get_project_risk_handler(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     ApiPath(project_id): ApiPath<Uuid>,
-) -> Result<Json<crate::adaptive_intelligence::RiskCalibration>, ApiError> {
+) -> Result<Json<serde_json::Value>, ApiError> {
     require_scoped_project(&state, &ctx, project_id).await?;
     let pid = project_id.to_string();
     let telemetry = state
@@ -8790,30 +9203,139 @@ async fn get_project_risk_handler(
         0.0
     };
 
-    let security_sensitivity = 0.0;
+    // ---------------------------------------------------------------------
+    // RISK SIGNAL REMEDIATION (see
+    // docs/next-intelligence/PHASE_4_RISK_SIGNAL_REMEDIATION.md)
+    //
+    // This used to be:
+    //
+    //     let security_sensitivity = 0.0;
+    //     ... calibrate_risk(&pid, factors)
+    //
+    // `security_sensitivity` has **no signal source in this schema**, so that `0.0` was a
+    // fabricated measurement sitting inside a formula that weights it at 0.10. The effect was
+    // not cosmetic: every score this endpoint returned was capped at 0.90 and every level was
+    // shifted down a band — a project whose five measured factors put it at 0.55 true risk read
+    // 0.495 and was reported `MEDIUM` rather than `HIGH`.
+    //
+    // The fix reuses `qa_memory_risk::calibrate_partial`, which is the normalisation half of the
+    // existing `calibrate_or_none` refusal: it weights the **measured** factors, divides by the
+    // weight the data backs, and takes the band from the same
+    // `adaptive_intelligence::RISK_LEVEL_THRESHOLDS` that `calibrate_risk` uses. No second
+    // engine, no re-declared weights, and no fabricated zero.
+    //
+    // The neutrality assumption is written into `explanation`, so the response says what it is
+    // assuming rather than a caller having to know.
+    use crate::qa_memory_risk::Factor;
 
-    let factors = crate::adaptive_intelligence::RiskFactors {
-        failure_rate,
-        flakiness_score,
-        failure_severity,
-        dependency_count,
-        healing_regression_rate,
-        security_sensitivity,
-    };
+    let project_factors = vec![
+        // A rate over zero observations is not a rate of zero. Both of these were `measured(..,
+        // 0.0, ..)` in the first draft of this remediation, which claimed a measurement on the
+        // strength of no evidence -- the same defect as the fabricated `0.0` it replaced, one
+        // level up. They are now unmeasured whenever their denominator is empty.
+        if total_runs > 0 {
+            Factor::measured(
+                "failure_rate",
+                failure_rate,
+                "failed executions over recorded executions for this project",
+                total_runs as usize,
+            )
+        } else {
+            Factor::unmeasured(
+                "failure_rate",
+                "this project has no recorded execution, so no failure rate exists to measure",
+            )
+        },
+        if !flakiness.is_empty() {
+            Factor::measured(
+                "flakiness_score",
+                flakiness_score,
+                "mean outcome-flip score across this project's stored flakiness metrics",
+                flakiness.len(),
+            )
+        } else {
+            Factor::unmeasured(
+                "flakiness_score",
+                "this project has no stored flakiness metric, so no flakiness exists to measure",
+            )
+        },
+        if failed_runs > 0 {
+            Factor::measured(
+                "failure_severity",
+                failure_severity,
+                "failure categories of this project's failures, weighted by share",
+                failed_runs as usize,
+            )
+        } else {
+            Factor::unmeasured(
+                "failure_severity",
+                "this project has no recorded failure, so no failure carries a category",
+            )
+        },
+        Factor::measured(
+            "dependency_count",
+            (dependency_count as f64 / 5.0).min(1.0),
+            "quality-graph relations recorded for this project, normalised by the same divisor \
+             calibrate_risk uses",
+            dependency_count,
+        ),
+        if total_attempts > 0 {
+            Factor::measured(
+                "healing_regression_rate",
+                healing_regression_rate,
+                "regressions over healing attempts recorded for this project",
+                total_attempts as usize,
+            )
+        } else {
+            Factor::unmeasured(
+                "healing_regression_rate",
+                "no governed-healing strategy has been attempted for this project",
+            )
+        },
+        // The one factor with no source anywhere. Named, so the reader sees the gap rather
+        // than inferring it from a zero.
+        Factor::unmeasured(
+            "security_sensitivity",
+            "this schema has no security_sensitivity field for a project; requirements record a              *category* (`kind`), not an importance, and treating one as the other would be              inventing the signal",
+        ),
+    ];
 
     if total_runs == 0 && flakiness.is_empty() && strategies.is_empty() {
-        Ok(Json(crate::adaptive_intelligence::RiskCalibration {
-            task_name: pid,
-            risk_score: 0.0,
-            risk_level: "INSUFFICIENT_DATA".to_string(),
-            factors,
-            explanation: "Insufficient execution telemetry or metrics to calibrate quality risk"
-                .to_string(),
-        }))
-    } else {
-        let cal = crate::adaptive_intelligence::calibrate_risk(&pid, factors);
-        Ok(Json(cal))
+        // No history at all. This branch predates the remediation and its shape is pinned by
+        // `api_tests::test_project_risk_intelligence_endpoint`, so it is left as it is; the
+        // factors it returns come from `calibrate_partial` so they cannot disagree with the
+        // factors the scoring branch would have used.
+        let (cal, _) = crate::qa_memory_risk::calibrate_partial(&pid, &project_factors);
+        return Ok(Json(serde_json::json!({
+            "task_name": pid,
+            "risk_score": 0.0,
+            "risk_level": "INSUFFICIENT_DATA",
+            "factors": cal.factors,
+            "explanation": "Insufficient execution telemetry or metrics to calibrate quality risk",
+        })));
     }
+
+    let (cal, coverage) = crate::qa_memory_risk::calibrate_partial(&pid, &project_factors);
+    let mut body = serde_json::to_value(&cal).unwrap_or(serde_json::Value::Null);
+    if let Some(obj) = body.as_object_mut() {
+        obj.insert(
+            "measured_weight".to_string(),
+            serde_json::json!(coverage.measured),
+        );
+        obj.insert(
+            "unmeasured_weight".to_string(),
+            serde_json::json!(coverage.unmeasured),
+        );
+        obj.insert(
+            "weighted_contribution".to_string(),
+            serde_json::json!(coverage.contribution),
+        );
+        obj.insert(
+            "factors_detail".to_string(),
+            serde_json::json!(project_factors),
+        );
+    }
+    Ok(Json(body))
 }
 
 async fn get_project_strategies_handler(
@@ -8950,7 +9472,6 @@ async fn retention_dry_run_handler(
 ) -> Result<Json<crate::operations::RetentionReport>, ApiError> {
     require_scoped_project(&state, &ctx, project_id).await?;
 
-
     let retention_days = payload.retention_days.unwrap_or(30);
     let policy = crate::operations::RetentionPolicy {
         retention_days,
@@ -8974,7 +9495,6 @@ async fn retention_prune_handler(
     ApiJson(payload): ApiJson<RetentionRequestPayload>,
 ) -> Result<Json<crate::operations::RetentionReport>, ApiError> {
     require_scoped_project(&state, &ctx, project_id).await?;
-
 
     let retention_days = payload.retention_days.unwrap_or(30);
     let policy = crate::operations::RetentionPolicy {

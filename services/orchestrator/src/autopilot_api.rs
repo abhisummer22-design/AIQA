@@ -93,7 +93,6 @@ pub(crate) async fn create_run(
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(mut config): ApiJson<AutopilotConfig>,
 ) -> Result<(StatusCode, Json<RunDetail>), ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
     config.base_url = config.base_url.trim().to_string();
     config
@@ -236,7 +235,6 @@ pub(crate) async fn start_run(
     ApiPath((project_id, run_id)): ApiPath<(Uuid, Uuid)>,
     body: Option<ApiJson<StartBody>>,
 ) -> Result<Json<RunDetail>, ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
     let body = body.map(|ApiJson(b)| b).unwrap_or_default();
     let run = load_run(&state, project_id, run_id).await?;
@@ -304,7 +302,6 @@ pub(crate) async fn cancel_run(
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, run_id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<Json<CancelResponse>, ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
     load_run(&state, project_id, run_id).await?;
     let outcome = match state
@@ -351,7 +348,6 @@ pub(crate) async fn continue_run(
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, run_id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<Json<RunDetail>, ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
     let run = load_run(&state, project_id, run_id).await?;
     if run.state != RunState::Waiting.as_str() {
@@ -403,7 +399,6 @@ pub(crate) async fn resume_run(
     Extension(ctx): Extension<AuthContext>,
     ApiPath((project_id, run_id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<Json<RunDetail>, ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
     let run = load_run(&state, project_id, run_id).await?;
     match state
@@ -488,7 +483,6 @@ pub(crate) async fn approve_cases(
     ApiPath((project_id, run_id)): ApiPath<(Uuid, Uuid)>,
     body: Option<ApiJson<ApproveCasesBody>>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
     let body = body.map(|ApiJson(b)| b).unwrap_or_default();
     load_run(&state, project_id, run_id).await?;

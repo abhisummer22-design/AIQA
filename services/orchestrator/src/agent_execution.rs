@@ -315,6 +315,21 @@ impl AgentExecutionDispatcher {
         };
 
         // 6. Quality Graph Integration & Traceability
+        //
+        // Phase 1 (Trace Graph): this wrote a `"test_case"` vertex keyed on
+        // `task.name` — the third variant of the same defect. That vertex was neither
+        // reachable (readers looked for `"test"`) nor keyed on an identity (it was a
+        // name).
+        //
+        // An `AgentTaskPlan` has no `test_case_id` field, so there is genuinely no
+        // stable case id to key on here — verified against the struct rather than
+        // assumed. An agent-generated task is therefore recorded as `TASK_NODE_TYPE`
+        // keyed on its name, kept deliberately separate from the case namespace so a
+        // name can never be mistaken for a `test_cases.id`. The `validates` edge is
+        // still real: `requirement_reference` is a stored field on the validated task.
+        // If a run *is* the execution of a persisted case, that link is written by the
+        // handoff path against the real id; duplicating it here with a name would
+        // create the very collision this phase removes.
         for task in &validated.tasks {
             if let Some(ref req_ref) = task.requirement_reference {
                 if let Ok(req_node_id) = self
@@ -322,14 +337,12 @@ impl AgentExecutionDispatcher {
                     .upsert_quality_node(project_id, "requirement", req_ref, req_ref)
                     .await
                 {
-                    if let Ok(case_node_id) = self
-                        .store
-                        .upsert_quality_node(project_id, "test_case", &task.name, &task.name)
-                        .await
+                    if let Ok(task_node_id) =
+                        self.store.upsert_task_node(project_id, &task.name).await
                     {
                         let _ = self
                             .store
-                            .upsert_quality_relation(case_node_id, req_node_id, "validates")
+                            .upsert_quality_relation(task_node_id, req_node_id, "validates")
                             .await;
                     }
                 }

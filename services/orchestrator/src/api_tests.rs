@@ -171,6 +171,382 @@ fn unconfigured_embedder() -> Arc<dyn Embedder> {
     Arc::new(FakeEmbedder::unconfigured())
 }
 
+/// Phase 1 (Trace Graph Completion) - the trace endpoint, over real HTTP.
+///
+/// The unit and store tests in `trace_tests` prove the graph persists and the reader
+/// is honest. This proves the part only HTTP can: that a case created through
+/// `POST /test-cases` produces a relation row **in the database**, and that
+/// `GET /trace` then returns that same chain - i.e. that the endpoint reports persisted
+/// history rather than recomputing it per request.
+///
+/// It also pins the boundary behaviour: a malformed id is a client error, and a
+/// project cannot read another project's trace.
+/// Phase 3 - the change-impact endpoint over real HTTP.
+///
+/// `change_impacts` had zero writers for its entire life, so the claim that "real
+/// change-impact records can be produced" is only worth anything if the rows land in the
+/// database from a request. This asserts that, plus the two boundary behaviours that
+/// matter most: an unresolvable target is refused with a reason rather than guessed at,
+/// and one tenant cannot read another's impact history.
+#[tokio::test]
+async fn phase3_change_impact_endpoint_persists_records_and_refuses_guesses() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "Phase3 Change Impact").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    // A real case created through the real handler, against a real requirement.
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(&owner),
+            Some(test_case_body_with_reference(
+                "Checkout with a saved card",
+                "REQ-P3-HTTP",
+            )),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    let case_id = body["id"].as_str().expect("created case id").to_string();
+
+    // ---- a resolvable change writes records ----
+    let (status, impact) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/change-impact"),
+            Some(&owner),
+            Some(serde_json::json!({
+                "change_ref": "commit-http-1",
+                "change_type": "requirement",
+                "targets": [{ "kind": "requirement", "ref_id": "REQ-P3-HTTP" }],
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={impact}");
+    assert!(
+        impact["insufficient_reason"].is_null(),
+        "the requirement resolves: {:?}",
+        impact["insufficient_reason"]
+    );
+    let selected = impact["impacted_tests"].as_array().expect("impacted array");
+    assert_eq!(selected.len(), 1, "the one linked case: {selected:?}");
+    assert_eq!(selected[0]["test_case_id"].as_str(), Some(case_id.as_str()));
+    assert_eq!(selected[0]["tier"].as_str(), Some("directly_impacted"));
+    assert!(
+        selected[0]["via"]
+            .as_str()
+            .is_some_and(|v| v.contains("validates")),
+        "the claim must name the stored edge it used: {:?}",
+        selected[0]["via"]
+    );
+    assert_eq!(impact["recorded"].as_u64(), Some(1));
+
+    // The row is really in SQLite, not just in the response.
+    let rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM change_impacts WHERE project_id = ? AND change_ref = ?",
+    )
+    .bind(project.to_string())
+    .bind("commit-http-1")
+    .fetch_one(&state.store.pool)
+    .await
+    .expect("count impact rows");
+    assert_eq!(rows, 1, "the record must be persisted");
+
+    // ---- re-running the same change is idempotent, not additive ----
+    let (status, again) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/change-impact"),
+            Some(&owner),
+            Some(serde_json::json!({
+                "change_ref": "commit-http-1",
+                "change_type": "requirement",
+                "targets": [{ "kind": "requirement", "ref_id": "REQ-P3-HTTP" }],
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a re-run confirms rather than creates"
+    );
+    assert_eq!(again["recorded"].as_u64(), Some(0));
+    assert_eq!(again["already_recorded"].as_u64(), Some(1));
+    let rows_after: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM change_impacts WHERE project_id = ? AND change_ref = ?",
+    )
+    .bind(project.to_string())
+    .bind("commit-http-1")
+    .fetch_one(&state.store.pool)
+    .await
+    .expect("count impact rows");
+    assert_eq!(rows_after, 1, "still exactly one row");
+
+    // ---- an ungrounded target is refused with a reason, not guessed ----
+    let (status, guessed) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/change-impact"),
+            Some(&owner),
+            Some(serde_json::json!({
+                "change_ref": "commit-http-2",
+                "change_type": "code",
+                "targets": [{ "kind": "code_file", "ref_id": "src/checkout.rs" }],
+            })),
+        ),
+    )
+    .await;
+    // 200, not 201: nothing resolved, so nothing was written. The status is the honest
+    // signal here - a refused target must not manufacture a row just to look productive.
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "an ungrounded target writes nothing, so nothing is created: {guessed}"
+    );
+    assert_eq!(guessed["recorded"].as_u64(), Some(0));
+    let target_outcome = &guessed["targets"][0];
+    assert_eq!(
+        target_outcome["resolution"]["outcome"].as_str(),
+        Some("Insufficient")
+    );
+    assert_eq!(
+        target_outcome["resolution"]["marker"].as_str(),
+        Some("INSUFFICIENT_DATA")
+    );
+    assert!(
+        guessed["impacted_tests"]
+            .as_array()
+            .expect("array")
+            .is_empty(),
+        "a code file must not manufacture impact: {guessed}"
+    );
+    assert!(
+        guessed["insufficient_reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("no declared target")),
+        "the answer must be reported as insufficient: {guessed}"
+    );
+
+    // ---- the history reads back, project-scoped ----
+    let (status, history) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/change-impact"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={history}");
+    assert_eq!(
+        history["count"].as_u64(),
+        Some(1),
+        "only the resolvable change was recorded"
+    );
+    let records = history["records"].as_array().expect("records array");
+    assert_eq!(records[0]["change_ref"].as_str(), Some("commit-http-1"));
+    assert_eq!(
+        records[0]["project_id"].as_str(),
+        Some(project.to_string().as_str())
+    );
+    assert!(
+        records[0]["rationale"]
+            .as_str()
+            .is_some_and(|r| r.contains("directly_impacted")),
+        "a record must say why the test was selected: {:?}",
+        records[0]["rationale"]
+    );
+
+    // Another project sees none of it.
+    let other = make_project(&state, "Phase3 Change Impact Other").await;
+    let other_owner = mint_key(&state, "operator", Some(&other.to_string())).await;
+    let (status, other_history) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{other}/change-impact"),
+            Some(&other_owner),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        other_history["count"].as_u64(),
+        Some(0),
+        "another project's impact history must be empty: {other_history}"
+    );
+}
+
+#[tokio::test]
+async fn phase1_trace_endpoint_returns_the_chain_actually_persisted() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "Phase1 Trace").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    // ---- create a case against a requirement, through the real HTTP handler ----
+    let (status, body) = send(
+        &state,
+        req(
+            "POST",
+            &format!("/api/v1/projects/{project}/test-cases"),
+            Some(&owner),
+            Some(test_case_body_with_reference(
+                "Checkout with a saved card",
+                "REQ-TRACE-E2E",
+            )),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    let case_id = body["id"].as_str().expect("created case id").to_string();
+    let case_uuid = uuid::Uuid::parse_str(&case_id).expect("id is a uuid");
+
+    // ---- the relation really is in SQLite, not just echoed by the endpoint ----
+    let stored: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM quality_relations rel \
+         JOIN quality_nodes f ON f.id = rel.from_node_id \
+         JOIN quality_nodes t ON t.id = rel.to_node_id \
+         WHERE rel.relation_type = 'validates' \
+           AND f.project_id = ? AND f.node_type = 'test' AND f.external_ref = ? \
+           AND t.node_type = 'requirement' AND t.external_ref = 'REQ-TRACE-E2E'",
+    )
+    .bind(project.to_string())
+    .bind(&case_id)
+    .fetch_one(&state.store.pool)
+    .await
+    .expect("relation lookup");
+    assert_eq!(
+        stored, 1,
+        "the validates edge must be persisted under the canonical node type, keyed on test_cases.id"
+    );
+
+    // ---- the endpoint returns that chain ----
+    let (status, trace) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/trace?test_case_id={case_id}"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={trace}");
+    assert_eq!(
+        trace["test_case_id"].as_str(),
+        Some(case_id.as_str()),
+        "the walk must be about the case asked for"
+    );
+    let requirement_hops = trace["steps"]["requirement"]
+        .as_array()
+        .expect("requirement hop is an array");
+    assert!(
+        requirement_hops
+            .iter()
+            .any(|h| h["label"].as_str() == Some("REQ-TRACE-E2E")),
+        "the persisted requirement must come back through the endpoint: {trace}"
+    );
+    // A case that has never run must say so, not present a short chain as complete.
+    let incomplete = trace["incomplete"].as_array().expect("incomplete array");
+    for hop in ["execution", "failure", "bug", "fix", "retest", "release"] {
+        // Phase 2 widened the missing-hop labels to carry the reason
+        // ("fix (no healing proposal recorded against this failure)"). The assertion is
+        // on the prefix so it still proves the hop was reported, without pinning wording.
+        let reported = incomplete
+            .iter()
+            .filter_map(|m| m.as_str())
+            .any(|m| m == hop || m.starts_with(&format!("{hop} (")));
+        assert!(
+            reported,
+            "`{hop}` has no evidence and must be named in `incomplete`: {incomplete:?}"
+        );
+        assert!(
+            trace["steps"][hop].is_null(),
+            "`{hop}` must not be fabricated into `steps`: {trace}"
+        );
+    }
+
+    // ---- the index lists it ----
+    let (status, index) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/trace"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={index}");
+    let entries = index["test_cases"].as_array().expect("index array");
+    let mine = entries
+        .iter()
+        .find(|e| e["test_case_id"].as_str() == Some(case_id.as_str()))
+        .expect("the created case must appear in the index");
+    assert_eq!(mine["resolved"].as_bool(), Some(true));
+    assert!(
+        mine["has"]
+            .as_array()
+            .expect("has array")
+            .iter()
+            .any(|h| h.as_str() == Some("requirement")),
+        "the index must reflect the persisted edge: {mine}"
+    );
+
+    // ---- a malformed id is a client error, not an empty trace ----
+    let (status, bad) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{project}/trace?test_case_id=not-a-uuid"),
+            Some(&owner),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a malformed id must be rejected, not walked as 'no such case': {bad}"
+    );
+
+    // ---- project isolation over HTTP ----
+    let other = make_project(&state, "Phase1 Trace Other").await;
+    let other_owner = mint_key(&state, "operator", Some(&other.to_string())).await;
+    let (status, leaked) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{other}/trace?test_case_id={case_uuid}"),
+            Some(&other_owner),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "an in-project id in the wrong project reads as an empty trace, not an error"
+    );
+    let leaked_reqs = leaked["steps"]["requirement"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        leaked_reqs.is_empty(),
+        "another project's trace must not resolve this case's edges: {leaked}"
+    );
+}
+
 /// Phase 4 — same setup as `test_state()`, but with the real, unmodified
 /// `CompiledApiExecutor` registered under `"compiled-api"`, exactly like
 /// `main.rs`'s own real production registration — so an API Testing page
@@ -7051,12 +7427,18 @@ async fn phase2_generate_ai_succeeds_with_real_seeded_risk_and_confirmed_defect_
         .expect("upsert risky node");
     state
         .store
-        .upsert_risk_assessment(risky_node, 0.8, 0.0, 0.0, 0.9, 2, 0.0, 500.0, "{}")
+        .upsert_risk_assessment(risky_node, 0.8, None, None, 0.9, 2, None, 500.0, "{}")
         .await
         .expect("upsert risk assessment");
     let (cluster_id, _) = state
         .store
-        .upsert_failure_cluster(&project.to_string(), "sig-confirmed", "hypothesis", 0.5, None)
+        .upsert_failure_cluster(
+            &project.to_string(),
+            "sig-confirmed",
+            "hypothesis",
+            0.5,
+            None,
+        )
         .await
         .expect("upsert failure cluster");
     let draft_id = state
@@ -9280,7 +9662,7 @@ fn ai_infra_with_executor(executor: Arc<dyn AiExecutor>) -> Arc<AiInfrastructure
 /// check that generation reads roles out of the stored requirements rather than out
 /// of whatever text the caller happened to paste alongside them.
 const RBAC_ROLES_FRD: &str = "## Roles\n\nCustomer: can create a ticket and view their own tickets. A customer cannot delete a ticket.\n\nAgent: can view every ticket and change ticket status. An agent cannot see billing invoices.\n\nAdministrator: everything an agent can do, plus creating a user account.\n";
-    const PASSWORD_FRD: &str = "## 2 Passwords\n\nA password must be at least 8 characters long.\n\nUsers shall sign in with an email address.\n";
+const PASSWORD_FRD: &str = "## 2 Passwords\n\nA password must be at least 8 characters long.\n\nUsers shall sign in with an email address.\n";
 
 fn generate_ai_body(document_ids: &[&str], skills: &[&str]) -> Value {
     serde_json::json!({
@@ -9308,108 +9690,111 @@ async fn post_generate(
     .await
 }
 
-    /// The document path has to stand on its own.
-    ///
-    /// It could not. `requirement_text` was a plain `String` with no
-    /// `#[serde(default)]` while every field beside it in the same struct had one,
-    /// so a request naming `requirement_document_ids` was rejected at
-    /// deserialization -- before the handler that knows documents are enough could
-    /// run. A caller who worked around that by sending `""` met a second guard that
-    /// refused empty text unconditionally. The net effect: the upload-a-document
-    /// flow could only be used if the document text was pasted back in as well, which
-    /// is the one input it was meant to replace.
-    ///
-    /// This drives the real router with a real uploaded document and no pasted text
-    /// at all. It matters beyond convenience: the prompt is built from the stored
-    /// requirements, so pasting the text back in is what puts a caller on the less
-    /// accurate of the two paths -- roles read from whatever was typed rather than
-    /// from what was uploaded, which for RBAC work is the whole question.
-    #[tokio::test]
-    async fn a_documents_requirements_can_be_used_without_pasting_its_text_back_in() {
-        let _env = REQUIREMENT_ENV.lock().await;
-        let executor = Arc::new(RecordingExecutor::ok_sequence(vec![valid_ai_response()]));
-        let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
-        let project = make_project(&state, "ReqGen - DocumentOnly").await;
-        let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-        let (_, uploaded) = upload_document(
-            &state,
-            &owner,
-            project,
-            "RBAC-FRD.md",
-            RBAC_ROLES_FRD.as_bytes(),
-            Some("RBAC"),
-        )
-        .await;
-        let doc_id = uploaded["requirements_document"]["document_id"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        assert!(
-            uploaded["requirements_document"]["requirements_count"]
-                .as_u64()
-                .unwrap_or(0)
-                > 0,
-            "the document must have produced requirements to generate from: {uploaded}"
-        );
+/// The document path has to stand on its own.
+///
+/// It could not. `requirement_text` was a plain `String` with no
+/// `#[serde(default)]` while every field beside it in the same struct had one,
+/// so a request naming `requirement_document_ids` was rejected at
+/// deserialization -- before the handler that knows documents are enough could
+/// run. A caller who worked around that by sending `""` met a second guard that
+/// refused empty text unconditionally. The net effect: the upload-a-document
+/// flow could only be used if the document text was pasted back in as well, which
+/// is the one input it was meant to replace.
+///
+/// This drives the real router with a real uploaded document and no pasted text
+/// at all. It matters beyond convenience: the prompt is built from the stored
+/// requirements, so pasting the text back in is what puts a caller on the less
+/// accurate of the two paths -- roles read from whatever was typed rather than
+/// from what was uploaded, which for RBAC work is the whole question.
+#[tokio::test]
+async fn a_documents_requirements_can_be_used_without_pasting_its_text_back_in() {
+    let _env = REQUIREMENT_ENV.lock().await;
+    let executor = Arc::new(RecordingExecutor::ok_sequence(vec![valid_ai_response()]));
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
+    let project = make_project(&state, "ReqGen - DocumentOnly").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let (_, uploaded) = upload_document(
+        &state,
+        &owner,
+        project,
+        "RBAC-FRD.md",
+        RBAC_ROLES_FRD.as_bytes(),
+        Some("RBAC"),
+    )
+    .await;
+    let doc_id = uploaded["requirements_document"]["document_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        uploaded["requirements_document"]["requirements_count"]
+            .as_u64()
+            .unwrap_or(0)
+            > 0,
+        "the document must have produced requirements to generate from: {uploaded}"
+    );
 
-        // No `requirement_text` key at all -- which is what a client that uploaded a
-        // document and wanted cases from it would send.
-        let (status, body) = post_generate(
-            &state,
-            &owner,
-            project,
-            serde_json::json!({
-                "requirement_document_ids": [doc_id],
-                "skills": [{
-                    "id": "skill-rbac-testing",
-                    "name": "RBAC Testing",
-                }],
-            }),
-        )
-        .await;
+    // No `requirement_text` key at all -- which is what a client that uploaded a
+    // document and wanted cases from it would send.
+    let (status, body) = post_generate(
+        &state,
+        &owner,
+        project,
+        serde_json::json!({
+            "requirement_document_ids": [doc_id],
+            "skills": [{
+                "id": "skill-rbac-testing",
+                "name": "RBAC Testing",
+            }],
+        }),
+    )
+    .await;
 
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a document alone must be enough to generate from; the pasted text was \
+             only ever meant to be the fallback. body={body}"
+    );
+    assert_eq!(body["generation_method"], "ai", "body={body}");
+    assert!(
+        !body["test_cases"]
+            .as_array()
+            .map(Vec::is_empty)
+            .unwrap_or(true),
+        "cases must come from the document's requirements: {body}"
+    );
+}
+
+/// And the other half: with no documents named, empty text is still refused. The
+/// relaxation must not turn "you must say what to test" into "you may say
+/// nothing".
+#[tokio::test]
+async fn naming_no_document_still_requires_something_to_generate_from() {
+    let _env = REQUIREMENT_ENV.lock().await;
+    let executor = Arc::new(RecordingExecutor::ok_sequence(vec![valid_ai_response()]));
+    let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
+    let project = make_project(&state, "ReqGen - Empty").await;
+    let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
+
+    for body in [
+        serde_json::json!({"skills": []}),
+        serde_json::json!({"requirement_text": "   ", "skills": []}),
+        serde_json::json!({"requirement_document_ids": [], "skills": []}),
+    ] {
+        let (status, response) = post_generate(&state, &owner, project, body.clone()).await;
         assert_eq!(
             status,
-            StatusCode::OK,
-            "a document alone must be enough to generate from; the pasted text was \
-             only ever meant to be the fallback. body={body}"
+            StatusCode::BAD_REQUEST,
+            "with no document and nothing to test, {body} must still be refused: {response}"
         );
-        assert_eq!(body["generation_method"], "ai", "body={body}");
+        let message = response["error"]["message"].as_str().unwrap_or_default();
         assert!(
-            !body["test_cases"].as_array().map(Vec::is_empty).unwrap_or(true),
-            "cases must come from the document's requirements: {body}"
+            message.contains("requirement_document_ids"),
+            "the refusal should say how to supply requirements instead: {response}"
         );
     }
-
-    /// And the other half: with no documents named, empty text is still refused. The
-    /// relaxation must not turn "you must say what to test" into "you may say
-    /// nothing".
-    #[tokio::test]
-    async fn naming_no_document_still_requires_something_to_generate_from() {
-        let _env = REQUIREMENT_ENV.lock().await;
-        let executor = Arc::new(RecordingExecutor::ok_sequence(vec![valid_ai_response()]));
-        let (state, _dir) = test_state_with_ai_router(ai_infra_with_executor(executor.clone())).await;
-        let project = make_project(&state, "ReqGen - Empty").await;
-        let owner = mint_key(&state, "operator", Some(&project.to_string())).await;
-
-        for body in [
-            serde_json::json!({"skills": []}),
-            serde_json::json!({"requirement_text": "   ", "skills": []}),
-            serde_json::json!({"requirement_document_ids": [], "skills": []}),
-        ] {
-            let (status, response) = post_generate(&state, &owner, project, body.clone()).await;
-            assert_eq!(
-                status,
-                StatusCode::BAD_REQUEST,
-                "with no document and nothing to test, {body} must still be refused: {response}"
-            );
-            let message = response["error"]["message"].as_str().unwrap_or_default();
-            assert!(
-                message.contains("requirement_document_ids"),
-                "the refusal should say how to supply requirements instead: {response}"
-            );
-        }
-    }
+}
 
 #[tokio::test]
 async fn generating_from_a_documents_requirements_shows_the_model_them_and_ties_the_cases_to_them()

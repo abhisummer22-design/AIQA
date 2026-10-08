@@ -56,7 +56,7 @@ const MAX_SIGNALS: usize = 20;
 /// Ceiling on telemetry rows one retrieval reads. The store takes an i64 limit and
 /// every existing caller passes 100 or 1000; 1000 is the largest in use, so this
 /// phase does not silently read less history than the surfaces it sits beside.
-const TELEMETRY_READ_MAX: i64 = 1000;
+pub const TELEMETRY_READ_MAX: i64 = 1000;
 /// Ceiling on affected-test lists.
 const MAX_AFFECTED_TESTS: usize = 50;
 /// Ceiling on releases compared in one historical comparison.

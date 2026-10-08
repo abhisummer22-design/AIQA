@@ -315,6 +315,58 @@ pub fn compute_telemetry_fingerprint(
     hex::encode(hasher.finalize())
 }
 
+/// The **single** canonical failure-fingerprint computation, returning the sanitized
+/// text, the category, and the fingerprint together.
+///
+/// ## Why this exists
+///
+/// Phase 2 found that three call sites each computed a "failure fingerprint" and
+/// **none of them agreed**:
+///
+/// | Call site | Hashed | Used for |
+/// |---|---|---|
+/// | `ExecutionTelemetry::from_task_state` | category + masked message + selector + endpoint | `execution_telemetry.failure_fingerprint` |
+/// | `Intelligence::record_failure` | category + masked message, **selector omitted** | `failure_clusters.failure_fingerprint` |
+/// | `governed_healing` | **`run_id` + `task_id`** + selector + reason | `healing_proposals.failure_fingerprint` |
+///
+/// Because the fingerprint is the join key for the whole
+/// Execution → Failure → Bug → Fix → Retest chain, every one of those divergences
+/// silently produced an *empty* result rather than an error — and an empty result here
+/// reads as "this failure touched nothing", which is the most misleading answer
+/// available. `qa_memory.rs` already documents this exact failure mode for the
+/// earlier `signature`-vs-fingerprint split, which migration 0030 fixed at the column
+/// but not at the computation.
+///
+/// The third row is the worst: hashing `run_id` and `task_id` makes the value unique
+/// per run, so it cannot group two occurrences of the same defect across runs — which
+/// is the entire purpose of a failure fingerprint. It is an idempotency key wearing a
+/// fingerprint's name. (Idempotency itself is unaffected: the caller builds
+/// `heal:{run_id}:{task_id}:{fp}` from it.)
+///
+/// ## The rule
+///
+/// Derive every failure fingerprint **only** from this function. The
+/// sanitize → categorize → mask → hash order is itself load-bearing: masking before
+/// hashing is what makes two runs of the same defect compare equal, and reordering it
+/// silently breaks dedup.
+///
+/// Returns the sanitized text alongside the result because callers legitimately need
+/// both: `from_task_state` stores the sanitized text as `error_message`, and
+/// `record_failure` must leave a failure *uncorrelated* when the sanitized text is
+/// empty rather than correlate it against a blank message.
+pub fn canonical_failure_fingerprint(
+    raw_reason: &str,
+    selector: Option<&str>,
+    http_status: Option<u16>,
+    endpoint: Option<&str>,
+) -> (String, FailureCategory, String) {
+    let sanitized = sanitize_telemetry_text(raw_reason);
+    let category = categorize_failure(&sanitized, http_status);
+    let masked = mask_dynamic_tokens(&sanitized);
+    let fingerprint = compute_telemetry_fingerprint(&category, &masked, selector, endpoint);
+    (sanitized, category, fingerprint)
+}
+
 // ============================================================================
 // 3. SECURITY & PRIVACY SANITIZATION
 // ============================================================================
@@ -401,11 +453,10 @@ impl ExecutionTelemetry {
                 .reason
                 .as_deref()
                 .unwrap_or("Task failed without reason");
-            let sanitized = sanitize_telemetry_text(raw_reason);
-            let category = categorize_failure(&sanitized, http_status);
-            let masked = mask_dynamic_tokens(&sanitized);
-            let fingerprint =
-                compute_telemetry_fingerprint(&category, &masked, selector.as_deref(), None);
+            // Phase 2: one canonical computation, shared with `record_failure` and
+            // governed healing, so the three cannot drift apart again.
+            let (sanitized, category, fingerprint) =
+                canonical_failure_fingerprint(raw_reason, selector.as_deref(), http_status, None);
             (Some(category), Some(fingerprint), Some(sanitized))
         } else {
             (None, None, None)
@@ -731,6 +782,29 @@ pub struct RiskCalibration {
 }
 
 /// Computes an explainable, multi-factor risk score.
+/// The four level bands, highest first, with their inclusive lower bounds.
+///
+/// **One owner.** `calibrate_risk` derives its level from here, and
+/// `qa_memory_risk::calibrate_partial` derives its level from here too. Before this existed the
+/// thresholds were inline in `calibrate_risk`, so any second caller computing a level had to
+/// either re-declare them or skip the level entirely — which is how a caller ends up reporting a
+/// score with no band, or worse a band that disagrees with the score beside it.
+pub const RISK_LEVEL_THRESHOLDS: [(&str, f64); 4] = [
+    ("CRITICAL", 0.70),
+    ("HIGH", 0.50),
+    ("MEDIUM", 0.25),
+    ("LOW", 0.0),
+];
+
+/// The band for a 0-1 score, from [`RISK_LEVEL_THRESHOLDS`].
+pub fn risk_level_for(score: f64) -> &'static str {
+    RISK_LEVEL_THRESHOLDS
+        .iter()
+        .find(|(_, bound)| score >= *bound)
+        .map(|(name, _)| *name)
+        .unwrap_or("LOW")
+}
+
 pub fn calibrate_risk(task_name: &str, factors: RiskFactors) -> RiskCalibration {
     let dep_norm = (factors.dependency_count as f64 / 5.0).min(1.0);
 
@@ -744,15 +818,7 @@ pub fn calibrate_risk(task_name: &str, factors: RiskFactors) -> RiskCalibration 
         + 0.10 * factors.security_sensitivity)
         .clamp(0.0, 1.0);
 
-    let risk_level = if score >= 0.70 {
-        "CRITICAL"
-    } else if score >= 0.50 {
-        "HIGH"
-    } else if score >= 0.25 {
-        "MEDIUM"
-    } else {
-        "LOW"
-    };
+    let risk_level = risk_level_for(score);
 
     let explanation = format!(
         "Risk score {:.2} ({risk_level}): failure_rate={:.2}, flakiness={:.2}, severity={:.2}, deps={}, regression={:.2}",
@@ -823,11 +889,44 @@ impl AdaptiveIntelligenceService {
             .map_err(|e| format!("failed to insert execution telemetry: {e}"))?;
 
         // 2. Synchronize Quality Graph if failure occurred
+        //
+        // Phase 1 (Trace Graph): this block used to write a `"test"` vertex keyed on
+        // `telemetry.task_name` — a *name*, so two different cases sharing a title (or
+        // one case renamed) collapsed onto one vertex, and the edge could not be joined
+        // with the `"test_case"` vertex the requirement path wrote. Both are fixed:
+        //
+        //   * with a `test_case_id` (migration 0028), the vertex is the canonical one
+        //     keyed on the stable id, so `fails_with` lands on the same vertex as
+        //     `validates` and `covers`;
+        //   * without one, the vertex is `TASK_NODE_TYPE` keyed on the task name — kept
+        //     in a separate namespace so a name can never masquerade as a case id.
+        //
+        // The branch is deliberately `if let`: an execution with no fingerprint or no
+        // category has no failure to link, and inventing one would be a fabricated
+        // edge.
         if let (Some(ref category), Some(ref fingerprint)) =
             (&telemetry.failure_category, &telemetry.failure_fingerprint)
         {
             let pid = &telemetry.project_id;
-            let cluster_title = format!("{}: {}", category.as_str(), &fingerprint[..12]);
+            // Phase 1 (Trace Graph Completion) bug fix: this was `&fingerprint[..12]`,
+            // which **panics** for any fingerprint shorter than 12 bytes. The slice is
+            // on `&String`, so it is a byte range, not a char range — so even a
+            // 12-character non-ASCII fingerprint would panic.
+            //
+            // It had never fired because every fingerprint the code produces is a
+            // 64-char SHA-256 hex digest (see `intelligence::record_failure`), so the
+            // short case looked unreachable. It is reachable: `failure_fingerprint` is
+            // just a column, and any writer supplying a shorter value — a truncated
+            // import, a test, a future non-hash scheme — took down the whole
+            // telemetry ingest, losing the execution record and every graph edge it
+            // would have produced. Found by `trace_tests`.
+            //
+            // `floor_char_boundary` is not available on this MSRV, so the length is
+            // clamped and then rounded down to a char boundary.
+            let cluster_title = {
+                let head = fingerprint.chars().take(12).collect::<String>();
+                format!("{}: {}", category.as_str(), head)
+            };
 
             // Upsert failure_cluster node
             if let Ok(cluster_node_id) = self
@@ -835,15 +934,22 @@ impl AdaptiveIntelligenceService {
                 .upsert_quality_node(pid, "failure_cluster", fingerprint, &cluster_title)
                 .await
             {
-                // Upsert test node
-                if let Ok(test_node_id) = self
-                    .store
-                    .upsert_quality_node(pid, "test", &telemetry.task_name, &telemetry.task_name)
-                    .await
-                {
+                let subject_node_id = match telemetry.test_case_id {
+                    Some(case_id) => self
+                        .store
+                        .upsert_test_case_node(pid, &case_id, &telemetry.task_name)
+                        .await
+                        .ok(),
+                    None => self
+                        .store
+                        .upsert_task_node(pid, &telemetry.task_name)
+                        .await
+                        .ok(),
+                };
+                if let Some(subject_node_id) = subject_node_id {
                     let _ = self
                         .store
-                        .upsert_quality_relation(test_node_id, cluster_node_id, "fails_with")
+                        .upsert_quality_relation(subject_node_id, cluster_node_id, "fails_with")
                         .await;
                 }
             }

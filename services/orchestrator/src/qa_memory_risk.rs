@@ -91,7 +91,12 @@ pub struct Factor {
 }
 
 impl Factor {
-    fn measured(name: &str, value: f64, basis: &str, evidence: usize) -> Self {
+    /// A factor backed by a real measurement.
+    ///
+    /// Public because `calibrate_partial` is public: a caller outside this module must be able
+    /// to contribute the factors it actually measured, rather than only inspecting the ones this
+    /// module measured for it.
+    pub fn measured(name: &str, value: f64, basis: &str, evidence: usize) -> Self {
         Self {
             name: name.to_string(),
             weight: weight_of(name),
@@ -100,7 +105,13 @@ impl Factor {
             evidence,
         }
     }
-    fn unmeasured(name: &str, why: &str) -> Self {
+    /// A factor with **no signal source**, and the reason.
+    ///
+    /// Public because this is now the answer a caller must be able to give. The whole point of
+    /// the risk-signal remediation is that "this schema has no source for this" has to be
+    /// expressible from outside this module — otherwise a caller facing a factor it cannot
+    /// measure has no option but to pass `0.0`, which is the defect being fixed.
+    pub fn unmeasured(name: &str, why: &str) -> Self {
         Self {
             name: name.to_string(),
             weight: weight_of(name),
@@ -211,10 +222,18 @@ pub struct ReleaseRisk {
 impl QaMemoryReader {
     /// Risk for one module, from its recorded executions.
     pub async fn module_risk(&self, project_id: &str, module_ref: &str) -> Retrieved<ModuleRisk> {
-        let all = self.telemetry_for(project_id).await;
-        if all.is_empty() {
+        // Phase 4 performance: the evidence is gathered **once** here and every case is
+        // answered from it. The per-case path used to re-read telemetry, healing
+        // proposals and bug drafts for each case, which made prioritising a project of
+        // 500 cases cost 2,000+ reads returning identical rows.
+        let evidence = self.test_evidence(project_id).await;
+        if evidence.all.is_empty() {
             return Retrieved::empty(project_id, InsufficientData::NoExecutions);
         }
+        if evidence.all.is_empty() {
+            return Retrieved::empty(project_id, InsufficientData::NoExecutions);
+        }
+        let all = evidence.all.clone();
 
         let (nodes, relations) = match (
             self.store.list_quality_nodes(project_id).await,
@@ -764,10 +783,13 @@ fn release_factors(failure_rate: f64, flakiness: f64, severity: Option<f64>) -> 
 
 /// How much of the model real rows back, and what the measured factors summed to.
 #[derive(Debug, Clone, Copy)]
-struct WeightCoverage {
-    measured: f64,
-    unmeasured: f64,
-    contribution: f64,
+pub struct WeightCoverage {
+    /// Share of the model's weight that a real measurement backs, 0.0-1.0.
+    pub measured: f64,
+    /// Share that no measurement backs. A non-zero value here is a stated gap.
+    pub unmeasured: f64,
+    /// Weighted sum of the measured factors only. **Not** a 0-1 score.
+    pub contribution: f64,
 }
 
 /// Run the **existing** `calibrate_risk`, but only when every factor it needs is
@@ -782,6 +804,141 @@ struct WeightCoverage {
 /// In this schema the unreachable branch is the normal one, because three of the six
 /// factors have no column anywhere. It is kept because the moment a migration adds
 /// one, the full model starts working with no change here.
+/// The other half of `calibrate_or_none`: a score from the **measured** factors, normalised
+/// over the weight the data actually backs.
+///
+/// ## Why this exists alongside the refusal
+///
+/// `calibrate_or_none` declines to emit a calibration unless every factor measures, because a
+/// partial weighted sum silently claims the missing weight was zero. That refusal is right for a
+/// report, and this module keeps it.
+///
+/// But declining is not the only honest option, and for a caller that *has* measured factors it
+/// throws away real information. Passing `0.0` into `calibrate_risk` for a factor with no
+/// evidence is the thing that must never happen — and dividing the measured sum by the measured
+/// weight is the standard correction for it.
+///
+/// ## The assumption, stated
+///
+/// Dividing by `measured_weight` is equivalent to asserting the unmeasured factors *would have
+/// been neutral*. That is an **assumption, not a measurement**, and it is written into
+/// `RiskCalibration::explanation` so it cannot be read past. When the unmeasured weight is large
+/// the assumption is weak, which is why the coverage is reported alongside rather than folded
+/// into the number.
+///
+/// ## One owner of weights and bands
+///
+/// The weights come from [`FACTOR_WEIGHTS`] (which is transcribed from `calibrate_risk`'s own
+/// formula) and the band comes from `adaptive_intelligence::risk_level_for`. Neither is
+/// re-declared here, so this cannot become a second risk engine: it reuses the existing weights
+/// and the existing bands and adds only the normalisation.
+///
+/// ## Not a substitute for the refusal
+///
+/// `calibration: Option<RiskCalibration>` stays `None` on the module/release/test-case surfaces.
+/// This function is for callers that would otherwise have to fabricate a zero — chiefly
+/// `GET /projects/:id/intelligence/risk`, which measures five of the six factors.
+pub fn calibrate_partial(subject: &str, factors: &[Factor]) -> (RiskCalibration, WeightCoverage) {
+    let measured_weight: f64 = factors
+        .iter()
+        .filter(|f| f.measured.is_some())
+        .map(|f| f.weight)
+        .sum();
+    let total_weight: f64 = factors.iter().map(|f| f.weight).sum();
+    let unmeasured_weight: f64 = total_weight - measured_weight;
+    let contribution: f64 = factors.iter().map(|f| f.contribution()).sum();
+
+    // Nothing measured is not a zero score; it is no answer. Delegated to the refusal's
+    // condition rather than duplicating it.
+    if measured_weight <= f64::EPSILON {
+        return (
+            RiskCalibration {
+                task_name: subject.to_string(),
+                risk_score: 0.0,
+                risk_level: "INSUFFICIENT_DATA".to_string(),
+                factors: RiskFactors {
+                    failure_rate: 0.0,
+                    flakiness_score: 0.0,
+                    failure_severity: 0.0,
+                    dependency_count: 0,
+                    healing_regression_rate: 0.0,
+                    security_sensitivity: 0.0,
+                },
+                explanation: format!(
+                    "no factor of the model for {subject} could be measured, so no score is \
+                     available; this is not a score of zero"
+                ),
+            },
+            WeightCoverage {
+                measured: 0.0,
+                unmeasured: unmeasured_weight,
+                contribution: 0.0,
+            },
+        );
+    }
+
+    let normalised = (contribution / measured_weight).clamp(0.0, 1.0);
+    let unmeasured: Vec<&str> = factors
+        .iter()
+        .filter(|f| f.measured.is_none())
+        .map(|f| f.name.as_str())
+        .collect();
+
+    let explanation = if unmeasured.is_empty() {
+        format!(
+            "weighted from {} measured factor(s) covering {:.0}% of the model",
+            factors.len(),
+            measured_weight * 100.0
+        )
+    } else {
+        format!(
+            "weighted from the measured factor(s) only, covering {:.0}% of the model, and \
+             normalised over that weight; the unmeasured factor(s) {} are assumed neutral, \
+             which is an assumption rather than a measurement",
+            measured_weight * 100.0,
+            unmeasured.join(", ")
+        )
+    };
+
+    (
+        RiskCalibration {
+            task_name: subject.to_string(),
+            risk_score: (normalised * 100.0).round() / 100.0,
+            risk_level: crate::adaptive_intelligence::risk_level_for(normalised).to_string(),
+            // `calibrate_risk`'s own struct field set, which is all `f64`. Filled with the
+            // measured factors where the field exists and 0.0 otherwise -- and the caller is
+            // told so in the explanation above, so the struct is never the thing a reader trusts.
+            factors: RiskFactors {
+                failure_rate: measured_of(factors, "failure_rate"),
+                flakiness_score: measured_of(factors, "flakiness_score"),
+                failure_severity: measured_of(factors, "failure_severity"),
+                dependency_count: factors
+                    .iter()
+                    .find(|f| f.name == "dependency_count")
+                    .and_then(|f| f.measured)
+                    .unwrap_or(0.0) as usize,
+                healing_regression_rate: measured_of(factors, "healing_regression_rate"),
+                security_sensitivity: measured_of(factors, "security_sensitivity"),
+            },
+            explanation,
+        },
+        WeightCoverage {
+            measured: measured_weight,
+            unmeasured: unmeasured_weight,
+            contribution,
+        },
+    )
+}
+
+/// One measured factor's value, or 0.0 when unmeasured.
+fn measured_of(factors: &[Factor], name: &str) -> f64 {
+    factors
+        .iter()
+        .find(|f| f.name == name)
+        .and_then(|f| f.measured)
+        .unwrap_or(0.0)
+}
+
 fn calibrate_or_none(
     subject: &str,
     factors: &[Factor],
@@ -850,4 +1007,731 @@ fn trend_from(points: &[ReleaseTrendPoint]) -> Option<String> {
         }
         .to_string(),
     )
+}
+
+// ============================================================================
+// PHASE 4 - RISK-BASED TESTING: per-test risk and prioritisation
+// ============================================================================
+//
+// ## What is reused
+//
+// Everything statistical. This section adds **no** formula. The six-factor
+// `calibrate_risk`, the `Factor` shape, `calibrate_or_none`, `failure_severity`,
+// `per_case_counts` and `average_flakiness` are all used as they already were for
+// modules and releases. What is new is a third *scope* — the individual test case —
+// and an ordering on top of it.
+//
+// ## Why there is no risk score, and that is the finding
+//
+// `calibrate_or_none` refuses to emit a `RiskCalibration` unless **every** factor is
+// measured, because a partial weighted sum silently claims the missing weight was zero.
+// For a test case two factors have no column anywhere in this schema:
+//
+//   * `dependency_count` - there is no case-to-case dependency graph. `TaskDef.prerequisites`
+//     is per *run*, not per case, so a test's dependencies are not stored.
+//   * `security_sensitivity` - no column and no table, as this module's header already
+//     records for modules and releases.
+//
+// So `test_risk().calibration` is `None` for every test case, today and structurally, and
+// **Phase 4 does not invent a score to fill the gap.** It reports what is measurable
+// (`weighted_contribution`, `measured_weight`, `unmeasured_weight`, each factor with its
+// basis and evidence count) and leaves the absent score absent. A caller can see exactly
+// how much of the model the data backed.
+//
+// ## Prioritisation is an order, not a blend
+//
+// `priority` is a band from a **documented total order** over named, individually
+// evidenced conditions - not a new weighted formula that would become a third risk model
+// alongside `calibrate_risk` and the inline formula in `intelligence.rs`. Each band states
+// the condition that put a test in it, and every applicable condition is reported, so the
+// band is auditable rather than a number nobody can reconstruct.
+//
+// ## The safety floor
+//
+// `PriorityBand::Mandatory` is the floor, derived exactly as Phase 3 derives it: a test
+// case with recorded failure evidence. There is **no declared mandatory flag anywhere in
+// this schema** (verified), so the floor is a derivation - stated as such rather than
+// presented as policy. Prioritisation **orders**; it never removes, so nothing on the
+// floor can be dropped by being low risk. `Phase 3`'s `Scope::restricted_to` is what
+// enforces retention when a run is actually scoped down.
+
+/// Flakiness at or above this is reported as flaky. A stated number so the band can be
+/// checked rather than taken on trust.
+pub const FLAKY_THRESHOLD: f64 = 0.34;
+
+/// Ceiling on test cases listed by one prioritisation call.
+pub const PRIORITISE_MAX: usize = 500;
+
+/// Everything the per-case risk computation reads, gathered once.
+///
+/// Held by value and handed to [`QaMemoryReader::test_risk_from`] so that answering a
+/// question about N cases costs one read of each table, not N. See
+/// [`QaMemoryReader::test_evidence`].
+struct TestEvidence {
+    all: Vec<ExecutionTelemetryRow>,
+    proposals: Vec<crate::store::HealingProposalRow>,
+    drafts: Vec<crate::store::BugDraftRow>,
+    /// Resolved once, keyed by cluster id, so the draft → cluster hop is one indexed
+    /// lookup per distinct cluster rather than per (case, draft) pair.
+    clusters: BTreeMap<Uuid, crate::store::FailureClusterRow>,
+    /// Case titles, read with the rest of the evidence. Pre-read so the per-case
+    /// computation stays synchronous and does not await per case.
+    titles: BTreeMap<Uuid, String>,
+}
+
+/// One test case's risk, from its own recorded executions.
+#[derive(Debug, Clone, Serialize)]
+pub struct TestRisk {
+    pub test_case_id: String,
+    pub title: Option<String>,
+    /// `None` in this schema — see the section header. Never a zero standing in for a
+    /// score nobody could compute.
+    pub calibration: Option<RiskCalibration>,
+    /// All six factors, measured or explicitly unmeasured with the reason.
+    pub factors: Vec<Factor>,
+    pub partial: bool,
+    /// Fraction of the `calibrate_risk` model that stored rows back, 0.0-1.0.
+    pub measured_weight: f64,
+    pub unmeasured_weight: f64,
+    /// Weighted sum of the measured factors only. **Not** a 0-1 score.
+    pub weighted_contribution: f64,
+    /// Measured factors divided by `measured_weight`. This assumes the unmeasured weight
+    /// would have been neutral, which is an assumption, not a measurement — hence
+    /// `band_basis` states it and `calibration` stays `None`.
+    pub measured_ratio: Option<f64>,
+    pub executions: usize,
+    pub failures: usize,
+    pub failure_rate: Option<f64>,
+    pub flakiness_score: Option<f64>,
+    /// Bug drafts whose cluster this case's failures produced.
+    pub recurring_defects: usize,
+    /// Healing proposals raised against this case's failure signature.
+    pub healing_attempts: usize,
+    /// Of those, the ones whose verification recorded a regression.
+    pub healing_regressions: usize,
+    pub window: Window,
+    pub signals: Vec<Signal>,
+}
+
+/// Why a test case is where it is in the order.
+///
+/// Ordered highest-priority first; [`PriorityBand::rank`] is the sort key and is a total
+/// order, so the same data always produces the same list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PriorityBand {
+    /// On the safety floor: has recorded failure evidence. Never removed by prioritisation.
+    Mandatory,
+    /// Inside a declared change's impact set (Phase 3 `change_impacts`).
+    Changed,
+    /// The measured share of the risk model is at or above 0.70.
+    CriticalRisk,
+    /// ... at or above 0.50.
+    HighRisk,
+    /// A bug draft exists against this case's failure.
+    RecurringDefect,
+    /// Flakiness at or above [`FLAKY_THRESHOLD`].
+    Flaky,
+    /// No condition applies. Still listed — this band orders, it does not exclude.
+    Routine,
+}
+
+impl PriorityBand {
+    pub fn rank(self) -> u8 {
+        match self {
+            Self::Mandatory => 0,
+            Self::Changed => 1,
+            Self::CriticalRisk => 2,
+            Self::HighRisk => 3,
+            Self::RecurringDefect => 4,
+            Self::Flaky => 5,
+            Self::Routine => 6,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Mandatory => "mandatory",
+            Self::Changed => "changed",
+            Self::CriticalRisk => "critical_risk",
+            Self::HighRisk => "high_risk",
+            Self::RecurringDefect => "recurring_defect",
+            Self::Flaky => "flaky",
+            Self::Routine => "routine",
+        }
+    }
+
+    /// The condition that put a test in this band, in one clause.
+    pub fn rationale(self) -> &'static str {
+        match self {
+            Self::Mandatory => {
+                "this case has recorded failure evidence, so it is on the \
+                 safety floor and is never removed by prioritisation"
+            }
+            Self::Changed => "this case is inside a declared change's recorded impact set",
+            Self::CriticalRisk => {
+                "the measured share of the existing risk model is at or \
+                 above 0.70"
+            }
+            Self::HighRisk => {
+                "the measured share of the existing risk model is at or above \
+                 0.50"
+            }
+            Self::RecurringDefect => {
+                "a bug draft has been raised against this case's \
+                 recorded failure"
+            }
+            Self::Flaky => {
+                "this case's recorded outcomes have flipped often enough to meet \
+                 the flakiness threshold"
+            }
+            Self::Routine => "no risk condition applies to this case",
+        }
+    }
+}
+
+/// One test case in the prioritised order.
+#[derive(Debug, Clone, Serialize)]
+pub struct PrioritisedTest {
+    pub test_case_id: String,
+    pub title: Option<String>,
+    /// The highest band that applies.
+    pub priority: PriorityBand,
+    /// Every band that applies, so a case that is both `changed` and `critical_risk`
+    /// reports both rather than silently losing one.
+    pub applies: Vec<PriorityBand>,
+    /// One human-readable line per applying condition — the explanation for the order.
+    pub reasons: Vec<String>,
+    pub risk: TestRisk,
+    /// The change this test is impacted by, when the call named one.
+    pub change_ref: Option<String>,
+}
+
+/// A whole project's prioritisation.
+#[derive(Debug, Clone, Serialize)]
+pub struct TestPrioritisation {
+    pub project_id: String,
+    /// The declared change the ordering is relative to, if one was named.
+    pub change_ref: Option<String>,
+    pub tests: Vec<PrioritisedTest>,
+    /// How many fell in each band, so the shape of the project is readable at a glance.
+    pub band_counts: BTreeMap<String, usize>,
+    /// The floor. Reported separately so a reader can audit what prioritisation will not
+    /// drop rather than trusting that it does not.
+    pub mandatory_floor: Vec<String>,
+    pub window: Window,
+    pub signals: Vec<Signal>,
+}
+
+impl QaMemoryReader {
+    /// Risk for one test case, from its own recorded executions.
+    ///
+    /// Project-scoped: the telemetry read is the same `telemetry_for(project_id)` every
+    /// other surface here uses, so one tenant's history cannot reach another's case.
+    pub async fn test_risk(&self, project_id: &str, test_case_id: &str) -> Retrieved<TestRisk> {
+        // Checked before the evidence read, and reported separately from
+        // "no matching history": a caller who passed a malformed id made a mistake, which
+        // is a different answer from "this project has nothing about that case". Phase 0
+        // records `UnknownSubject` as its own reason for exactly this reason.
+        if Uuid::parse_str(test_case_id).is_err() {
+            return Retrieved::empty(project_id, InsufficientData::UnknownSubject);
+        }
+
+        let evidence = self.test_evidence(project_id).await;
+        if evidence.all.is_empty() {
+            return Retrieved::empty(project_id, InsufficientData::NoExecutions);
+        }
+        match self.test_risk_from(&evidence, test_case_id) {
+            Some(risk) => Retrieved {
+                project_id: project_id.to_string(),
+                insufficient_data: None,
+                view: Some(risk),
+            },
+            None => Retrieved::empty(project_id, InsufficientData::NoMatchingHistory),
+        }
+    }
+
+    /// Everything `test_risk_from` needs, read **once**.
+    ///
+    /// This exists because the obvious implementation — a per-case `test_risk` call —
+    /// turned one question into four per case: a full bounded `execution_telemetry`
+    /// scan, a full `healing_proposals` read, a full `bug_drafts` read, and a cluster
+    /// lookup for every draft. Prioritising a project of 500 cases did 2,000+ reads to
+    /// answer one question, all of them returning the same rows.
+    ///
+    /// Phase 6's stance on retrieval — "one bounded read per question rather than a pile
+    /// of joins" — applies here literally: the read happens once, and every case is
+    /// answered from it. Measured in the Phase 4 report.
+    ///
+    /// Clusters are resolved eagerly, so the draft→cluster hop is one indexed lookup per
+    /// distinct cluster instead of per (case, draft) pair.
+    async fn test_evidence(&self, project_id: &str) -> TestEvidence {
+        let all = self.telemetry_for(project_id).await;
+        let proposals = self
+            .store
+            .list_healing_proposals(project_id, None)
+            .await
+            .unwrap_or_default();
+        let drafts = self
+            .store
+            .list_bug_drafts(Some(project_id))
+            .await
+            .unwrap_or_default();
+
+        let mut clusters: BTreeMap<Uuid, crate::store::FailureClusterRow> = BTreeMap::new();
+        for d in &drafts {
+            if let Some(cluster) = self
+                .store
+                .get_failure_cluster_by_id(d.failure_cluster_id)
+                .await
+                .ok()
+                .flatten()
+            {
+                clusters.insert(d.failure_cluster_id, cluster);
+            }
+        }
+
+        let mut titles: BTreeMap<Uuid, String> = BTreeMap::new();
+        for c in self
+            .store
+            .list_test_cases(project_id, None, None)
+            .await
+            .unwrap_or_default()
+        {
+            titles.insert(c.id, c.title);
+        }
+
+        TestEvidence {
+            all,
+            proposals,
+            drafts,
+            clusters,
+            titles,
+        }
+    }
+
+    /// `test_risk` over evidence already read. `None` when the case has no rows.
+    fn test_risk_from(&self, evidence: &TestEvidence, test_case_id: &str) -> Option<TestRisk> {
+        let case = Uuid::parse_str(test_case_id).ok()?;
+        let rows: Vec<&ExecutionTelemetryRow> = evidence
+            .all
+            .iter()
+            .filter(|r| r.test_case_id == Some(case))
+            .collect();
+        if rows.is_empty() {
+            return None;
+        }
+
+        let owned: Vec<ExecutionTelemetryRow> = rows.iter().map(|r| (*r).clone()).collect();
+        let failures = rows
+            .iter()
+            .filter(|r| QaMemoryReader::is_failure(r))
+            .count();
+        let failure_rate = failures as f64 / rows.len() as f64;
+
+        // Reused exactly as modules and releases use it: rows plus the per-case counts,
+        // and it returns 0.0 when no case has two samples. A single-execution case would
+        // then read as "perfectly stable", so it is reported as unmeasured instead.
+        let mut one_case_counts: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+        one_case_counts.insert(test_case_id.to_string(), (rows.len(), failures));
+        let raw_flakiness = average_flakiness(&rows, &one_case_counts);
+        let flakiness = if rows.len() < 2 {
+            None
+        } else {
+            Some(raw_flakiness)
+        };
+        let severity = failure_severity(&rows);
+
+        // Healing and recurring-defect evidence, both joined on the fingerprints this
+        // case's own failures carry. Stored keys throughout.
+        let fingerprints: BTreeSet<String> = rows
+            .iter()
+            .filter_map(|r| r.failure_fingerprint.clone())
+            .filter(|f| !f.is_empty())
+            .collect();
+
+        let mut healing_attempts = 0usize;
+        let mut healing_regressions = 0usize;
+        for p in evidence
+            .proposals
+            .iter()
+            .filter(|p| fingerprints.contains(&p.failure_fingerprint))
+        {
+            healing_attempts += 1;
+            let regressed = p
+                .verification_result
+                .as_deref()
+                .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+                .and_then(|v| {
+                    v.get("regression_detected")
+                        .and_then(|b| b.as_bool())
+                        .or_else(|| {
+                            v.get("outcome")
+                                .and_then(|o| o.as_str())
+                                .map(|o| o == "REGRESSION_INTRODUCED")
+                        })
+                })
+                .unwrap_or(false);
+            if regressed {
+                healing_regressions += 1;
+            }
+        }
+
+        let mut recurring_defects = 0usize;
+        for d in &evidence.drafts {
+            let Some(cluster) = evidence.clusters.get(&d.failure_cluster_id) else {
+                continue;
+            };
+            if cluster
+                .failure_fingerprint
+                .as_deref()
+                .map(|fp| fingerprints.contains(fp))
+                .unwrap_or(false)
+            {
+                recurring_defects += 1;
+            }
+        }
+
+        let healing_regression_rate = if healing_attempts == 0 {
+            None
+        } else {
+            Some(healing_regressions as f64 / healing_attempts as f64)
+        };
+
+        let factors = vec![
+            Factor::measured(
+                "failure_rate",
+                failure_rate,
+                &format!(
+                    "{failures} failed of {} recorded executions of this case",
+                    rows.len()
+                ),
+                rows.len(),
+            ),
+            match flakiness {
+                Some(v) => Factor::measured(
+                    "flakiness_score",
+                    v,
+                    "adaptive_intelligence::evaluate_flakiness over this case's own outcomes",
+                    rows.len(),
+                ),
+                None => Factor::unmeasured(
+                    "flakiness_score",
+                    "fewer than two recorded executions, so no outcome flip can be observed",
+                ),
+            },
+            match severity {
+                Some(v) => Factor::measured(
+                    "failure_severity",
+                    v,
+                    "failure categories of this case's failures, weighted by share",
+                    failures,
+                ),
+                None => Factor::unmeasured(
+                    "failure_severity",
+                    "no failure of this case carries a failure_category",
+                ),
+            },
+            Factor::unmeasured(
+                "dependency_count",
+                "this schema has no test-case-to-test-case dependency graph; \
+                 TaskDef.prerequisites is per run, not per case",
+            ),
+            match healing_regression_rate {
+                Some(v) => Factor::measured(
+                    "healing_regression_rate",
+                    v,
+                    &format!(
+                        "{healing_regressions} of {healing_attempts} healing proposals against \
+                         this case's failure signature recorded a regression"
+                    ),
+                    healing_attempts,
+                ),
+                None => Factor::unmeasured(
+                    "healing_regression_rate",
+                    "no healing proposal has been raised against this case's failure signature",
+                ),
+            },
+            Factor::unmeasured(
+                "security_sensitivity",
+                "this schema has no security_sensitivity field for a test case",
+            ),
+        ];
+
+        let (calibration, coverage) = calibrate_or_none(test_case_id, &factors);
+        let partial = coverage.unmeasured > f64::EPSILON;
+        let measured_ratio = if coverage.measured > f64::EPSILON {
+            Some(coverage.contribution / coverage.measured)
+        } else {
+            None
+        };
+        let window = Self::window(&owned);
+
+        let mut signals = Vec::new();
+        signals.push(Signal {
+            kind: "failure_rate".into(),
+            statement: format!(
+                "this case failed {failures} time(s) in {} recorded execution(s)",
+                rows.len()
+            ),
+            evidence_runs: rows.iter().map(|r| r.run_id).collect(),
+            confidence: 1.0,
+            basis: "counted from execution_telemetry rows carrying this case's test_case_id".into(),
+        });
+        if let Some(f) = flakiness {
+            signals.push(Signal {
+                kind: "flakiness".into(),
+                statement: format!(
+                    "outcome flips score {f:.2} for this case across {} execution(s)",
+                    rows.len()
+                ),
+                evidence_runs: rows.iter().map(|r| r.run_id).collect(),
+                confidence: 1.0,
+                basis: "adaptive_intelligence::evaluate_flakiness".into(),
+            });
+        }
+        if recurring_defects > 0 {
+            signals.push(Signal {
+                kind: "failure_recurrence".into(),
+                statement: format!(
+                    "{recurring_defects} bug draft(s) exist against this case's failure \
+                     signature"
+                ),
+                evidence_runs: Vec::new(),
+                confidence: 1.0,
+                basis: "bug_drafts -> failure_clusters.failure_fingerprint -> this case's \
+                        telemetry rows"
+                    .into(),
+            });
+        }
+
+        let title = evidence.titles.get(&case).cloned();
+
+        Some(TestRisk {
+            test_case_id: test_case_id.to_string(),
+            title,
+            calibration,
+            factors,
+            partial,
+            measured_weight: coverage.measured,
+            unmeasured_weight: coverage.unmeasured,
+            weighted_contribution: coverage.contribution,
+            measured_ratio,
+            executions: rows.len(),
+            failures,
+            failure_rate: Some(failure_rate),
+            flakiness_score: flakiness,
+            recurring_defects,
+            healing_attempts,
+            healing_regressions,
+            window,
+            signals,
+        })
+    }
+
+    /// Order a project's test cases by evidenced risk, most important first.
+    ///
+    /// ## This orders; it never removes
+    ///
+    /// Every case with recorded executions is returned. `PriorityBand::Routine` is a
+    /// position in the order, not an exclusion — dropping cases is Phase 3's
+    /// `Scope::restricted_to`, which is where the safety floor is actually enforced.
+    ///
+    /// ## `change_ref` is optional and additive
+    ///
+    /// Naming a change promotes the cases Phase 3 recorded for it into `Changed`. It
+    /// never demotes anything, so a stale history cannot bury current work — the
+    /// opposite failure mode to the one the negative tests check.
+    ///
+    /// ## One telemetry read
+    ///
+    /// All history is read once and shared across every case, so prioritising 200 cases
+    /// does not re-read the table 200 times. Measured in the Phase 4 report.
+    pub async fn prioritise_tests(
+        &self,
+        project_id: &str,
+        change_ref: Option<&str>,
+    ) -> Retrieved<TestPrioritisation> {
+        // Phase 4 performance: the evidence is gathered **once** here and every case is
+        // answered from it. The per-case path used to re-read telemetry, healing
+        // proposals and bug drafts for each case, which made prioritising a project of
+        // 500 cases cost 2,000+ reads returning identical rows.
+        let evidence = self.test_evidence(project_id).await;
+        if evidence.all.is_empty() {
+            return Retrieved::empty(project_id, InsufficientData::NoExecutions);
+        }
+        let all = self.telemetry_for(project_id).await;
+        if all.is_empty() {
+            return Retrieved::empty(project_id, InsufficientData::NoExecutions);
+        }
+
+        // Which cases the named change impacts, from the Phase 3 records. The stored id
+        // is a graph node; the node's `external_ref` is the case id.
+        let changed: BTreeSet<String> = match change_ref {
+            None => BTreeSet::new(),
+            Some(reference) => {
+                let nodes = self
+                    .store
+                    .list_quality_nodes(project_id)
+                    .await
+                    .unwrap_or_default();
+                let case_of: BTreeMap<Uuid, String> = nodes
+                    .iter()
+                    .filter(|n| {
+                        n.node_type == crate::store::TEST_NODE_TYPE
+                            || n.node_type == crate::store::LEGACY_TEST_NODE_TYPE
+                    })
+                    .filter_map(|n| {
+                        let node = n.id;
+                        let case = n.external_ref.clone()?;
+                        Some((node, case))
+                    })
+                    .collect();
+                self.store
+                    .list_change_impacts(project_id, 5000)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|r| r.change_ref == reference)
+                    .filter_map(|r| r.selected_test_node_id)
+                    .filter_map(|node| case_of.get(&node).cloned())
+                    .collect()
+            }
+        };
+
+        // Every case with recorded executions, counted once.
+        let mut counts: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+        for r in &all {
+            let Some(case) = r.test_case_id.map(|c| c.to_string()) else {
+                continue;
+            };
+            let slot = counts.entry(case).or_insert((0, 0));
+            slot.0 += 1;
+            if QaMemoryReader::is_failure(r) {
+                slot.1 += 1;
+            }
+        }
+
+        let mut tests: Vec<PrioritisedTest> = Vec::new();
+        for case_id in counts.keys() {
+            if Uuid::parse_str(case_id).is_err() {
+                continue;
+            }
+            // Answered from the shared evidence. `None` here would mean the counted row
+            // set and the evidence disagree, which cannot happen because both come from
+            // the same read; skipped rather than given a fabricated zero if it somehow did.
+            let Some(risk) = self.test_risk_from(&evidence, case_id) else {
+                continue;
+            };
+
+            let mut applies: Vec<PriorityBand> = Vec::new();
+            let mut reasons: Vec<String> = Vec::new();
+
+            // The floor: any recorded failure at all.
+            if risk.failures > 0 {
+                applies.push(PriorityBand::Mandatory);
+                reasons.push(format!(
+                    "{} recorded failure(s); on the safety floor",
+                    risk.failures
+                ));
+            }
+            if changed.contains(case_id) {
+                applies.push(PriorityBand::Changed);
+                let reference = change_ref.unwrap_or("");
+                reasons.push(format!("recorded as impacted by change `{reference}`"));
+            }
+            match risk.measured_ratio {
+                Some(r) if r >= 0.70 => {
+                    applies.push(PriorityBand::CriticalRisk);
+                    reasons.push(format!(
+                        "measured share of the risk model is {r:.2} (>= 0.70)"
+                    ));
+                }
+                Some(r) if r >= 0.50 => {
+                    applies.push(PriorityBand::HighRisk);
+                    reasons.push(format!(
+                        "measured share of the risk model is {r:.2} (>= 0.50)"
+                    ));
+                }
+                _ => {}
+            }
+            if risk.recurring_defects > 0 {
+                applies.push(PriorityBand::RecurringDefect);
+                reasons.push(format!(
+                    "{} bug draft(s) against this case's failure signature",
+                    risk.recurring_defects
+                ));
+            }
+            if risk.flakiness_score.is_some_and(|f| f >= FLAKY_THRESHOLD) {
+                applies.push(PriorityBand::Flaky);
+                reasons.push(format!(
+                    "flakiness {} meets the {FLAKY_THRESHOLD} threshold",
+                    risk.flakiness_score.unwrap_or_default()
+                ));
+            }
+            if applies.is_empty() {
+                applies.push(PriorityBand::Routine);
+                reasons.push(PriorityBand::Routine.rationale().to_string());
+            }
+
+            applies.sort_by_key(|b| b.rank());
+            let priority = applies[0];
+            reasons.push(priority.rationale().to_string());
+
+            tests.push(PrioritisedTest {
+                test_case_id: case_id.clone(),
+                title: risk.title.clone(),
+                priority,
+                applies,
+                reasons,
+                risk,
+                change_ref: change_ref.map(ToString::to_string),
+            });
+        }
+
+        // Highest band first, then case id, so the order is a total order and stable.
+        tests.sort_by(|a, b| {
+            a.priority
+                .rank()
+                .cmp(&b.priority.rank())
+                .then(a.test_case_id.cmp(&b.test_case_id))
+        });
+        tests.truncate(PRIORITISE_MAX);
+
+        let mut band_counts: BTreeMap<String, usize> = BTreeMap::new();
+        for t in &tests {
+            *band_counts
+                .entry(t.priority.as_str().to_string())
+                .or_insert(0) += 1;
+        }
+        let mandatory_floor: Vec<String> = tests
+            .iter()
+            .filter(|t| t.priority == PriorityBand::Mandatory)
+            .map(|t| t.test_case_id.clone())
+            .collect();
+
+        let window = Self::window(&all.iter().map(|r| (*r).clone()).collect::<Vec<_>>());
+
+        Retrieved {
+            project_id: project_id.to_string(),
+            view: Some(TestPrioritisation {
+                project_id: project_id.to_string(),
+                change_ref: change_ref.map(ToString::to_string),
+                tests,
+                band_counts,
+                mandatory_floor,
+                window,
+                signals: vec![Signal {
+                    kind: "prioritisation_scope".into(),
+                    statement: "ordered every test case with recorded executions; no case was \
+                         excluded from the list"
+                        .to_string(),
+                    evidence_runs: Vec::new(),
+                    confidence: 1.0,
+                    basis: "one telemetry read, counted per test_case_id".into(),
+                }],
+            }),
+            insufficient_data: None,
+        }
+    }
 }

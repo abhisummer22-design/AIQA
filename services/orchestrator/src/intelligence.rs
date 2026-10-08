@@ -406,28 +406,40 @@ impl<'a> Intelligence<'a> {
             if !t.status.is_terminal() {
                 continue;
             }
-            self.update_test_intelligence(
-                pid,
-                t,
-                prereq_counts.get(t.id.as_str()).copied().unwrap_or(0),
-            )
-            .await?;
-
-            if matches!(t.status, TaskStatus::Failed | TaskStatus::Timeout) {
-                self.record_failure(pid, t).await?;
-            }
-
-            // Phase 6: Ingest normalized execution telemetry
-            let executor_name = task_defs
+            // The same `TaskDef.test_case_id` the telemetry row below is keyed on, read
+            // once so the risk-assessment vertex and the telemetry row cannot disagree
+            // about which case a task belongs to.
+            let task_case_id = task_defs
                 .get(t.id.as_str())
-                .and_then(|def| def.executor.as_deref())
-                .unwrap_or("simulated");
+                .and_then(|def| def.test_case_id.clone())
+                .and_then(|raw| Uuid::parse_str(&raw).ok());
+            // Phase 2: the failing selector is read **once, before** either consumer,
+            // because it is part of the failure fingerprint on both sides. It used to be
+            // derived after `record_failure` had already run, which is part of why the
+            // cluster and the telemetry row could not be joined.
             let selector = task_defs.get(t.id.as_str()).and_then(|def| {
                 def.params
                     .get("selector")
                     .and_then(|v| v.as_str())
                     .map(ToString::to_string)
             });
+            let executor_name = task_defs
+                .get(t.id.as_str())
+                .and_then(|def| def.executor.as_deref())
+                .unwrap_or("simulated");
+            self.update_test_intelligence(
+                pid,
+                t,
+                task_case_id.as_ref(),
+                prereq_counts.get(t.id.as_str()).copied().unwrap_or(0),
+            )
+            .await?;
+
+            if matches!(t.status, TaskStatus::Failed | TaskStatus::Timeout) {
+                self.record_failure(pid, t, selector.as_deref()).await?;
+            }
+
+            // Phase 6: Ingest normalized execution telemetry
             let telemetry = crate::adaptive_intelligence::ExecutionTelemetry::from_task_state(
                 pid,
                 effective_run_id,
@@ -457,12 +469,42 @@ impl<'a> Intelligence<'a> {
         &self,
         project_id: &str,
         t: &TaskState,
+        test_case_id: Option<&Uuid>,
         dependency_count: usize,
     ) -> Result<()> {
-        let node_id = self
-            .store
-            .upsert_quality_node(project_id, "test", &t.name, &t.name)
-            .await?;
+        // Phase 1 (Trace Graph): this vertex anchors `upsert_risk_assessment` and
+        // `upsert_test_value` below, so its identity matters beyond this row.
+        //
+        // It used to be `upsert_quality_node(pid, "test", &t.name, &t.name)` —
+        // always a name, even when the task's `TaskDef` carried a real `test_cases.id`.
+        // `TEST_NODE_TYPE` vertices are joined on `external_ref = test_cases.id`
+        // (see `Store::list_test_cases_for_requirement`), so a case-backed task was
+        // writing into that namespace under a key no case could ever match, and the
+        // risk score it computed was stranded on a vertex the trace walk could not
+        // reach.
+        //
+        // Now: a stable id when one exists, so the risk assessment lands on the case
+        // itself. With no case id, the name is kept — the task is still recorded, and
+        // it still appears in `GET /intelligence/tests` — but routed through
+        // `unambiguous_task_ref` so a name that parses as a UUID cannot claim a real
+        // case's vertex.
+        let node_id = match test_case_id {
+            Some(case_id) => {
+                self.store
+                    .upsert_test_case_node(project_id, case_id, &t.name)
+                    .await?
+            }
+            None => {
+                self.store
+                    .upsert_quality_node(
+                        project_id,
+                        crate::store::TEST_NODE_TYPE,
+                        &crate::store::unambiguous_task_ref(&t.name),
+                        &t.name,
+                    )
+                    .await?
+            }
+        };
 
         // B3 — scored history must come from this tenant only. `project_id`
         // here is already the resolved tenant key (see `tenant_key`), so an
@@ -502,22 +544,79 @@ impl<'a> Intelligence<'a> {
             _ => 0.0,
         };
 
-        // Weighted, documented, explainable — see module doc comment. Every
-        // weight and input is chosen to be inspectable, not tuned against
-        // any labeled dataset (none exists yet — see README "Intelligence
-        // layer" limitations).
+        // ---------------------------------------------------------------------
+        // RISK SIGNAL REMEDIATION (a later finding, documented in
+        // docs/next-intelligence/PHASE_4_RISK_SIGNAL_REMEDIATION.md)
+        //
+        // This block used to read:
+        //
+        //     let security_sensitivity = 0.0_f64; // no signal source wired up yet
+        //     let business_criticality = 0.0_f64; // no requirement-linkage source wired up yet
+        //     let change_frequency = 0.0_f64; // no change-intelligence source wired up yet
+        //
+        // and then multiply the first of them into the score at weight 0.10. That is the
+        // worst of both worlds: the row looked like a measurement, and the score was
+        // understated by a fabricated zero on every node in the system.
+        //
+        // The three signals are now decided one at a time, and each states whether it is a
+        // **measurement** or has **no source**:
+        //
+        // * `security_sensitivity` — NO SOURCE. There is no column, no tag convention and no
+        //   field anywhere in this schema recording how security-sensitive a test is. Phase 4
+        //   already declined to derive it from `requirements.kind`, because a *category* is not
+        //   an *importance*, and that reasoning is unchanged. So: `None`. Not invented.
+        // * `business_criticality` — NO SOURCE. `requirements` stores `kind`, `section` and
+        //   `ordinal` and no importance of any kind. So: `None`. Not invented.
+        // * `change_frequency` — SOURCE FOUND. Phase 3 built `change_impacts`: real,
+        //   production-written, project-scoped records of which declared changes affected which
+        //   node. The old comment ("no change-intelligence source wired up yet") was true when
+        //   written and is now false, so the existing source is now wired rather than left
+        //   behind as a placeholder.
+        let security_sensitivity: Option<f64> = None;
+        let business_criticality: Option<f64> = None;
+        let change_frequency: Option<f64> = Some(
+            self.store
+                .count_distinct_changes_for_node(project_id, Some(&node_id))
+                .await? as f64,
+        );
+
+        // Weighted, documented, explainable — see module doc comment. Every weight and input is
+        // chosen to be inspectable, not tuned against any labeled dataset (none exists yet —
+        // see README "Intelligence layer" limitations).
         let dep_norm = (dependency_count as f64 / 5.0).min(1.0);
         let cost_norm = (execution_cost_ms / 30_000.0).min(1.0);
-        let security_sensitivity = 0.0_f64; // no signal source wired up yet
-        let business_criticality = 0.0_f64; // no requirement-linkage source wired up yet
-        let change_frequency = 0.0_f64; // no change-intelligence source wired up yet (see README)
 
-        let risk_score = (0.40 * historical_failure_rate
+        // The model, as **measured factors only**. A factor with no source contributes nothing
+        // and is not counted, rather than contributing a zero that reads as a measurement.
+        let measured_weight: f64 = 0.40 + 0.20 + 0.15 + 0.15;
+        let contribution = 0.40 * historical_failure_rate
             + 0.20 * flakiness_score
             + 0.15 * dep_norm
-            + 0.15 * cost_norm
-            + 0.10 * security_sensitivity)
-            .clamp(0.0, 1.0);
+            + 0.15 * cost_norm;
+
+        // Renormalised by the weight the data actually backs.
+        //
+        // This is the substantive change. Summing only the measured weights without dividing
+        // caps every score at 0.90 and, worse, shifts the level bands: a node whose four
+        // measured factors put it at 0.55 true risk was stored as 0.495, below the 0.50 `HIGH`
+        // boundary it actually crosses. Dividing by the measured weight restores the scale, and
+        // it is the same arithmetic `qa_memory_risk` already sanctions for exactly this
+        // situation ("divide by measured_weight ... note that such a division assumes the
+        // missing weight would have been neutral"). The assumption is recorded in `inputs`
+        // rather than left implicit.
+        //
+        // If every factor were measurable this collapses to the original expression, because
+        // `measured_weight` would be 1.0.
+        let risk_score = (contribution / measured_weight).clamp(0.0, 1.0);
+
+        let unmeasured_weight = 1.0 - measured_weight;
+        let unmeasured_factors: Vec<&str> = [
+            ("security_sensitivity", security_sensitivity),
+            ("business_criticality", business_criticality),
+        ]
+        .into_iter()
+        .filter_map(|(name, v)| v.is_none().then_some(name))
+        .collect();
 
         let inputs = serde_json::json!({
             "historical_failure_rate": historical_failure_rate,
@@ -526,10 +625,25 @@ impl<'a> Intelligence<'a> {
             "dependency_count_normalized": dep_norm,
             "execution_cost_ms": execution_cost_ms,
             "execution_cost_normalized": cost_norm,
+            // `null` means **no signal source exists**, which is a different fact from `0.0`
+            // ("measured, and it is zero"). This is the whole point of the remediation: the
+            // two must be distinguishable in the record.
             "security_sensitivity": security_sensitivity,
+            "business_criticality": business_criticality,
+            "change_frequency": change_frequency,
+            "measured_weight": measured_weight,
+            "unmeasured_weight": unmeasured_weight,
+            "unmeasured_factors": unmeasured_factors,
             "window_runs": window_runs,
             "weights": {"failure_rate": 0.40, "flakiness": 0.20, "dependency_count": 0.15, "execution_cost": 0.15, "security_sensitivity": 0.10},
-            "note": "heuristic, unweighted by any human-override feedback loop yet; business_criticality/change_frequency have no data source wired up in this slice"
+            "score_normalisation": format!(
+                "sum(weight x measured) / measured_weight, with measured_weight={measured_weight}; \
+                 this assumes the unmeasured weight would have been neutral, which is an \
+                 assumption and not a measurement"
+            ),
+            "note": "heuristic, unweighted by any human-override feedback loop yet. \
+                     security_sensitivity and business_criticality have no signal source in this \
+                     schema and are recorded as unmeasured rather than as zero."
         })
         .to_string();
 
@@ -572,7 +686,16 @@ impl<'a> Intelligence<'a> {
         Ok(())
     }
 
-    async fn record_failure(&self, project_id: &str, t: &TaskState) -> Result<()> {
+    /// Phase 2: `selector` is the task's failing selector, taken from the plan's `TaskDef`
+    /// — the same value `ExecutionTelemetry::from_task_state` receives. It is part of the
+    /// fingerprint, so omitting it made the cluster disagree with the telemetry row it
+    /// is supposed to describe.
+    async fn record_failure(
+        &self,
+        project_id: &str,
+        t: &TaskState,
+        selector: Option<&str>,
+    ) -> Result<()> {
         let reason = t.reason.clone().unwrap_or_default();
         let signature = normalize_signature(&reason);
         if signature.is_empty() {
@@ -590,22 +713,30 @@ impl<'a> Intelligence<'a> {
         // defect. When either input is unavailable the value is simply `None` and the
         // cluster stays uncorrelated rather than wrongly correlated.
         let failure_fingerprint = {
-            use crate::adaptive_intelligence::{
-                categorize_failure, compute_telemetry_fingerprint, mask_dynamic_tokens,
-                sanitize_telemetry_text,
-            };
-            let sanitized = sanitize_telemetry_text(&reason);
+            // Phase 2 fix. This block previously claimed to compute "exactly the chain
+            // `ExecutionTelemetry::from_task_state` uses" and then passed `None` for the
+            // selector that `from_task_state` passes through. `compute_telemetry_fingerprint`
+            // mixes the selector into the hash, so for any failure carrying one — which is
+            // the ordinary Playwright case — the cluster's fingerprint and the telemetry
+            // row's fingerprint were different values, the cluster↔telemetry join found
+            // nothing, and every defect reported an empty `related_test_cases`.
+            //
+            // An empty list there reads as "this defect touched no tests", which is the
+            // most misleading answer available; `qa_memory.rs` documents that failure
+            // mode for the earlier signature-vs-fingerprint split.
+            //
+            // The selector now arrives as a parameter, and both sides call
+            // `canonical_failure_fingerprint`, so the two chains cannot diverge again.
+            let (sanitized, _category, fingerprint) =
+                crate::adaptive_intelligence::canonical_failure_fingerprint(
+                    &reason, selector, None, None,
+                );
+            // A failure whose sanitized text is empty stays uncorrelated rather than
+            // correlated against a blank message.
             if sanitized.trim().is_empty() {
                 None
             } else {
-                let category = categorize_failure(&sanitized, None);
-                let masked = mask_dynamic_tokens(&sanitized);
-                Some(compute_telemetry_fingerprint(
-                    &category,
-                    &masked,
-                    None,
-                    None,
-                ))
+                Some(fingerprint)
             }
         };
 
@@ -707,16 +838,13 @@ impl<'a> Intelligence<'a> {
         };
         let pid = tenant_key(Some(project_id));
 
-        let req_node_id = self
-            .store
-            .upsert_quality_node(pid, "requirement", &req_ref, &req_name)
-            .await?;
-        let case_node_id = self
-            .store
-            .upsert_quality_node(pid, "test_case", &test_case_id.to_string(), test_case_title)
-            .await?;
+        // Phase 1: this now writes the **canonical** node type via
+        // `Store::link_case_to_requirement`. It previously wrote `"test_case"`, which no
+        // reader looked for, while every execution wrote `"test"` — so a case's
+        // requirement edge and its execution's failure edge could never meet. See
+        // `Store::upsert_test_case_node` for the full root cause.
         self.store
-            .upsert_quality_relation(case_node_id, req_node_id, "validates")
+            .link_case_to_requirement(pid, &test_case_id, test_case_title, &req_ref, &req_name)
             .await?;
         Ok(())
     }
@@ -1140,7 +1268,7 @@ RESPONSE 404 Not Found
             .await
             .expect("upsert risky node");
         store
-            .upsert_risk_assessment(risky_node, 0.8, 0.0, 0.0, 0.9, 2, 0.0, 500.0, "{}")
+            .upsert_risk_assessment(risky_node, 0.8, None, None, 0.9, 2, None, 500.0, "{}")
             .await
             .expect("upsert risk assessment");
         store
@@ -1154,7 +1282,7 @@ RESPONSE 404 Not Found
             .await
             .expect("upsert safe node");
         store
-            .upsert_risk_assessment(safe_node, 0.1, 0.0, 0.0, 0.05, 0, 0.0, 100.0, "{}")
+            .upsert_risk_assessment(safe_node, 0.1, None, None, 0.05, 0, None, 100.0, "{}")
             .await
             .expect("upsert risk assessment");
 
@@ -1169,11 +1297,11 @@ RESPONSE 404 Not Found
             .upsert_risk_assessment(
                 other_project_node,
                 0.95,
-                0.0,
-                0.0,
+                None,
+                None,
                 0.99,
                 3,
-                0.0,
+                None,
                 900.0,
                 "{}",
             )

@@ -186,7 +186,6 @@ pub(crate) async fn plan(
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<OpenApiBody>,
 ) -> Result<Json<Value>, ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
     let spec = read_spec(&body).await?;
     let options = options_of(&body, &spec)?;
@@ -232,7 +231,6 @@ pub(crate) async fn create_run(
     ApiPath(project_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<OpenApiBody>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-
     require_scoped_project(&state, &ctx, project_id).await?;
     let spec = read_spec(&body).await?;
     let options = options_of(&body, &spec)?;

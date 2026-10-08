@@ -21,7 +21,8 @@ use crate::execution_plan::Action;
 use crate::executor::ExecutorRegistry;
 use crate::plan_validator::{AgentExecutionPlan, AgentTaskPlan, PlanValidator};
 use crate::policy::PolicyConfig;
-use crate::store::Store;
+use crate::store::{Store, LEGACY_TEST_NODE_TYPE, TASK_NODE_TYPE, TEST_NODE_TYPE};
+use sqlx::Row;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use tempfile::tempdir;
@@ -770,26 +771,58 @@ async fn test_28_traceability_links_requirement_and_test_case() {
         .await
         .expect("dispatched");
 
-    // Verify Quality Graph nodes and relation exist in SQLite store
+    // Verify the Quality Graph nodes and relation really exist in SQLite.
+    //
+    // Phase 1 rewrote this test. The old version built the vertex it then asserted
+    // on: it called `upsert_quality_node("proj-trace", "test_case", "Verify Login
+    // Flow", ...)` itself. Because the unique key is
+    // `(project_id, node_type, external_ref)`, that call returned the dispatcher's
+    // vertex only when the dispatcher's node type happened to match the literal this
+    // test hardcoded — the coupling was real but accidental, expressed as a literal
+    // in the assertion rather than as the constant the production code uses. When the
+    // dispatcher changed to the honest identity, the test's `upsert` silently created
+    // a *second*, unrelated vertex and the assertion failed on a node it had just
+    // invented.
+    //
+    // This version observes the dispatcher's vertex instead of creating one, so the
+    // node type under test is the constant the production path actually uses.
+    //
+    // An `AgentTaskPlan` carries no `test_case_id` — verified against
+    // `plan_validator::AgentTaskPlan`, not assumed — so the dispatcher records a
+    // `TASK_NODE_TYPE` vertex keyed on the task name, not a case vertex keyed on a
+    // `test_cases.id`. That is the honest identity, and it changes no behaviour: a
+    // task name can never equal a UUID, so the old `"test_case"` vertex could never
+    // satisfy `list_test_cases_for_requirement`'s `external_ref = tc.id` join and was
+    // unreachable by any reader.
     let req_node_id = store
         .upsert_quality_node("proj-trace", "requirement", "REQ-TRACE-99", "REQ-TRACE-99")
         .await
         .unwrap();
-    let case_node_id = store
-        .upsert_quality_node(
-            "proj-trace",
-            "test_case",
-            "Verify Login Flow",
-            "Verify Login Flow",
-        )
-        .await
-        .unwrap();
 
-    // Verify the validates relation was established
+    // Observe what the dispatcher wrote. A missing row is a failure, not something to
+    // create on the spot.
+    let case_node_id: Option<String> = sqlx::query(
+        "SELECT id FROM quality_nodes WHERE project_id = ? AND node_type = ? AND external_ref = ?",
+    )
+    .bind("proj-trace")
+    .bind(TASK_NODE_TYPE)
+    .bind("Verify Login Flow")
+    .fetch_optional(&store.pool)
+    .await
+    .unwrap()
+    .map(|r| r.get("id"));
+
+    assert!(
+        case_node_id.is_some(),
+        "the dispatcher must persist a {} vertex for the task it ran",
+        TASK_NODE_TYPE
+    );
+
+    // And the `validates` edge must run from *that* vertex to the requirement.
     let rel_exists = sqlx::query(
         "SELECT id FROM quality_relations WHERE from_node_id = ? AND to_node_id = ? AND relation_type = 'validates'",
     )
-    .bind(case_node_id.to_string())
+    .bind(case_node_id.as_deref().unwrap())
     .bind(req_node_id.to_string())
     .fetch_optional(&store.pool)
     .await
@@ -797,8 +830,27 @@ async fn test_28_traceability_links_requirement_and_test_case() {
 
     assert!(
         rel_exists.is_some(),
-        "quality relation 'validates' must be persisted"
+        "quality relation 'validates' must be persisted from the dispatcher's own vertex"
     );
+
+    // Negative: the agent path must NOT fabricate a case vertex. A name is not an id,
+    // and writing one would put a name into the namespace readers join on.
+    let fabricated_case_vertex: Option<String> = sqlx::query(
+        "SELECT id FROM quality_nodes WHERE project_id = ? AND node_type IN (?, ?) AND external_ref = ?",
+    )
+    .bind("proj-trace")
+    .bind(TEST_NODE_TYPE)
+    .bind(LEGACY_TEST_NODE_TYPE)
+    .bind("Verify Login Flow")
+    .fetch_optional(&store.pool)
+    .await
+    .unwrap()
+    .map(|r| r.get("id"));
+    assert!(
+        fabricated_case_vertex.is_none(),
+        "an agent task name must never be written as a test-case vertex"
+    );
+
     assert_eq!(res.lifecycle_state, AgentExecutionLifecycle::Executing);
 }
 

@@ -320,9 +320,8 @@ impl Grounding {
             // afford, so one long element ended the page and hid every later
             // one, including short relevant ones. It now skips that element and
             // keeps going.
-            let (relevant, incidental): (Vec<_>, Vec<_>) = elements
-                .into_iter()
-                .partition(|(score, _, _)| *score > 0);
+            let (relevant, incidental): (Vec<_>, Vec<_>) =
+                elements.into_iter().partition(|(score, _, _)| *score > 0);
 
             let mut shown = Vec::new();
             let mut incidental = incidental.into_iter();

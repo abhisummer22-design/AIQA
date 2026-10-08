@@ -12,12 +12,20 @@
 //! - Strict multi-tenant boundary checks via `AgentContext::is_authorized_for_project`.
 //! - Strictly diagnostic, reasoning, and planning: zero external executor invocation.
 
+pub mod exploration;
+pub mod exploration_execution;
 pub mod healing;
 pub mod planning;
 
 #[cfg(test)]
 mod tests;
 
+pub use exploration::{
+    behaviour_support_report, ExplorationBehaviour, ExplorationBudget, ExplorationCounters,
+    ExplorationFinding, ExplorationReport, ExplorationService, ExplorationStop, ExploratoryAgent,
+    FindingClass, ProbeRunner,
+};
+pub use exploration_execution::{AssertionEvidence, DispatchOutcome, RunPipelineProbeRunner};
 pub use healing::{FailureEvidence, HealedCandidate, SelfHealingAgent, SelfHealingOutput};
 pub use planning::{
     CoverageGap, PlanningRequest, TestObjective, TestPlanOutput, TestPlanningAgent, TestSuitePlan,

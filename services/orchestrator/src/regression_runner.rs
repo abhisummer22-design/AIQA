@@ -68,6 +68,55 @@ pub struct Scope {
     pub skipped: Vec<SkippedCase>,
 }
 
+impl Scope {
+    /// Narrow this scope to a selected set of case ids.
+    ///
+    /// Phase 3 (Smart Regression). This is the **only** thing Phase 3 added to the
+    /// regression engine, and it is deliberately a filter rather than a second engine:
+    /// everything about deciding *what can be replayed and how* — `scope()`'s two status
+    /// queries, `replay_of`, the plan lookup, the "another case was last run as the same
+    /// task" rule — is untouched and still owns that decision. Selection only decides
+    /// *which of those* to keep.
+    ///
+    /// ## Nothing disappears silently
+    ///
+    /// Every case this drops is moved into `skipped` with a reason, using the same
+    /// `SkippedCase` shape the engine already uses for "this case cannot be repeated".
+    /// A regression run that executes 12 of 60 cases can therefore account for the other
+    /// 48, which is what makes a reduced run auditable rather than merely smaller.
+    ///
+    /// ## The floor cannot be subtracted
+    ///
+    /// `mandatory` is a caller-supplied set that is **added to** the selection and never
+    /// intersected with it. That is the structural guarantee behind "never remove mandatory
+    /// safety tests only to reduce test count": a case on this list is retained even when
+    /// it appears in neither `selected` nor anything else. The engine does not decide what
+    /// is mandatory — see `change_impact::Tier::SafetyFloor` for how that set is derived,
+    /// and the Phase 3 report for why it is derived rather than declared.
+    pub fn restricted_to(
+        &self,
+        selected: &BTreeSet<String>,
+        mandatory: &BTreeSet<String>,
+    ) -> Scope {
+        let mut tasks: Vec<(ReplayedCase, TaskDef)> = Vec::new();
+        let mut skipped = self.skipped.clone();
+        for (case, task) in &self.tasks {
+            if selected.contains(&case.case_id) || mandatory.contains(&case.case_id) {
+                tasks.push((case.clone(), task.clone()));
+            } else {
+                skipped.push(SkippedCase {
+                    case_id: case.case_id.clone(),
+                    title: case.title.clone(),
+                    reason: "not selected by change-impact analysis".to_string(),
+                });
+            }
+        }
+        // The order the engine already produced is preserved, so selection cannot make a
+        // run's case list differ between two runs of the same schedule.
+        Scope { tasks, skipped }
+    }
+}
+
 /// The cases in scope (the project's approved cases, or a suite's), split into those whose last run can be repeated and those that cannot.
 pub async fn scope(state: &AppState, project_id: &str, suite_id: Option<&str>) -> Result<Scope> {
     let suite = suite_id.map(Uuid::parse_str).transpose()?;

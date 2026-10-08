@@ -116,6 +116,50 @@ fn release_from_row(r: sqlx::sqlite::SqliteRow) -> ReleaseRow {
     }
 }
 
+/// Phase 1 (Trace Graph): the canonical graph vertex type for a test case, keyed on
+/// `quality_nodes.external_ref = test_cases.id`.
+///
+/// This value replaces the two that previously disagreed - see
+/// [`Store::upsert_test_case_node`] for the root-cause description.
+pub const TEST_NODE_TYPE: &str = "test";
+
+/// Phase 1: the historical `node_type` that `Intelligence::link_test_case_to_requirement`
+/// wrote before the canonical value existed.
+///
+/// **Read only, never written.** The trace walk includes it so edges persisted before this
+/// change stay visible instead of silently becoming unreachable - dropping them would look
+/// like "no history exists", which is the exact class of wrong answer this work exists to
+/// eliminate.
+pub const LEGACY_TEST_NODE_TYPE: &str = "test_case";
+
+/// Phase 1: a task with no known test case (a crawl, or a hand-built API task).
+pub const TASK_NODE_TYPE: &str = "task";
+
+/// Phase 1: makes a name safe to use as `external_ref` in the case-vertex namespace.
+///
+/// [`TEST_NODE_TYPE`] vertices are keyed on `test_cases.id`, and readers join on that id
+/// ([`Store::list_test_cases_for_requirement`] does `case_node.external_ref = tc.id`). A
+/// task with no case must still be recorded somewhere, and for every ordinary name the name
+/// itself is the obvious key.
+///
+/// The one unsafe name is a string that parses as a UUID: a client could create a task
+/// literally named after some case's id, which would silently claim that case's vertex -
+/// attaching a foreign task's risk assessment to a real test case. That is exactly the
+/// fabrication this work prevents, so such a name is namespaced away instead.
+///
+/// A prefix is used rather than a different `node_type` on purpose: moving name-keyed tasks
+/// off `TEST_NODE_TYPE` would drop them out of [`Store::list_test_intelligence`] and
+/// [`Store::dashboard_test_count`], both of which list by node type. Namespacing the
+/// `external_ref` leaves those features untouched and affects only the pathological input.
+pub fn unambiguous_task_ref(task_name: &str) -> String {
+    let looks_like_a_uuid = Uuid::parse_str(task_name.trim()).is_ok();
+    if looks_like_a_uuid {
+        format!("task:{task_name}")
+    } else {
+        task_name.to_string()
+    }
+}
+
 #[derive(Clone)]
 pub struct Store {
     pub pool: SqlitePool,
@@ -1014,11 +1058,186 @@ impl Store {
             .upsert_module_node(project_id, module_ref, module_name)
             .await?;
         let case_node_id = self
-            .upsert_quality_node(project_id, "test", case_ref, case_name)
+            .upsert_quality_node(project_id, TEST_NODE_TYPE, case_ref, case_name)
             .await?;
         self.upsert_quality_relation(case_node_id, module_node_id, "covers")
             .await?;
         Ok(())
+    }
+
+    /// Phase 1: the graph vertex for a test **case**, keyed on its stable
+    /// `test_cases.id` rather than on a task name.
+    ///
+    /// ## Why this exists
+    ///
+    /// The graph carried two *different* `node_type` values for one concept, which was
+    /// the root cause of `quality_relations` being empty in the live database:
+    ///
+    ///   * `Intelligence::link_test_case_to_requirement` wrote `"test_case"` keyed on
+    ///     `test_cases.id` - correct, but **unreachable**: every reader (`qa_memory.rs`)
+    ///     looked for `"test"`.
+    ///   * `AdaptiveIntelligenceService::record_execution_telemetry` wrote `"test"`
+    ///     keyed on `telemetry.task_name` - a **name, not an identity**.
+    ///
+    /// A case's requirement edge and its execution's failure edge therefore landed on two
+    /// vertices that could never join. `TEST_NODE_TYPE` is the single canonical value, and
+    /// `external_ref` is always the stable `test_cases.id` where one is known.
+    pub async fn upsert_test_case_node(
+        &self,
+        project_id: &str,
+        test_case_id: &Uuid,
+        title: &str,
+    ) -> Result<Uuid> {
+        self.upsert_quality_node(project_id, TEST_NODE_TYPE, &test_case_id.to_string(), title)
+            .await
+    }
+
+    /// Phase 1: the graph vertex for a task whose test case is **not known**.
+    ///
+    /// Deliberately a different node type from [`Self::upsert_test_case_node`]. A crawl
+    /// task or a hand-built API task has no `test_cases.id`; keying it under
+    /// `TEST_NODE_TYPE` would put a *name* into the namespace where stable ids live,
+    /// where it could collide with a real case.
+    pub async fn upsert_task_node(&self, project_id: &str, task_name: &str) -> Result<Uuid> {
+        self.upsert_quality_node(project_id, TASK_NODE_TYPE, task_name, task_name)
+            .await
+    }
+
+    /// Phase 1: `test_case` -> `requirement` (`validates`), keyed on the stable id.
+    ///
+    /// Split out of `Intelligence::link_test_case_to_requirement` so the edge can also be
+    /// written when a case gains a requirement reference *after* creation - not only at
+    /// insert time. Writes the canonical node type, so the edge is reachable by every
+    /// reader instead of landing on an orphaned `"test_case"` vertex.
+    pub async fn link_case_to_requirement(
+        &self,
+        project_id: &str,
+        test_case_id: &Uuid,
+        title: &str,
+        requirement_ref: &str,
+        requirement_name: &str,
+    ) -> Result<()> {
+        let req_node_id = self
+            .upsert_quality_node(project_id, "requirement", requirement_ref, requirement_name)
+            .await?;
+        let case_node_id = self
+            .upsert_test_case_node(project_id, test_case_id, title)
+            .await?;
+        self.upsert_quality_relation(case_node_id, req_node_id, "validates")
+            .await?;
+        Ok(())
+    }
+
+    /// Phase 1: `test_case` -> `module` (`covers`), keyed on the stable case id.
+    ///
+    /// Unlike [`Self::link_test_case_to_module`], which accepts a free-form `case_ref`
+    /// because some callers have only a name, this requires the id - which is the point.
+    /// It is what makes the module edge land on the *same* vertex the `validates` and
+    /// `fails_with` edges use.
+    ///
+    /// **No production caller, on purpose.** The pre-Phase-1 problem was not that this edge
+    /// was hard to write, but that its only writer had no caller - so `covers` could never
+    /// appear in the database. This method fixes the *identity* half of that: the edge now
+    /// lands on the canonical case vertex. The missing-caller half is unchanged,
+    /// deliberately, because nothing in the production data model names a module.
+    /// `TestCaseRow` carries `source_document` (a document, not a module), `TaskDef` has no
+    /// module field, `RunPlan` has no path. A caller added now would have to invent that
+    /// mapping - a heuristic link presented as traceability, which is the failure mode this
+    /// work exists to prevent.
+    pub async fn link_case_to_module(
+        &self,
+        project_id: &str,
+        test_case_id: &Uuid,
+        module_ref: &str,
+        module_name: &str,
+    ) -> Result<()> {
+        let module_node_id = self
+            .upsert_module_node(project_id, module_ref, module_name)
+            .await?;
+        let title = self
+            .get_test_case(*test_case_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|c| c.title)
+            .unwrap_or_else(|| test_case_id.to_string());
+        let case_node_id = self
+            .upsert_test_case_node(project_id, test_case_id, &title)
+            .await?;
+        self.upsert_quality_relation(case_node_id, module_node_id, "covers")
+            .await?;
+        Ok(())
+    }
+
+    /// Phase 1: the failure cluster behind a telemetry fingerprint.
+    ///
+    /// The graph's `failure_cluster` vertex is keyed on
+    /// `execution_telemetry.failure_fingerprint`, while the `failure_clusters` **row** is
+    /// keyed on `signature` - the two are joined by the `failure_fingerprint` column that
+    /// migration 0030 added. A trace walk starts at a graph vertex and needs to reach the
+    /// real cluster row, so this lookup is the bridge.
+    ///
+    /// Project-scoped, like every other read here, so one tenant's fingerprint cannot
+    /// resolve against another tenant's cluster.
+    pub async fn get_failure_cluster_by_fingerprint(
+        &self,
+        project_id: &str,
+        fingerprint: &str,
+    ) -> Result<Option<FailureClusterRow>> {
+        let row = sqlx::query(
+            "SELECT id, signature, first_seen_at, last_seen_at, occurrence_count, failure_fingerprint, root_cause_hypothesis, confidence, reproducibility, review_state,
+                    ai_hypothesis, ai_hypothesis_provider, ai_hypothesis_model, ai_hypothesis_generated_at
+             FROM failure_clusters WHERE project_id = ? AND failure_fingerprint = ?",
+        )
+        .bind(project_id)
+        .bind(fingerprint)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| FailureClusterRow {
+            id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap_or_default(),
+            signature: r.get("signature"),
+            first_seen_at: parse_ts(&r.get::<String, _>("first_seen_at")),
+            last_seen_at: parse_ts(&r.get::<String, _>("last_seen_at")),
+            occurrence_count: r.get("occurrence_count"),
+            failure_fingerprint: r.get::<Option<String>, _>("failure_fingerprint"),
+            root_cause_hypothesis: r.get("root_cause_hypothesis"),
+            confidence: r.get("confidence"),
+            reproducibility: r.get("reproducibility"),
+            review_state: r.get("review_state"),
+            ai_hypothesis: r.get("ai_hypothesis"),
+            ai_hypothesis_provider: r.get("ai_hypothesis_provider"),
+            ai_hypothesis_model: r.get("ai_hypothesis_model"),
+            ai_hypothesis_generated_at: parse_ts_opt(r.get("ai_hypothesis_generated_at")),
+        }))
+    }
+
+    /// Phase 1: the stable `test_cases.id` a task executed, if any.
+    ///
+    /// `tasks.test_case_id` (migration 0028) is the forward link; this is the lookup for
+    /// callers holding a `(run_id, task_id)` pair and needing the case behind it - the
+    /// governed-healing verification path being the one that needs it.
+    ///
+    /// **Project scoped.** The join to `runs` is not incidental: `tasks` carries no
+    /// `project_id` of its own, so without it a caller could pair another tenant's
+    /// `run_id` with a `task_id` of its own and resolve a case id across the boundary.
+    pub async fn get_task_test_case_id(
+        &self,
+        project_id: &str,
+        run_id: &Uuid,
+        task_id: &str,
+    ) -> Result<Option<Uuid>> {
+        let raw: Option<String> = sqlx::query(
+            "SELECT t.test_case_id FROM tasks t \
+             JOIN runs r ON r.id = t.run_id \
+             WHERE r.project_id = ? AND r.id = ? AND t.id = ? AND t.test_case_id IS NOT NULL",
+        )
+        .bind(project_id)
+        .bind(run_id.to_string())
+        .bind(task_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .map(|r| r.get("test_case_id"));
+        Ok(raw.and_then(|s| Uuid::parse_str(&s).ok()))
     }
 
     /// Recovers `tasks.test_case_id` for rows written before migration 0028, by
@@ -3084,12 +3303,14 @@ impl Store {
              tc.requirement_reference, tc.source_requirement, tc.traceability, tc.risk_factor, tc.tags, tc.source, tc.status, \
              tc.validation_notes, tc.executed_run_id, tc.executed_task_id, tc.created_by, tc.created_at, tc.updated_at, tc.suite_id \
              FROM test_cases tc
-             JOIN quality_nodes case_node ON case_node.node_type = 'test_case' AND case_node.external_ref = tc.id AND case_node.project_id = ?
+             JOIN quality_nodes case_node ON case_node.node_type IN (?, ?) AND case_node.external_ref = tc.id AND case_node.project_id = ?
              JOIN quality_relations rel ON rel.from_node_id = case_node.id AND rel.relation_type = 'validates'
              JOIN quality_nodes req_node ON req_node.id = rel.to_node_id AND req_node.node_type = 'requirement' AND req_node.project_id = ?
              WHERE req_node.external_ref = ?
              ORDER BY tc.created_at DESC",
         )
+        .bind(TEST_NODE_TYPE)
+        .bind(LEGACY_TEST_NODE_TYPE)
         .bind(project_id)
         .bind(project_id)
         .bind(requirement_key)
@@ -3193,15 +3414,32 @@ impl Store {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Writes one node's risk assessment.
+    ///
+    /// ## `Option<f64>` is load-bearing
+    ///
+    /// `business_criticality` and `security_sensitivity` are `Option<f64>` because **neither
+    /// has a signal source in this schema**, and a column that stores a fabricated `0.0` for a
+    /// factor the model weights is indistinguishable from a measurement that came out nil. The
+    /// migration already made both columns nullable; this is the writer finally using that.
+    ///
+    /// `Some(0.0)` therefore means "measured, and the measurement is zero" — a real answer for
+    /// `change_frequency`, which *does* have a source. `None` means "no source exists".
+    ///
+    /// `score` stays non-optional because the column is `NOT NULL` and a node's standing is
+    /// always derivable from its measured factors; the caller normalises by measured weight and
+    /// records the coverage in `inputs_json`, so a partial score can never be mistaken for a
+    /// full-model one.
+    #[allow(clippy::too_many_arguments)]
     pub async fn upsert_risk_assessment(
         &self,
         node_id: Uuid,
         score: f64,
-        business_criticality: f64,
-        change_frequency: f64,
+        business_criticality: Option<f64>,
+        change_frequency: Option<f64>,
         historical_failure_rate: f64,
         dependency_count: i64,
-        security_sensitivity: f64,
+        security_sensitivity: Option<f64>,
         execution_cost: f64,
         inputs_json: &str,
     ) -> Result<()> {
@@ -3236,8 +3474,8 @@ impl Store {
         value_score: f64,
         risk_coverage: f64,
         historical_defect_detection: f64,
-        business_criticality: f64,
-        change_relevance: f64,
+        business_criticality: Option<f64>,
+        change_relevance: Option<f64>,
         execution_cost: f64,
         flakiness: f64,
     ) -> Result<()> {
@@ -3290,6 +3528,428 @@ impl Store {
 
     /// Test-intelligence table: one row per known test node with its latest
     /// risk/value/flakiness, for `GET /intelligence/tests`.
+    /// Records one change-impact result, or returns `false` when the identical record
+    /// already exists.
+    ///
+    /// The insert uses `ON CONFLICT DO NOTHING` against the `uq_change_impacts_record`
+    /// unique index added by migration 0031, so re-computing the same impact for the same
+    /// change is idempotent rather than additive. `false` is returned in that case so a
+    /// caller can report "already recorded" instead of claiming a new finding.
+    ///
+    /// **Project scoped by construction:** `project_id` is a required parameter and is
+    /// written on every row this method produces. The column is nullable in the schema only
+    /// so pre-migration rows survive; this is the only writer and it never omits it.
+    pub async fn insert_change_impact(
+        &self,
+        project_id: &str,
+        change_ref: &str,
+        change_type: &str,
+        affected_node_id: &Uuid,
+        selected_test_node_id: Option<&Uuid>,
+        rationale: Option<&str>,
+    ) -> Result<(Uuid, bool)> {
+        let id = Uuid::new_v4();
+        let now = now_rfc3339();
+        let result = sqlx::query(
+            "INSERT INTO change_impacts (id, project_id, change_ref, change_type, affected_node_id, selected_test_node_id, rationale, computed_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+        )
+        .bind(id.to_string())
+        .bind(project_id)
+        .bind(change_ref)
+        .bind(change_type)
+        .bind(affected_node_id.to_string())
+        .bind(selected_test_node_id.map(|u| u.to_string()))
+        .bind(rationale)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        Ok((id, result.rows_affected() > 0))
+    }
+
+    /// A project's change-impact history, newest first.
+    ///
+    /// Scoped by `project_id` directly rather than by joining through `quality_nodes`.
+    /// Migration 0031 added the column precisely so this read states its scope instead of
+    /// inferring it.
+    pub async fn list_change_impacts(
+        &self,
+        project_id: &str,
+        limit: i64,
+    ) -> Result<Vec<ChangeImpactRow>> {
+        let rows = sqlx::query(
+            "SELECT id, project_id, change_ref, change_type, affected_node_id, selected_test_node_id, rationale, computed_at \
+             FROM change_impacts WHERE project_id = ? ORDER BY computed_at DESC, id LIMIT ?",
+        )
+        .bind(project_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| {
+                Some(ChangeImpactRow {
+                    id: Uuid::parse_str(&r.get::<String, _>("id")).ok()?,
+                    project_id: r.get("project_id"),
+                    change_ref: r.get("change_ref"),
+                    change_type: r.get("change_type"),
+                    affected_node_id: Uuid::parse_str(&r.get::<String, _>("affected_node_id"))
+                        .ok()?,
+                    selected_test_node_id: r
+                        .get::<Option<String>, _>("selected_test_node_id")
+                        .and_then(|s| Uuid::parse_str(&s).ok()),
+                    rationale: r.get("rationale"),
+                    computed_at: parse_ts(&r.get::<String, _>("computed_at")),
+                })
+            })
+            .collect())
+    }
+
+    // ================================================================
+    // PHASE 5 - EXPLORATORY TESTING: sessions and findings
+
+    /// Opens an exploratory session, recording the budget the caller asked for.
+    pub async fn insert_exploration_session(
+        &self,
+        project_id: &str,
+        session_id: &Uuid,
+        target: &str,
+        budget: &crate::agents::exploration::ExplorationBudget,
+        agent_limits: &crate::agent::AgentLimits,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO exploration_sessions (id, project_id, target, max_actions, \
+             max_state_transitions, max_findings, max_pages, max_turns, max_tool_calls, \
+             status, actions_taken, state_transitions_taken, pages_visited, findings_recorded, \
+             findings_suppressed, stop_reason, error, started_at, finished_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'RUNNING', 0, 0, 0, 0, 0, ?, NULL, ?, NULL)",
+        )
+        .bind(session_id.to_string())
+        .bind(project_id)
+        .bind(target)
+        .bind(budget.max_actions as i64)
+        .bind(budget.max_state_transitions as i64)
+        .bind(budget.max_findings as i64)
+        .bind(budget.max_pages as i64)
+        .bind(agent_limits.max_turns as i64)
+        .bind(agent_limits.max_tool_calls_total as i64)
+        .bind("RUNNING")
+        .bind(now_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Closes a session with what it actually did.
+    ///
+    /// Scoped to `project_id` in the `WHERE` clause rather than trusting the session id
+    /// alone, so a caller holding another tenant's session id cannot write to it.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn finish_exploration_session(
+        &self,
+        project_id: &str,
+        session_id: &Uuid,
+        status: &str,
+        actions_taken: usize,
+        state_transitions_taken: usize,
+        pages_visited: usize,
+        findings_recorded: usize,
+        findings_suppressed: usize,
+        stop_reason: &str,
+        error: Option<&str>,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE exploration_sessions SET status = ?, actions_taken = ?, \
+             state_transitions_taken = ?, pages_visited = ?, findings_recorded = ?, \
+             findings_suppressed = ?, stop_reason = ?, error = ?, finished_at = ? \
+             WHERE id = ? AND project_id = ?",
+        )
+        .bind(status)
+        .bind(actions_taken as i64)
+        .bind(state_transitions_taken as i64)
+        .bind(pages_visited as i64)
+        .bind(findings_recorded as i64)
+        .bind(findings_suppressed as i64)
+        .bind(stop_reason)
+        .bind(error)
+        .bind(now_rfc3339())
+        .bind(session_id.to_string())
+        .bind(project_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Records a finding, or reports that the same underlying defect was already recorded
+    /// for this project.
+    ///
+    /// The returned `bool` is `false` when the unique index on
+    /// `(project_id, failure_fingerprint)` rejected the row. That makes the second report
+    /// of a defect a recorded **suppression** rather than a silent duplicate -- the
+    /// difference between a system that deduplicates and one that loses information.
+    ///
+    /// Rows with no fingerprint are always inserted: an `INSUFFICIENT_EVIDENCE` observation
+    /// is not a claim about the application, and must not stop the same inconclusive
+    /// observation being recorded later.
+    pub async fn record_exploration_finding(
+        &self,
+        finding: &ExplorationFindingRow,
+    ) -> Result<(Uuid, bool)> {
+        let id = Uuid::new_v4();
+        let result = sqlx::query(
+            "INSERT INTO exploration_findings (id, session_id, project_id, classification, \
+             behaviour, route, failure_fingerprint, evidence_object_key, observed, expected, \
+             violated_requirement, action_sequence, app_state, confidence, basis, \
+             related_failure, observed_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(id.to_string())
+        .bind(finding.session_id.to_string())
+        .bind(&finding.project_id)
+        .bind(&finding.classification)
+        .bind(&finding.behaviour)
+        .bind(&finding.route)
+        .bind(&finding.failure_fingerprint)
+        .bind(&finding.evidence_object_key)
+        .bind(&finding.observed)
+        .bind(&finding.expected)
+        .bind(&finding.violated_requirement)
+        .bind(&finding.action_sequence)
+        .bind(&finding.app_state)
+        .bind(finding.confidence)
+        .bind(&finding.basis)
+        .bind(&finding.related_failure)
+        .bind(now_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        let inserted = result.rows_affected() > 0;
+        Ok((if inserted { id } else { finding.id }, inserted))
+    }
+
+    /// A project's exploratory sessions, newest first.
+    pub async fn list_exploration_sessions(
+        &self,
+        project_id: &str,
+        limit: i64,
+    ) -> Result<Vec<ExplorationSessionRow>> {
+        let rows = sqlx::query(
+            "SELECT id, project_id, target, max_actions, max_state_transitions, max_findings, \
+             max_pages, max_turns, max_tool_calls, status, actions_taken, \
+             state_transitions_taken, pages_visited, findings_recorded, findings_suppressed, \
+             stop_reason, error, started_at, finished_at FROM exploration_sessions \
+             WHERE project_id = ? ORDER BY started_at DESC, id LIMIT ?",
+        )
+        .bind(project_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| exploration_session_from_row(&r))
+            .collect())
+    }
+
+    /// One session, project-scoped. `None` for another tenant's session id.
+    pub async fn exploration_session(
+        &self,
+        project_id: &str,
+        session_id: &Uuid,
+    ) -> Result<Option<ExplorationSessionRow>> {
+        let rows = sqlx::query(
+            "SELECT id, project_id, target, max_actions, max_state_transitions, max_findings, \
+             max_pages, max_turns, max_tool_calls, status, actions_taken, \
+             state_transitions_taken, pages_visited, findings_recorded, findings_suppressed, \
+             stop_reason, error, started_at, finished_at FROM exploration_sessions \
+             WHERE project_id = ? AND id = ?",
+        )
+        .bind(project_id)
+        .bind(session_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| exploration_session_from_row(&r))
+            .next())
+    }
+
+    /// A project's findings, newest first, optionally filtered by classification.
+    ///
+    /// Two static queries rather than one assembled at runtime. The filter value is a
+    /// `match` on a classification name and is bound like any other parameter, but a query
+    /// built with `format!` is an injection-shaped pattern that has to be re-audited every
+    /// time this function is read. Either way the filter is applied in SQL, so a project
+    /// with many inconclusive observations does not load all of them to show its confirmed
+    /// defects.
+    pub async fn list_exploration_findings(
+        &self,
+        project_id: &str,
+        classification: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<ExplorationFindingRow>> {
+        let rows = match classification {
+            None => {
+                sqlx::query(
+                    "SELECT id, session_id, project_id, classification, behaviour, route, \
+                     failure_fingerprint, evidence_object_key, observed, expected, \
+                     violated_requirement, action_sequence, app_state, confidence, basis, \
+                     related_failure, observed_at FROM exploration_findings \
+                     WHERE project_id = ? ORDER BY observed_at DESC, id LIMIT ?",
+                )
+                .bind(project_id)
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await?
+            }
+            Some(c) => {
+                sqlx::query(
+                    "SELECT id, session_id, project_id, classification, behaviour, route, \
+                     failure_fingerprint, evidence_object_key, observed, expected, \
+                     violated_requirement, action_sequence, app_state, confidence, basis, \
+                     related_failure, observed_at FROM exploration_findings \
+                     WHERE project_id = ? AND classification = ? \
+                     ORDER BY observed_at DESC, id LIMIT ?",
+                )
+                .bind(project_id)
+                .bind(c)
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await?
+            }
+        };
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| exploration_finding_from_row(&r))
+            .collect())
+    }
+
+    /// Every finding already recorded for one underlying failure in this project.
+    ///
+    /// This is the read side of duplicate suppression. The write side is the unique index;
+    /// this exists so a caller can be *told* an exploration reached a known defect rather
+    /// than only finding out that its insert did nothing.
+    pub async fn findings_by_fingerprint(
+        &self,
+        project_id: &str,
+        fingerprint: &str,
+    ) -> Result<Vec<ExplorationFindingRow>> {
+        let rows = sqlx::query(
+            "SELECT id, session_id, project_id, classification, behaviour, route, \
+             failure_fingerprint, evidence_object_key, observed, expected, \
+             violated_requirement, action_sequence, app_state, confidence, basis, \
+             related_failure, observed_at FROM exploration_findings \
+             WHERE project_id = ? AND failure_fingerprint = ? ORDER BY observed_at DESC, id",
+        )
+        .bind(project_id)
+        .bind(fingerprint)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| exploration_finding_from_row(&r))
+            .collect())
+    }
+
+    /// How many findings a project has recorded in each classification.
+    pub async fn exploration_finding_counts(
+        &self,
+        project_id: &str,
+    ) -> Result<std::collections::BTreeMap<String, i64>> {
+        let rows = sqlx::query(
+            "SELECT classification, COUNT(*) AS n FROM exploration_findings \
+             WHERE project_id = ? GROUP BY classification",
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.get::<String, _>("classification"), r.get::<i64, _>("n")))
+            .collect())
+    }
+
+    /// The three `risk_assessments` columns that `intelligence.rs` supplies as literals, for
+    /// every assessment belonging to a project.
+    ///
+    /// Added for Phase 6's `fabricated_constant_check`, which needs to ask "does this column
+    /// ever vary?" — a question that requires reading across every row rather than one at a
+    /// time.
+    ///
+    /// This lives here, as a fixed statement with a bound parameter, rather than in
+    /// `integrity.rs`: `Store` is the governed read surface for this codebase, and putting the
+    /// query next to the verifier would mean the verifier owns SQL, which is exactly what the
+    /// no-arbitrary-SQL rule forbids. Naming the columns is also what keeps it from becoming a
+    /// query builder — there is no way to ask this reader for a column it was not written for.
+    pub async fn list_risk_assessment_constants(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<(Option<f64>, Option<f64>, Option<f64>)>> {
+        let rows = sqlx::query(
+            "SELECT security_sensitivity, business_criticality, change_frequency \
+             FROM risk_assessments WHERE node_id IN \
+             (SELECT id FROM quality_nodes WHERE project_id = ?) ORDER BY node_id",
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                (
+                    r.get::<Option<f64>, _>("security_sensitivity"),
+                    r.get::<Option<f64>, _>("business_criticality"),
+                    r.get::<Option<f64>, _>("change_frequency"),
+                )
+            })
+            .collect())
+    }
+
+    /// How many **distinct** declared changes have affected one node, for this project.
+    ///
+    /// Phase 3 wrote this table and `intelligence.rs` has been storing `change_frequency` as a
+    /// hardcoded `0.0` with the comment "no change-intelligence source wired up yet". That
+    /// comment was true when written and is now false: `change_impacts` is a real, production-
+    /// written, project-scoped source.
+    ///
+    /// Distinct `change_ref` values, not impact records: one change that touches a node five
+    /// times is one change, and counting records would make the number a measure of the
+    /// analysis's verbosity rather than of change.
+    ///
+    /// Named columns and one bound parameter, like every other reader here. A `None` node id
+    /// yields zero rather than every row, so a caller cannot accidentally ask for a
+    /// project-wide total by passing nothing.
+    pub async fn count_distinct_changes_for_node(
+        &self,
+        project_id: &str,
+        node_id: Option<&Uuid>,
+    ) -> Result<i64> {
+        let Some(node_id) = node_id else {
+            return Ok(0);
+        };
+        Ok(sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(DISTINCT change_ref) FROM change_impacts \
+             WHERE project_id = ? AND affected_node_id = ?",
+        )
+        .bind(project_id)
+        .bind(node_id.to_string())
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
+    /// How many impact records a project has recorded for one change.
+    ///
+    /// Used by tests to prove idempotence, and by the API to report whether a
+    /// recomputation found anything new.
+    pub async fn count_change_impacts(&self, project_id: &str, change_ref: &str) -> Result<i64> {
+        Ok(sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM change_impacts WHERE project_id = ? AND change_ref = ?",
+        )
+        .bind(project_id)
+        .bind(change_ref)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
     pub async fn list_test_intelligence(
         &self,
         project_filter: Option<&str>,
@@ -4640,6 +5300,114 @@ pub struct Project {
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// One exploratory run and the ceiling it ran under.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ExplorationSessionRow {
+    pub id: Uuid,
+    pub project_id: String,
+    pub target: String,
+    pub max_actions: usize,
+    pub max_state_transitions: usize,
+    pub max_findings: usize,
+    pub max_pages: usize,
+    pub max_turns: usize,
+    pub max_tool_calls: usize,
+    pub status: String,
+    pub actions_taken: usize,
+    pub state_transitions_taken: usize,
+    pub pages_visited: usize,
+    pub findings_recorded: usize,
+    pub findings_suppressed: usize,
+    /// Why the run ended, verbatim from the agent runtime. Never empty: a run that
+    /// stopped without saying why is the one a reader cannot trust.
+    pub stop_reason: String,
+    pub error: Option<String>,
+    pub started_at: chrono::DateTime<chrono::Utc>,
+    pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// One thing exploration believes it saw, with the evidence behind that belief.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ExplorationFindingRow {
+    pub id: Uuid,
+    pub session_id: Uuid,
+    pub project_id: String,
+    /// `OBSERVED_ANOMALY | POTENTIAL_DEFECT | CONFIRMED_DEFECT | INSUFFICIENT_EVIDENCE`
+    pub classification: String,
+    pub behaviour: String,
+    pub route: String,
+    /// The real fingerprint from `canonical_failure_fingerprint`. `None` when no
+    /// recorded failure backs the finding, which is why those rows are not
+    /// deduplicated.
+    pub failure_fingerprint: Option<String>,
+    pub evidence_object_key: Option<String>,
+    pub observed: String,
+    pub expected: Option<String>,
+    pub violated_requirement: Option<String>,
+    /// The exact `Action` sequence executed, as the real Action AST serialized, so a
+    /// finding can be replayed rather than taken on trust.
+    pub action_sequence: String,
+    pub app_state: String,
+    pub confidence: f64,
+    /// What established the classification. This is the field that makes the row
+    /// auditable: it states the evidence, not the verdict.
+    pub basis: String,
+    pub related_failure: Option<String>,
+    pub observed_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Row mappers for the two Phase 5 tables.
+///
+/// Kept outside the `impl` so the readers above stay about *what they ask for* rather
+/// than about column order, which is the part that rots when a column is added.
+fn exploration_session_from_row(r: &sqlx::sqlite::SqliteRow) -> Option<ExplorationSessionRow> {
+    Some(ExplorationSessionRow {
+        id: Uuid::parse_str(&r.get::<String, _>("id")).ok()?,
+        project_id: r.get("project_id"),
+        target: r.get("target"),
+        max_actions: r.get::<i64, _>("max_actions") as usize,
+        max_state_transitions: r.get::<i64, _>("max_state_transitions") as usize,
+        max_findings: r.get::<i64, _>("max_findings") as usize,
+        max_pages: r.get::<i64, _>("max_pages") as usize,
+        max_turns: r.get::<i64, _>("max_turns") as usize,
+        max_tool_calls: r.get::<i64, _>("max_tool_calls") as usize,
+        status: r.get("status"),
+        actions_taken: r.get::<i64, _>("actions_taken") as usize,
+        state_transitions_taken: r.get::<i64, _>("state_transitions_taken") as usize,
+        pages_visited: r.get::<i64, _>("pages_visited") as usize,
+        findings_recorded: r.get::<i64, _>("findings_recorded") as usize,
+        findings_suppressed: r.get::<i64, _>("findings_suppressed") as usize,
+        stop_reason: r.get("stop_reason"),
+        error: r.get("error"),
+        started_at: parse_ts(&r.get::<String, _>("started_at")),
+        finished_at: r
+            .get::<Option<String>, _>("finished_at")
+            .map(|s| parse_ts(&s)),
+    })
+}
+
+fn exploration_finding_from_row(r: &sqlx::sqlite::SqliteRow) -> Option<ExplorationFindingRow> {
+    Some(ExplorationFindingRow {
+        id: Uuid::parse_str(&r.get::<String, _>("id")).ok()?,
+        session_id: Uuid::parse_str(&r.get::<String, _>("session_id")).ok()?,
+        project_id: r.get("project_id"),
+        classification: r.get("classification"),
+        behaviour: r.get("behaviour"),
+        route: r.get("route"),
+        failure_fingerprint: r.get("failure_fingerprint"),
+        evidence_object_key: r.get("evidence_object_key"),
+        observed: r.get("observed"),
+        expected: r.get("expected"),
+        violated_requirement: r.get("violated_requirement"),
+        action_sequence: r.get("action_sequence"),
+        app_state: r.get("app_state"),
+        confidence: r.get::<f64, _>("confidence"),
+        basis: r.get("basis"),
+        related_failure: r.get("related_failure"),
+        observed_at: parse_ts(&r.get::<String, _>("observed_at")),
+    })
+}
+
 /// A real, persisted custom skill (see migration `0009_custom_skills.sql`).
 /// `id` is a plain string (not a `Uuid`) so it slots into
 /// `ai_generation.rs::SkillInput.id` — the same field the frontend already
@@ -5025,6 +5793,30 @@ pub struct FlakinessMetricsRow {
     pub window_runs: i64,
     pub window_failures: i64,
     pub environment_correlation: Option<String>,
+    pub computed_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+/// One recorded change-impact result: "change `X` affects node `Y`, and test `Z` was
+/// selected because of it".
+///
+/// Phase 3: this table had zero writers for its entire life. The row shape follows the
+/// table's original design rather than reshaping it - `selected_test_node_id` sitting on
+/// the same row as `affected_node_id` is coherent under that reading, which is also why
+/// the unique key is the triple rather than the pair.
+///
+/// `selected_test_node_id` is `None` when a change is recorded as affecting a node with no
+/// test selected for it. That is a real negative result and is persisted rather than
+/// skipped: "this change affects this node and we selected nothing" is information a
+/// reader of the history needs.
+pub struct ChangeImpactRow {
+    pub id: Uuid,
+    pub project_id: String,
+    pub change_ref: String,
+    pub change_type: String,
+    pub affected_node_id: Uuid,
+    pub selected_test_node_id: Option<Uuid>,
+    pub rationale: Option<String>,
     pub computed_at: chrono::DateTime<chrono::Utc>,
 }
 

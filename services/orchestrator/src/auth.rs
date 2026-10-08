@@ -317,7 +317,7 @@ pub fn require_role(ctx: &AuthContext, min: Role) -> Result<(), ApiError> {
 macro_rules! role_gate {
     ($name:ident, $role:expr, $what:literal) => {
         #[doc = concat!("Refuses the request unless the caller is ", $what, " or above,",
-                        " before the body is read. See `auth`'s module notes.")]
+                                " before the body is read. See `auth`'s module notes.")]
         #[derive(Debug, Clone, Copy)]
         pub struct $name;
 
@@ -332,15 +332,12 @@ macro_rules! role_gate {
                 parts: &mut axum::http::request::Parts,
                 _state: &S,
             ) -> Result<Self, Self::Rejection> {
-                let ctx = parts
-                    .extensions
-                    .get::<AuthContext>()
-                    .ok_or_else(|| {
-                        ApiError::unauthenticated(
-                            "no authenticated context on this request -- the auth \
+                let ctx = parts.extensions.get::<AuthContext>().ok_or_else(|| {
+                    ApiError::unauthenticated(
+                        "no authenticated context on this request -- the auth \
                              middleware did not run",
-                        )
-                    })?;
+                    )
+                })?;
                 require_role(ctx, $role)?;
                 Ok($name)
             }

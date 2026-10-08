@@ -397,9 +397,7 @@ fn note_private_target(ip: &std::net::IpAddr, port: u16) {
         IpAddr::V6(v6) => v6.is_unique_local(),
     } || (ip.is_loopback() && port != ORCHESTRATOR_PORT);
     if opened_by_opt_in && private_targets_allowed() {
-        tracing::warn!(
-            "AIQA_ALLOW_PRIVATE_TARGETS is set: allowing a private target {ip}:{port}"
-        );
+        tracing::warn!("AIQA_ALLOW_PRIVATE_TARGETS is set: allowing a private target {ip}:{port}");
     }
 }
 
@@ -1655,31 +1653,31 @@ fn step_log_line(index: usize, action: &crate::execution_plan::Action) -> String
         Action::AssertUrl { url_contains } => {
             serde_json::json!({ "index": index, "type": "ASSERT_URL", "url_contains": url_contains })
         }
-            Action::AssertHidden { selector } => {
-                serde_json::json!({ "index": index, "type": "ASSERT_HIDDEN", "selector": selector })
-            }
-            Action::AssertEnabled { selector } => {
-                serde_json::json!({ "index": index, "type": "ASSERT_ENABLED", "selector": selector })
-            }
-            Action::PressKey { key } => {
-                serde_json::json!({ "index": index, "type": "PRESS_KEY", "key": key })
-            }
-            // Every API action is listed explicitly rather than folded into a
-            // `_ =>` arm. A wildcard here is how a newly added browser action
-            // ends up logged as "UNSUPPORTED" while its Playwright line is
-            // written correctly beside it -- a run log that contradicts the spec
-            // it came from, with the compiler unable to say so. Naming them
-            // keeps the match exhaustive: adding an action becomes a compile
-            // error here as well as in the materializer and the API splitter.
-            Action::Request { .. }
-            | Action::AssertStatus { .. }
-            | Action::AssertHeader { .. }
-            | Action::AssertBodyField { .. }
-            | Action::AssertStatusIn { .. }
-            | Action::AssertBodySchema { .. } => {
-                serde_json::json!({ "index": index, "type": "API_ACTION", "note": "cannot appear in a browser plan" })
-            }
-        };
+        Action::AssertHidden { selector } => {
+            serde_json::json!({ "index": index, "type": "ASSERT_HIDDEN", "selector": selector })
+        }
+        Action::AssertEnabled { selector } => {
+            serde_json::json!({ "index": index, "type": "ASSERT_ENABLED", "selector": selector })
+        }
+        Action::PressKey { key } => {
+            serde_json::json!({ "index": index, "type": "PRESS_KEY", "key": key })
+        }
+        // Every API action is listed explicitly rather than folded into a
+        // `_ =>` arm. A wildcard here is how a newly added browser action
+        // ends up logged as "UNSUPPORTED" while its Playwright line is
+        // written correctly beside it -- a run log that contradicts the spec
+        // it came from, with the compiler unable to say so. Naming them
+        // keeps the match exhaustive: adding an action becomes a compile
+        // error here as well as in the materializer and the API splitter.
+        Action::Request { .. }
+        | Action::AssertStatus { .. }
+        | Action::AssertHeader { .. }
+        | Action::AssertBodyField { .. }
+        | Action::AssertStatusIn { .. }
+        | Action::AssertBodySchema { .. } => {
+            serde_json::json!({ "index": index, "type": "API_ACTION", "note": "cannot appear in a browser plan" })
+        }
+    };
     let line = format!("AIQA_STEP {step}");
     format!(
         "  console.log({});\n",
@@ -3096,7 +3094,7 @@ AIQA_HEALING_EVENT {"event":"heal","actionIndex":1,"actionKind":"CLICK","primary
             Some("no"),
             Some("maybe"),
             Some("enabled"),
-            Some(" true"),   // leading space is not a clear yes
+            Some(" true"), // leading space is not a clear yes
             Some("true "),
             Some("TrUe"),
         ] {
@@ -3105,7 +3103,13 @@ AIQA_HEALING_EVENT {"event":"heal","actionIndex":1,"actionKind":"CLICK","primary
                 "{v:?} must be read as OFF, not as consent"
             );
         }
-        for v in [Some("1"), Some("true"), Some("TRUE"), Some("yes"), Some("YES")] {
+        for v in [
+            Some("1"),
+            Some("true"),
+            Some("TRUE"),
+            Some("yes"),
+            Some("YES"),
+        ] {
             assert!(
                 private_target_opt_in(v),
                 "{v:?} is a clear yes and must read as ON"
@@ -3135,9 +3139,9 @@ AIQA_HEALING_EVENT {"event":"heal","actionIndex":1,"actionKind":"CLICK","primary
     #[test]
     fn the_opt_in_unlocks_the_ranges_a_developer_actually_targets() {
         for ip in [
-            "127.0.0.1",   // a dev server
+            "127.0.0.1", // a dev server
             "10.1.2.3",
-            "172.17.0.3",  // a Docker service
+            "172.17.0.3",   // a Docker service
             "192.168.1.50", // a device on the LAN
             "fd00::1",      // fc00::/7, the IPv6 counterpart of RFC1918
         ] {
@@ -3156,12 +3160,12 @@ AIQA_HEALING_EVENT {"event":"heal","actionIndex":1,"actionKind":"CLICK","primary
         for ip in [
             "169.254.169.254", // cloud instance metadata -- the real SSRF prize
             "169.254.1.1",
-            "fe80::1",      // IPv6 link-local
-            "224.0.0.1",    // multicast
+            "fe80::1",         // IPv6 link-local
+            "224.0.0.1",       // multicast
             "255.255.255.255", // broadcast
-            "0.0.0.0",      // unspecified
+            "0.0.0.0",         // unspecified
             "::",
-            "192.0.2.1",    // TEST-NET documentation range
+            "192.0.2.1", // TEST-NET documentation range
             "198.51.100.1",
             "203.0.113.1",
         ] {

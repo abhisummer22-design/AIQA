@@ -273,11 +273,7 @@ async fn a_proposal_from_another_project_cannot_be_acted_on_through_this_project
         );
         // 404, not 403: a mismatch must not confirm the proposal exists elsewhere,
         // which is the reasoning `require_resource_in_project` already states.
-        assert_eq!(
-            status,
-            StatusCode::NOT_FOUND,
-            "{verb} leaked: {response}"
-        );
+        assert_eq!(status, StatusCode::NOT_FOUND, "{verb} leaked: {response}");
     }
 
     // The decisive one. A guard placed *after* the mutation looks equivalent and is
@@ -313,7 +309,11 @@ async fn a_proposal_from_another_project_cannot_be_read_through_this_projects_ur
     for suffix in ["", "/diff", "/verification"] {
         let path = format!("/api/v1/projects/{project_a}/healing/proposals/{proposal}{suffix}");
         let (status, resp) = send(&state, "GET", &path, Some(&global_admin), None).await;
-        assert_eq!(status, StatusCode::NOT_FOUND, "GET {suffix} leaked another project: {resp}");
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "GET {suffix} leaked another project: {resp}"
+        );
     }
 }
 
@@ -455,7 +455,11 @@ fn a_hashed_key_matches_only_its_own_raw_form() {
     let hashed = crate::auth::hash_key(&raw);
     assert_ne!(raw, hashed, "the key must not be stored in the clear");
     assert_ne!(hashed, crate::auth::hash_key("something else"));
-    assert_eq!(hashed, crate::auth::hash_key(&raw), "hashing must be deterministic");
+    assert_eq!(
+        hashed,
+        crate::auth::hash_key(&raw),
+        "hashing must be deterministic"
+    );
     assert!(raw.starts_with("aiqa_"), "unexpected key format: {raw}");
 }
 
