@@ -84,6 +84,37 @@ const LIST_QUALITY_RELATIONS_MAX: i64 = 20000;
 
 /// `list_test_case_embeddings` -- the brute-force candidate pool
 
+/// One release/build, as stored (Phase 2, QA Intelligence Memory —
+/// migrations/0029_qa_releases.sql).
+///
+/// `label`, `version` and `notes` are all optional **on purpose**: a team may
+/// track a label, a version, or neither, and filling a column with an invented
+/// value would be fabricating history (master plan §1.4). The UUID is the stable
+/// identity; the optional fields are human labels only.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ReleaseRow {
+    pub id: Uuid,
+    pub project_id: String,
+    pub label: Option<String>,
+    pub version: Option<String>,
+    pub notes: Option<String>,
+    pub created_by: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub released_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+fn release_from_row(r: sqlx::sqlite::SqliteRow) -> ReleaseRow {
+    ReleaseRow {
+        id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap_or_default(),
+        project_id: r.get("project_id"),
+        label: r.get("label"),
+        version: r.get("version"),
+        notes: r.get("notes"),
+        created_by: r.get("created_by"),
+        created_at: parse_ts(&r.get::<String, _>("created_at")),
+        released_at: parse_ts_opt(r.get("released_at")),
+    }
+}
 
 #[derive(Clone)]
 pub struct Store {
@@ -447,6 +478,50 @@ impl Store {
         state: RunState,
         policy_notes: Option<&str>,
     ) -> Result<()> {
+        self.insert_run_for_release(
+            run_id,
+            plan,
+            project_id,
+            requested_by,
+            state,
+            policy_notes,
+            None,
+        )
+        .await
+    }
+
+    /// Phase 2: `insert_run` plus an optional release association.
+    ///
+    /// `release_id` must name a release **of this run's own project**. A release
+    /// from another project is refused rather than attached, so a run can never
+    /// enter a tenant's release history by pointing at another tenant's release.
+    /// `None` is the ordinary case and stays `NULL` — nothing is auto-attached, so
+    /// a release-less run is honestly absent from every release view.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn insert_run_for_release(
+        &self,
+        run_id: RunId,
+        plan: &RunPlan,
+        project_id: Option<&str>,
+        requested_by: Option<&str>,
+        state: RunState,
+        policy_notes: Option<&str>,
+        release_id: Option<&str>,
+    ) -> Result<()> {
+        if let (Some(rel), Some(pid)) = (release_id, project_id) {
+            let owned = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM qa_releases WHERE id = ? AND project_id = ?",
+            )
+            .bind(rel)
+            .bind(pid)
+            .fetch_one(&self.pool)
+            .await?;
+            if owned == 0 {
+                return Err(anyhow::anyhow!(
+                    "release {rel} does not belong to project {pid}"
+                ));
+            }
+        }
         // B6 — this used to issue one un-batched INSERT per task and per
         // dependency, each in its own implicit transaction (and therefore
         // its own fsync). A 100-task plan took ~14s and then failed; 500
@@ -470,8 +545,8 @@ impl Store {
         let mut tx = self.pool.begin().await?;
 
         sqlx::query(
-            "INSERT INTO runs (id, name, project_id, state, concurrency, plan, created_at, requested_by, policy_notes)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO runs (id, name, project_id, state, concurrency, plan, created_at, requested_by, policy_notes, release_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&run_id_s)
         .bind(&plan.name)
@@ -482,6 +557,8 @@ impl Store {
         .bind(now_rfc3339())
         .bind(requested_by)
         .bind(policy_notes)
+        // Phase 2: NULL unless a caller explicitly named this run's release.
+        .bind(release_id)
         .execute(&mut *tx)
         .await?;
 
@@ -490,14 +567,18 @@ impl Store {
         // the API it provides for exactly this multi-row-insert case.
         for chunk in plan.tasks.chunks(CHUNK) {
             let mut qb = sqlx::QueryBuilder::new(
-                "INSERT INTO tasks (id, run_id, name, status, executor_kind) ",
+                "INSERT INTO tasks (id, run_id, name, status, executor_kind, test_case_id) ",
             );
             qb.push_values(chunk, |mut b, t| {
                 b.push_bind(t.id.clone())
                     .push_bind(run_id_s.clone())
                     .push_bind(t.name.clone())
                     .push_bind("QUEUED")
-                    .push_bind(t.executor.clone());
+                    .push_bind(t.executor.clone())
+                    // Phase 2: NULL for every task that is not one test case's
+                    // execution (a crawl, a hand-built API task, a direct
+                    // RunPlan). Never inferred from the task name.
+                    .push_bind(t.test_case_id.clone());
             });
             qb.build().execute(&mut *tx).await?;
         }
@@ -774,7 +855,7 @@ impl Store {
 
     pub async fn list_tasks_for_run(&self, run_id: RunId) -> Result<Vec<TaskState>> {
         let rows = sqlx::query(
-            "SELECT id, name, status, reason, started_at, finished_at FROM tasks WHERE run_id = ? ORDER BY id",
+            "SELECT id, name, status, reason, started_at, finished_at, test_case_id FROM tasks WHERE run_id = ? ORDER BY id",
         )
         .bind(run_id.to_string())
         .fetch_all(&self.pool)
@@ -804,9 +885,252 @@ impl Store {
                     reason: r.get("reason"),
                     started_at: parse_ts_opt(r.get("started_at")),
                     finished_at: parse_ts_opt(r.get("finished_at")),
+                    // Phase 2: the durable case<->execution link, read back from
+                    // the column migration 0028 added.
+                    test_case_id: r.get("test_case_id"),
                 }
             })
             .collect())
+    }
+
+    // ============================ Phase 2: QA Intelligence Memory foundation
+    //
+    // Everything below exists to make historical QA intelligence retrievable, and
+    // every one of it reuses `execution_telemetry` rather than standing up a
+    // second memory store (see docs/qa-intelligence-memory/PHASE_1_AUDIT.md §7).
+
+    /// Records a release for a project.
+    ///
+    /// A duplicate `label` inside the same project is refused by the UNIQUE index
+    /// (migration 0029). Across projects the same label is a different release,
+    /// which is what makes labels usable as a human key without making them an
+    /// identity.
+    pub async fn create_release(
+        &self,
+        project_id: &str,
+        label: Option<&str>,
+        version: Option<&str>,
+        notes: Option<&str>,
+        created_by: Option<&str>,
+    ) -> Result<ReleaseRow> {
+        let id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO qa_releases (id, project_id, label, version, notes, created_by, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(project_id)
+        .bind(label)
+        .bind(version)
+        .bind(notes)
+        .bind(created_by)
+        .bind(now_rfc3339())
+        .execute(&self.pool)
+        .await?;
+
+        let inserted = sqlx::query("SELECT * FROM qa_releases WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(release_from_row(inserted))
+    }
+
+    /// Releases of one project, newest first. Strictly project-scoped: this is
+    /// the only read path Phase 5 needs and it never sees another project's rows.
+    pub async fn list_releases(&self, project_id: &str) -> Result<Vec<ReleaseRow>> {
+        let rows = sqlx::query(
+            "SELECT * FROM qa_releases WHERE project_id = ? ORDER BY created_at DESC, id DESC",
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(release_from_row).collect())
+    }
+
+    /// Every run recorded against one release, newest first.
+    ///
+    /// Runs with no release are absent from every release view - never attached to
+    /// one by default - so release intelligence can answer INSUFFICIENT_DATA
+    /// instead of inventing an association.
+    pub async fn runs_for_release(&self, release_id: Uuid) -> Result<Vec<Uuid>> {
+        let rows = sqlx::query("SELECT id FROM runs WHERE release_id = ? ORDER BY created_at DESC")
+            .bind(release_id.to_string())
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| Uuid::parse_str(&r.get::<String, _>("id")).ok())
+            .collect())
+    }
+
+    /// Records a module as a `quality_nodes` vertex of type `module` and links a
+    /// test case to it.
+    ///
+    /// Phase 2 (QA Intelligence Memory): a module is modelled on the **existing**
+    /// quality graph rather than in a table of its own. `quality_nodes` is already
+    /// a generic typed graph used for `test`, `failure_cluster` and requirement
+    /// vertices, with identity `(project_id, node_type, external_ref)`
+    /// (`upsert_quality_node`), and `quality_relations` already carries typed
+    /// edges (`validates`, `fails_with`). A module is exactly the same kind of
+    /// vertex, so a `module` table would have been a fourth parallel identity
+    /// system for no gain (master plan §1.3).
+    ///
+    /// The edge is named `covers`, case -> module, to sit alongside the existing
+    /// direction of `validates` (case -> requirement) and `fails_with`
+    /// (case -> cluster): all three point from the test case outwards.
+    ///
+    /// Returns the module node id. A blank `module_ref` is refused rather than
+    /// creating an unnamed vertex.
+    pub async fn upsert_module_node(
+        &self,
+        project_id: &str,
+        module_ref: &str,
+        name: &str,
+    ) -> Result<Uuid> {
+        let module_ref = module_ref.trim();
+        if module_ref.is_empty() {
+            return Err(anyhow::anyhow!("a module reference cannot be empty"));
+        }
+        let module_node_id = self
+            .upsert_quality_node(project_id, "module", module_ref, name)
+            .await?;
+        Ok(module_node_id)
+    }
+
+    /// Links one test case's `test` vertex to a module's `module` vertex.
+    ///
+    /// Both vertices are created if absent, so a caller never has to order its
+    /// writes. Idempotent: `upsert_quality_relation` is a read-then-insert against
+    /// the `(from, to, type)` unique key, so repeating it is a no-op.
+    pub async fn link_test_case_to_module(
+        &self,
+        project_id: &str,
+        case_ref: &str,
+        module_ref: &str,
+        case_name: &str,
+        module_name: &str,
+    ) -> Result<()> {
+        let module_node_id = self
+            .upsert_module_node(project_id, module_ref, module_name)
+            .await?;
+        let case_node_id = self
+            .upsert_quality_node(project_id, "test", case_ref, case_name)
+            .await?;
+        self.upsert_quality_relation(case_node_id, module_node_id, "covers")
+            .await?;
+        Ok(())
+    }
+
+    /// Recovers `tasks.test_case_id` for rows written before migration 0028, by
+    /// reading the case id out of the `runs.plan` JSON that has contained it all
+    /// along.
+    ///
+    /// Returns how many rows it filled.
+    ///
+    /// Two rules, both from master plan §1.4 ("historical claims must be
+    /// evidence-based") and §8.5:
+    ///
+    ///  * **Only unambiguous runs are touched.** A run is resolved only when every
+    ///    task in its plan carries exactly one `test_case_id`. A plan naming zero
+    ///    or several distinct cases leaves its tasks NULL, because which task
+    ///    belongs to which case is not recorded anywhere and guessing would invent
+    ///    history.
+    ///  * **Only this project.** `project_id` is required and every statement is
+    ///    scoped by it, so one tenant's history can never be written under
+    ///    another's.
+    ///
+    /// Idempotent by construction: a row already carrying a value is skipped.
+    pub async fn backfill_task_test_case_links(&self, project_id: &str) -> Result<u64> {
+        let runs = sqlx::query("SELECT id, plan FROM runs WHERE project_id = ?")
+            .bind(project_id)
+            .fetch_all(&self.pool)
+            .await?;
+
+        let mut filled = 0u64;
+        for run in runs {
+            let run_id: String = run.get("id");
+            let plan_json: String = run.get("plan");
+
+            // Resolve the plan's tasks -> case ids. Anything but a clean
+            // one-case-per-task mapping is left alone.
+            let pairs: Vec<(String, String)> =
+                match serde_json::from_str::<serde_json::Value>(&plan_json) {
+                    Ok(serde_json::Value::Object(map)) => {
+                        let mut out: Vec<(String, String)> = Vec::new();
+                        for task in map
+                            .get("tasks")
+                            .and_then(|t| t.as_array())
+                            .cloned()
+                            .unwrap_or_default()
+                        {
+                            let (Some(id), Some(case)) = (
+                                task.get("id").and_then(|v| v.as_str()),
+                                task.get("test_case_id").and_then(|v| v.as_str()),
+                            ) else {
+                                // A task with no case id makes the whole run
+                                // partially unattributable; skip the run rather than
+                                // guess at the remaining tasks.
+                                out.clear();
+                                break;
+                            };
+                            // A malformed id is not a link; skip the run.
+                            if uuid::Uuid::parse_str(case).is_err() {
+                                out.clear();
+                                break;
+                            }
+                            out.push((id.to_string(), case.to_string()));
+                        }
+                        out
+                    }
+                    // An unreadable plan is not evidence of anything.
+                    _ => Vec::new(),
+                };
+            if pairs.is_empty() {
+                continue;
+            }
+
+            for (task_id, case_id) in pairs {
+                let res = sqlx::query(
+                    "UPDATE tasks SET test_case_id = ?
+                     WHERE id = ? AND run_id = ? AND test_case_id IS NULL",
+                )
+                .bind(&case_id)
+                .bind(&task_id)
+                .bind(&run_id)
+                .execute(&self.pool)
+                .await?;
+                filled += res.rows_affected();
+            }
+        }
+        Ok(filled)
+    }
+
+    /// The `CREATE TABLE` statement SQLite holds for one table, for the migration
+    /// tests that assert the schema rather than trusting a comment.
+    ///
+    /// Read from `sqlite_master` with a **bound** parameter: `pragma_table_info`
+    /// needs the table name as a literal, and sqlx refuses runtime-built SQL, so the
+    /// DDL text is both the statically-valid way to ask and the stronger assertion —
+    /// it checks the statement the migration actually ran, not a re-derivation of it.
+    ///
+    /// `None` when no such table exists.
+    pub async fn table_ddl(&self, table: &str) -> Result<Option<String>> {
+        let row = sqlx::query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?")
+            .bind(table)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|r| r.get::<String, _>("sql")))
+    }
+
+    /// Whether a table exists. Bound, so the name is never interpolated.
+    pub async fn table_exists(&self, table: &str) -> Result<bool> {
+        let n = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
+        )
+        .bind(table)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(n > 0)
     }
 
     /// Every run id known to the DB, most recent first — the "history" list
@@ -3010,12 +3334,23 @@ impl Store {
     /// been seen again. Returns the cluster id and its post-update
     /// occurrence count (so the caller can decide whether it's crossed the
     /// "recurring, draft a bug" threshold).
+    ///
+    /// `failure_fingerprint` is the telemetry-side SHA-256 for the same failure, or
+    /// `None` when the caller has no telemetry context. Phase 6 (migration 0030)
+    /// added the column because a cluster was otherwise unjoinable with the
+    /// executions that produced it: the cluster is keyed by normalized text while
+    /// telemetry is keyed by a hash, and nothing joined them. It is filled on insert
+    /// and backfilled on update **only when still NULL**, so a cluster created before
+    /// the migration picks the value up on its next occurrence instead of keeping a
+    /// value that was never there.
+    #[allow(clippy::too_many_arguments)]
     pub async fn upsert_failure_cluster(
         &self,
         project_id: &str,
         signature: &str,
         hypothesis: &str,
         confidence: f64,
+        failure_fingerprint: Option<&str>,
     ) -> Result<(Uuid, i64)> {
         let existing = sqlx::query(
             "SELECT id, occurrence_count FROM failure_clusters WHERE project_id = ? AND signature = ?",
@@ -3028,21 +3363,37 @@ impl Store {
             let id: String = row.get("id");
             let count: i64 = row.get::<i64, _>("occurrence_count") + 1;
             let reproducibility = (count as f64 / 5.0).min(1.0);
-            sqlx::query(
-                "UPDATE failure_clusters SET occurrence_count = ?, last_seen_at = ?, reproducibility = ? WHERE id = ?",
-            )
-            .bind(count)
-            .bind(now_rfc3339())
-            .bind(reproducibility)
-            .bind(&id)
-            .execute(&self.pool)
-            .await?;
+            if let Some(fp) = failure_fingerprint {
+                sqlx::query(
+                    "UPDATE failure_clusters
+                     SET occurrence_count = ?, last_seen_at = ?, reproducibility = ?,
+                         failure_fingerprint = COALESCE(failure_fingerprint, ?)
+                     WHERE id = ?",
+                )
+                .bind(count)
+                .bind(now_rfc3339())
+                .bind(reproducibility)
+                .bind(fp)
+                .bind(&id)
+                .execute(&self.pool)
+                .await?;
+            } else {
+                sqlx::query(
+                    "UPDATE failure_clusters SET occurrence_count = ?, last_seen_at = ?, reproducibility = ? WHERE id = ?",
+                )
+                .bind(count)
+                .bind(now_rfc3339())
+                .bind(reproducibility)
+                .bind(&id)
+                .execute(&self.pool)
+                .await?;
+            }
             return Ok((Uuid::parse_str(&id).unwrap_or_default(), count));
         }
         let id = Uuid::new_v4();
         sqlx::query(
-            "INSERT INTO failure_clusters (id, project_id, signature, first_seen_at, last_seen_at, occurrence_count, root_cause_hypothesis, confidence, reproducibility, review_state)
-             VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, 'NEEDS_REVIEW')",
+            "INSERT INTO failure_clusters (id, project_id, signature, first_seen_at, last_seen_at, occurrence_count, root_cause_hypothesis, confidence, reproducibility, review_state, failure_fingerprint)
+             VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, 'NEEDS_REVIEW', ?)",
         )
         .bind(id.to_string())
         .bind(project_id)
@@ -3052,6 +3403,7 @@ impl Store {
         .bind(hypothesis)
         .bind(confidence)
         .bind(0.2_f64)
+        .bind(failure_fingerprint)
         .execute(&self.pool)
         .await?;
         Ok((id, 1))
@@ -3066,7 +3418,7 @@ impl Store {
     ) -> Result<Vec<FailureClusterRow>> {
         let pid = project_filter.unwrap_or("default");
         let rows = sqlx::query(
-            "SELECT id, signature, first_seen_at, last_seen_at, occurrence_count, root_cause_hypothesis, confidence, reproducibility, review_state,
+            "SELECT id, signature, first_seen_at, last_seen_at, occurrence_count, failure_fingerprint, root_cause_hypothesis, confidence, reproducibility, review_state,
                     ai_hypothesis, ai_hypothesis_provider, ai_hypothesis_model, ai_hypothesis_generated_at
              FROM failure_clusters WHERE project_id = ? ORDER BY occurrence_count DESC LIMIT ?",
         )
@@ -3082,6 +3434,7 @@ impl Store {
                 first_seen_at: parse_ts(&r.get::<String, _>("first_seen_at")),
                 last_seen_at: parse_ts(&r.get::<String, _>("last_seen_at")),
                 occurrence_count: r.get("occurrence_count"),
+                failure_fingerprint: r.get::<Option<String>, _>("failure_fingerprint"),
                 root_cause_hypothesis: r.get("root_cause_hypothesis"),
                 confidence: r.get("confidence"),
                 reproducibility: r.get("reproducibility"),
@@ -3100,7 +3453,7 @@ impl Store {
     /// cluster's own id.
     pub async fn get_failure_cluster_by_id(&self, id: Uuid) -> Result<Option<FailureClusterRow>> {
         let row = sqlx::query(
-            "SELECT id, signature, first_seen_at, last_seen_at, occurrence_count, root_cause_hypothesis, confidence, reproducibility, review_state,
+            "SELECT id, signature, first_seen_at, last_seen_at, occurrence_count, failure_fingerprint, root_cause_hypothesis, confidence, reproducibility, review_state,
                     ai_hypothesis, ai_hypothesis_provider, ai_hypothesis_model, ai_hypothesis_generated_at
              FROM failure_clusters WHERE id = ?",
         )
@@ -3113,6 +3466,7 @@ impl Store {
             first_seen_at: parse_ts(&r.get::<String, _>("first_seen_at")),
             last_seen_at: parse_ts(&r.get::<String, _>("last_seen_at")),
             occurrence_count: r.get("occurrence_count"),
+            failure_fingerprint: r.get::<Option<String>, _>("failure_fingerprint"),
             root_cause_hypothesis: r.get("root_cause_hypothesis"),
             confidence: r.get("confidence"),
             reproducibility: r.get("reproducibility"),
@@ -3130,7 +3484,7 @@ impl Store {
         id: Uuid,
     ) -> Result<Option<FailureClusterRow>> {
         let row = sqlx::query(
-            "SELECT id, signature, first_seen_at, last_seen_at, occurrence_count, root_cause_hypothesis, confidence, reproducibility, review_state,
+            "SELECT id, signature, first_seen_at, last_seen_at, occurrence_count, failure_fingerprint, root_cause_hypothesis, confidence, reproducibility, review_state,
                     ai_hypothesis, ai_hypothesis_provider, ai_hypothesis_model, ai_hypothesis_generated_at
              FROM failure_clusters WHERE id = ? AND project_id = ?",
         )
@@ -3144,6 +3498,7 @@ impl Store {
             first_seen_at: parse_ts(&r.get::<String, _>("first_seen_at")),
             last_seen_at: parse_ts(&r.get::<String, _>("last_seen_at")),
             occurrence_count: r.get("occurrence_count"),
+            failure_fingerprint: r.get::<Option<String>, _>("failure_fingerprint"),
             root_cause_hypothesis: r.get("root_cause_hypothesis"),
             confidence: r.get("confidence"),
             reproducibility: r.get("reproducibility"),
@@ -4076,7 +4431,7 @@ impl Store {
         signature: &str,
     ) -> Result<Option<FailureClusterRow>> {
         let row = sqlx::query(
-            "SELECT id, signature, first_seen_at, last_seen_at, occurrence_count, root_cause_hypothesis, confidence, reproducibility, review_state,
+            "SELECT id, signature, first_seen_at, last_seen_at, occurrence_count, failure_fingerprint, root_cause_hypothesis, confidence, reproducibility, review_state,
                     ai_hypothesis, ai_hypothesis_provider, ai_hypothesis_model, ai_hypothesis_generated_at
              FROM failure_clusters WHERE project_id = ? AND signature = ?",
         )
@@ -4090,6 +4445,7 @@ impl Store {
             first_seen_at: parse_ts(&r.get::<String, _>("first_seen_at")),
             last_seen_at: parse_ts(&r.get::<String, _>("last_seen_at")),
             occurrence_count: r.get("occurrence_count"),
+            failure_fingerprint: r.get::<Option<String>, _>("failure_fingerprint"),
             root_cause_hypothesis: r.get("root_cause_hypothesis"),
             confidence: r.get("confidence"),
             reproducibility: r.get("reproducibility"),
@@ -4528,6 +4884,11 @@ pub struct FailureClusterRow {
     pub first_seen_at: chrono::DateTime<chrono::Utc>,
     pub last_seen_at: chrono::DateTime<chrono::Utc>,
     pub occurrence_count: i64,
+    /// Phase 6 (migration 0030): the telemetry-side SHA-256 for this cluster's
+    /// failure, which is the only value that joins a cluster to the executions
+    /// that produced it. `None` for clusters recorded before the migration and never
+    /// seen again.
+    pub failure_fingerprint: Option<String>,
     pub root_cause_hypothesis: Option<String>,
     pub confidence: Option<f64>,
     pub reproducibility: Option<f64>,

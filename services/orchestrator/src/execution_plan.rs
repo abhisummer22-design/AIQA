@@ -886,6 +886,11 @@ pub fn materialize_task_def(
             executor: Some("compiled-api".to_string()),
             params: serde_json::to_value(plan)
                 .map_err(|e| format!("failed to serialize execution plan: {e}"))?,
+            // Phase 2: a compiled plan always came from one test case, and
+            // `ExecutionPlan.test_case_id` already carries it. This is the path
+            // `compile_and_execute` handoffs take, so without it the compiled
+            // executions would be exactly the ones with no case link.
+            test_case_id: Some(plan.test_case_id.clone()),
         }),
         ExecutionType::Browser => {
             let spec_path = crate::executor::materialize_playwright_spec(&task_id, plan)?;
@@ -903,6 +908,8 @@ pub fn materialize_task_def(
                 simulate: None,
                 executor: Some("playwright".to_string()),
                 params,
+                // Phase 2: as above - same reason, browser branch.
+                test_case_id: Some(plan.test_case_id.clone()),
             })
         }
         ExecutionType::Python => {

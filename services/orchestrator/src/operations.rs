@@ -533,6 +533,9 @@ impl OperationsService {
                     .map(|t| t.created_at)
                     .unwrap_or(first.created_at),
                 occurrence_count: count,
+                // Phase 6: this synthesized row is built from telemetry, so the
+                // fingerprint is known exactly rather than left to be inferred.
+                failure_fingerprint: first.failure_fingerprint.clone(),
                 root_cause_hypothesis: first.error_message.clone(),
                 confidence: Some(0.75),
                 reproducibility: Some(rep),

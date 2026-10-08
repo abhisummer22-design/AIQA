@@ -183,6 +183,21 @@ pub struct TaskDef {
     pub executor: Option<String>,
     #[serde(default)]
     pub params: serde_json::Value,
+    /// The test case this task came from, when it came from one.
+    ///
+    /// Phase 2 (QA Intelligence Memory): this is the forward half of the
+    /// case<->execution link. The backward half already existed
+    /// (`test_cases.executed_run_id`/`executed_task_id`), so a case knew its own
+    /// latest execution but no execution knew its case - which is why
+    /// `execution_telemetry.test_case_id` was NULL in every row ever written.
+    /// `tasks.test_case_id` (migration 0028) and
+    /// `execution_telemetry.test_case_id` are both fed from here.
+    ///
+    /// Optional because most tasks are not one case's execution: a crawl task, a
+    /// hand-built API task, or anything posted directly as a `RunPlan`. Those stay
+    /// `None` rather than being guessed at.
+    #[serde(default)]
+    pub test_case_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -207,6 +222,14 @@ pub struct TaskState {
     pub reason: Option<String>,
     pub started_at: Option<chrono::DateTime<chrono::Utc>>,
     pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Phase 2 (QA Intelligence Memory): mirrors `tasks.test_case_id`.
+    ///
+    /// `TaskState` already mirrors the task row's own columns (`status`,
+    /// `reason`, `started_at`, `finished_at`), so this belongs here for the same
+    /// reason and is read back by `store::list_tasks_for_run`. `None` for every
+    /// task that is not one test case's execution.
+    #[serde(default)]
+    pub test_case_id: Option<String>,
 }
 
 impl TaskState {
@@ -219,6 +242,7 @@ impl TaskState {
             reason: None,
             started_at: None,
             finished_at: None,
+            test_case_id: None,
         }
     }
 }

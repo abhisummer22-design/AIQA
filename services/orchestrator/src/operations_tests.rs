@@ -116,7 +116,7 @@ async fn test_01_cross_environment_correlation_identical_fingerprint() {
 
     // Register cluster
     let (cluster_id, _) = store
-        .upsert_failure_cluster(pid, &fingerprint, "Selector changed", 0.9)
+        .upsert_failure_cluster(pid, &fingerprint, "Selector changed", 0.9, None)
         .await
         .unwrap();
 
@@ -188,7 +188,7 @@ async fn test_02_project_isolation_no_cross_project_leakage() {
     store.insert_execution_telemetry(&t_b).await.unwrap();
 
     let (cluster_a, _) = store
-        .upsert_failure_cluster(pid_a, &fingerprint, "Timeout hypothesis", 0.8)
+        .upsert_failure_cluster(pid_a, &fingerprint, "Timeout hypothesis", 0.8, None)
         .await
         .unwrap();
 
@@ -244,7 +244,7 @@ async fn test_03_recurrence_state_new() {
     store.insert_execution_telemetry(&t).await.unwrap();
 
     let (cluster_id, _) = store
-        .upsert_failure_cluster(pid, sig, "Expired token", 0.9)
+        .upsert_failure_cluster(pid, sig, "Expired token", 0.9, None)
         .await
         .unwrap();
 
@@ -287,7 +287,7 @@ async fn test_04_recurrence_state_recurring() {
     }
 
     let (cluster_id, _) = store
-        .upsert_failure_cluster(pid, sig, "Menu selector shifted", 0.8)
+        .upsert_failure_cluster(pid, sig, "Menu selector shifted", 0.8, None)
         .await
         .unwrap();
 
@@ -330,7 +330,7 @@ async fn test_05_recurrence_state_persistent() {
     }
 
     let (cluster_id, _) = store
-        .upsert_failure_cluster(pid, sig, "Connection pool exhausted", 0.85)
+        .upsert_failure_cluster(pid, sig, "Connection pool exhausted", 0.85, None)
         .await
         .unwrap();
 
@@ -371,7 +371,7 @@ async fn test_06_recurrence_state_resolved_via_verified_healing() {
     store.insert_execution_telemetry(&t).await.unwrap();
 
     let (cluster_id, _) = store
-        .upsert_failure_cluster(pid, sig, "Outdated selector", 0.9)
+        .upsert_failure_cluster(pid, sig, "Outdated selector", 0.9, None)
         .await
         .unwrap();
 
@@ -475,7 +475,7 @@ async fn test_07_operational_timeline_chronological_ordering() {
     store.insert_healing_proposal(&proposal).await.unwrap();
 
     let (cluster_id, _) = store
-        .upsert_failure_cluster(pid, sig, "Load latency spike", 0.8)
+        .upsert_failure_cluster(pid, sig, "Load latency spike", 0.8, None)
         .await
         .unwrap();
 
@@ -557,7 +557,7 @@ async fn test_08_conservative_regression_confirmed() {
     store.insert_healing_proposal(&proposal).await.unwrap();
 
     let (cluster_id, _) = store
-        .upsert_failure_cluster(pid, sig, "Status mismatch", 0.7)
+        .upsert_failure_cluster(pid, sig, "Status mismatch", 0.7, None)
         .await
         .unwrap();
 
@@ -646,7 +646,7 @@ async fn test_09_non_causal_change_time_correlation_language() {
     }
 
     let (cluster_id, _) = store
-        .upsert_failure_cluster(pid, sig, "Server error spike", 0.6)
+        .upsert_failure_cluster(pid, sig, "Server error spike", 0.6, None)
         .await
         .unwrap();
 
@@ -1048,15 +1048,15 @@ async fn test_14_prometheus_metrics_render_phase8_metrics() {
 
     // Insert failure cluster with occurrence_count = 3
     let (_cluster_id, _) = store
-        .upsert_failure_cluster(pid, "metric-sig-1", "hypothesis 1", 0.8)
+        .upsert_failure_cluster(pid, "metric-sig-1", "hypothesis 1", 0.8, None)
         .await
         .unwrap();
     let _ = store
-        .upsert_failure_cluster(pid, "metric-sig-1", "hypothesis 1", 0.8)
+        .upsert_failure_cluster(pid, "metric-sig-1", "hypothesis 1", 0.8, None)
         .await
         .unwrap();
     let _ = store
-        .upsert_failure_cluster(pid, "metric-sig-1", "hypothesis 1", 0.8)
+        .upsert_failure_cluster(pid, "metric-sig-1", "hypothesis 1", 0.8, None)
         .await
         .unwrap();
 

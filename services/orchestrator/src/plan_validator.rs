@@ -261,6 +261,10 @@ impl ValidatedPlan {
                         delay_ms: 10,
                     }),
                     executor: Some("simulated".to_string()),
+                    // Phase 2: a simulated task is an explicitly declared
+                    // outcome, not a real execution of anything, so it
+                    // contributes no history and stays unlinked.
+                    test_case_id: None,
                     params: task
                         .custom_params
                         .clone()
@@ -272,6 +276,9 @@ impl ValidatedPlan {
                     prerequisites: task.prerequisites.clone(),
                     simulate: None,
                     executor: Some(other.to_string()),
+                    // Phase 2: a hand-declared executor carries no case link,
+                    // so it stays unlinked rather than being inferred.
+                    test_case_id: None,
                     params: task
                         .custom_params
                         .clone()

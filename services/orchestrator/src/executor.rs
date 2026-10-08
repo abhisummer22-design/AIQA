@@ -2059,6 +2059,7 @@ AIQA_HEALING_EVENT {"event":"heal","actionIndex":1,"actionKind":"CLICK","primary
             simulate: None,
             executor: Some("playwright".to_string()),
             params,
+            test_case_id: None,
         }
     }
 

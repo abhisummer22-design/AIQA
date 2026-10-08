@@ -7056,7 +7056,7 @@ async fn phase2_generate_ai_succeeds_with_real_seeded_risk_and_confirmed_defect_
         .expect("upsert risk assessment");
     let (cluster_id, _) = state
         .store
-        .upsert_failure_cluster(&project.to_string(), "sig-confirmed", "hypothesis", 0.5)
+        .upsert_failure_cluster(&project.to_string(), "sig-confirmed", "hypothesis", 0.5, None)
         .await
         .expect("upsert failure cluster");
     let draft_id = state
@@ -12074,6 +12074,7 @@ async fn test_phase8_investigations_and_drilldown_endpoints() {
             "sig-ops-test",
             "API Gateway Timeout",
             0.9,
+            None,
         )
         .await
         .unwrap();

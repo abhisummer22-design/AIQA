@@ -780,6 +780,21 @@ pub struct QaIntelligenceFeedback {
     pub high_risk_components: Vec<String>,
     pub top_failure_clusters: Vec<String>,
     pub recommended_priorities: Vec<String>,
+    /// Phase 4 (QA Intelligence Memory): the same history as *structured*
+    /// signals rather than flat sentences.
+    ///
+    /// Master plan §6 "Explainability" asks for a historical signal, a metric,
+    /// an evidence reference, a confidence and a time window per planning
+    /// input. The `*_tests` / `*_selectors` fields are one string each and carry
+    /// none of those, so a plan cannot be traced back to what produced it.
+    /// These can.
+    ///
+    /// Kept alongside the string fields rather than replacing them: those are
+    /// read by the existing `agents::planning` renderer and its tests, and Phase 4
+    /// must extend a planning engine, not rewrite it.
+    ///
+    /// Empty whenever the project has no history - never a placeholder signal.
+    pub planning_signals: Vec<crate::qa_memory::PlanningSignal>,
 }
 
 // ============================================================================
@@ -894,12 +909,24 @@ impl AdaptiveIntelligenceService {
                 .push("Review and update brittle DOM selectors in browser suites".to_string());
         }
 
+        // Phase 4 (QA Intelligence Memory): the same history as structured
+        // signals. Built by the Phase 3 retrieval layer, so there is one
+        // definition of what the history means and one window rule - not a
+        // second interpretation here.
+        //
+        // A read failure must not fail planning: the feedback is an input, and
+        // the existing behaviour is that a missing signal is simply absent.
+        let planning_signals = crate::qa_memory::QaMemoryReader::new(self.store.clone())
+            .planning_signals(project_id)
+            .await;
+
         Ok(QaIntelligenceFeedback {
             fragile_tests,
             fragile_selectors,
             high_risk_components: Vec::new(),
             top_failure_clusters,
             recommended_priorities,
+            planning_signals,
         })
     }
 }

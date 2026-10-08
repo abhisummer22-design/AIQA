@@ -434,7 +434,15 @@ impl<'a> Intelligence<'a> {
                 t,
                 executor_name,
                 "test",
-                None,
+                // Phase 2 (QA Intelligence Memory): the case this task executed,
+                // read from the plan's own TaskDef. This is the column that was
+                // NULL in every telemetry row ever written because the forward
+                // case<->execution link had nowhere to live; `tasks.test_case_id`
+                // (migration 0028) now carries the same value.
+                task_defs
+                    .get(t.id.as_str())
+                    .and_then(|def| def.test_case_id.clone())
+                    .and_then(|raw| Uuid::parse_str(&raw).ok()),
                 Vec::new(),
                 selector,
                 None,
@@ -571,9 +579,45 @@ impl<'a> Intelligence<'a> {
             return Ok(());
         }
         let (hypothesis, confidence) = classify_failure(&reason);
+
+        // Phase 6 (migration 0030): the telemetry-side fingerprint for this same
+        // failure, computed with exactly the chain
+        // `ExecutionTelemetry::from_task_state` uses — same reason, same
+        // sanitize -> categorize -> mask -> hash order, with `http_status` and
+        // `selector` both `None` because this function has neither. Writing it here
+        // is what lets a cluster be joined to the executions that produced it;
+        // without it `bug_history` reported "this defect touched no tests" for every
+        // defect. When either input is unavailable the value is simply `None` and the
+        // cluster stays uncorrelated rather than wrongly correlated.
+        let failure_fingerprint = {
+            use crate::adaptive_intelligence::{
+                categorize_failure, compute_telemetry_fingerprint, mask_dynamic_tokens,
+                sanitize_telemetry_text,
+            };
+            let sanitized = sanitize_telemetry_text(&reason);
+            if sanitized.trim().is_empty() {
+                None
+            } else {
+                let category = categorize_failure(&sanitized, None);
+                let masked = mask_dynamic_tokens(&sanitized);
+                Some(compute_telemetry_fingerprint(
+                    &category,
+                    &masked,
+                    None,
+                    None,
+                ))
+            }
+        };
+
         let (cluster_id, occurrence_count) = self
             .store
-            .upsert_failure_cluster(project_id, &signature, &hypothesis, confidence)
+            .upsert_failure_cluster(
+                project_id,
+                &signature,
+                &hypothesis,
+                confidence,
+                failure_fingerprint.as_deref(),
+            )
             .await?;
 
         // Anomaly -> confirmed-defect promotion path (PRD §14, flagged as
@@ -1138,7 +1182,7 @@ RESPONSE 404 Not Found
 
         // A CONFIRMED bug draft — must appear.
         let (confirmed_cluster, _) = store
-            .upsert_failure_cluster("proj-1", "sig-confirmed", "hypothesis", 0.5)
+            .upsert_failure_cluster("proj-1", "sig-confirmed", "hypothesis", 0.5, None)
             .await
             .expect("upsert failure cluster");
         let confirmed_draft = store
@@ -1159,7 +1203,7 @@ RESPONSE 404 Not Found
         // A DISMISSED bug draft — a human already judged this NOT a real
         // defect pattern; must not appear.
         let (dismissed_cluster, _) = store
-            .upsert_failure_cluster("proj-1", "sig-dismissed", "hypothesis", 0.5)
+            .upsert_failure_cluster("proj-1", "sig-dismissed", "hypothesis", 0.5, None)
             .await
             .expect("upsert failure cluster");
         let dismissed_draft = store
@@ -1180,7 +1224,7 @@ RESPONSE 404 Not Found
         // A still-unreviewed (NEEDS_REVIEW) bug draft — unverified, must not
         // appear either.
         let (needs_review_cluster, _) = store
-            .upsert_failure_cluster("proj-1", "sig-needs-review", "hypothesis", 0.5)
+            .upsert_failure_cluster("proj-1", "sig-needs-review", "hypothesis", 0.5, None)
             .await
             .expect("upsert failure cluster");
         store

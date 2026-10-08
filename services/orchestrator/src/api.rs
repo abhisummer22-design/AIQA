@@ -2610,6 +2610,10 @@ async fn handoff_test_case_scoped(
             simulate: body.simulate.clone(),
             executor: body.executor.clone(),
             params: body.params.clone(),
+            // Phase 2: this task IS this case's execution, so the forward half of
+            // the case<->execution link is known right here and is never guessed
+            // from the task name.
+            test_case_id: Some(id.to_string()),
         }
     };
     let run_plan = RunPlan {
@@ -7010,6 +7014,9 @@ async fn start_crawl_scoped(
         prerequisites: Vec::new(),
         simulate: None,
         executor: Some("playwright".to_string()),
+        // Phase 2: a crawl is not one test case's execution - it is the
+        // discovery that grounds other cases. Correctly left unlinked.
+        test_case_id: None,
         params,
     };
     let run_plan = RunPlan {

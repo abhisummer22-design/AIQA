@@ -76,6 +76,9 @@ impl RunEngine {
                     reason: None,
                     started_at: None,
                     finished_at: None,
+                    // Phase 2: carried from the plan so the in-memory task and
+                    // the persisted `tasks.test_case_id` agree.
+                    test_case_id: t.test_case_id.clone(),
                 },
             );
         }

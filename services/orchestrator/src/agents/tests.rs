@@ -646,6 +646,9 @@ async fn test_12_generate_test_plan_incorporates_qa_intelligence_feedback() {
         recommended_priorities: vec![
             "Stabilize #promo-code-input before next regression pass".to_string()
         ],
+        // Phase 4: this fixture predates structured signals and asserts the
+        // string fields only, so it carries none.
+        planning_signals: vec![],
     };
 
     let request = super::planning::PlanningRequest {

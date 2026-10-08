@@ -867,6 +867,7 @@ mod tests {
             simulate: None,
             executor: Some("compiled-api".to_string()),
             params: json!({"plan": id}),
+            test_case_id: None,
         }
     }
 

@@ -325,11 +325,11 @@ async fn b14_bug_drafts_are_project_scoped() {
     let (store, _dir) = temp_store().await;
 
     let (alpha_cluster, _) = store
-        .upsert_failure_cluster("alpha", "alpha signature", "hypothesis", 0.5)
+        .upsert_failure_cluster("alpha", "alpha signature", "hypothesis", 0.5, None)
         .await
         .expect("alpha cluster");
     let (beta_cluster, _) = store
-        .upsert_failure_cluster("beta", "beta signature", "hypothesis", 0.5)
+        .upsert_failure_cluster("beta", "beta signature", "hypothesis", 0.5, None)
         .await
         .expect("beta cluster");
 
@@ -368,7 +368,7 @@ async fn b14_bug_draft_project_is_resolvable_for_authorization() {
     let (store, _dir) = temp_store().await;
 
     let (cluster, _) = store
-        .upsert_failure_cluster("alpha", "sig", "hypothesis", 0.5)
+        .upsert_failure_cluster("alpha", "sig", "hypothesis", 0.5, None)
         .await
         .expect("cluster");
     let draft = store
