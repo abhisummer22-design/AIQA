@@ -717,6 +717,50 @@ impl Store {
         Ok(())
     }
 
+    /// Write a task's status, optionally stamping one end of its clock.
+    ///
+    /// # Q6 (Phase 7.3): the two-bool contract, as implemented
+    ///
+    /// **This is documentation of the existing behaviour, not a redesign.** The enum refactor
+    /// asked about by D6 is **deferred**, not resolved: see the note at the end.
+    ///
+    /// ## The three flag combinations that do something
+    ///
+    /// | `set_started` | `set_finished` | SQL that runs | columns written |
+    /// |---|---|---|---|
+    /// | `true`  | `false` | start branch  | `status`, `started_at` |
+    /// | `false` | `true`  | finish branch | `status`, `reason`, `finished_at` |
+    /// | `false` | `false`| status branch | `status`, `reason` |
+    ///
+    /// ## `(true, true)` is unreachable
+    ///
+    /// The body is `if set_started { .. } else if set_finished { .. } else { .. }`. With both flags
+    /// true the **start** branch wins and the finish branch never runs, so a single call cannot
+    /// stamp both ends. Production reaches this by calling the method **twice** -- once to start
+    /// (`engine.rs`, the task-start path) and once to finish (`engine.rs`, the completion path) --
+    /// which is why each call passes exactly one flag. Passing `(true, true)` looks like the
+    /// natural way to say "both ends" and silently records only the start.
+    ///
+    /// ## The start branch does not write `reason`
+    ///
+    /// Only the finish and status branches bind `reason`. A start therefore clears neither
+    /// `reason` nor `finished_at`, and it never writes a failure reason for a task that is merely
+    /// being marked `Running` -- which is the intent, since a running task has no outcome yet.
+    ///
+    /// ## `(false, false)` has no production caller
+    ///
+    /// It sets `status` and `reason` with **neither** timestamp, which is the right shape for a
+    /// task that was never dispatched. At the time of this audit no production code calls it: the
+    /// three production call sites use `(true, false)`, `(false, true)` or, in the
+    /// infrastructure-failure sweep, `(false, true)`. It exists for tests and remains reachable.
+    ///
+    /// ## Deferred, not resolved
+    ///
+    /// **D6 is still open.** An enum (`Start` / `Finish` / `StatusOnly`) would remove the
+    /// unreachable `(true, true)` and make the three shapes impossible to confuse -- but Phase
+    /// 7.3's instruction was explicitly *not* to introduce it, so it is recorded here as the
+    /// smallest defensible future change rather than made now. Nothing in this phase relies on the
+    /// awkward shape beyond what is written above.
     pub async fn set_task_status(
         &self,
         run_id: RunId,

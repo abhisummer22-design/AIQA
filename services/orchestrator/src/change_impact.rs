@@ -56,6 +56,7 @@ use crate::store::{
     QualityNodeRow, QualityRelationRow, Store, LEGACY_TEST_NODE_TYPE, TASK_NODE_TYPE,
     TEST_NODE_TYPE,
 };
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
@@ -85,18 +86,66 @@ pub struct ChangeTarget {
     pub ref_id: String,
 }
 
-/// The change kinds this build resolves, and why the others cannot be.
+/// **The** supported change-target set for this build. Q5 (Phase 7.3).
 ///
-/// Kept as data rather than a `match` in two places so the accepted set and the
-/// explanation for a refusal cannot drift apart.
+/// This used to be stated twice by hand — once here, once as a `matches!` arm inside
+/// [`ChangeImpactReader::resolve`] — and the two disagreed: `module` appeared in the `matches!`
+/// accept-list while this table refused it, so a target could be accepted by one component and
+/// silently refused by another. There is now exactly one list, and every other check derives from
+/// it.
+///
+/// **Phase 7 approved scope (Q3):** `requirement`, `test_case`, `failure_cluster`. Nothing else.
+///
+/// | kind | supported | why |
+/// |---|---|---|
+/// | `requirement` | yes | `quality_nodes` holds a `requirement` vertex written by `link_case_to_requirement` |
+/// | `test_case` | yes | `quality_nodes` holds a `test` vertex written by `upsert_quality_node` |
+/// | `failure_cluster` | yes | `quality_nodes` holds a `failure_cluster` vertex keyed on the fingerprint |
+/// | `module` | **no (deferred, Q4)** | the vertex type exists but **no authoritative module-identity source does** |
+/// | `api_contract` | no | no vertex type records an API contract anywhere in the schema |
+/// | `page` | no | no vertex type records a page or route; a target URL is not a stored identity and matching on it would be a string guess |
+/// | `code_file` | no | the backend has no git integration, no diff parser and no file-to-test mapping |
+/// | `configuration` | no | nothing records which tests a configuration change affects |
+/// | `dependency` | no | no manifest or lockfile is read anywhere in the backend |
+/// | `requirement_change` | no | a synonym for `requirement`, not a separate identity; declaring the requirement itself is correct |
+/// | anything else | no | not a kind this build knows |
+pub const SUPPORTED_CHANGE_KINDS: &[&str] = &["requirement", "test_case", "failure_cluster"];
+
+/// Whether `kind` is one this build resolves. The single answer every caller must use.
+pub fn is_supported_change_kind(kind: &str) -> bool {
+    SUPPORTED_CHANGE_KINDS.contains(&kind.trim())
+}
+
+/// The human-readable list, for error messages and docs.
+pub fn supported_change_kinds_joined() -> String {
+    SUPPORTED_CHANGE_KINDS
+        .iter()
+        .map(|k| format!("`{k}`"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The change kinds this build resolves, and why the others cannot.
+///
+/// Returns `None` **only** for a supported kind, so a supported kind can never be refused by the
+/// note table and an unsupported kind can never fall through as if it were supported. Both
+/// directions are covered by `phase_7_3_*` tests.
 fn resolution_note(kind: &str) -> Option<&'static str> {
     match kind {
-        "requirement" => None,
-        "test_case" => None,
-        "failure_cluster" => None,
+        // The supported set. `None` means "resolvable", checked against
+        // SUPPORTED_CHANGE_KINDS so the two cannot drift.
+        "requirement" | "test_case" | "failure_cluster" => None,
+        // Q4 (Phase 7.3): deferred. The prerequisite is an authoritative module-identity source,
+        // not this edge. `store::link_test_case_to_module` and `store::link_case_to_module` both
+        // write a `covers` edge and both are **uncalled by production code** -- `trace.rs` records
+        // that as deliberate -- and no column anywhere stores which module a case belongs to.
+        // Wiring a writer before such a source exists would mean inferring ownership from a
+        // document or task name, which is a heuristic presented as fact.
         "module" => Some(
-            "a module vertex exists, but no `covers` edge is ever written, so a module \
-             change has no provable impact on any test case",
+            "module-change impact is deferred and not supported by this build: nothing in the \
+             schema records an authoritative module identity for a test case, so a `covers` edge \
+             has no defensible source. Declaring a `requirement`, `test_case` or \
+             `failure_cluster` target derives real impact today",
         ),
         "api_contract" => Some("no vertex type records an API contract anywhere in the schema"),
         "page" => Some(
@@ -275,63 +324,62 @@ impl ChangeImpactReader {
     /// case folding, no substring: a near miss is reported as unresolved, because a
     /// requirement key that resembles another is precisely where a heuristic would invent
     /// an impact.
-    pub async fn resolve(&self, project_id: &str, target: &ChangeTarget) -> Resolution {
+    pub async fn resolve(&self, project_id: &str, target: &ChangeTarget) -> Result<Resolution> {
         let kind = target.kind.trim();
         let ref_id = target.ref_id.trim();
 
         if ref_id.is_empty() {
-            return Resolution::Insufficient {
+            return Ok(Resolution::Insufficient {
                 marker: "INSUFFICIENT_DATA",
                 reason: "the target carries no reference to resolve".to_string(),
-            };
+            });
         }
         if let Some(note) = resolution_note(kind) {
-            return Resolution::Insufficient {
+            return Ok(Resolution::Insufficient {
                 marker: "INSUFFICIENT_DATA",
                 reason: note.to_string(),
-            };
+            });
         }
-        if !matches!(
-            kind,
-            "requirement" | "test_case" | "failure_cluster" | "module"
-        ) {
-            return Resolution::Insufficient {
+        // Q5 (Phase 7.3): the accept-list is the shared constant, not a second hand-written
+        // `matches!`. `module` is no longer in it (Q3/Q4), so it now takes the same path as every
+        // other unsupported kind instead of being accepted here and refused above.
+        if !is_supported_change_kind(kind) {
+            return Ok(Resolution::Insufficient {
                 marker: "INSUFFICIENT_DATA",
                 reason: format!(
-                    "`{kind}` is not a change kind this build can resolve; expected one of \
-                     requirement, test_case, failure_cluster, module"
+                    "`{kind}` is not a change kind this build can resolve; the supported kinds \
+                     are {}",
+                    supported_change_kinds_joined()
                 ),
-            };
+            });
         }
 
         // A test case is addressed by its UUID. Parsed rather than string-compared so a
         // malformed id is a clear refusal instead of a silent no-match.
         if kind == "test_case" && Uuid::parse_str(ref_id).is_err() {
-            return Resolution::Insufficient {
+            return Ok(Resolution::Insufficient {
                 marker: "INSUFFICIENT_DATA",
                 reason: "a test_case target must be a test_cases.id (a UUID)".to_string(),
-            };
+            });
         }
 
+        // Every arm here is a supported kind (Q5), so the fallback is unreachable rather than a
+        // silent `module` default that contradicted the refusal table.
         let wanted: &[&str] = match kind {
             "test_case" => &[TEST_NODE_TYPE, LEGACY_TEST_NODE_TYPE],
             "requirement" => &["requirement"],
             "failure_cluster" => &["failure_cluster"],
-            _ => &["module"],
+            _ => &[],
         };
 
-        let all_nodes: Vec<QualityNodeRow> = self
-            .store
-            .list_quality_nodes(project_id)
-            .await
-            .unwrap_or_default();
+        let all_nodes: Vec<QualityNodeRow> = self.store.list_quality_nodes(project_id).await?;
         let matches: Vec<&QualityNodeRow> = all_nodes
             .iter()
             .filter(|n| wanted.contains(&n.node_type.as_str()))
             .filter(|n| n.external_ref.as_deref() == Some(ref_id))
             .collect();
 
-        match matches.len() {
+        Ok(match matches.len() {
             1 => {
                 let n = matches[0];
                 Resolution::Resolved {
@@ -355,7 +403,7 @@ impl ChangeImpactReader {
                      guess which one changed"
                 ),
             },
-        }
+        })
     }
 
     /// Test cases reachable from one vertex, by stored relation only.
@@ -368,22 +416,20 @@ impl ChangeImpactReader {
     /// `related` then adds one hop of genuine dependency: cases that failed with the same
     /// fingerprint as a directly reached case. That is a recorded relationship - both
     /// clusters exist, both edges exist - not a guess.
-    pub async fn impacted_from_node(&self, project_id: &str, node_id: Uuid) -> Vec<ImpactedTest> {
-        let nodes: Vec<QualityNodeRow> = self
-            .store
-            .list_quality_nodes(project_id)
-            .await
-            .unwrap_or_default();
+    pub async fn impacted_from_node(
+        &self,
+        project_id: &str,
+        node_id: Uuid,
+    ) -> Result<Vec<ImpactedTest>> {
+        let nodes: Vec<QualityNodeRow> = self.store.list_quality_nodes(project_id).await?;
         let relations: Vec<QualityRelationRow> = self
             .store
             .list_quality_relations_for_project(project_id)
-            .await
-            .unwrap_or_default();
+            .await?;
         let telemetry = self
             .store
             .list_execution_telemetry(project_id, crate::qa_memory::TELEMETRY_READ_MAX)
-            .await
-            .unwrap_or_default();
+            .await?;
 
         // Which nodes are case vertices, and which real case each is.
         let case_of: BTreeMap<Uuid, Uuid> = nodes
@@ -492,7 +538,7 @@ impl ChangeImpactReader {
                 .then(a.test_case_id.cmp(&b.test_case_id))
         });
         out.truncate(IMPACT_MAX_TESTS);
-        out
+        Ok(out)
     }
 
     /// Cases with recorded failure evidence — the safety floor.
@@ -502,15 +548,14 @@ impl ChangeImpactReader {
     /// read honestly is "this case has actually failed", which is the strongest available
     /// proxy for "must not be dropped to save runtime". Documented as a limitation: a real
     /// mandatory flag is a schema decision.
-    pub async fn safety_floor(&self, project_id: &str) -> BTreeMap<Uuid, String> {
+    pub async fn safety_floor(&self, project_id: &str) -> Result<BTreeMap<Uuid, String>> {
         let mut floor: BTreeMap<Uuid, String> = BTreeMap::new();
 
-        for r in self
+        let telemetry = self
             .store
             .list_execution_telemetry(project_id, crate::qa_memory::TELEMETRY_READ_MAX)
-            .await
-            .unwrap_or_default()
-        {
+            .await?;
+        for r in &telemetry {
             let (Some(case_id), Some(fp)) = (r.test_case_id, r.failure_fingerprint.as_deref())
             else {
                 continue;
@@ -528,29 +573,19 @@ impl ChangeImpactReader {
         // something": a human-reviewable defect record exists against it. Resolved
         // through the draft's cluster and that cluster's fingerprint, both stored keys -
         // draft -> cluster -> fingerprint -> the cases that failed with it.
-        for d in self
-            .store
-            .list_bug_drafts(Some(project_id))
-            .await
-            .unwrap_or_default()
-        {
+        let drafts = self.store.list_bug_drafts(Some(project_id)).await?;
+        for d in drafts {
             let cluster = self
                 .store
                 .get_failure_cluster_by_id(d.failure_cluster_id)
-                .await
-                .ok()
-                .flatten();
+                .await?;
             let Some(fp) = cluster.and_then(|c| c.failure_fingerprint) else {
                 continue;
             };
             if fp.is_empty() {
                 continue;
             }
-            for r in self
-                .store
-                .list_execution_telemetry(project_id, crate::qa_memory::TELEMETRY_READ_MAX)
-                .await
-                .unwrap_or_default()
+            for r in telemetry
                 .iter()
                 .filter(|r| r.failure_fingerprint.as_deref() == Some(fp.as_str()))
             {
@@ -564,7 +599,7 @@ impl ChangeImpactReader {
             }
         }
 
-        floor
+        Ok(floor)
     }
 
     /// Recorded risk per case vertex, from the existing intelligence read.
@@ -572,12 +607,8 @@ impl ChangeImpactReader {
     /// Reuses [`Store::list_test_intelligence`] rather than adding a query, so risk is
     /// read exactly as `GET /intelligence/tests` reads it and cannot disagree with that
     /// view.
-    pub async fn risk_scores(&self, project_id: &str) -> BTreeMap<Uuid, f64> {
-        let nodes = self
-            .store
-            .list_quality_nodes(project_id)
-            .await
-            .unwrap_or_default();
+    pub async fn risk_scores(&self, project_id: &str) -> Result<BTreeMap<Uuid, f64>> {
+        let nodes = self.store.list_quality_nodes(project_id).await?;
         let case_node: BTreeMap<Uuid, Uuid> = nodes
             .iter()
             .filter(|n| n.node_type == TEST_NODE_TYPE || n.node_type == LEGACY_TEST_NODE_TYPE)
@@ -586,16 +617,16 @@ impl ChangeImpactReader {
                 Some((n.id, id))
             })
             .collect();
-        self.store
+        Ok(self
+            .store
             .list_test_intelligence(Some(project_id))
-            .await
-            .unwrap_or_default()
+            .await?
             .into_iter()
             .filter_map(|row| {
                 let case_id = case_node.get(&row.id).copied()?;
                 Some((case_id, row.risk_score?))
             })
-            .collect()
+            .collect())
     }
 
     /// Full analysis of one declared change, and the writes it produces.
@@ -609,17 +640,17 @@ impl ChangeImpactReader {
         change_ref: &str,
         change_type: &str,
         targets: &[ChangeTarget],
-    ) -> ChangeImpact {
+    ) -> Result<ChangeImpact> {
         let mut outcomes: Vec<TargetOutcome> = Vec::new();
         let mut union: BTreeMap<Uuid, ImpactedTest> = BTreeMap::new();
         let mut any_resolved = false;
 
         for target in targets {
-            let resolution = self.resolve(project_id, target).await;
+            let resolution = self.resolve(project_id, target).await?;
             let impacted = match &resolution {
                 Resolution::Resolved { node_id, .. } => {
                     any_resolved = true;
-                    let found = self.impacted_from_node(project_id, *node_id).await;
+                    let found = self.impacted_from_node(project_id, *node_id).await?;
                     for i in &found {
                         union
                             .entry(i.test_case_id)
@@ -644,8 +675,8 @@ impl ChangeImpactReader {
             });
         }
 
-        let floor = self.safety_floor(project_id).await;
-        let risk = self.risk_scores(project_id).await;
+        let floor = self.safety_floor(project_id).await?;
+        let risk = self.risk_scores(project_id).await?;
 
         // Apply the two change-independent tiers to the union, then select.
         let mut selected: BTreeMap<Uuid, ImpactedTest> = union.clone();
@@ -693,8 +724,7 @@ impl ChangeImpactReader {
         let not_selected: Vec<NotSelected> = self
             .store
             .list_test_cases(project_id, None, None)
-            .await
-            .unwrap_or_default()
+            .await?
             .into_iter()
             .filter(|c| !chosen.contains(&c.id))
             .map(|c| NotSelected {
@@ -707,6 +737,34 @@ impl ChangeImpactReader {
             .collect();
 
         // ---- persist ----
+        // Q7 (Phase 7.3): a refused target leaves **no** `change_impacts` row, because that
+        // table's rows all mean "this node's impact was derived". Writing one for an unresolved
+        // target would invent that claim, so it is not written. `change_impacts` has no status
+        // column and no migration is permitted here, so the refusal is recorded where the schema
+        // *does* support it unambiguously: `audit_log`, whose `outcome` column is exactly
+        // 'ok' | 'denied' | 'error' and whose `target` can carry the change_ref.
+        //
+        // The audit trail is not an impact record. `list_change_impacts` still returns nothing for
+        // a refused change, so nothing downstream can mistake this for a resolved impact.
+        for outcome in &outcomes {
+            if let Resolution::Insufficient { marker, reason } = &outcome.resolution {
+                self.store
+                    .insert_audit(
+                        None,
+                        None,
+                        Some(project_id),
+                        "change_impact.unsupported_target",
+                        Some(change_ref),
+                        Some(&format!(
+                            "{} target `{}` was not resolved ({}): {}",
+                            outcome.target.kind, outcome.target.ref_id, marker, reason
+                        )),
+                        "denied",
+                    )
+                    .await?;
+            }
+        }
+
         let mut recorded = 0usize;
         let mut already = 0usize;
         for outcome in &outcomes {
@@ -716,7 +774,7 @@ impl ChangeImpactReader {
             if outcome.impacted.is_empty() {
                 // A resolved node with no impact is a real negative result; record it once
                 // with no selected test rather than recording nothing at all.
-                if let Some(f) = ["requirement", "test_case", "failure_cluster", "module"]
+                if let Some(f) = SUPPORTED_CHANGE_KINDS
                     .iter()
                     .find(|k| outcome.target.kind.trim() == **k)
                 {
@@ -743,7 +801,7 @@ impl ChangeImpactReader {
                 continue;
             }
             for i in &outcome.impacted {
-                let node_id = match self.test_node_id(project_id, i.test_case_id).await {
+                let node_id = match self.test_node_id(project_id, i.test_case_id).await? {
                     Some(n) => n,
                     None => continue,
                 };
@@ -771,7 +829,7 @@ impl ChangeImpactReader {
             }
         }
 
-        ChangeImpact {
+        Ok(ChangeImpact {
             project_id: project_id.to_string(),
             change_ref: change_ref.to_string(),
             change_type: change_type.to_string(),
@@ -786,22 +844,22 @@ impl ChangeImpactReader {
             }),
             recorded,
             already_recorded: already,
-        }
+        })
     }
 
     /// The case vertex id for a test case, if this project has one.
-    async fn test_node_id(&self, project_id: &str, case_id: Uuid) -> Option<Uuid> {
+    async fn test_node_id(&self, project_id: &str, case_id: Uuid) -> Result<Option<Uuid>> {
         let want = case_id.to_string();
-        self.store
+        Ok(self
+            .store
             .list_quality_nodes(project_id)
-            .await
-            .unwrap_or_default()
+            .await?
             .into_iter()
             .find(|n| {
                 (n.node_type == TEST_NODE_TYPE || n.node_type == LEGACY_TEST_NODE_TYPE)
                     && n.external_ref.as_deref() == Some(want.as_str())
             })
-            .map(|n| n.id)
+            .map(|n| n.id))
     }
 }
 

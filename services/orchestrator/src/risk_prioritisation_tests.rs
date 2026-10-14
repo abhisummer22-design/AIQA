@@ -201,7 +201,12 @@ async fn no_risk_score_is_invented_for_the_factors_that_have_no_column() {
     let c = case(&store, &pid, "A failing case").await;
     failing(&store, &pid, c, 3).await;
 
-    let risk: TestRisk = present(reader(&store).test_risk(&pid, &c.to_string()).await);
+    let risk: TestRisk = present(
+        reader(&store)
+            .test_risk(&pid, &c.to_string())
+            .await
+            .expect("test_risk"),
+    );
 
     assert!(
         risk.calibration.is_none(),
@@ -252,6 +257,7 @@ async fn no_risk_score_is_invented_for_the_factors_that_have_no_column() {
         "there is no security_sensitivity field for a test case"
     );
     assert_eq!(by_name("dependency_count").evidence, 0);
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ insufficient data
@@ -262,7 +268,12 @@ async fn an_empty_project_reports_insufficient_data_not_low_risk() {
     let (store, _d) = temp_store().await;
     let pid = project(&store, "P4 Empty").await;
 
-    let (marker, view) = absent(reader(&store).prioritise_tests(&pid, None).await);
+    let (marker, view) = absent(
+        reader(&store)
+            .prioritise_tests(&pid, None)
+            .await
+            .expect("prioritise_tests"),
+    );
     assert_eq!(marker, Some(InsufficientData::NoExecutions));
     assert!(
         view.is_none(),
@@ -273,10 +284,12 @@ async fn an_empty_project_reports_insufficient_data_not_low_risk() {
     let (marker, view) = absent(
         reader(&store)
             .test_risk(&pid, &Uuid::new_v4().to_string())
-            .await,
+            .await
+            .expect("test_risk"),
     );
     assert_eq!(marker, Some(InsufficientData::NoExecutions));
     assert!(view.is_none());
+    store.pool.close().await;
 }
 
 /// A case with no executions must report `NO_MATCHING_HISTORY`, not a low score.
@@ -291,7 +304,12 @@ async fn a_case_with_no_executions_is_not_low_risk() {
     let never = case(&store, &pid, "Never executed").await;
     run(&store, &pid, executed, TaskStatus::Passed, None, "#x").await;
 
-    let (marker, view) = absent(reader(&store).test_risk(&pid, &never.to_string()).await);
+    let (marker, view) = absent(
+        reader(&store)
+            .test_risk(&pid, &never.to_string())
+            .await
+            .expect("test_risk"),
+    );
     assert_eq!(marker, Some(InsufficientData::NoMatchingHistory));
     assert!(
         view.is_none(),
@@ -299,7 +317,12 @@ async fn a_case_with_no_executions_is_not_low_risk() {
     );
 
     // And it must not appear in the ordering either, because nothing is known about it.
-    let order = present(reader(&store).prioritise_tests(&pid, None).await);
+    let order = present(
+        reader(&store)
+            .prioritise_tests(&pid, None)
+            .await
+            .expect("prioritise_tests"),
+    );
     let ids: Vec<&str> = order
         .tests
         .iter()
@@ -310,6 +333,7 @@ async fn a_case_with_no_executions_is_not_low_risk() {
         !ids.contains(&never.to_string().as_str()),
         "a case with no evidence must not be ranked: {ids:?}"
     );
+    store.pool.close().await;
 }
 
 /// A malformed case id is `UNKNOWN_SUBJECT`, not a crash or a silent no-match.
@@ -320,9 +344,15 @@ async fn a_malformed_case_id_is_unknown_subject() {
     let c = case(&store, &pid, "Anything").await;
     run(&store, &pid, c, TaskStatus::Passed, None, "#x").await;
 
-    let (marker, view) = absent(reader(&store).test_risk(&pid, "not-a-uuid").await);
+    let (marker, view) = absent(
+        reader(&store)
+            .test_risk(&pid, "not-a-uuid")
+            .await
+            .expect("test_risk"),
+    );
     assert_eq!(marker, Some(InsufficientData::UnknownSubject));
     assert!(view.is_none());
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ prioritization
@@ -340,7 +370,12 @@ async fn a_failing_case_outranks_a_clean_one_with_a_stated_reason() {
         run(&store, &pid, healthy, TaskStatus::Passed, None, "#x").await;
     }
 
-    let order = present(reader(&store).prioritise_tests(&pid, None).await);
+    let order = present(
+        reader(&store)
+            .prioritise_tests(&pid, None)
+            .await
+            .expect("prioritise_tests"),
+    );
 
     let first = order.tests.first().expect("at least one test");
     assert_eq!(
@@ -363,6 +398,7 @@ async fn a_failing_case_outranks_a_clean_one_with_a_stated_reason() {
         !last.applies.contains(&PriorityBand::Mandatory),
         "a clean case must not be on the floor"
     );
+    store.pool.close().await;
 }
 
 /// Every case with history appears — prioritisation orders, it does not exclude.
@@ -381,7 +417,12 @@ async fn prioritisation_lists_every_case_and_excludes_nothing() {
         }
     }
 
-    let order = present(reader(&store).prioritise_tests(&pid, None).await);
+    let order = present(
+        reader(&store)
+            .prioritise_tests(&pid, None)
+            .await
+            .expect("prioritise_tests"),
+    );
     assert_eq!(order.tests.len(), 6, "all six cases must be listed");
     for c in &made {
         assert!(
@@ -397,6 +438,7 @@ async fn prioritisation_lists_every_case_and_excludes_nothing() {
         "three cases failed: {:?}",
         order.mandatory_floor
     );
+    store.pool.close().await;
 }
 
 /// An alternating case meets the flakiness threshold.
@@ -426,7 +468,12 @@ async fn an_alternating_case_is_reported_flaky() {
         .await;
     }
 
-    let risk = present(reader(&store).test_risk(&pid, &c.to_string()).await);
+    let risk = present(
+        reader(&store)
+            .test_risk(&pid, &c.to_string())
+            .await
+            .expect("test_risk"),
+    );
     let flaky = risk
         .flakiness_score
         .expect("8 samples can measure flakiness");
@@ -435,7 +482,12 @@ async fn an_alternating_case_is_reported_flaky() {
         "an alternating case must meet the threshold: {flaky} vs {FLAKY_THRESHOLD}"
     );
 
-    let order = present(reader(&store).prioritise_tests(&pid, None).await);
+    let order = present(
+        reader(&store)
+            .prioritise_tests(&pid, None)
+            .await
+            .expect("prioritise_tests"),
+    );
     let entry = order
         .tests
         .iter()
@@ -446,6 +498,7 @@ async fn an_alternating_case_is_reported_flaky() {
         "the flaky band must apply: {:?}",
         entry.applies
     );
+    store.pool.close().await;
 }
 
 /// A failure that recurred enough to draft a bug is reported as a recurring defect,
@@ -465,7 +518,12 @@ async fn a_recurring_failure_is_reported_as_a_recurring_defect() {
             .expect("count drafts");
     assert_eq!(drafts, 1, "the second occurrence must have drafted a bug");
 
-    let risk = present(reader(&store).test_risk(&pid, &c.to_string()).await);
+    let risk = present(
+        reader(&store)
+            .test_risk(&pid, &c.to_string())
+            .await
+            .expect("test_risk"),
+    );
     assert_eq!(risk.recurring_defects, 1);
     assert!(
         risk.signals.iter().any(|s| s.kind == "failure_recurrence"),
@@ -473,7 +531,12 @@ async fn a_recurring_failure_is_reported_as_a_recurring_defect() {
         risk.signals
     );
 
-    let order = present(reader(&store).prioritise_tests(&pid, None).await);
+    let order = present(
+        reader(&store)
+            .prioritise_tests(&pid, None)
+            .await
+            .expect("prioritise_tests"),
+    );
     assert!(
         order.tests[0]
             .applies
@@ -481,6 +544,7 @@ async fn a_recurring_failure_is_reported_as_a_recurring_defect() {
         "a recurring defect must be reported: {:?}",
         order.tests[0].applies
     );
+    store.pool.close().await;
 }
 
 /// A stable, high-volume passing case must NOT be reported risky.
@@ -497,13 +561,23 @@ async fn a_stable_passing_case_is_not_reported_risky() {
         run(&store, &pid, stable, TaskStatus::Passed, None, "#x").await;
     }
 
-    let risk = present(reader(&store).test_risk(&pid, &stable.to_string()).await);
+    let risk = present(
+        reader(&store)
+            .test_risk(&pid, &stable.to_string())
+            .await
+            .expect("test_risk"),
+    );
     assert_eq!(risk.failures, 0);
     assert_eq!(risk.failure_rate, Some(0.0));
     assert_eq!(risk.recurring_defects, 0);
     assert_eq!(risk.healing_attempts, 0);
 
-    let order = present(reader(&store).prioritise_tests(&pid, None).await);
+    let order = present(
+        reader(&store)
+            .prioritise_tests(&pid, None)
+            .await
+            .expect("prioritise_tests"),
+    );
     let entry = order
         .tests
         .iter()
@@ -516,6 +590,7 @@ async fn a_stable_passing_case_is_not_reported_risky() {
         entry.applies
     );
     assert_eq!(entry.risk.measured_ratio, Some(0.0));
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ change interaction
@@ -541,13 +616,15 @@ async fn a_named_change_promotes_its_cases_without_demoting_others() {
                 ref_id: "REQ-P4-1".into(),
             }],
         )
-        .await;
+        .await
+        .expect("analyse");
     assert!(impact.recorded > 0, "the impact must have been recorded");
 
     let order = present(
         reader(&store)
             .prioritise_tests(&pid, Some("commit-p4"))
-            .await,
+            .await
+            .expect("prioritise_tests"),
     );
     assert_eq!(order.change_ref.as_deref(), Some("commit-p4"));
 
@@ -565,7 +642,8 @@ async fn a_named_change_promotes_its_cases_without_demoting_others() {
     let none = present(
         reader(&store)
             .prioritise_tests(&pid, Some("commit-that-never-happened"))
-            .await,
+            .await
+            .expect("prioritise_tests"),
     );
     assert!(
         none.tests
@@ -573,6 +651,7 @@ async fn a_named_change_promotes_its_cases_without_demoting_others() {
             .all(|t| !t.applies.contains(&PriorityBand::Changed)),
         "an unknown change must promote nothing"
     );
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ isolation
@@ -611,11 +690,21 @@ async fn the_same_fingerprint_in_two_projects_does_not_bleed_risk() {
         "the fixtures must share a fingerprint, or this proves nothing"
     );
 
-    let my_order = present(reader(&store).prioritise_tests(&mine, None).await);
+    let my_order = present(
+        reader(&store)
+            .prioritise_tests(&mine, None)
+            .await
+            .expect("prioritise_tests"),
+    );
     assert_eq!(my_order.tests.len(), 1, "only our own case may be listed");
     assert_eq!(my_order.tests[0].test_case_id, my_case.to_string());
 
-    let their_order = present(reader(&store).prioritise_tests(&theirs, None).await);
+    let their_order = present(
+        reader(&store)
+            .prioritise_tests(&theirs, None)
+            .await
+            .expect("prioritise_tests"),
+    );
     assert_eq!(their_order.tests.len(), 1);
     assert_eq!(their_order.tests[0].test_case_id, their_case.to_string());
 
@@ -623,7 +712,8 @@ async fn the_same_fingerprint_in_two_projects_does_not_bleed_risk() {
     let (marker, view) = absent(
         reader(&store)
             .test_risk(&mine, &their_case.to_string())
-            .await,
+            .await
+            .expect("test_risk"),
     );
     assert_eq!(
         marker,
@@ -631,6 +721,7 @@ async fn the_same_fingerprint_in_two_projects_does_not_bleed_risk() {
         "another tenant's case must not resolve here"
     );
     assert!(view.is_none());
+    store.pool.close().await;
 }
 
 /// An empty project must not inherit the mandatory floor from a busy neighbour.
@@ -642,12 +733,23 @@ async fn an_empty_neighbour_project_has_no_floor_and_no_risk() {
     let c = case(&store, &busy, "Breaks").await;
     failing(&store, &busy, c, 3).await;
 
-    let order = present(reader(&store).prioritise_tests(&busy, None).await);
+    let order = present(
+        reader(&store)
+            .prioritise_tests(&busy, None)
+            .await
+            .expect("prioritise_tests"),
+    );
     assert_eq!(order.mandatory_floor.len(), 1);
 
-    let (marker, view) = absent(reader(&store).prioritise_tests(&empty, None).await);
+    let (marker, view) = absent(
+        reader(&store)
+            .prioritise_tests(&empty, None)
+            .await
+            .expect("prioritise_tests"),
+    );
     assert_eq!(marker, Some(InsufficientData::NoExecutions));
     assert!(view.is_none(), "the idle project must inherit nothing");
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ safety floor
@@ -677,7 +779,12 @@ async fn the_safety_floor_is_reported_and_cannot_be_suppressed() {
         run(&store, &pid, clean, TaskStatus::Passed, None, "#y").await;
     }
 
-    let order = present(reader(&store).prioritise_tests(&pid, None).await);
+    let order = present(
+        reader(&store)
+            .prioritise_tests(&pid, None)
+            .await
+            .expect("prioritise_tests"),
+    );
 
     let floor = order
         .tests
@@ -708,6 +815,7 @@ async fn the_safety_floor_is_reported_and_cannot_be_suppressed() {
         !order.mandatory_floor.contains(&clean.to_string()),
         "a never-failed case is not on the floor"
     );
+    store.pool.close().await;
 }
 
 /// The floor a Phase 4 ordering reports must be exactly the floor Phase 3 enforces.
@@ -723,13 +831,19 @@ async fn phase_four_and_phase_three_agree_on_the_safety_floor() {
     failing(&store, &pid, fragile, 2).await;
     run(&store, &pid, changed, TaskStatus::Passed, None, "#z").await;
 
-    let order = present(reader(&store).prioritise_tests(&pid, None).await);
+    let order = present(
+        reader(&store)
+            .prioritise_tests(&pid, None)
+            .await
+            .expect("prioritise_tests"),
+    );
     let p4_floor: Vec<String> = order.mandatory_floor.clone();
 
     // Phase 3's derivation: "has recorded failure evidence".
     let floor_map = crate::change_impact::ChangeImpactReader::new(store.clone())
         .safety_floor(&pid)
-        .await;
+        .await
+        .expect("safety_floor");
     let p3_floor: Vec<String> = floor_map.keys().map(ToString::to_string).collect();
 
     assert_eq!(
@@ -738,6 +852,7 @@ async fn phase_four_and_phase_three_agree_on_the_safety_floor() {
     );
     assert!(p3_floor.contains(&fragile.to_string()));
     assert!(!p3_floor.contains(&changed.to_string()));
+    store.pool.close().await;
 }
 
 /// Narrowing a real regression scope to a Phase 4 selection still keeps the floor.
@@ -758,7 +873,12 @@ async fn narrowing_a_regression_scope_to_a_selection_still_keeps_the_floor() {
     failing(&store, &pid, fragile, 2).await;
     run(&store, &pid, healthy, TaskStatus::Passed, None, "#z").await;
 
-    let order = present(reader(&store).prioritise_tests(&pid, None).await);
+    let order = present(
+        reader(&store)
+            .prioritise_tests(&pid, None)
+            .await
+            .expect("prioritise_tests"),
+    );
     // Select only the healthy case - the worst possible choice for safety.
     let selected: BTreeSet<String> = [healthy.to_string()].into_iter().collect();
     let mandatory: BTreeSet<String> = order.mandatory_floor.iter().cloned().collect();
@@ -820,6 +940,7 @@ async fn narrowing_a_regression_scope_to_a_selection_still_keeps_the_floor() {
         narrowed.skipped.is_empty(),
         "nothing should be dropped when both are retained or selected"
     );
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ conflicting signals
@@ -854,7 +975,12 @@ async fn conflicting_signals_rank_by_evidence_rather_than_by_alarm() {
     let always_fails = case(&store, &pid, "Always fails").await;
     failing(&store, &pid, always_fails, 10).await;
 
-    let order = present(reader(&store).prioritise_tests(&pid, None).await);
+    let order = present(
+        reader(&store)
+            .prioritise_tests(&pid, None)
+            .await
+            .expect("prioritise_tests"),
+    );
 
     let a = order
         .tests
@@ -878,6 +1004,7 @@ async fn conflicting_signals_rank_by_evidence_rather_than_by_alarm() {
         a.priority.rank() <= b.priority.rank(),
         "the always-failing case must not rank below the mostly-passing one"
     );
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ shape
@@ -891,7 +1018,12 @@ async fn the_risk_shape_states_its_own_data_sufficiency() {
     let c = case(&store, &pid, "Shaped").await;
     failing(&store, &pid, c, 2).await;
 
-    let risk: TestRisk = present(reader(&store).test_risk(&pid, &c.to_string()).await);
+    let risk: TestRisk = present(
+        reader(&store)
+            .test_risk(&pid, &c.to_string())
+            .await
+            .expect("test_risk"),
+    );
     assert_eq!(risk.executions, 2);
     assert_eq!(risk.failures, 2);
     assert_eq!(risk.failure_rate, Some(1.0));
@@ -916,6 +1048,7 @@ async fn the_risk_shape_states_its_own_data_sufficiency() {
         (summed - risk.weighted_contribution).abs() < 1e-9,
         "weighted_contribution must be the sum of the measured factors"
     );
+    store.pool.close().await;
 }
 
 /// A healing proposal whose verification recorded a regression makes
@@ -1015,7 +1148,12 @@ async fn a_healing_regression_makes_its_factor_measurable() {
         .await
         .expect("insert proposal");
 
-    let risk = present(reader(&store).test_risk(&pid, &c.to_string()).await);
+    let risk = present(
+        reader(&store)
+            .test_risk(&pid, &c.to_string())
+            .await
+            .expect("test_risk"),
+    );
     assert_eq!(risk.healing_attempts, 1);
     assert_eq!(risk.healing_regressions, 1);
     let f = risk
@@ -1035,6 +1173,7 @@ async fn a_healing_regression_makes_its_factor_measurable() {
         "the healing factor should push measured weight past the module ceiling: {}",
         risk.measured_weight
     );
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ performance
@@ -1099,7 +1238,11 @@ async fn phase4_measures_prioritisation_cost() {
 
     let r = QaMemoryReader::new(store.clone());
     let started = Instant::now();
-    let order = present(r.prioritise_tests(&pid, None).await);
+    let order = present(
+        r.prioritise_tests(&pid, None)
+            .await
+            .expect("prioritise_tests"),
+    );
     let elapsed = started.elapsed();
 
     let failures: usize = order.tests.iter().filter(|t| t.risk.failures > 0).count();
@@ -1131,7 +1274,7 @@ async fn phase4_measures_prioritisation_cost() {
     // proposals and bug drafts for one case. This is what `prioritise_tests` replaced.
     let per_case = Instant::now();
     for t in &order.tests {
-        let _ = r.test_risk(&pid, &t.test_case_id).await;
+        let _ = r.test_risk(&pid, &t.test_case_id).await.expect("test_risk");
     }
     let per_case_elapsed = per_case.elapsed();
     println!(
@@ -1146,4 +1289,101 @@ async fn phase4_measures_prioritisation_cost() {
         elapsed.as_millis() < 5_000,
         "one ordering must not cost more than a few seconds for 200 cases"
     );
+    store.pool.close().await;
+}
+
+/// A storage failure during prioritisation is reported, never turned into `NO_EXECUTIONS`.
+///
+/// ## What this test asserted before, and why it changed
+///
+/// Its previous version asserted the opposite. When `QaMemoryReader::telemetry_for` and
+/// `test_evidence` returned plain `Vec`s and swallowed their reads with `unwrap_or_default()`, a
+/// closed pool produced an empty evidence set, `prioritise_tests` hit its "is there any history?"
+/// guard against evidence that had **failed to load**, and returned `Ok(NO_EXECUTIONS)` for a
+/// project that had executions.
+///
+/// That version was a characterisation test, written deliberately to record the gap rather than
+/// hide it, and it said so: *"When R1b is addressed, this test is the place to strengthen into an
+/// end-to-end failure assertion."* R1b is now addressed, so this is that assertion.
+///
+/// ## The three states, all distinguished
+///
+/// | State | Result |
+/// |---|---|
+/// | healthy store, no history | `Ok(NO_EXECUTIONS)` — a true answer |
+/// | healthy store, with history | `Ok(view)` — the ranking |
+/// | **closed store** | **`Err`** — never `NO_EXECUTIONS` |
+///
+/// `store.pool.close()` is a real read failure, the same technique `engine_tests` uses. No mock,
+/// no sleep, and the healthy paths are asserted first so the failure cannot pass for the wrong
+/// reason.
+#[tokio::test]
+async fn a_storage_failure_is_reported_rather_than_no_executions() {
+    let (store, _d) = temp_store().await;
+    let pid = project(&store, "P61b StorageFail").await;
+    let c = case(&store, &pid, "Checkout").await;
+    run(&store, &pid, c, TaskStatus::Passed, None, "#pay").await;
+
+    // --- state 2: healthy store, real history ---
+    let healthy = reader(&store)
+        .prioritise_tests(&pid, Some("commit-p4"))
+        .await
+        .expect("a healthy read must succeed");
+    assert!(
+        healthy.insufficient_data.is_none(),
+        "with history recorded the reader must produce an ordering: {healthy:?}"
+    );
+    let order = healthy.view.expect("a view when history exists");
+    assert_eq!(
+        order.change_ref.as_deref(),
+        Some("commit-p4"),
+        "the declared change is carried into the answer"
+    );
+
+    // --- state 1: healthy store, genuinely no history ---
+    let empty_pid = project(&store, "P61b NoHistory").await;
+    let empty = reader(&store)
+        .prioritise_tests(&empty_pid, None)
+        .await
+        .expect("an empty project is not a failure");
+    assert_eq!(
+        empty.insufficient_data,
+        Some(crate::qa_memory::InsufficientData::NoExecutions),
+        "a project with no history still reports NO_EXECUTIONS -- that behaviour is preserved"
+    );
+
+    // --- state 3: the store cannot answer ---
+    store.pool.close().await;
+
+    let res = reader(&store)
+        .prioritise_tests(&pid, Some("commit-p4"))
+        .await;
+    assert!(
+        res.is_err(),
+        "a closed pool must be an error, not NO_EXECUTIONS for a project that has history: {:?}",
+        res.as_ref().map(|r| r.insufficient_data)
+    );
+    store.pool.close().await;
+}
+
+/// The reader must still work normally after the failure path is proven — a `Result` that is
+/// always `Err` would satisfy the test above.
+#[tokio::test]
+async fn a_healthy_change_path_still_reports_its_ordinary_answers() {
+    let (store, _d) = temp_store().await;
+    let pid = project(&store, "P61 ChangeHealthy").await;
+
+    let res = reader(&store)
+        .prioritise_tests(&pid, Some("commit-p4"))
+        .await
+        .expect("a healthy read must succeed");
+    assert!(
+        res.insufficient_data.is_some(),
+        "no telemetry means no prioritisation, which is a stated answer rather than a failure"
+    );
+    assert!(
+        res.view.is_none(),
+        "and no ordering may be invented from no history"
+    );
+    store.pool.close().await;
 }

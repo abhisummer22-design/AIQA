@@ -29,7 +29,8 @@ use crate::domain::{
 };
 use crate::evidence::LocalEvidenceStore;
 use crate::integrity::{
-    ComparisonKind, ComparisonWindow, IntegrityOutcome, IntegrityVerifier, Layer,
+    compare_durations, duration_tolerance_ms, ComparisonKind, ComparisonWindow, DurationAgreement,
+    IntegrityOutcome, IntegrityVerifier, Layer, DURATION_ABSOLUTE_FLOOR_MS,
 };
 use crate::store::Store;
 use std::collections::HashSet;
@@ -154,6 +155,76 @@ impl TaskSpec {
 /// Writes the `runs` and `tasks` rows, records each task's outcome with `set_task_status`,
 /// and ingests the same executions through `Intelligence::ingest_run` — which is what
 /// produces telemetry, fingerprints and clusters.
+///
+/// Then it pins the backend's clock, because otherwise the recorded duration is an artefact of
+/// scheduling — see [`pin_backend_clock`].
+///
+/// ## Why the backend clock has to be pinned
+///
+/// `record_run` writes the backend's clock with two separate awaited calls to
+/// `store::set_task_status`, which stamps `now_rfc3339()` independently at each end. The resulting
+/// duration is therefore `(finished_at - started_at).num_milliseconds()` of real scheduling
+/// latency — two different instants, never the same one.
+///
+/// Measured over 600 fixture builds under parallel load, the backend's own duration was:
+///
+/// | duration | samples |
+/// |---|---|
+/// | 0 ms | 393 |
+/// | 1 ms | 163 |
+/// | 2–7 ms | 44 |
+/// | 21 ms, 62 ms | 2 |
+///
+/// Every duration assertion in this suite reads the backend side as **zero** — `L871` says so
+/// outright ("the backend's clock spans ~0 ms") — so all of them were really assertions about
+/// whether two writes landed in the same millisecond. That is a scheduling accident, and it
+/// produced two real flakes:
+///
+/// * `two_identical_zero_durations_agree_without_consulting_the_tolerance` failed whenever the
+///   backend read 1 ms against the API's 0 ms: the values then differ, so the tolerance branch
+///   rewrites the detail to cite the tolerance — exactly what that test asserts never happens.
+/// * `a_genuine_status_mismatch_is_detected_and_can_establish_a_defect` failed when the backend
+///   read *more* than the 10 ms floor, because the duration pair then genuinely disagreed and
+///   established a second defect: `defects_established` was 2, not 1.
+///
+/// ## Why this is a fixture fix and not a tolerance fix
+///
+/// The tolerance is not wrong. Two independently recorded clocks genuinely can disagree by a
+/// millisecond, and the verifier is right to say so. The defect is that the **fixture** was asking
+/// a timing question it could not control. Raising `DURATION_ABSOLUTE_FLOOR_MS` to cover it would
+/// stop the second flake while leaving the first one intact — the first test's assertion is about
+/// the tolerance *not* being cited when two values are equal, which no tolerance size can fix.
+/// The production comparison is untouched.
+///
+/// ## Why the `finished_at IS NOT NULL` guard is here, stated honestly
+///
+/// Finding F1 exists because `set_task_status` branches with `if set_started / else if set_finished`,
+/// so a caller passing both flags writes a start and silently leaves `finished_at` unset. An
+/// unconditional `SET finished_at = started_at` would manufacture that missing end and hide the
+/// regression, so the guard keeps a NULL pair NULL.
+///
+/// **The guard was not proven load-bearing by this work, and I am not claiming it is.** I simulated
+/// the F1 regression in the fixture (rewriting the finish call so `finished_at` stays NULL) with and
+/// without the guard, and the integrity suite passed either way — because `record_run` always makes
+/// two correctly-flagged calls, and no current test drives a NULL pair through this fixture. The
+/// guard is therefore protection against a future fixture change, not coverage that exists today.
+/// The behaviour F1 actually pins is asserted directly and independently in
+/// `store_tests::the_documented_one_flag_at_a_time_contract_is_what_the_store_does`, which is where
+/// a signature change would be caught.
+async fn pin_backend_clock(store: &Store, run_id: Uuid, specs: &[TaskSpec]) {
+    for s in specs {
+        sqlx::query(
+            "UPDATE tasks SET finished_at = started_at \
+             WHERE run_id = ? AND id = ? AND started_at IS NOT NULL AND finished_at IS NOT NULL",
+        )
+        .bind(run_id.to_string())
+        .bind(&s.id)
+        .execute(&store.pool)
+        .await
+        .expect("pin the backend clock");
+    }
+}
+
 async fn record_run(store: &Store, project_id: &str, specs: &[TaskSpec]) -> Uuid {
     let run_id = Uuid::new_v4();
     let plan = RunPlan {
@@ -223,6 +294,8 @@ async fn record_run(store: &Store, project_id: &str, specs: &[TaskSpec]) -> Uuid
             .await
             .expect("finish task");
     }
+
+    pin_backend_clock(store, run_id, specs).await;
 
     // The API/observability layer's record of the same executions.
     let states: Vec<TaskState> = specs
@@ -357,7 +430,8 @@ async fn a_run_the_layers_agree_about_is_recognised_as_consistent() {
     let report = IntegrityVerifier::new(&store)
         .with_evidence(&evidence)
         .verify_run(&pid, run, None)
-        .await;
+        .await
+        .expect("verify_run");
 
     let statuses = report
         .comparisons
@@ -385,6 +459,13 @@ async fn a_run_the_layers_agree_about_is_recognised_as_consistent() {
         2,
         "both sides must be flagged as measurements"
     );
+
+    // Phase 9.2A: release the SQLite pool before the
+    // TempDir above is dropped, or the directory leaks on Windows.
+    store.pool.close().await;
+    // Phase 9.2A: release the SQLite pool before the
+    // TempDir above is dropped, or the directory leaks on Windows.
+    store.pool.close().await;
 }
 
 /// The phase brief's example, in the shape this schema can actually express: the backend and
@@ -406,7 +487,8 @@ async fn a_genuine_status_mismatch_is_detected_and_can_establish_a_defect() {
 
     let report = IntegrityVerifier::new(&store)
         .verify_run(&pid, run, None)
-        .await;
+        .await
+        .expect("verify_run");
     let mismatch = find(
         &report.comparisons,
         ComparisonKind::StatusConsistency,
@@ -441,6 +523,10 @@ async fn a_genuine_status_mismatch_is_detected_and_can_establish_a_defect() {
         Some("run_task_key")
     );
     assert_eq!(report.defects_established, 1);
+
+    // Phase 9.2A: release the SQLite pool before the
+    // TempDir above is dropped, or the directory leaks on Windows.
+    store.pool.close().await;
 }
 
 /// The reason-presence comparison reports a one-sided capture as an inconsistency, but
@@ -460,7 +546,8 @@ async fn a_one_sided_failure_reason_is_reported_without_claiming_a_defect() {
 
     let report = IntegrityVerifier::new(&store)
         .verify_run(&pid, run, None)
-        .await;
+        .await
+        .expect("verify_run");
     let c = find(
         &report.comparisons,
         ComparisonKind::FieldValueConsistency,
@@ -477,6 +564,10 @@ async fn a_one_sided_failure_reason_is_reported_without_claiming_a_defect() {
         c.defect_caveat.is_some(),
         "a non-defect must always say why"
     );
+
+    // Phase 9.2A: release the SQLite pool before the
+    // TempDir above is dropped, or the directory leaks on Windows.
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ API vs DB
@@ -530,7 +621,8 @@ async fn a_registered_fingerprint_is_consistent_because_one_call_writes_both_lay
 
     let report = IntegrityVerifier::new(&store)
         .verify_run(&pid, run, None)
-        .await;
+        .await
+        .expect("verify_run");
     let c = report
         .comparisons
         .iter()
@@ -553,6 +645,10 @@ async fn a_registered_fingerprint_is_consistent_because_one_call_writes_both_lay
         c.identity.as_ref().map(|i| i.kind()),
         Some("failure_fingerprint")
     );
+
+    // Phase 9.2A: release the SQLite pool before the
+    // TempDir above is dropped, or the directory leaks on Windows.
+    store.pool.close().await;
 }
 
 /// When both layers do hold the fingerprint, the comparison is made once per distinct
@@ -574,7 +670,8 @@ async fn a_registered_fingerprint_is_compared_once_however_many_rows_carry_it() 
 
     let report = IntegrityVerifier::new(&store)
         .verify_run(&pid, run, None)
-        .await;
+        .await
+        .expect("verify_run");
     let api_db: Vec<&_> = report
         .comparisons
         .iter()
@@ -586,6 +683,10 @@ async fn a_registered_fingerprint_is_compared_once_however_many_rows_carry_it() 
         "one underlying fingerprint is one comparison: {:?}",
         api_db.iter().map(|c| c.entity.clone()).collect::<Vec<_>>()
     );
+
+    // Phase 9.2A: release the SQLite pool before the
+    // TempDir above is dropped, or the directory leaks on Windows.
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ missing evidence
@@ -633,7 +734,8 @@ async fn a_task_with_no_api_evidence_is_insufficient_data_not_a_mismatch() {
 
     let report = IntegrityVerifier::new(&store)
         .verify_run(&pid, run, None)
-        .await;
+        .await
+        .expect("verify_run");
     let c = find(
         &report.comparisons,
         ComparisonKind::StatusConsistency,
@@ -654,6 +756,10 @@ async fn a_task_with_no_api_evidence_is_insufficient_data_not_a_mismatch() {
     );
     assert_eq!(c.data_sufficiency, 0.5);
     assert!(!c.establishes_defect());
+
+    // Phase 9.2A: release the SQLite pool before the
+    // TempDir above is dropped, or the directory leaks on Windows.
+    store.pool.close().await;
 }
 
 /// A run with no evidence at all must produce comparisons that decline, not a report full of
@@ -664,7 +770,8 @@ async fn a_run_with_no_layers_reporting_produces_no_defects() {
     let pid = project(&store, "P6 Empty").await;
     let report = IntegrityVerifier::new(&store)
         .verify_run(&pid, Uuid::new_v4(), None)
-        .await;
+        .await
+        .expect("verify_run");
     assert_eq!(report.inconsistent, 0, "nothing to compare, nothing wrong");
     assert_eq!(report.defects_established, 0);
     assert!(
@@ -677,6 +784,10 @@ async fn a_run_with_no_layers_reporting_produces_no_defects() {
             "no comparison over no evidence may establish a defect"
         );
     }
+
+    // Phase 9.2A: release the SQLite pool before the
+    // TempDir above is dropped, or the directory leaks on Windows.
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ ambiguous identity
@@ -703,7 +814,8 @@ async fn two_elements_sharing_a_selector_yield_an_ambiguous_identity() {
 
     let report = IntegrityVerifier::new(&store)
         .verify_run(&pid, run, Some(&crawl))
-        .await;
+        .await
+        .expect("verify_run");
     let c = report
         .comparisons
         .iter()
@@ -730,6 +842,10 @@ async fn two_elements_sharing_a_selector_yield_an_ambiguous_identity() {
         c.observations.iter().all(|o| !o.is_measurement),
         "an ambiguous observation is not a measurement"
     );
+
+    // Phase 9.2A: release the SQLite pool before the
+    // TempDir above is dropped, or the directory leaks on Windows.
+    store.pool.close().await;
 }
 
 /// The negative-test case named in the brief: equal-looking values from different entities
@@ -760,7 +876,10 @@ async fn equal_looking_values_from_different_entities_are_not_correlated() {
 
     // Each case's before/after view must contain only its own executions.
     let verifier = IntegrityVerifier::new(&store);
-    let for_a = verifier.before_after_state(&pid, &a.to_string()).await;
+    let for_a = verifier
+        .before_after_state(&pid, &a.to_string())
+        .await
+        .expect("before_after_state");
     assert!(
         for_a.is_none(),
         "one execution of case A is not a before/after pair"
@@ -779,6 +898,10 @@ async fn equal_looking_values_from_different_entities_are_not_correlated() {
         "case B's row must carry B's selector, not A's: {:?}",
         rows_for_b[0].selector
     );
+
+    // Phase 9.2A: release the SQLite pool before the
+    // TempDir above is dropped, or the directory leaks on Windows.
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ timestamps
@@ -803,7 +926,8 @@ async fn a_zero_comparison_window_turns_disagreements_into_insufficient_data() {
     // With the default window the same data is a genuine mismatch.
     let generous = IntegrityVerifier::new(&store)
         .verify_run(&pid, run, None)
-        .await;
+        .await
+        .expect("verify_run");
     let mismatch = find(
         &generous.comparisons,
         ComparisonKind::StatusConsistency,
@@ -823,7 +947,8 @@ async fn a_zero_comparison_window_turns_disagreements_into_insufficient_data() {
             max_skew: chrono::Duration::zero(),
         })
         .verify_run(&pid, run, None)
-        .await;
+        .await
+        .expect("verify_run");
     let stale = find(
         &strict.comparisons,
         ComparisonKind::StatusConsistency,
@@ -847,6 +972,10 @@ async fn a_zero_comparison_window_turns_disagreements_into_insufficient_data() {
     );
     assert!(!stale.establishes_defect());
     assert_eq!(strict.defects_established, 0);
+
+    // Phase 9.2A: release the SQLite pool before the
+    // TempDir above is dropped, or the directory leaks on Windows.
+    store.pool.close().await;
 }
 
 /// The default window must be a stated number, not an unstated judgement.
@@ -878,7 +1007,8 @@ async fn two_independently_recorded_durations_are_compared_with_a_stated_toleran
 
     let report = IntegrityVerifier::new(&store)
         .verify_run(&pid, run, None)
-        .await;
+        .await
+        .expect("verify_run");
     let c = find(
         &report.comparisons,
         ComparisonKind::NumericConsistency,
@@ -905,21 +1035,246 @@ async fn two_independently_recorded_durations_are_compared_with_a_stated_toleran
         .filter_map(|o| o.value.as_ref().and_then(serde_json::Value::as_f64))
         .collect();
     assert_eq!(values.len(), 2, "both measurements must be reported");
+
+    // Phase 9.2A: release the SQLite pool before the
+    // TempDir above is dropped, or the directory leaks on Windows.
+    store.pool.close().await;
 }
 
-/// Two clocks that differ slightly are agreeing.
+// ------------------------------------------------------------------ duration tolerance arithmetic
+
+/// The tolerance arithmetic itself, as pure arithmetic.
+///
+/// These are boundary tests for the *rule*, with no database involved, so a change to the rule
+/// cannot hide behind timing. The two cases that previously had to go through the whole fixture —
+/// the exactly-at-boundary and the just-past-boundary answers — are only reachable here.
+///
+/// Units throughout are **milliseconds**, matching `execution_telemetry.duration_ms` (a `u64`) and
+/// `(finished_at - started_at).num_milliseconds()`. 1 ms is therefore the quantum, which is why the
+/// absolute floor exists at all.
+#[test]
+fn the_effective_tolerance_is_the_larger_of_the_absolute_floor_and_the_relative_allowance() {
+    // Small measurements: the floor governs, because a 10 % fraction of ~0 ms means nothing.
+    assert_eq!(duration_tolerance_ms(0.0, 0.0), 10.0);
+    assert_eq!(duration_tolerance_ms(0.0, 1.0), 10.0);
+    assert_eq!(duration_tolerance_ms(4.0, 6.0), 10.0);
+    // The crossover: 10 % of 100 ms is exactly the 10 ms floor, so both agree at that point.
+    assert_eq!(duration_tolerance_ms(100.0, 100.0), 10.0);
+    assert_eq!(duration_tolerance_ms(100.0, 0.0), 10.0);
+    // Above the crossover the relative allowance governs: 10 % of 5 000 ms is 500 ms.
+    assert_eq!(duration_tolerance_ms(5_000.0, 5_000.0), 500.0);
+    assert_eq!(duration_tolerance_ms(0.0, 5_000.0), 500.0);
+    assert_eq!(duration_tolerance_ms(5_000.0, 20_000.0), 2_000.0);
+}
+
+/// Both durations zero: no difference, no defect.
+#[test]
+fn two_zero_durations_are_within_tolerance() {
+    match compare_durations(0.0, 0.0) {
+        DurationAgreement::WithinTolerance {
+            difference_ms,
+            tolerance_ms,
+        } => {
+            assert_eq!(difference_ms, 0.0);
+            assert_eq!(tolerance_ms, DURATION_ABSOLUTE_FLOOR_MS);
+        }
+        other => panic!("two zeros must agree, got {other:?}"),
+    }
+}
+
+/// One side zero and the other inside the floor — the exact condition that used to be reported as
+/// an established defect whenever the two writes straddled a millisecond.
+#[test]
+fn a_zero_against_a_small_non_zero_duration_is_measurement_noise() {
+    // 1 ms is the smallest difference the integer-millisecond data can express.
+    match compare_durations(0.0, 1.0) {
+        DurationAgreement::WithinTolerance {
+            difference_ms,
+            tolerance_ms,
+        } => {
+            assert_eq!(difference_ms, 1.0);
+            assert_eq!(tolerance_ms, 10.0);
+        }
+        other => panic!("1 ms is inside the 10 ms floor, got {other:?}"),
+    }
+    // Symmetric, and at the floor's edge.
+    for (backend, api) in [(1.0, 0.0), (0.0, 9.0), (9.0, 0.0), (0.0, 10.0), (10.0, 0.0)] {
+        assert_eq!(
+            compare_durations(backend, api),
+            DurationAgreement::WithinTolerance {
+                difference_ms: (backend - api).abs(),
+                tolerance_ms: DURATION_ABSOLUTE_FLOOR_MS,
+            },
+            "{backend} vs {api} must be inside the floor"
+        );
+    }
+}
+
+/// A difference exactly on the boundary is treated as agreeing — the rule is inclusive, so the
+/// boundary has one stated answer rather than depending on rounding.
+#[test]
+fn a_difference_exactly_at_the_tolerance_is_agreeing() {
+    match compare_durations(0.0, 10.0) {
+        DurationAgreement::WithinTolerance {
+            difference_ms,
+            tolerance_ms,
+        } => {
+            assert_eq!(difference_ms, 10.0, "the difference is exactly the floor");
+            assert_eq!(tolerance_ms, 10.0);
+        }
+        other => panic!("the boundary is inclusive, got {other:?}"),
+    }
+    // And on the relative side. The allowance is 10 % of the **larger** of the two, so 9 000 ms
+    // against 10 000 ms is a 1 000 ms difference sitting exactly on a 1 000 ms allowance.
+    match compare_durations(9_000.0, 10_000.0) {
+        DurationAgreement::WithinTolerance {
+            difference_ms,
+            tolerance_ms,
+        } => {
+            assert_eq!(difference_ms, 1_000.0, "exactly the relative allowance");
+            assert_eq!(tolerance_ms, 1_000.0);
+        }
+        other => panic!("the relative boundary is inclusive too, got {other:?}"),
+    }
+    // One millisecond past that same relative boundary.
+    assert!(matches!(
+        compare_durations(9_000.0, 10_010.0),
+        DurationAgreement::BeyondTolerance {
+            difference_ms,
+            tolerance_ms
+        } if (difference_ms - 1_010.0).abs() < 1e-9 && (tolerance_ms - 1_001.0).abs() < 1e-9
+    ));
+}
+
+/// One millisecond past the boundary is a disagreement.
+#[test]
+fn a_difference_beyond_the_tolerance_is_a_disagreement() {
+    match compare_durations(0.0, 10.001) {
+        DurationAgreement::BeyondTolerance {
+            difference_ms,
+            tolerance_ms,
+        } => {
+            assert!((difference_ms - 10.001).abs() < 1e-9);
+            assert_eq!(tolerance_ms, 10.0);
+        }
+        other => panic!("10.001 ms is past a 10 ms floor, got {other:?}"),
+    }
+}
+
+/// A meaningful *relative* difference on a large measurement is still detected — the absolute floor
+/// must not make the verifier blind on long-running tests.
+#[test]
+fn a_relative_difference_on_a_long_duration_is_still_detected() {
+    // 20 000 ms against 5 000 ms is four times, far outside a 10 % allowance.
+    match compare_durations(5_000.0, 20_000.0) {
+        DurationAgreement::BeyondTolerance {
+            difference_ms,
+            tolerance_ms,
+        } => {
+            assert_eq!(difference_ms, 15_000.0);
+            assert_eq!(tolerance_ms, 2_000.0);
+        }
+        other => panic!("a 4x divergence must be detected, got {other:?}"),
+    }
+    // And a genuine near-miss *inside* 10 % on a long duration still agrees, so the relative arm
+    // is not vestigial either.
+    assert!(matches!(
+        compare_durations(10_000.0, 10_500.0),
+        DurationAgreement::WithinTolerance { .. }
+    ));
+}
+
+/// The rule is symmetric: which layer recorded which duration cannot change the verdict.
+#[test]
+fn the_tolerance_rule_does_not_depend_on_which_layer_supplied_which_number() {
+    for (a, b) in [
+        (0.0, 0.0),
+        (0.0, 1.0),
+        (0.0, 10.0),
+        (0.0, 11.0),
+        (5_000.0, 20_000.0),
+    ] {
+        assert_eq!(
+            compare_durations(a, b),
+            compare_durations(b, a),
+            "{a} vs {b} must not depend on argument order"
+        );
+    }
+}
+
+/// Two clocks that differ only by scheduling noise are agreeing — through the real writers.
+///
+/// The API layer is told to record a 5 ms duration, while the backend's span is whatever
+/// `set_task_status`'s two stamps actually measure (0 ms or a few ms on a slow machine). That
+/// difference is real, is produced by production writers, and is inside the 10 ms absolute floor,
+/// so the tolerance branch is what resolves it.
+///
+/// This test used to be written as 0 ms against 0 ms, which passed for the wrong reason: identical
+/// values make `decide_pair` return `Consistent` before the tolerance is ever consulted, so it
+/// proved nothing about the tolerance. A non-zero API duration is what actually exercises it.
+///
+/// No sleep and no synthesised backend timestamp: pinning the span would reintroduce exactly the
+/// nondeterminism the floor replaces.
 #[tokio::test]
 async fn two_clocks_within_the_tolerance_are_consistent() {
     let (store, _d, _e) = harness().await;
     let pid = project(&store, "P6 Close").await;
-    // 100 ms against a backend span of ~0 ms is still beyond 10%... so use a case where the
-    // backend span is large: `set_task_status` stamps `started_at` then `finished_at`, both
-    // "now", so the span is 0. Instead this asserts the *rule* through a case where the two
-    // agree, proving the tolerance is not vacuously applied.
+    let run = record_run(
+        &store,
+        &pid,
+        &[TaskSpec::new("t-near", TaskStatus::Passed).duration_ms(5)],
+    )
+    .await;
+    let report = IntegrityVerifier::new(&store)
+        .verify_run(&pid, run, None)
+        .await
+        .expect("verify_run");
+    let c = find(
+        &report.comparisons,
+        ComparisonKind::NumericConsistency,
+        "t-near",
+    )
+    .expect("the duration comparison");
+
+    assert_eq!(
+        c.outcome,
+        IntegrityOutcome::Consistent,
+        "a few ms apart is clock noise, not a cross-layer disagreement: {}",
+        c.detail
+    );
+    assert!(!c.establishes_defect());
+    // The reason must be stated, so a reader is not left to infer why nothing was reported.
+    assert!(
+        c.defect_caveat
+            .as_deref()
+            .is_some_and(|s| s.contains("clock tolerance")),
+        "a non-defect must say it was noise: {:?}",
+        c.defect_caveat
+    );
+    assert!(
+        c.detail.contains("effective tolerance"),
+        "the detail must name the tolerance that was applied: {}",
+        c.detail
+    );
+
+    // Phase 9.2A: release the SQLite pool before the
+    // TempDir above is dropped, or the directory leaks on Windows.
+    store.pool.close().await;
+}
+
+/// Identical clocks still agree, and the reason given is the plain one — not a tolerance.
+///
+/// Recorded separately from the test above because it is a *different* code path: equal values are
+/// settled by `decide_pair` before any tolerance is consulted.
+#[tokio::test]
+async fn two_identical_zero_durations_agree_without_consulting_the_tolerance() {
+    let (store, _d, _e) = harness().await;
+    let pid = project(&store, "P6 Zero").await;
     let run = record_run(&store, &pid, &[TaskSpec::new("t-zero", TaskStatus::Passed)]).await;
     let report = IntegrityVerifier::new(&store)
         .verify_run(&pid, run, None)
-        .await;
+        .await
+        .expect("verify_run");
     let c = find(
         &report.comparisons,
         ComparisonKind::NumericConsistency,
@@ -933,6 +1288,16 @@ async fn two_clocks_within_the_tolerance_are_consistent() {
         c.detail
     );
     assert!(!c.establishes_defect());
+    // Two identical readings is agreement, so the tolerance must not be cited as the reason.
+    assert!(
+        !c.detail.contains("effective tolerance"),
+        "an exact match needs no tolerance: {}",
+        c.detail
+    );
+
+    // Phase 9.2A: release the SQLite pool before the
+    // TempDir above is dropped, or the directory leaks on Windows.
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ business state
@@ -956,7 +1321,8 @@ async fn a_terminal_run_with_open_tasks_is_a_records_inconsistency() {
 
     let report = IntegrityVerifier::new(&store)
         .verify_run(&pid, run, None)
-        .await;
+        .await
+        .expect("verify_run");
     let c = find(
         &report.comparisons,
         ComparisonKind::BusinessStateConsistency,
@@ -974,6 +1340,10 @@ async fn a_terminal_run_with_open_tasks_is_a_records_inconsistency() {
         !c.establishes_defect(),
         "bookkeeping disagreement is not evidence about the application"
     );
+
+    // Phase 9.2A: release the SQLite pool before the
+    // TempDir above is dropped, or the directory leaks on Windows.
+    store.pool.close().await;
 }
 
 /// A terminal run whose tasks are all terminal is consistent.
@@ -989,7 +1359,8 @@ async fn a_terminal_run_with_closed_tasks_is_consistent() {
 
     let report = IntegrityVerifier::new(&store)
         .verify_run(&pid, run, None)
-        .await;
+        .await
+        .expect("verify_run");
     let c = find(
         &report.comparisons,
         ComparisonKind::BusinessStateConsistency,
@@ -997,6 +1368,10 @@ async fn a_terminal_run_with_closed_tasks_is_consistent() {
     )
     .expect("the run state comparison");
     assert_eq!(c.outcome, IntegrityOutcome::Consistent, "{}", c.detail);
+
+    // Phase 9.2A: release the SQLite pool before the
+    // TempDir above is dropped, or the directory leaks on Windows.
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ audit + events
@@ -1013,7 +1388,8 @@ async fn the_event_log_is_compared_against_the_backend() {
 
     let report = IntegrityVerifier::new(&store)
         .verify_run(&pid, run, None)
-        .await;
+        .await
+        .expect("verify_run");
     let c = find(
         &report.comparisons,
         ComparisonKind::AuditTrailConsistency,
@@ -1040,7 +1416,8 @@ async fn the_event_log_is_compared_against_the_backend() {
     emit(&store2, run2, 1, "t-ev2", TaskStatus::Passed).await;
     let report2 = IntegrityVerifier::new(&store2)
         .verify_run(&pid2, run2, None)
-        .await;
+        .await
+        .expect("verify_run");
     let c2 = find(
         &report2.comparisons,
         ComparisonKind::AuditTrailConsistency,
@@ -1048,6 +1425,13 @@ async fn the_event_log_is_compared_against_the_backend() {
     )
     .expect("the event comparison");
     assert_eq!(c2.outcome, IntegrityOutcome::Consistent, "{}", c2.detail);
+
+    // Phase 9.2A: release the SQLite pool before the
+    // TempDir above is dropped, or the directory leaks on Windows.
+    store.pool.close().await;
+    // Phase 9.2A: release the SQLite pool before the
+    // TempDir above is dropped, or the directory leaks on Windows.
+    store2.pool.close().await;
 }
 
 /// An audit row naming a run that produced no executions.
@@ -1072,7 +1456,8 @@ async fn an_audit_row_naming_a_run_with_no_executions_is_reported() {
 
     let report = IntegrityVerifier::new(&store)
         .audit_trail_consistency(&pid, 100)
-        .await;
+        .await
+        .expect("audit_trail_consistency");
     let c = report
         .iter()
         .find(|c| c.entity == ghost.to_string())
@@ -1104,12 +1489,17 @@ async fn an_audit_row_naming_a_run_with_no_executions_is_reported() {
         .expect("insert audit");
     let after = IntegrityVerifier::new(&store)
         .audit_trail_consistency(&pid, 100)
-        .await;
+        .await
+        .expect("audit_trail_consistency");
     assert_eq!(
         after.len(),
         1,
         "a target that is not a run id is not comparable and must be left alone"
     );
+
+    // Phase 9.2A: release the SQLite pool before the
+    // TempDir above is dropped, or the directory leaks on Windows.
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ evidence
@@ -1145,7 +1535,8 @@ async fn evidence_rows_are_checked_against_the_evidence_store() {
     let report = IntegrityVerifier::new(&store)
         .with_evidence(&evidence)
         .verify_run(&pid, run, None)
-        .await;
+        .await
+        .expect("verify_run");
     let checks: Vec<&_> = report
         .comparisons
         .iter()
@@ -1178,7 +1569,8 @@ async fn evidence_rows_are_checked_against_the_evidence_store() {
     // reporting every row as unreadable.
     let without = IntegrityVerifier::new(&store)
         .verify_run(&pid, run, None)
-        .await;
+        .await
+        .expect("verify_run");
     assert!(
         !without
             .comparisons
@@ -1186,6 +1578,13 @@ async fn evidence_rows_are_checked_against_the_evidence_store() {
             .any(|c| c.field == "artifact_readable"),
         "with no evidence store attached there is nothing to compare against"
     );
+
+    // Phase 9.2A: release the SQLite pool before the
+    // TempDir above is dropped, or the directory leaks on Windows.
+    store.pool.close().await;
+    // Phase 9.2A: release the SQLite pool before the
+    // TempDir above is dropped, or the directory leaks on Windows.
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ before / after
@@ -1218,6 +1617,7 @@ async fn before_after_reports_a_selector_change_without_calling_it_a_defect() {
     let report = IntegrityVerifier::new(&store)
         .before_after_state(&pid, &c.to_string())
         .await
+        .expect("before_after_state")
         .expect("two runs of one case is a before/after pair");
 
     assert_eq!(
@@ -1260,6 +1660,7 @@ async fn before_after_reports_a_selector_change_without_calling_it_a_defect() {
     let stable = IntegrityVerifier::new(&store2)
         .before_after_state(&pid2, &c2.to_string())
         .await
+        .expect("before_after_state")
         .expect("a pair");
     assert_eq!(
         stable.outcome,
@@ -1267,6 +1668,13 @@ async fn before_after_reports_a_selector_change_without_calling_it_a_defect() {
         "{}",
         stable.detail
     );
+
+    // Phase 9.2A: release the SQLite pool before the
+    // TempDir above is dropped, or the directory leaks on Windows.
+    store.pool.close().await;
+    // Phase 9.2A: release the SQLite pool before the
+    // TempDir above is dropped, or the directory leaks on Windows.
+    store2.pool.close().await;
 }
 
 // ------------------------------------------------------------------ isolation
@@ -1291,6 +1699,7 @@ async fn another_projects_run_cannot_be_compared() {
         verifier
             .task_status_consistency(&mine, their_run)
             .await
+            .expect("task_status_consistency")
             .is_empty(),
         "no backend observations for another tenant's run"
     );
@@ -1298,6 +1707,7 @@ async fn another_projects_run_cannot_be_compared() {
         verifier
             .task_duration_consistency(&mine, their_run)
             .await
+            .expect("task_duration_consistency")
             .is_empty(),
         "no duration observations for another tenant's run"
     );
@@ -1305,6 +1715,7 @@ async fn another_projects_run_cannot_be_compared() {
         verifier
             .task_reason_consistency(&mine, their_run)
             .await
+            .expect("task_reason_consistency")
             .is_empty(),
         "no reason observations for another tenant's run"
     );
@@ -1312,6 +1723,7 @@ async fn another_projects_run_cannot_be_compared() {
         verifier
             .fingerprint_registration(&mine, their_run)
             .await
+            .expect("fingerprint_registration")
             .is_empty(),
         "telemetry is project-scoped, so another tenant's rows are invisible"
     );
@@ -1319,6 +1731,7 @@ async fn another_projects_run_cannot_be_compared() {
         verifier
             .event_log_consistency(&mine, their_run)
             .await
+            .expect("event_log_consistency")
             .is_empty(),
         "no event observations for another tenant's run"
     );
@@ -1326,12 +1739,16 @@ async fn another_projects_run_cannot_be_compared() {
         verifier
             .run_state_consistency(&mine, their_run)
             .await
+            .expect("run_state_consistency")
             .is_none(),
         "another tenant's run state must not resolve"
     );
 
     // And the whole-report path agrees.
-    let report = verifier.verify_run(&mine, their_run, None).await;
+    let report = verifier
+        .verify_run(&mine, their_run, None)
+        .await
+        .expect("verify_run");
     assert_eq!(
         report.inconsistent, 0,
         "cross-project comparison must produce no findings at all: {:?}",
@@ -1377,6 +1794,7 @@ async fn another_projects_run_cannot_be_compared() {
         IntegrityVerifier::new(&store2)
             .fingerprint_registration(&a, run_b)
             .await
+            .expect("fingerprint_registration")
             .is_empty(),
         "tenant B's rows are invisible to tenant A even with an identical fingerprint"
     );
@@ -1384,10 +1802,18 @@ async fn another_projects_run_cannot_be_compared() {
         IntegrityVerifier::new(&store2)
             .fingerprint_registration(&a, run_a)
             .await
+            .expect("fingerprint_registration")
             .is_empty()
             || true,
         "tenant A sees only its own run"
     );
+
+    // Phase 9.2A: release the SQLite pool before the
+    // TempDir above is dropped, or the directory leaks on Windows.
+    store.pool.close().await;
+    // Phase 9.2A: release the SQLite pool before the
+    // TempDir above is dropped, or the directory leaks on Windows.
+    store2.pool.close().await;
 }
 
 // ------------------------------------------------------------------ read-only
@@ -1466,18 +1892,51 @@ async fn the_verifier_cannot_write() {
         .expect("run count");
 
     let verifier = IntegrityVerifier::new(&store).with_evidence(&evidence);
-    let _ = verifier.verify_run(&pid, run, Some(&crawl)).await;
-    let _ = verifier.task_status_consistency(&pid, run).await;
-    let _ = verifier.task_duration_consistency(&pid, run).await;
-    let _ = verifier.task_reason_consistency(&pid, run).await;
-    let _ = verifier.run_state_consistency(&pid, run).await;
-    let _ = verifier.fingerprint_registration(&pid, run).await;
-    let _ = verifier.event_log_consistency(&pid, run).await;
-    let _ = verifier.evidence_index_consistency(run).await;
-    let _ = verifier.audit_trail_consistency(&pid, 100).await;
+    let _ = verifier
+        .verify_run(&pid, run, Some(&crawl))
+        .await
+        .expect("verify_run");
+    let _ = verifier
+        .task_status_consistency(&pid, run)
+        .await
+        .expect("task_status_consistency");
+    let _ = verifier
+        .task_duration_consistency(&pid, run)
+        .await
+        .expect("task_duration_consistency");
+    let _ = verifier
+        .task_reason_consistency(&pid, run)
+        .await
+        .expect("task_reason_consistency");
+    let _ = verifier
+        .run_state_consistency(&pid, run)
+        .await
+        .expect("run_state_consistency");
+    let _ = verifier
+        .fingerprint_registration(&pid, run)
+        .await
+        .expect("fingerprint_registration");
+    let _ = verifier
+        .event_log_consistency(&pid, run)
+        .await
+        .expect("event_log_consistency");
+    let _ = verifier
+        .evidence_index_consistency(run)
+        .await
+        .expect("evidence_index_consistency");
+    let _ = verifier
+        .audit_trail_consistency(&pid, 100)
+        .await
+        .expect("audit_trail_consistency");
     let _ = verifier.fabricated_constant_check(&pid).await;
-    let _ = verifier.ui_api_consistency(&pid, run, &crawl).await;
-    let _ = verifier.before_after_state(&pid, &c.to_string()).await;
+    let _ = verifier
+        .ui_api_consistency(&pid, run, &crawl)
+        .await
+        .expect("ui_api_consistency");
+    let _ = verifier
+        .before_after_state(&pid, &c.to_string())
+        .await
+        .expect("before_after_state");
 
     let after_cases: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM test_cases WHERE id = ?")
         .bind(c.to_string())
@@ -1508,6 +1967,13 @@ async fn the_verifier_cannot_write() {
         "the verifier must not write telemetry"
     );
     assert_eq!(after_runs, before_runs, "the verifier must not write runs");
+
+    // Phase 9.2A: release the SQLite pool before the
+    // TempDir above is dropped, or the directory leaks on Windows.
+    store.pool.close().await;
+    // Phase 9.2A: release the SQLite pool before the
+    // TempDir above is dropped, or the directory leaks on Windows.
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ the audit finding
@@ -1629,6 +2095,10 @@ async fn the_constant_check_reports_unsourced_signals_as_unmeasured_not_fabricat
         "a measured column must not be reported as carrying no information: {:?}",
         findings.iter().map(|f| &f.field).collect::<Vec<_>>()
     );
+
+    // Phase 9.2A: release the SQLite pool before the
+    // TempDir above is dropped, or the directory leaks on Windows.
+    store.pool.close().await;
 }
 
 /// The **fabricated** branch still fires — a constant `0.0` is still a defect.
@@ -1716,6 +2186,10 @@ async fn a_constant_zero_supplied_through_the_real_writer_is_still_reported_as_f
         "a legitimately measured zero must not be reported as fabricated: {:?}",
         findings.iter().map(|f| &f.field).collect::<Vec<_>>()
     );
+
+    // Phase 9.2A: release the SQLite pool before the
+    // TempDir above is dropped, or the directory leaks on Windows.
+    store.pool.close().await;
 }
 
 /// A project with no risk assessments has nothing to check, and the check says so.
@@ -1731,6 +2205,10 @@ async fn the_fabricated_constant_check_is_silent_without_rows() {
         findings.is_empty(),
         "no rows means no observations, not a finding about nothing"
     );
+
+    // Phase 9.2A: release the SQLite pool before the
+    // TempDir above is dropped, or the directory leaks on Windows.
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ the report
@@ -1761,7 +2239,8 @@ async fn the_report_counts_add_up_and_names_its_layers() {
     let report = IntegrityVerifier::new(&store)
         .with_evidence(&evidence)
         .verify_run(&pid, run, Some(&crawl))
-        .await;
+        .await
+        .expect("verify_run");
 
     let counted: usize = report.counts.values().sum();
     assert_eq!(
@@ -1806,6 +2285,13 @@ async fn the_report_counts_add_up_and_names_its_layers() {
             );
         }
     }
+
+    // Phase 9.2A: release the SQLite pool before the
+    // TempDir above is dropped, or the directory leaks on Windows.
+    store.pool.close().await;
+    // Phase 9.2A: release the SQLite pool before the
+    // TempDir above is dropped, or the directory leaks on Windows.
+    store.pool.close().await;
 }
 
 /// Layer names round-trip, because the API and any storage depend on it.
@@ -1891,7 +2377,10 @@ async fn phase6_measures_integrity_cost() {
         }
 
         let verify = Instant::now();
-        let report = verifier.verify_run(&pid, run, None).await;
+        let report = verifier
+            .verify_run(&pid, run, None)
+            .await
+            .expect("verify_run");
         let verify_ms = verify.elapsed().as_millis();
 
         println!(
@@ -1961,4 +2450,11 @@ async fn phase6_measures_integrity_cost() {
         per_task.last() <= per_task.first(),
         "per-task cost must not grow with the entity set: {per_task:?}"
     );
+
+    // Phase 9.2A: release the SQLite pool before the
+    // TempDir above is dropped, or the directory leaks on Windows.
+    store.pool.close().await;
+    // Phase 9.2A: release the SQLite pool before the
+    // TempDir above is dropped, or the directory leaks on Windows.
+    store.pool.close().await;
 }

@@ -129,6 +129,7 @@ async fn a_finished_run_is_evicted_once_it_has_aged_out() {
         !state.runs.read().await.contains_key(&record.run_id),
         "a terminal run older than the retention window must not stay in the map"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -144,6 +145,7 @@ async fn a_run_that_has_only_just_finished_is_still_visible() {
          view -- dropping it immediately would make it vanish from the orchestrator \
          and neural-pipeline views before the UI showing it polls again"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -169,6 +171,7 @@ async fn a_live_or_awaiting_approval_run_is_never_evicted() {
              would otherwise have nothing to act on"
         );
     }
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -187,6 +190,7 @@ async fn pruning_keeps_the_finished_run_and_drops_only_the_stale_ones() {
     assert!(runs.contains_key(&live.run_id));
     assert!(!runs.contains_key(&stale_a.run_id));
     assert!(!runs.contains_key(&stale_b.run_id));
+    state.store.pool.close().await;
 }
 
 /// A record that reached a terminal state but recorded no finish time cannot be
@@ -209,6 +213,7 @@ async fn a_terminal_run_with_no_recorded_finish_time_is_kept() {
 
     assert_eq!(state.prune_finished_runs().await, 0);
     assert!(state.runs.read().await.contains_key(&run_id));
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -220,7 +225,7 @@ async fn the_idempotency_cache_is_bounded_rather_than_growing_per_key_forever() 
         .await
         .expect("connect");
     let dispatcher = AgentExecutionDispatcher::new(
-        store,
+        store.clone(),
         PolicyConfig {
             max_concurrency: 8,
             require_approval_for: HashSet::new(),
@@ -284,4 +289,5 @@ async fn the_idempotency_cache_is_bounded_rather_than_growing_per_key_forever() 
         len <= IDEMPOTENCY_CACHE_MAX + 1,
         "the cache grew to {len} entries, past the {IDEMPOTENCY_CACHE_MAX} cap"
     );
+    store.pool.close().await;
 }

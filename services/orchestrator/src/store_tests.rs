@@ -74,6 +74,7 @@ async fn b1_wal_and_busy_timeout_are_configured() {
         busy >= 1000,
         "busy_timeout must be set so a blocked writer waits instead of failing immediately (got {busy}ms)"
     );
+    store.pool.close().await;
 }
 
 /// B1: concurrent writers must not silently lose writes. Pre-fix a contended
@@ -138,6 +139,8 @@ async fn b1_concurrent_writes_do_not_silently_disappear() {
         passed, N,
         "every concurrent write must be durably persisted"
     );
+    // Teardown: all 60 spawned writers were joined above, so this close cannot block.
+    store.pool.close().await;
 }
 
 // -------------------------------------------------------------------- B6
@@ -184,6 +187,7 @@ async fn b6_insert_run_rolls_back_completely_on_failure() {
         summary.is_none(),
         "a failed insert_run must leave no run row behind"
     );
+    store.pool.close().await;
 }
 
 /// B6: large plans must insert successfully. Pre-fix ~100 tasks returned
@@ -224,6 +228,7 @@ async fn b6_insert_run_handles_large_plans() {
         .filter(|t| !t.prerequisites.is_empty())
         .count();
     assert_eq!(with_prereqs, 999, "every dependency edge must persist");
+    store.pool.close().await;
 }
 
 // -------------------------------------------------------------------- B3
@@ -313,6 +318,7 @@ async fn b3_task_history_does_not_cross_projects() {
         alpha.iter().all(|h| h.status == TaskStatus::Failed),
         "alpha's executions all failed"
     );
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------- B14
@@ -320,6 +326,7 @@ async fn b3_task_history_does_not_cross_projects() {
 /// B14: bug drafts are project-owned via their failure cluster. Pre-fix
 /// `list_bug_drafts()` had no project filter at all, so a project-scoped
 /// viewer key received every tenant's drafts.
+
 #[tokio::test]
 async fn b14_bug_drafts_are_project_scoped() {
     let (store, _dir) = temp_store().await;
@@ -359,6 +366,7 @@ async fn b14_bug_drafts_are_project_scoped() {
     // A global/admin key (no project scope) still sees everything.
     let all = store.list_bug_drafts(None).await.expect("all drafts");
     assert_eq!(all.len(), 2, "an unscoped key sees every project's drafts");
+    store.pool.close().await;
 }
 
 /// B14: the project owning a draft must be resolvable server-side so the
@@ -391,6 +399,7 @@ async fn b14_bug_draft_project_is_resolvable_for_authorization() {
         missing.is_none(),
         "an unknown draft id must not resolve to a project"
     );
+    store.pool.close().await;
 }
 
 // -------------------------------------------------------------------- BE-8
@@ -429,6 +438,7 @@ async fn be8_project_create_and_get_round_trip() {
         missing.is_none(),
         "a project id that was never created must not resolve to a row"
     );
+    store.pool.close().await;
 }
 
 /// BE-8: `list_projects`'s `Some(pid)` filter must return *at most* the one
@@ -476,6 +486,7 @@ async fn be8_list_projects_respects_project_filter() {
         0,
         "a filter naming a project that was never created must return empty, not an error"
     );
+    store.pool.close().await;
 }
 
 /// BE-8: `update_project` leaves an omitted (`None`) field unchanged
@@ -534,6 +545,7 @@ async fn be8_update_project_is_a_genuine_partial_update() {
         !phantom,
         "updating a nonexistent project must report zero rows affected, not silently succeed"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -563,6 +575,7 @@ async fn delete_project_removes_project_and_all_scoped_records_atomically() {
         !deleted_again,
         "delete_project must return false when project is absent"
     );
+    store.pool.close().await;
 }
 
 // ======================================================================
@@ -704,6 +717,7 @@ async fn test_plan_suite_case_hierarchy_round_trip_with_real_counts() {
     assert!(ids.contains(&case_1));
     assert!(ids.contains(&case_2));
     assert!(!ids.contains(&case_3));
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -739,6 +753,7 @@ async fn deleting_a_plan_detaches_its_suites_rather_than_deleting_them() {
         suite.plan_id, None,
         "the surviving suite must be detached, not left pointing at a deleted plan"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -774,6 +789,7 @@ async fn deleting_a_suite_detaches_its_cases_rather_than_deleting_them() {
         case.suite_id, None,
         "the surviving case must be detached, not left pointing at a deleted suite"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -841,6 +857,7 @@ async fn set_test_case_suite_reassigns_and_clears() {
         None,
         "explicit None must genuinely clear the assignment"
     );
+    store.pool.close().await;
 }
 
 // --------------------------------------- Vector Store v1 (test_case_embeddings)
@@ -871,6 +888,7 @@ async fn test_case_embedding_upsert_and_list_round_trip() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].test_case_id, case_id);
     assert_eq!(rows[0].embedding, vec![0.1, 0.2, 0.3]);
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -918,6 +936,7 @@ async fn upsert_test_case_embedding_replaces_not_duplicates() {
         vec![0.9, 0.8, 0.7],
         "the stored vector must be the latest real one, not the stale first one"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -952,6 +971,7 @@ async fn delete_test_case_also_deletes_its_embedding() {
         .await
         .unwrap()
         .is_empty());
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -1008,6 +1028,7 @@ async fn count_test_case_embeddings_is_scoped_per_real_project() {
         0,
         "a project with no embedded cases at all must honestly report 0, not error"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -1040,6 +1061,7 @@ async fn test_plan_update_is_a_genuine_partial_update_including_status() {
         crate::domain::TestPlanStatus::Active,
         "a prior partial update must not be reverted by a later one"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -1064,6 +1086,7 @@ async fn test_plans_and_suites_are_isolated_across_projects() {
 
     let proj_2_suites = store.list_test_suites("proj-2", None).await.expect("list");
     assert!(proj_2_suites.is_empty());
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -1095,6 +1118,7 @@ async fn deleting_a_project_removes_its_test_plans_and_suites_too() {
         .await
         .expect("list")
         .is_empty());
+    store.pool.close().await;
 }
 
 // ---------------------------------------------------------- Phase 3 — requirements
@@ -1156,6 +1180,7 @@ async fn a_requirement_document_is_stored_with_its_requirements_in_document_orde
     assert_eq!(reqs[1].kind, "functional");
     assert_eq!(reqs[1].section.as_deref(), Some("3.2 Login"));
     assert_eq!(reqs[1].document_id, id);
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -1195,6 +1220,7 @@ async fn the_same_content_again_refreshes_the_document_and_leaves_its_requiremen
         ["First.", "EDITED"],
         "unchanged content is not parsed into the table twice"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -1231,6 +1257,7 @@ async fn requirements_written_by_older_parsing_rules_are_replaced_on_the_next_up
         .await
         .unwrap();
     assert_eq!(version, crate::requirements::PARSER_VERSION);
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -1276,6 +1303,7 @@ async fn requirements_are_listed_in_the_order_the_documents_were_asked_for() {
         ["A-1", "A-2", "B-1"],
         "upload order when no ids are given"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -1326,6 +1354,7 @@ async fn another_projects_documents_and_requirements_are_never_returned() {
     )
     .await;
     assert_ne!(same_in_p1, theirs);
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ Phase 7B — what AI calls took
@@ -1407,6 +1436,7 @@ async fn recorded_ai_calls_add_up_per_provider_model_and_task() {
     assert_eq!(other_task.len(), 1);
     assert_eq!(other_task[0].calls, 1);
     assert!(store.ai_call_stats("NOTHING").await.unwrap().is_empty());
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -1436,6 +1466,7 @@ async fn a_call_that_reported_no_tokens_counts_as_a_call_but_never_dilutes_the_t
         (row.token_calls, row.prompt_tokens, row.completion_tokens),
         (1, 100, 50)
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -1449,6 +1480,7 @@ async fn a_latency_too_large_to_store_is_kept_as_the_largest_that_can_be() {
         store.ai_call_stats("T").await.unwrap()[0].total_ms,
         i64::MAX
     );
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ Phase 7C — a key found by its id
@@ -1504,6 +1536,7 @@ async fn an_api_key_is_found_by_its_id_only_while_it_has_not_been_revoked() {
             .is_none(),
         "revoked by hash too"
     );
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------- a transaction that reads first, next to another writer
@@ -1558,6 +1591,10 @@ async fn delete_project_waits_for_another_writer_instead_of_failing_with_databas
 
     assert!(deleted, "the project existed");
     assert!(store.get_project(id).await.expect("get").is_none());
+    // Teardown: call_while_the_write_lock_is_held committed its writer transaction and
+    // awaited the spawned call before returning, so no connection is checked out and
+    // this close cannot block. Its 200 ms sleep is the lock condition under test.
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -1577,6 +1614,10 @@ async fn a_requirement_document_upload_waits_for_another_writer_instead_of_faili
         (docs.len(), docs[0].id, docs[0].requirements_count),
         (1, id, 2)
     );
+    // Teardown: call_while_the_write_lock_is_held committed its writer transaction and
+    // awaited the spawned call before returning, so no connection is checked out and
+    // this close cannot block. Its 200 ms sleep is the lock condition under test.
+    store.pool.close().await;
 }
 
 // ------------------------------------------- execution display settings
@@ -1587,6 +1628,7 @@ async fn a_requirement_document_upload_waits_for_another_writer_instead_of_faili
 async fn show_browser_window_is_none_until_it_is_ever_set() {
     let (store, _dir) = temp_store().await;
     assert_eq!(store.get_show_browser_window().await.unwrap(), None);
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -1598,4 +1640,159 @@ async fn show_browser_window_persists_and_can_be_turned_back_off() {
 
     store.set_show_browser_window(false).await.unwrap();
     assert_eq!(store.get_show_browser_window().await.unwrap(), Some(false));
+    store.pool.close().await;
+}
+
+// ---------------------------------------------------------------- task status contract
+
+/// The `set_task_status` contract, pinned in both directions.
+///
+/// ## The contract
+///
+/// `Store::set_task_status` branches `if set_started { .. } else if set_finished { .. }`, so the
+/// two flags are **mutually exclusive**. The method documents this, and the engine honours it with
+/// two calls at all three of its sites. This test states that contract rather than leaving it as
+/// a comment nobody checks.
+///
+/// ## Why it matters
+///
+/// The finish branch is the only one that writes `finished_at`, and `task_history_by_name`
+/// filters on `finished_at IS NOT NULL`. So a caller that passes both flags once gets a task that
+/// looks started and never finished — and is invisible to the reader that most of the intelligence
+/// layer depends on. That is silent, and it is the reason this contract is worth a test rather
+/// than a doc comment.
+///
+/// ## Deliberately not changed
+///
+/// The production signature keeps two booleans. Converting it to an enum would remove the trap
+/// permanently, but it changes a public method and is a design decision, not a correctness fix.
+#[tokio::test]
+async fn the_documented_one_flag_at_a_time_contract_is_what_the_store_does() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = Store::connect(&dir.path().join("task-status-contract.sqlite3"))
+        .await
+        .expect("connect");
+    let pid = Uuid::new_v4();
+    let pid_str = pid.to_string();
+    store
+        .insert_project(pid, "Contract", None)
+        .await
+        .expect("insert_project");
+
+    // ---- the valid sequence: start, then finish ----
+    let rid = Uuid::new_v4();
+    store
+        .insert_run(
+            rid,
+            &plan("contract-ok", vec![task("t1", "widget", &[])]),
+            Some(&pid_str),
+            Some("tester"),
+            RunState::Running,
+            None,
+        )
+        .await
+        .expect("insert_run");
+
+    store
+        .set_task_status(rid, "t1", TaskStatus::Running, None, true, false)
+        .await
+        .expect("start");
+
+    let mid = store
+        .list_tasks_for_run(rid)
+        .await
+        .expect("tasks after start")
+        .into_iter()
+        .find(|t| t.id == "t1")
+        .expect("the task");
+    assert!(
+        mid.started_at.is_some(),
+        "the start call must record started_at"
+    );
+    assert_eq!(
+        mid.finished_at, None,
+        "the start call must NOT record finished_at -- that is the other flag's job"
+    );
+
+    store
+        .set_task_status(rid, "t1", TaskStatus::Passed, Some("done"), false, true)
+        .await
+        .expect("finish");
+
+    let done = store
+        .list_tasks_for_run(rid)
+        .await
+        .expect("tasks after finish")
+        .into_iter()
+        .find(|t| t.id == "t1")
+        .expect("the task");
+    assert_eq!(
+        done.started_at, mid.started_at,
+        "the finish call must not disturb started_at"
+    );
+    assert!(
+        done.finished_at.is_some(),
+        "the finish call must record finished_at, or history cannot see this task"
+    );
+    assert_eq!(done.reason.as_deref(), Some("done"));
+    assert_eq!(done.status, TaskStatus::Passed);
+
+    // And the task is now visible to the reader that filters on finished_at.
+    let history = store
+        .task_history_by_name("widget", Some(&pid_str), 10)
+        .await
+        .expect("history");
+    assert!(
+        history.iter().any(|h| h.status == TaskStatus::Passed),
+        "a properly finished task must appear in history"
+    );
+
+    // ---- the invalid sequence: both flags at once ----
+    // Recorded as the behaviour it is, so that anyone who later changes the signature knows this
+    // test asserted something real rather than blocking a deliberate improvement.
+    let rid2 = Uuid::new_v4();
+    store
+        .insert_run(
+            rid2,
+            &plan("contract-both", vec![task("t2", "gadget", &[])]),
+            Some(&pid_str),
+            Some("tester"),
+            RunState::Running,
+            None,
+        )
+        .await
+        .expect("insert_run");
+
+    store
+        .set_task_status(rid2, "t2", TaskStatus::Passed, Some("both"), true, true)
+        .await
+        .expect("combined call");
+
+    let both = store
+        .list_tasks_for_run(rid2)
+        .await
+        .expect("tasks")
+        .into_iter()
+        .find(|t| t.id == "t2")
+        .expect("the task");
+    assert!(
+        both.started_at.is_some(),
+        "the first branch runs, so started_at is set"
+    );
+    assert_eq!(
+        both.finished_at, None,
+        "KNOWN LIMITATION, documented and intended by the current signature: one call with both \
+         flags records only the start. This is why every production caller makes two calls."
+    );
+
+    let history2 = store
+        .task_history_by_name("gadget", Some(&pid_str), 10)
+        .await
+        .expect("history");
+    assert!(
+        !history2.iter().any(|h| h.status == TaskStatus::Passed),
+        "and consequently such a task is invisible to history, which is the concrete cost the \
+         two-call contract exists to avoid"
+    );
+    store.pool.close().await;
 }

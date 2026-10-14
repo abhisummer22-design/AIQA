@@ -199,7 +199,10 @@ async fn an_empty_project_reports_no_executions_not_a_clean_bill_of_health() {
     let reader = QaMemoryReader::new(store.clone());
 
     let case_id = Uuid::new_v4();
-    let stability = reader.test_stability(&pid, &case_id.to_string()).await;
+    let stability = reader
+        .test_stability(&pid, &case_id.to_string())
+        .await
+        .expect("test_stability");
     assert_eq!(
         stability.insufficient_data,
         Some(InsufficientData::NoExecutions)
@@ -210,7 +213,10 @@ async fn an_empty_project_reports_no_executions_not_a_clean_bill_of_health() {
         "an empty project must not produce a view full of zeroes"
     );
 
-    let module = reader.module_risk_history(&pid, "checkout").await;
+    let module = reader
+        .module_risk_history(&pid, "checkout")
+        .await
+        .expect("module_risk_history");
     assert_eq!(
         module.insufficient_data,
         Some(InsufficientData::NoExecutions)
@@ -220,18 +226,29 @@ async fn an_empty_project_reports_no_executions_not_a_clean_bill_of_health() {
     // before history: the release does not exist here, and answering
     // `NO_EXECUTIONS` would imply it does. (This ordering was asserted the other
     // way round in an earlier draft of this test; the code is right.)
-    let release = reader.release_history(&pid, Uuid::new_v4()).await;
+    let release = reader
+        .release_history(&pid, Uuid::new_v4())
+        .await
+        .expect("release_history");
     assert_eq!(
         release.insufficient_data,
         Some(InsufficientData::UnknownSubject)
     );
 
-    let req = reader.requirement_history(&pid, "REQ-1").await;
+    let req = reader
+        .requirement_history(&pid, "REQ-1")
+        .await
+        .expect("requirement_history");
     assert_eq!(req.insufficient_data, Some(InsufficientData::NoExecutions));
 
     // An unknown subject on an empty project is still "no executions" - the
     // project has nothing, so that is the more specific and more honest answer.
-    assert!(reader.bug_history(&pid).await.is_empty());
+    assert!(reader
+        .bug_history(&pid)
+        .await
+        .expect("bug_history")
+        .is_empty());
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -245,18 +262,27 @@ async fn an_unknown_subject_is_distinguished_from_an_empty_project() {
 
     // History exists, so an unrelated case is "unknown", not "no executions".
     let other = Uuid::new_v4();
-    let stability = fx.reader.test_stability(&pid, &other.to_string()).await;
+    let stability = fx
+        .reader
+        .test_stability(&pid, &other.to_string())
+        .await
+        .expect("test_stability");
     assert_eq!(
         stability.insufficient_data,
         Some(InsufficientData::UnknownSubject)
     );
 
-    let module = fx.reader.module_risk_history(&pid, "no-such-module").await;
+    let module = fx
+        .reader
+        .module_risk_history(&pid, "no-such-module")
+        .await
+        .expect("module_risk_history");
     assert_eq!(
         module.insufficient_data,
         Some(InsufficientData::UnknownSubject),
         "a module that does not exist must say so, not report a clean rate"
     );
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ one record
@@ -273,6 +299,7 @@ async fn a_single_execution_yields_no_rate_because_a_rate_needs_two_samples() {
         .reader
         .test_stability(&pid, &case.to_string())
         .await
+        .expect("test_stability")
         .view
         .expect("found");
 
@@ -286,6 +313,7 @@ async fn a_single_execution_yields_no_rate_because_a_rate_needs_two_samples() {
         view.failure_rate == Some(0.0),
         "a 0% failure rate over one execution is arithmetically true: {view:?}"
     );
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ stability
@@ -313,6 +341,7 @@ async fn stability_counts_outcomes_and_reports_a_rate_over_repeated_history() {
         .reader
         .test_stability(&pid, &case.to_string())
         .await
+        .expect("test_stability")
         .view
         .expect("found");
 
@@ -327,6 +356,7 @@ async fn stability_counts_outcomes_and_reports_a_rate_over_repeated_history() {
         "three samples is enough for the existing flakiness evaluation"
     );
     assert_eq!(view.latest_failure_fingerprint.as_deref(), Some("fp-a"));
+    store.pool.close().await;
 }
 
 // -------------------------------------------------------------- repeated failure
@@ -381,6 +411,7 @@ async fn a_repeated_fingerprint_is_reported_as_recurring() {
         .reader
         .module_risk_history(&pid, "checkout")
         .await
+        .expect("module_risk_history")
         .view
         .expect("found");
 
@@ -403,6 +434,7 @@ async fn a_repeated_fingerprint_is_reported_as_recurring() {
         rec.first_seen.is_some() && rec.last_seen.is_some(),
         "recurrence must be time-bounded, not just counted"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -427,12 +459,17 @@ async fn a_module_with_linked_cases_that_never_ran_reports_no_matching_history()
         .await
         .expect("link billing");
 
-    let result = fx.reader.module_risk_history(&pid, "billing").await;
+    let result = fx
+        .reader
+        .module_risk_history(&pid, "billing")
+        .await
+        .expect("module_risk_history");
     assert_eq!(
         result.insufficient_data,
         Some(InsufficientData::NoMatchingHistory),
         "a module whose cases never ran has no history to report, not a clean record"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -458,6 +495,7 @@ async fn a_module_reports_how_many_of_its_cases_have_never_run() {
         .reader
         .module_risk_history(&pid, "cart")
         .await
+        .expect("module_risk_history")
         .view
         .expect("found");
 
@@ -467,6 +505,7 @@ async fn a_module_reports_how_many_of_its_cases_have_never_run() {
         view.signals.iter().any(|s| s.kind == "partial_coverage"),
         "the gap must be stated, not hidden by averaging over the one case that ran"
     );
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ releases
@@ -508,6 +547,7 @@ async fn a_release_is_compared_against_other_releases_that_have_runs() {
         .reader
         .release_history(&pid, newer.id)
         .await
+        .expect("release_history")
         .view
         .expect("found");
 
@@ -531,6 +571,7 @@ async fn a_release_is_compared_against_other_releases_that_have_runs() {
         "a release with no runs must be omitted, not counted as a clean release"
     );
     let _ = empty;
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -549,7 +590,11 @@ async fn a_release_with_no_executions_says_so_rather_than_reporting_zero_failure
     let case = fx.case();
     fx.execute(&store, case, "PASSED", None, "test", None).await;
 
-    let result = fx.reader.release_history(&pid, release.id).await;
+    let result = fx
+        .reader
+        .release_history(&pid, release.id)
+        .await
+        .expect("release_history");
     assert_eq!(
         result.insufficient_data,
         Some(InsufficientData::NoMatchingHistory)
@@ -558,6 +603,7 @@ async fn a_release_with_no_executions_says_so_rather_than_reporting_zero_failure
         result.view.is_none(),
         "an unexercised release must not look like a perfect one"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -572,9 +618,11 @@ async fn an_unknown_release_id_is_unknown_not_a_zero_result() {
         fx.reader
             .release_history(&pid, Uuid::new_v4())
             .await
+            .expect("release_history")
             .insufficient_data,
         Some(InsufficientData::UnknownSubject)
     );
+    store.pool.close().await;
 }
 
 async fn execute_with_release(
@@ -663,9 +711,11 @@ async fn a_requirement_with_no_tests_reports_no_matching_history() {
         fx.reader
             .requirement_history(&pid, "REQ-NOPE")
             .await
+            .expect("requirement_history")
             .insufficient_data,
         Some(InsufficientData::UnknownSubject)
     );
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ isolation
@@ -696,6 +746,7 @@ async fn one_projects_history_is_never_visible_from_another() {
         reader
             .test_stability(&theirs, &case.to_string())
             .await
+            .expect("test_stability")
             .insufficient_data,
         Some(InsufficientData::NoExecutions)
     );
@@ -703,6 +754,7 @@ async fn one_projects_history_is_never_visible_from_another() {
         reader
             .module_risk_history(&theirs, "checkout")
             .await
+            .expect("module_risk_history")
             .insufficient_data,
         Some(InsufficientData::NoExecutions)
     );
@@ -710,6 +762,7 @@ async fn one_projects_history_is_never_visible_from_another() {
         reader
             .release_history(&theirs, release.id)
             .await
+            .expect("release_history")
             .insufficient_data,
         Some(InsufficientData::UnknownSubject),
         "another project's release must not be readable, and must not be described as an empty one"
@@ -718,17 +771,26 @@ async fn one_projects_history_is_never_visible_from_another() {
         reader
             .release_history(&theirs, release.id)
             .await
+            .expect("release_history")
             .view
             .is_none(),
         "and it must carry no data at all"
     );
-    assert!(reader.bug_history(&theirs).await.is_empty());
+    assert!(reader
+        .bug_history(&theirs)
+        .await
+        .expect("bug_history")
+        .is_empty());
 
     // And the summary must not leak a count either.
-    let summary = reader.project_memory_summary(&theirs).await;
+    let summary = reader
+        .project_memory_summary(&theirs)
+        .await
+        .expect("project_memory_summary");
     assert!(!summary.has_history);
     assert_eq!(summary.executions, 0);
     assert_eq!(summary.distinct_fingerprints, 0);
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ bounded
@@ -769,6 +831,7 @@ async fn a_large_history_is_summarised_and_never_dumped() {
         .reader
         .module_risk_history(&pid, "big")
         .await
+        .expect("module_risk_history")
         .view
         .expect("found");
 
@@ -787,6 +850,7 @@ async fn a_large_history_is_summarised_and_never_dumped() {
     // though the lists are truncated.
     let rate = view.failure_rate.expect("rate");
     assert!((rate - 25.0).abs() < 0.5, "rate was {rate}");
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -810,6 +874,7 @@ async fn lists_are_bounded_no_matter_how_much_history_exists() {
         .reader
         .module_risk_history(&pid, "wide")
         .await
+        .expect("module_risk_history")
         .view
         .expect("found");
 
@@ -822,6 +887,7 @@ async fn lists_are_bounded_no_matter_how_much_history_exists() {
         view.test_cases_with_history, 60,
         "the exact count is still reported even though the list is capped"
     );
+    store.pool.close().await;
 }
 
 // -------------------------------------------------------------- time-aware
@@ -850,18 +916,21 @@ async fn every_view_states_the_window_it_was_computed_over() {
         fx.reader
             .test_stability(&pid, &case.to_string())
             .await
+            .expect("test_stability")
             .view
             .unwrap()
             .window,
         fx.reader
             .module_risk_history(&pid, "w")
             .await
+            .expect("module_risk_history")
             .view
             .unwrap()
             .window,
         fx.reader
             .release_history(&pid, release.id)
             .await
+            .expect("release_history")
             .view
             .unwrap()
             .window,
@@ -877,6 +946,7 @@ async fn every_view_states_the_window_it_was_computed_over() {
             "a window must say how much it covered"
         );
     }
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -894,6 +964,7 @@ async fn the_window_reports_the_environments_actually_present() {
         .reader
         .test_stability(&pid, &case.to_string())
         .await
+        .expect("test_stability")
         .view
         .expect("found");
 
@@ -901,6 +972,7 @@ async fn the_window_reports_the_environments_actually_present() {
     // was - which is what makes a mixed-environment total honest.
     assert_eq!(view.executions, 2);
     assert_eq!(view.window.executions_considered, 2);
+    store.pool.close().await;
 }
 
 // -------------------------------------------------------------- explainable
@@ -931,9 +1003,16 @@ async fn every_signal_carries_a_basis_and_evidence() {
         .reader
         .test_stability(&pid, &case.to_string())
         .await
+        .expect("test_stability")
         .view
         .unwrap();
-    let module = fx.reader.module_risk_history(&pid, "e").await.view.unwrap();
+    let module = fx
+        .reader
+        .module_risk_history(&pid, "e")
+        .await
+        .expect("module_risk_history")
+        .view
+        .unwrap();
 
     for signal in stability.signals.iter().chain(module.signals.iter()) {
         assert!(!signal.statement.is_empty(), "a signal must say something");
@@ -963,6 +1042,7 @@ async fn every_signal_carries_a_basis_and_evidence() {
         "the statement must carry the real numbers: {}",
         rate_signal.statement
     );
+    store.pool.close().await;
 }
 
 // -------------------------------------------------------------- determinism
@@ -990,12 +1070,25 @@ async fn repeated_reads_of_the_same_history_return_identical_answers() {
         .await;
     }
 
-    let first = serde_json::to_string(&fx.reader.module_risk_history(&pid, "d").await).unwrap();
-    let second = serde_json::to_string(&fx.reader.module_risk_history(&pid, "d").await).unwrap();
+    let first = serde_json::to_string(
+        &fx.reader
+            .module_risk_history(&pid, "d")
+            .await
+            .expect("module_risk_history"),
+    )
+    .unwrap();
+    let second = serde_json::to_string(
+        &fx.reader
+            .module_risk_history(&pid, "d")
+            .await
+            .expect("module_risk_history"),
+    )
+    .unwrap();
     assert_eq!(
         first, second,
         "the same stored history must produce byte-identical answers"
     );
+    store.pool.close().await;
 }
 
 // -------------------------------------------------------- partial metadata
@@ -1020,6 +1113,7 @@ async fn a_partial_history_answers_with_what_exists_and_names_what_is_missing() 
         .reader
         .module_risk_history(&pid, "p")
         .await
+        .expect("module_risk_history")
         .view
         .expect("found");
 
@@ -1034,6 +1128,7 @@ async fn a_partial_history_answers_with_what_exists_and_names_what_is_missing() 
     );
     let rec = &view.affected_tests[0];
     assert_eq!(rec.failures, 1);
+    store.pool.close().await;
 }
 
 // -------------------------------------------------------------- summary
@@ -1045,7 +1140,13 @@ async fn the_summary_counts_only_what_is_stored() {
     let reader = QaMemoryReader::new(store.clone());
     let mut fx = Fixture::new(reader.clone(), pid.clone());
 
-    assert!(!reader.project_memory_summary(&pid).await.has_history);
+    assert!(
+        !reader
+            .project_memory_summary(&pid)
+            .await
+            .expect("project_memory_summary")
+            .has_history
+    );
 
     let a = fx.case();
     let b = fx.case();
@@ -1066,13 +1167,17 @@ async fn the_summary_counts_only_what_is_stored() {
         .await
         .unwrap();
 
-    let summary = reader.project_memory_summary(&pid).await;
+    let summary = reader
+        .project_memory_summary(&pid)
+        .await
+        .expect("project_memory_summary");
     assert!(summary.has_history);
     assert_eq!(summary.executions, 2);
     assert_eq!(summary.linked_test_cases, 2);
     assert_eq!(summary.distinct_fingerprints, 2);
     assert_eq!(summary.releases, 1);
     assert_eq!(summary.modules, 2);
+    store.pool.close().await;
 }
 
 // -------------------------------------------------------------- no CoT
@@ -1099,10 +1204,34 @@ async fn no_view_carries_a_field_that_looks_like_hidden_reasoning() {
     execute_with_release(&store, &pid, case, release.id, "PASSED", None).await;
 
     let rendered = [
-        serde_json::to_string(&fx.reader.test_stability(&pid, &case.to_string()).await).unwrap(),
-        serde_json::to_string(&fx.reader.module_risk_history(&pid, "c").await).unwrap(),
-        serde_json::to_string(&fx.reader.release_history(&pid, release.id).await).unwrap(),
-        serde_json::to_string(&fx.reader.requirement_history(&pid, "REQ-X").await).unwrap(),
+        serde_json::to_string(
+            &fx.reader
+                .test_stability(&pid, &case.to_string())
+                .await
+                .expect("test_stability"),
+        )
+        .unwrap(),
+        serde_json::to_string(
+            &fx.reader
+                .module_risk_history(&pid, "c")
+                .await
+                .expect("module_risk_history"),
+        )
+        .unwrap(),
+        serde_json::to_string(
+            &fx.reader
+                .release_history(&pid, release.id)
+                .await
+                .expect("release_history"),
+        )
+        .unwrap(),
+        serde_json::to_string(
+            &fx.reader
+                .requirement_history(&pid, "REQ-X")
+                .await
+                .expect("requirement_history"),
+        )
+        .unwrap(),
     ];
 
     const FORBIDDEN: [&str; 6] = [
@@ -1121,4 +1250,5 @@ async fn no_view_carries_a_field_that_looks_like_hidden_reasoning() {
             );
         }
     }
+    store.pool.close().await;
 }

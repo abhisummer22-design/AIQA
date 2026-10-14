@@ -412,7 +412,10 @@ fn compile_deterministic_browser(case: &TestCaseRow) -> Option<ExecutionPlan> {
     })
 }
 
-fn compile_deterministic(case: &TestCaseRow) -> Option<ExecutionPlan> {
+/// **Phase 8 visibility.** `test_quality::concrete_steps` reuses this exact function to answer
+/// "are these steps concrete enough to execute?" rather than inventing a second heuristic.
+/// Roadmap rule 8 requires reusing the existing validator/compiler; this is the reuse.
+pub(crate) fn compile_deterministic(case: &TestCaseRow) -> Option<ExecutionPlan> {
     compile_deterministic_api(case).or_else(|| compile_deterministic_browser(case))
 }
 

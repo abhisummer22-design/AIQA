@@ -50,7 +50,18 @@ use uuid::Uuid;
 // ------------------------------------------------------------------ harness
 
 async fn harness() -> (Store, tempfile::TempDir, Arc<LocalEvidenceStore>) {
-    let dir = tempfile::tempdir().expect("tempdir");
+    harness_in(&std::env::temp_dir()).await
+}
+
+/// Phase 9.2B Batch 2: `harness`, rooted in a caller-owned directory so a test can measure
+/// exactly what *this* fixture leaves behind. Counting global `.tmp*` entries is not a valid
+/// assertion -- `cargo test` runs these tests concurrently, so any other suite's fixture
+/// perturbs the total and the result would depend on scheduling order.
+///
+/// `harness()` above delegates here with `std::env::temp_dir()`, which is precisely what
+/// `tempfile::tempdir()` does, so the 19 production call sites keep their existing behaviour.
+async fn harness_in(root: &std::path::Path) -> (Store, tempfile::TempDir, Arc<LocalEvidenceStore>) {
+    let dir = tempfile::tempdir_in(root).expect("tempdir");
     let store = Store::connect(&dir.path().join("phase5-exploration.sqlite3"))
         .await
         .expect("connect");
@@ -662,6 +673,7 @@ async fn an_unknown_behaviour_is_rejected_rather_than_guessed() {
         rendered.contains("boundary_value"),
         "the rejection must offer the real catalogue: {rendered}"
     );
+    store.pool.close().await;
 }
 
 /// An action sequence with no assertion cannot produce evidence, so it is refused rather
@@ -710,6 +722,7 @@ async fn a_probe_with_no_assertion_is_refused_rather_than_run() {
         0,
         "a refused probe must not consume budget"
     );
+    store.pool.close().await;
 }
 
 /// A blocked executor stays blocked — the tool calls the real `policy::evaluate`.
@@ -777,6 +790,7 @@ async fn a_blocked_executor_stays_blocked() {
         .await
         .expect("findings");
     assert!(findings.is_empty(), "a denied probe records nothing");
+    store.pool.close().await;
 }
 
 /// An executor gated for approval is not run autonomously, and the finding says so.
@@ -829,6 +843,7 @@ async fn a_gated_executor_is_not_run_autonomously() {
         FindingClass::InsufficientEvidence.as_str(),
         "but without approval it cannot be evidence"
     );
+    store.pool.close().await;
 }
 
 /// A plan the real validator refuses — here by its SSRF guard — is refused, not executed.
@@ -883,6 +898,7 @@ async fn a_plan_the_real_validator_refuses_is_not_executed() {
         0,
         "a refused plan must not consume budget"
     );
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ budget enforcement
@@ -967,6 +983,7 @@ async fn the_tool_refuses_to_act_once_the_budget_is_spent() {
         1,
         "the budget must not be exceeded, however hard the agent pushes"
     );
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ project isolation
@@ -1064,6 +1081,7 @@ async fn a_probe_cannot_cross_a_project_boundary() {
             .is_none(),
         "another tenant's session must not resolve"
     );
+    store.pool.close().await;
 }
 
 /// A probe with no project scope at all is refused — exploration is never unscoped.
@@ -1100,6 +1118,7 @@ async fn exploration_without_a_project_scope_is_refused() {
         err.to_string().contains("project scope"),
         "the refusal must name the missing scope: {err}"
     );
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ duplicate suppression
@@ -1227,6 +1246,7 @@ async fn a_known_defect_reached_again_is_suppressed_and_reported() {
     let snapshot = counters.snapshot().await;
     assert_eq!(snapshot.findings, 1);
     assert_eq!(snapshot.suppressed, 1);
+    store.pool.close().await;
 }
 
 /// An `INSUFFICIENT_EVIDENCE` row has no fingerprint and is therefore **not** deduplicated —
@@ -1287,6 +1307,7 @@ async fn observations_without_a_fingerprint_are_not_deduplicated() {
         3,
         "three inconclusive observations, three rows"
     );
+    store.pool.close().await;
 }
 
 /// A row with a fingerprint is deduplicated, and the lookup names the row it matched.
@@ -1345,6 +1366,7 @@ async fn findings_are_retrievable_by_fingerprint_for_the_suppression_report() {
         .await
         .expect("read")
         .is_empty());
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ evidence persistence
@@ -1440,6 +1462,7 @@ async fn a_recorded_finding_carries_readable_evidence() {
         stored, parsed["actions"],
         "the row must store the same action sequence as the evidence"
     );
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ end-to-end session
@@ -1510,6 +1533,7 @@ async fn a_session_runs_within_its_budget_and_records_why_it_stopped() {
         "the recorded count must match the budget: {}",
         session.actions_taken
     );
+    store.pool.close().await;
 }
 
 /// Exploration cannot loop forever: the runtime's own ceilings bound it.
@@ -1553,6 +1577,7 @@ async fn exploration_cannot_loop_forever() {
         "the turn ceiling must hold exactly: {}",
         report.turns_taken
     );
+    store.pool.close().await;
 }
 
 /// With no crawl evidence there is nothing to explore, and the session says so rather than
@@ -1587,6 +1612,7 @@ async fn an_empty_surface_stops_without_inventing_a_target() {
         report.findings.is_empty(),
         "nothing was explored, so nothing was found"
     );
+    store.pool.close().await;
 }
 
 /// The default runner — no browser executor — produces **no** confirmed defect, whatever the
@@ -1644,6 +1670,7 @@ async fn the_production_default_cannot_produce_a_confirmed_defect() {
             );
         }
     }
+    store.pool.close().await;
 }
 
 /// Running the same exploration repeatedly converges: the catalogue is finite, and a defect
@@ -1703,6 +1730,7 @@ async fn repeated_exploration_does_not_produce_unlimited_duplicates() {
         "three rounds of the same exploration cannot grow the finding set without bound: {}",
         all.len()
     );
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ risk / history
@@ -1825,7 +1853,10 @@ async fn risk_history_is_reported_and_its_absence_is_not_low_risk() {
         .expect("ingest");
 
     let reader = crate::qa_memory::QaMemoryReader::new(store.clone());
-    let ranking = reader.prioritise_tests(&busy, None).await;
+    let ranking = reader
+        .prioritise_tests(&busy, None)
+        .await
+        .expect("prioritise_tests");
     let crate::qa_memory::Retrieved {
         view: Some(view), ..
     } = ranking
@@ -1847,7 +1878,10 @@ async fn risk_history_is_reported_and_its_absence_is_not_low_risk() {
     // now has telemetry, and asserting against it would be asserting against my own
     // fixture rather than against the behaviour.)
     let untouched = project(&store, "P5 Untouched").await;
-    let untouched_ranking = reader.prioritise_tests(&untouched, None).await;
+    let untouched_ranking = reader
+        .prioritise_tests(&untouched, None)
+        .await
+        .expect("prioritise_tests");
     assert!(
         untouched_ranking.insufficient_data.is_some(),
         "a project with no history must report insufficient data, not an empty low-risk \
@@ -1861,11 +1895,15 @@ async fn risk_history_is_reported_and_its_absence_is_not_low_risk() {
 
     // And the session the service ran against `quiet` recorded its own history, so the two
     // projects now differ — which is what makes the contrast meaningful.
-    let quiet_ranking = reader.prioritise_tests(&quiet, None).await;
+    let quiet_ranking = reader
+        .prioritise_tests(&quiet, None)
+        .await
+        .expect("prioritise_tests");
     assert!(
         quiet_ranking.view.is_some(),
         "the explored project does have recorded probes, so it must have an ordering"
     );
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ performance
@@ -2000,7 +2038,10 @@ async fn phase5_measures_exploration_cost() {
     // ---- 2. memory / risk retrieval overhead, in isolation
     let reader = crate::qa_memory::QaMemoryReader::new(store.clone());
     let mem = Instant::now();
-    let ranking = reader.prioritise_tests(&pid, None).await;
+    let ranking = reader
+        .prioritise_tests(&pid, None)
+        .await
+        .expect("prioritise_tests");
     let mem_ms = mem.elapsed().as_millis();
     let ranked = ranking.view.expect("history exists");
 
@@ -2112,5 +2153,297 @@ async fn phase5_measures_exploration_cost() {
             .count(),
         1,
         "50 identical fingerprints must yield exactly one row"
+    );
+    store.pool.close().await;
+}
+
+// ===========================================================================
+// Phase 9.2B Batch 2 — harness() lifecycle
+// ===========================================================================
+//
+// These test cleanup, not exploration logic. A green suite is not evidence that a directory was
+// removed: `tempfile` swallows the Windows removal error that causes the leak in the first place.
+// Every assertion below reads the filesystem directly, and each measures only inside a root it
+// owns, so it is immune to the other suites running concurrently.
+
+/// The private measurement root owned by one test. Only this namespace is ever removed.
+fn p92b2_root(test_name: &str) -> std::path::PathBuf {
+    let root = std::env::temp_dir()
+        .join("aiqa_p92b2_artifacts")
+        .join(test_name);
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("create isolated artifact root");
+    root
+}
+
+fn p92b2_dir_count(root: &std::path::Path) -> usize {
+    std::fs::read_dir(root)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .filter(|e| e.path().is_dir())
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// **A + B.** The fixture must still produce a genuinely migrated, writable database, and real
+/// exploration state must round-trip through the production writers.
+#[tokio::test]
+async fn p92b2_fixture_is_usable_and_fully_migrated() {
+    let root = p92b2_root("usable_and_migrated");
+    let (store, dir, _evidence) = harness_in(&root).await;
+
+    let tables: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN \
+         ('projects','exploration_sessions','execution_telemetry','runs','quality_nodes')",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .expect("query sqlite_master");
+    assert_eq!(
+        tables.0, 5,
+        "the exploration fixture must run the real migrations"
+    );
+
+    let pid = project(&store, "P92B2 lifecycle").await;
+    let session = open_session(&store, &pid).await;
+    let loaded = store
+        .exploration_session(&pid, &session)
+        .await
+        .expect("read session")
+        .expect("the session must be readable");
+    assert_eq!(
+        loaded.id, session,
+        "the fixture must round-trip real exploration state, not merely a directory"
+    );
+    assert!(
+        dir.path().join("evidence").exists(),
+        "the evidence root must be a real directory inside the fixture"
+    );
+
+    store.pool.close().await;
+}
+
+/// **C + I.** Exploration state and session behaviour must be unchanged by the teardown work.
+/// Uses the same production writers the existing tests use, and asserts the rows actually landed.
+#[tokio::test]
+async fn p92b2_exploration_state_behaviour_is_unchanged() {
+    let root = p92b2_root("exploration_state_behaviour");
+    let (store, _d, evidence) = harness_in(&root).await;
+
+    let pid = project(&store, "P92B2 behaviour").await;
+    let first = open_session(&store, &pid).await;
+    let second = open_session(&store, &pid).await;
+
+    store
+        .finish_exploration_session(
+            &pid,
+            &first,
+            "COMPLETED",
+            3,
+            2,
+            1,
+            0,
+            0,
+            "probe finished",
+            None,
+        )
+        .await
+        .expect("finish session");
+
+    let listed = store
+        .list_exploration_sessions(&pid, 10)
+        .await
+        .expect("list_exploration_sessions");
+    assert_eq!(
+        listed.len(),
+        2,
+        "both sessions must be listed back: {listed:?}"
+    );
+
+    let finished = store
+        .exploration_session(&pid, &first)
+        .await
+        .expect("read session")
+        .expect("the finished session must be readable");
+    assert_eq!(
+        finished.status, "COMPLETED",
+        "the finished session must report the status the writer recorded"
+    );
+
+    let open = store
+        .exploration_session(&pid, &second)
+        .await
+        .expect("read session")
+        .expect("the open session must be readable");
+    assert_ne!(
+        open.status, "COMPLETED",
+        "an untouched session must not inherit the other one's status"
+    );
+
+    evidence
+        .put(
+            &Uuid::new_v4().to_string(),
+            "probe",
+            "exploration",
+            "phase 9.2b evidence",
+        )
+        .expect("evidence put");
+
+    store.pool.close().await;
+}
+
+/// **D + E + F.** Every pool handle must be released, the close must complete, and the SQLite file
+/// plus its WAL/SHM sidecars must not block the directory's removal.
+#[tokio::test]
+async fn p92b2_awaited_close_removes_the_directory_despite_wal_and_shm() {
+    let root = p92b2_root("close_removes_directory");
+    let (store, dir, _evidence) = harness_in(&root).await;
+    let path = dir.path().to_path_buf();
+
+    // Real writes so the WAL/SHM sidecars genuinely exist; otherwise this proves nothing.
+    let pid = project(&store, "P92B2 wal").await;
+    let session = open_session(&store, &pid).await;
+    store
+        .finish_exploration_session(
+            &pid,
+            &session,
+            "COMPLETED",
+            1,
+            1,
+            1,
+            0,
+            0,
+            "probe finished",
+            None,
+        )
+        .await
+        .expect("finish session");
+
+    let live: Vec<String> = std::fs::read_dir(&path)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        live.iter()
+            .any(|f| f.ends_with("-wal") || f.ends_with("-shm")),
+        "WAL/SHM sidecars must exist while the fixture is live, else this test proves nothing: \
+         {live:?}"
+    );
+    assert!(
+        live.iter().any(|f| f == "evidence"),
+        "the evidence directory must exist while the fixture is live: {live:?}"
+    );
+
+    store.pool.close().await; // awaiting this is the whole mechanism
+    drop(dir); // ...and only then may the TempDir be removed
+
+    assert!(
+        !path.exists(),
+        "after an awaited `pool.close()` the directory must be gone. If it remains, an open \
+         SQLite handle -- not the fixture -- is what blocked removal."
+    );
+    assert_eq!(
+        p92b2_dir_count(&root),
+        0,
+        "the measurement root must be empty afterwards"
+    );
+}
+
+/// **G.** Repeated creation and teardown must not accumulate artifacts in the isolated root.
+#[tokio::test]
+async fn p92b2_repeated_fixtures_accumulate_nothing() {
+    let root = p92b2_root("repeated_fixtures");
+    assert_eq!(
+        p92b2_dir_count(&root),
+        0,
+        "the measurement root starts empty"
+    );
+    for _ in 0..10 {
+        let (store, dir, _evidence) = harness_in(&root).await;
+        project(&store, "P92B2 repeat").await;
+        store.pool.close().await;
+        drop(dir);
+    }
+    let after = p92b2_dir_count(&root);
+    assert_eq!(
+        after, 0,
+        "ten fixture cycles must leave zero directories in the isolated root; {after} remained"
+    );
+}
+
+/// **H.** Concurrent fixtures must each remove exactly their own directory, never another's.
+#[tokio::test]
+async fn p92b2_concurrent_fixtures_do_not_interfere() {
+    let root = p92b2_root("concurrent_fixtures");
+    assert_eq!(
+        p92b2_dir_count(&root),
+        0,
+        "the measurement root starts empty"
+    );
+
+    let mut handles = Vec::new();
+    for i in 0..8 {
+        let root = root.clone();
+        handles.push(tokio::spawn(async move {
+            let (store, dir, _evidence) = harness_in(&root).await;
+            let path = dir.path().to_path_buf();
+            // Prove the fixture was real before releasing it, so a fixture that never created its
+            // database cannot pass by never existing.
+            assert!(
+                path.join("phase5-exploration.sqlite3").exists(),
+                "concurrent fixture {i} must have created its database before teardown"
+            );
+            project(&store, "P92B2 concurrent").await;
+            store.pool.close().await;
+            drop(dir);
+            path
+        }));
+    }
+
+    let mut paths = Vec::new();
+    for h in handles {
+        paths.push(h.await.expect("concurrent fixture task must not panic"));
+    }
+    assert_eq!(
+        p92b2_dir_count(&root),
+        0,
+        "eight concurrent fixtures must leave nothing behind -- neither their own nor each \
+         other's"
+    );
+    for p in &paths {
+        assert!(
+            !p.exists(),
+            "each fixture must remove exactly its own directory; {} survived",
+            p.display()
+        );
+    }
+}
+
+/// **J.** A teardown failure must remain observable rather than silently suppressed.
+/// `TempDir::close()` is the fallible form and returns the real removal error; asserting on it is
+/// what stops a future regression from passing quietly. Under this repository's retention policy a
+/// directory that genuinely cannot be removed is left in place rather than force-deleted, so it
+/// must still be *inspectable* -- which is exactly what a returned `Err` tells us.
+#[tokio::test]
+async fn p92b2_teardown_failure_is_observable() {
+    let root = p92b2_root("teardown_failure_observable");
+    let (store, dir, _evidence) = harness_in(&root).await;
+    let path = dir.path().to_path_buf();
+    project(&store, "P92B2 diagnostics").await;
+
+    store.pool.close().await;
+    let result = dir.close();
+    assert!(
+        result.is_ok(),
+        "an awaited pool close must let TempDir::close() succeed; got {:?}",
+        result.err()
+    );
+    assert!(
+        !path.exists(),
+        "and the directory must really be gone, not merely reported as closed"
     );
 }

@@ -237,6 +237,7 @@ async fn the_whole_chain_carries_one_failure_from_a_requirement_to_the_next_plan
     let stability = reader
         .test_stability(&pid, &case_id.to_string())
         .await
+        .expect("test_stability")
         .view
         .expect("step 8: test stability");
     assert_eq!(stability.executions, 3);
@@ -246,6 +247,7 @@ async fn the_whole_chain_carries_one_failure_from_a_requirement_to_the_next_plan
     let module = reader
         .module_risk_history(&pid, "payment")
         .await
+        .expect("module_risk_history")
         .view
         .expect("step 8: module history");
     assert_eq!(module.executions, 3);
@@ -274,6 +276,7 @@ async fn the_whole_chain_carries_one_failure_from_a_requirement_to_the_next_plan
     let requirement = reader
         .requirement_history(&pid, &req_key)
         .await
+        .expect("requirement_history")
         .view
         .expect("step 8: requirement history");
     assert_eq!(requirement.executions, 3);
@@ -284,6 +287,7 @@ async fn the_whole_chain_carries_one_failure_from_a_requirement_to_the_next_plan
     let risk = reader
         .module_risk(&pid, "payment")
         .await
+        .expect("module_risk")
         .view
         .expect("step 9: module risk");
     assert_eq!(risk.executions, 3);
@@ -300,7 +304,7 @@ async fn the_whole_chain_carries_one_failure_from_a_requirement_to_the_next_plan
 
     // Bug history: the recurring failure must now be visible, which is the link
     // Phase 4 found broken and this chain is the regression guard for.
-    let defects = reader.bug_history(&pid).await;
+    let defects = reader.bug_history(&pid).await.expect("bug_history");
     assert_eq!(
         defects.len(),
         1,
@@ -321,7 +325,10 @@ async fn the_whole_chain_carries_one_failure_from_a_requirement_to_the_next_plan
 
     // ---------------------------------------------------------------- 10.
     // Future test planning: the next plan is informed by all of the above.
-    let signals = reader.planning_signals(&pid).await;
+    let signals = reader
+        .planning_signals(&pid)
+        .await
+        .expect("planning_signals");
     assert!(
         signals.iter().any(|s| s.subject == "payment"),
         "step 10: the failing module must reach the next plan: {signals:?}"
@@ -357,6 +364,7 @@ async fn the_whole_chain_carries_one_failure_from_a_requirement_to_the_next_plan
             .any(|s| s.subject == "payment"),
         "step 10: the agent must receive what retrieval knows"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -435,25 +443,39 @@ async fn a_chain_where_nothing_failed_still_produces_an_honest_empty_answer() {
         .expect("telemetry");
 
     assert!(
-        reader.bug_history(&pid).await.is_empty(),
+        reader
+            .bug_history(&pid)
+            .await
+            .expect("bug_history")
+            .is_empty(),
         "one clean run must produce no defect"
     );
     assert!(
         reader
             .planning_signals(&pid)
             .await
+            .expect("planning_signals")
             .iter()
             .all(|s| s.metric.starts_with("0 of ")),
         "a clean module may produce a signal, but it must report zero failures: {:?}",
-        reader.planning_signals(&pid).await
+        reader
+            .planning_signals(&pid)
+            .await
+            .expect("planning_signals")
     );
 
-    let risk = reader.module_risk(&pid, "healthy").await.view.unwrap();
+    let risk = reader
+        .module_risk(&pid, "healthy")
+        .await
+        .expect("module_risk")
+        .view
+        .unwrap();
     assert_eq!(risk.failures, 0);
     assert_eq!(
         risk.weighted_contribution, 0.0,
         "nothing failed, so nothing weighs"
     );
+    store.pool.close().await;
 }
 
 // ============================================================ data integrity
@@ -617,6 +639,7 @@ async fn the_chain_leaves_no_orphaned_or_duplicated_records() {
         unparseable, 0,
         "every remembered execution must carry a real RFC3339 timestamp"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -655,6 +678,7 @@ async fn releasing_a_release_never_moves_a_run_out_of_its_project() {
         runs.is_empty(),
         "the refused insert must leave no run behind"
     );
+    store.pool.close().await;
 }
 
 // ================================================================== security
@@ -739,15 +763,63 @@ async fn no_cross_project_leakage_anywhere_in_the_chain() {
 
     // Every read surface, asked about the other project.
     let rendered = [
-        serde_json::to_string(&reader.test_stability(&theirs, &case.to_string()).await).unwrap(),
-        serde_json::to_string(&reader.module_risk_history(&theirs, "secret").await).unwrap(),
-        serde_json::to_string(&reader.module_risk(&theirs, "secret").await).unwrap(),
-        serde_json::to_string(&reader.release_history(&theirs, release.id).await).unwrap(),
-        serde_json::to_string(&reader.release_risk(&theirs, release.id).await).unwrap(),
-        serde_json::to_string(&reader.requirement_history(&theirs, "REQ-X").await).unwrap(),
-        serde_json::to_string(&reader.project_memory_summary(&theirs).await).unwrap(),
-        serde_json::to_string(&reader.planning_signals(&theirs).await).unwrap(),
-        serde_json::to_string(&reader.bug_history(&theirs).await).unwrap(),
+        serde_json::to_string(
+            &reader
+                .test_stability(&theirs, &case.to_string())
+                .await
+                .expect("test_stability"),
+        )
+        .unwrap(),
+        serde_json::to_string(
+            &reader
+                .module_risk_history(&theirs, "secret")
+                .await
+                .expect("module_risk_history"),
+        )
+        .unwrap(),
+        serde_json::to_string(
+            &reader
+                .module_risk(&theirs, "secret")
+                .await
+                .expect("module_risk"),
+        )
+        .unwrap(),
+        serde_json::to_string(
+            &reader
+                .release_history(&theirs, release.id)
+                .await
+                .expect("release_history"),
+        )
+        .unwrap(),
+        serde_json::to_string(
+            &reader
+                .release_risk(&theirs, release.id)
+                .await
+                .expect("release_risk"),
+        )
+        .unwrap(),
+        serde_json::to_string(
+            &reader
+                .requirement_history(&theirs, "REQ-X")
+                .await
+                .expect("requirement_history"),
+        )
+        .unwrap(),
+        serde_json::to_string(
+            &reader
+                .project_memory_summary(&theirs)
+                .await
+                .expect("project_memory_summary"),
+        )
+        .unwrap(),
+        serde_json::to_string(
+            &reader
+                .planning_signals(&theirs)
+                .await
+                .expect("planning_signals"),
+        )
+        .unwrap(),
+        serde_json::to_string(&reader.bug_history(&theirs).await.expect("bug_history")).unwrap(),
     ];
 
     for needle in [
@@ -768,14 +840,31 @@ async fn no_cross_project_leakage_anywhere_in_the_chain() {
         reader
             .test_stability(&theirs, &case.to_string())
             .await
+            .expect("test_stability")
             .insufficient_data,
         Some(InsufficientData::NoExecutions)
     );
-    assert!(reader.planning_signals(&theirs).await.is_empty());
-    assert!(reader.bug_history(&theirs).await.is_empty());
-    assert!(reader.release_risk_overview(&theirs).await.is_empty());
-    let summary = reader.project_memory_summary(&theirs).await;
+    assert!(reader
+        .planning_signals(&theirs)
+        .await
+        .expect("planning_signals")
+        .is_empty());
+    assert!(reader
+        .bug_history(&theirs)
+        .await
+        .expect("bug_history")
+        .is_empty());
+    assert!(reader
+        .release_risk_overview(&theirs)
+        .await
+        .expect("release_risk_overview")
+        .is_empty());
+    let summary = reader
+        .project_memory_summary(&theirs)
+        .await
+        .expect("project_memory_summary");
     assert!(!summary.has_history && summary.executions == 0 && summary.releases == 0);
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -859,12 +948,36 @@ async fn no_credential_material_reaches_the_memory() {
         .expect("telemetry");
 
     let rendered = [
-        serde_json::to_string(&reader.test_stability(&pid, &case.to_string()).await).unwrap(),
-        serde_json::to_string(&reader.module_risk_history(&pid, "m").await).unwrap(),
-        serde_json::to_string(&reader.module_risk(&pid, "m").await).unwrap(),
-        serde_json::to_string(&reader.bug_history(&pid).await).unwrap(),
-        serde_json::to_string(&reader.planning_signals(&pid).await).unwrap(),
-        serde_json::to_string(&reader.project_memory_summary(&pid).await).unwrap(),
+        serde_json::to_string(
+            &reader
+                .test_stability(&pid, &case.to_string())
+                .await
+                .expect("test_stability"),
+        )
+        .unwrap(),
+        serde_json::to_string(
+            &reader
+                .module_risk_history(&pid, "m")
+                .await
+                .expect("module_risk_history"),
+        )
+        .unwrap(),
+        serde_json::to_string(&reader.module_risk(&pid, "m").await.expect("module_risk")).unwrap(),
+        serde_json::to_string(&reader.bug_history(&pid).await.expect("bug_history")).unwrap(),
+        serde_json::to_string(
+            &reader
+                .planning_signals(&pid)
+                .await
+                .expect("planning_signals"),
+        )
+        .unwrap(),
+        serde_json::to_string(
+            &reader
+                .project_memory_summary(&pid)
+                .await
+                .expect("project_memory_summary"),
+        )
+        .unwrap(),
     ];
 
     for json in &rendered {
@@ -888,6 +1001,7 @@ async fn no_credential_material_reaches_the_memory() {
     // persistence, not QA memory, and fixing it would mean changing what the run
     // engine persists for every executor — so it is reported for a decision rather
     // than changed here. See FINAL_VALIDATION_REPORT.md.
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -977,16 +1091,64 @@ async fn no_chain_of_thought_is_stored_or_returned_anywhere_in_the_chain() {
 
     // Everything the chain returns, in one list.
     let rendered = [
-        serde_json::to_string(&reader.test_stability(&pid, &case.to_string()).await).unwrap(),
-        serde_json::to_string(&reader.module_risk_history(&pid, "m").await).unwrap(),
-        serde_json::to_string(&reader.release_history(&pid, release.id).await).unwrap(),
-        serde_json::to_string(&reader.requirement_history(&pid, "REQ-1").await).unwrap(),
-        serde_json::to_string(&reader.module_risk(&pid, "m").await).unwrap(),
-        serde_json::to_string(&reader.release_risk(&pid, release.id).await).unwrap(),
-        serde_json::to_string(&reader.release_risk_overview(&pid).await).unwrap(),
-        serde_json::to_string(&reader.bug_history(&pid).await).unwrap(),
-        serde_json::to_string(&reader.planning_signals(&pid).await).unwrap(),
-        serde_json::to_string(&reader.project_memory_summary(&pid).await).unwrap(),
+        serde_json::to_string(
+            &reader
+                .test_stability(&pid, &case.to_string())
+                .await
+                .expect("test_stability"),
+        )
+        .unwrap(),
+        serde_json::to_string(
+            &reader
+                .module_risk_history(&pid, "m")
+                .await
+                .expect("module_risk_history"),
+        )
+        .unwrap(),
+        serde_json::to_string(
+            &reader
+                .release_history(&pid, release.id)
+                .await
+                .expect("release_history"),
+        )
+        .unwrap(),
+        serde_json::to_string(
+            &reader
+                .requirement_history(&pid, "REQ-1")
+                .await
+                .expect("requirement_history"),
+        )
+        .unwrap(),
+        serde_json::to_string(&reader.module_risk(&pid, "m").await.expect("module_risk")).unwrap(),
+        serde_json::to_string(
+            &reader
+                .release_risk(&pid, release.id)
+                .await
+                .expect("release_risk"),
+        )
+        .unwrap(),
+        serde_json::to_string(
+            &reader
+                .release_risk_overview(&pid)
+                .await
+                .expect("release_risk_overview"),
+        )
+        .unwrap(),
+        serde_json::to_string(&reader.bug_history(&pid).await.expect("bug_history")).unwrap(),
+        serde_json::to_string(
+            &reader
+                .planning_signals(&pid)
+                .await
+                .expect("planning_signals"),
+        )
+        .unwrap(),
+        serde_json::to_string(
+            &reader
+                .project_memory_summary(&pid)
+                .await
+                .expect("project_memory_summary"),
+        )
+        .unwrap(),
         serde_json::to_string(
             &crate::adaptive_intelligence::AdaptiveIntelligenceService::new(store.clone())
                 .generate_planning_feedback(&pid)
@@ -1013,4 +1175,5 @@ async fn no_chain_of_thought_is_stored_or_returned_anywhere_in_the_chain() {
             assert!(!json.contains(needle), "a view exposed {needle}: {json}");
         }
     }
+    store.pool.close().await;
 }

@@ -174,9 +174,20 @@ pub struct TestStabilityView {
     pub executions: usize,
     pub passed: usize,
     pub failed: usize,
+    /// Recorded outcomes that are neither a pass nor a failure -- a step that was blocked,
+    /// skipped, cancelled, or never started. Reported, never silently folded into the other two.
     pub other_outcomes: usize,
-    /// 0..1, `None` when there are fewer than two executions (a rate from one sample
-    /// would be a claim, not a measurement).
+    /// Percentages 0..=100, not 0..1: an earlier version of this doc claimed `0..1`, which the
+    /// implementation never did.
+    ///
+    /// The denominator is the **completed** pass/fail outcomes only, so an outcome where the
+    /// step never ran (see `other_outcomes`) can neither create a rate nor dilute one; when
+    /// there are no eligible outcomes at all the answer is `None`, not `0.0`.
+    ///
+    /// `None` when that denominator is zero. It is **not** `None` below two executions: one
+    /// genuine pass really does measure 0% failures, and that is an existing tested contract.
+    /// (`flakiness_score` is the field with a two-sample minimum, because one sample cannot
+    /// show flakiness -- a single pass is not evidence of instability.)
     pub failure_rate: Option<f64>,
     /// `None` below the same threshold. The existing
     /// `adaptive_intelligence::evaluate_flakiness` owns the real calculation; this
@@ -203,7 +214,30 @@ pub struct ModuleRiskHistory {
     pub test_cases_with_history: usize,
     pub executions: usize,
     pub failures: usize,
+    /// **All-recorded-outcome rate** (B3, Q1): failures over *every* recorded execution row for
+    /// this module's cases, so a blocked or unexecuted step is in the denominator.
+    ///
+    /// Unchanged in value from before Phase 7.3, deliberately: renaming or redefining it would
+    /// silently repoint every existing consumer. Read [`Self::completed_failure_rate`] for the
+    /// rate over executions that actually ran.
     pub failure_rate: Option<f64>,
+    /// **Completed-execution failure rate, as a PERCENTAGE (0..100).**
+    ///
+    /// Renamed from `completed_failure_rate` (pre-Phase-8 follow-up): the API response carried
+    /// a key of that name holding a 0..1 *fraction*, so one name meant two units. The API key
+    /// keeps its fraction value and its name for compatibility; this field now says which of
+    /// the two it is.
+    ///
+    /// Numerator and denominator count only executions
+    /// that are a genuine `PASSED`, `FAILED` or `TIMEOUT`. Blocked, skipped and cancelled steps
+    /// are excluded from both halves. `None` when nothing completed.
+    ///
+    /// `INFRA_ERROR` rows are excluded here too and reported as
+    /// [`Self::infrastructure_errors`] (Q2).
+    pub completed_failure_rate_percent: Option<f64>,
+    /// Recorded outcomes where the **executor** failed rather than the test (Q2). A count, not a
+    /// rate: it has no denominator and is never folded into either rate.
+    pub infrastructure_errors: usize,
     pub affected_tests: Vec<AffectedTest>,
     /// Fingerprints seen more than once here, i.e. genuinely recurring rather than
     /// one-off.
@@ -239,7 +273,22 @@ pub struct ReleaseHistory {
     pub runs: usize,
     pub executions: usize,
     pub failures: usize,
+    /// **All-recorded-outcome rate** (B3, Q1): failures over every recorded execution row for
+    /// this release. Unchanged in value from before Phase 7.3, so existing consumers keep their
+    /// current answer; read [`Self::completed_failure_rate`] for the completed-execution rate.
     pub failure_rate: Option<f64>,
+    /// **Completed-execution failure rate, as a PERCENTAGE (0..100).**
+    ///
+    /// Renamed from `completed_failure_rate` (pre-Phase-8 follow-up): the API response carried
+    /// a key of that name holding a 0..1 *fraction*, so one name meant two units. The API key
+    /// keeps its fraction value and its name for compatibility; this field now says which of
+    /// the two it is.
+    /// Numerator and denominator count only `PASSED` / `FAILED` /
+    /// `TIMEOUT` rows, so a blocked or unexecuted step cannot dilute it. `None` when nothing
+    /// completed.
+    pub completed_failure_rate_percent: Option<f64>,
+    /// Executor-failure count (Q2). A count, not a rate.
+    pub infrastructure_errors: usize,
     pub distinct_fingerprints: usize,
     /// Every other release of this project that has runs, newest first, with its own
     /// totals, so a comparison needs no second call.
@@ -255,7 +304,20 @@ pub struct ReleaseComparison {
     pub runs: usize,
     pub executions: usize,
     pub failures: usize,
+    /// **All-recorded-outcome rate** (B3, Q1). Unchanged from before Phase 7.3.
     pub failure_rate: Option<f64>,
+    /// **Completed-execution failure rate, as a PERCENTAGE (0..100).**
+    ///
+    /// Renamed from `completed_failure_rate` (pre-Phase-8 follow-up): the API response carried
+    /// a key of that name holding a 0..1 *fraction*, so one name meant two units. The API key
+    /// keeps its fraction value and its name for compatibility; this field now says which of
+    /// the two it is.
+    ///
+    /// Numerator and denominator count only `PASSED` / `FAILED` / `TIMEOUT` rows.
+    /// `None` when nothing completed.
+    pub completed_failure_rate_percent: Option<f64>,
+    /// Executor-failure count (Q2). A count, not a rate.
+    pub infrastructure_errors: usize,
 }
 
 /// How one requirement's coverage and execution history stand.
@@ -269,7 +331,19 @@ pub struct RequirementHistory {
     pub with_execution_history: usize,
     pub executions: usize,
     pub failures: usize,
+    /// **All-recorded-outcome rate** (B3, Q1). Unchanged from before Phase 7.3.
     pub failure_rate: Option<f64>,
+    /// **Completed-execution failure rate, as a PERCENTAGE (0..100).**
+    ///
+    /// Renamed from `completed_failure_rate` (pre-Phase-8 follow-up): the API response carried
+    /// a key of that name holding a 0..1 *fraction*, so one name meant two units. The API key
+    /// keeps its fraction value and its name for compatibility; this field now says which of
+    /// the two it is.
+    /// Numerator and denominator count only `PASSED` / `FAILED` / `TIMEOUT`,
+    /// so a case whose step was never executed reports `None` rather than a diluted figure.
+    pub completed_failure_rate_percent: Option<f64>,
+    /// Executor-failure count (Q2). A count, not a rate.
+    pub infrastructure_errors: usize,
     pub distinct_failure_fingerprints: usize,
     pub window: Window,
     pub signals: Vec<Signal>,
@@ -310,11 +384,30 @@ impl QaMemoryReader {
     /// pile of joins: the master plan's Phase 3 test list requires correct answers
     /// on "large history", and a single bounded scan is what keeps those answers
     /// consistent with each other. Phase 6 records the query cost.
-    pub(crate) async fn telemetry_for(&self, project_id: &str) -> Vec<ExecutionTelemetryRow> {
+    ///
+    /// ## Why this returns a `Result`
+    ///
+    /// It used to return `Vec<ExecutionTelemetryRow>` and swallow the read with
+    /// `unwrap_or_default()`. A closed or failing store therefore produced an **empty** vector,
+    /// which every caller then read as "this project has no execution history" — so a storage
+    /// fault and a genuinely empty project became indistinguishable, and a project with history
+    /// was reported as `NO_EXECUTIONS`.
+    ///
+    /// The distinction this return type now forces:
+    ///
+    /// * `Ok(vec![])` — the store answered, and there is genuinely no history. A real answer, and
+    ///   `NO_EXECUTIONS` is the correct thing to report for it.
+    /// * `Err(e)` — the store could not answer. No caller may turn this into an empty history.
+    ///
+    /// An empty `Ok` is deliberately still allowed to produce `NO_EXECUTIONS`; that behaviour is
+    /// correct and unchanged.
+    pub(crate) async fn telemetry_for(
+        &self,
+        project_id: &str,
+    ) -> anyhow::Result<Vec<ExecutionTelemetryRow>> {
         self.store
             .list_execution_telemetry(project_id, TELEMETRY_READ_MAX)
             .await
-            .unwrap_or_default()
     }
 
     pub(crate) fn has_history(rows: &[ExecutionTelemetryRow]) -> bool {
@@ -341,15 +434,97 @@ impl QaMemoryReader {
         }
     }
 
+    /// A **completed** execution that failed. `TIMEOUT` counts: the step ran and did not
+    /// succeed, which is what a failure rate is about.
     pub(crate) fn is_failure(row: &ExecutionTelemetryRow) -> bool {
         matches!(row.status.as_str(), "FAILED" | "TIMEOUT")
     }
 
+    /// A **completed** execution that passed. Together with [`Self::is_failure`] this is the
+    /// set of rows that qualify as evidence about a test's reliability; every other row is a
+    /// record that something did not run, and is reported separately rather than counted here.
     pub(crate) fn is_pass(row: &ExecutionTelemetryRow) -> bool {
         row.status == "PASSED"
     }
 
+    /// **B3 (Phase 7.3): the completed-execution failure rate.** `failed / (passed + failed) * 100`.
+    ///
+    /// This is the *other* rate from [`Self::rate`], and the two answer different questions:
+    ///
+    /// | helper | numerator | denominator | question it answers |
+    /// |---|---|---|---|
+    /// | `rate(f, n)` | `f` failures | `n` **all recorded rows** | "how many recorded attempts failed?" |
+    /// | `completed_failure_rate(rows)` | failures | **completed pass/fail rows only** | "when this actually runs, how often does it fail?" |
+    ///
+    /// `None` when nothing completed -- a set of only blocked/skipped/cancelled rows has no
+    /// completed execution to have failed, so there is no rate to report. Never `0.0`: a
+    /// fabricated zero is a claim, and this codebase refuses those elsewhere.
+    ///
+    /// Q2 (Phase 7.3): `INFRA_ERROR` is **not** a completed pass/fail outcome. It is neither a
+    /// pass nor a product failure -- it records that the executor itself broke -- so it is
+    /// excluded from both halves of this rate. It is counted and reported separately by
+    /// [`Self::infra_errors`] and is never silently turned into a pass.
+    pub(crate) fn completed_failure_rate(rows: &[&ExecutionTelemetryRow]) -> Option<f64> {
+        let completed = rows
+            .iter()
+            .filter(|r| Self::is_pass(r) || Self::is_failure(r))
+            .count();
+        let failures = rows.iter().filter(|r| Self::is_failure(r)).count();
+        Self::rate(failures, completed)
+    }
+
+    /// **The completed-execution failure rate as a 0..1 fraction** — the *same* measurement as
+    /// [`Self::completed_failure_rate`], without the x100 percentage scaling.
+    ///
+    /// **Phase 7.4 (Decision 1).** The risk model consumes factors in **0..1**
+    /// (`Factor.contribution` multiplies a weight by the value and the result feeds a 0..1 score),
+    /// while `completed_failure_rate` returns 0..100 because it shares `rate()` with the
+    /// all-recorded metric. Two functions rather than a magic division at each call site, so the
+    /// scaling lives in exactly one place and cannot be forgotten.
+    ///
+    /// This is the **only** shape the risk `failure_rate` factor may now use: it excludes every
+    /// outcome that is not a genuine pass or failure, so a blocked step cannot dilute the factor
+    /// and an `INFRA_ERROR` cannot inflate it. `None` when nothing completed — a caller must
+    /// represent that as unmeasured, never as a measured `0.0`.
+    pub(crate) fn completed_failure_rate_fraction(rows: &[&ExecutionTelemetryRow]) -> Option<f64> {
+        let completed = Self::completed_count(rows);
+        let failures = rows.iter().filter(|r| Self::is_failure(r)).count();
+        Self::rate(failures, completed).map(|pct| pct / 100.0)
+    }
+
+    /// **How many of these rows are a completed pass or failure** (`PASSED` / `FAILED` /
+    /// `TIMEOUT`).
+    ///
+    /// The denominator of the completed-execution rate, exposed separately because a risk
+    /// `Factor` must state how many observations its value was taken over. Exposing it here means
+    /// the eligibility rule is written once and every consumer quotes the same count.
+    pub(crate) fn completed_count(rows: &[&ExecutionTelemetryRow]) -> usize {
+        rows.iter()
+            .filter(|r| Self::is_pass(r) || Self::is_failure(r))
+            .count()
+    }
+
+    /// **B3 (Phase 7.3): how many recorded outcomes were infrastructure errors.**
+    ///
+    /// Q2: `INFRA_ERROR` means the executor failed (no browser, a dead subprocess), which is
+    /// neither a test passing nor a test failing. Counting it as a failure inflates a project's
+    /// risk for conditions the application under test never caused; dropping it entirely would
+    /// erase it from observability. Both are wrong, so it is counted here and reported next to
+    /// the rate rather than inside it.
+    ///
+    /// This is Q2's "track them separately", and it is a **count, not a rate**: it has no
+    /// denominator, so it cannot be mistaken for a failure share.
+    pub(crate) fn infra_errors(rows: &[&ExecutionTelemetryRow]) -> usize {
+        rows.iter().filter(|r| r.status == "INFRA_ERROR").count()
+    }
+
     /// A rate, or `None` when there is nothing to take a rate of.
+    ///
+    /// This is the **all-recorded-outcome** rate. It divides by every stored row, so a blocked or
+    /// unexecuted step is in the denominator. That is a legitimate question ("what share of
+    /// recorded attempts failed?") and it is what `failure_rate` on the history views means --
+    /// which is why those fields are *not* silently redefined here. For the rate over completed
+    /// executions only, see [`Self::completed_failure_rate`].
     pub(crate) fn rate(part: usize, whole: usize) -> Option<f64> {
         if whole == 0 {
             None
@@ -370,10 +545,10 @@ impl QaMemoryReader {
         &self,
         project_id: &str,
         test_case_id: &str,
-    ) -> Retrieved<TestStabilityView> {
-        let all = self.telemetry_for(project_id).await;
+    ) -> anyhow::Result<Retrieved<TestStabilityView>> {
+        let all = self.telemetry_for(project_id).await?;
         if !Self::has_history(&all) {
-            return Retrieved::empty(project_id, InsufficientData::NoExecutions);
+            return Ok(Retrieved::empty(project_id, InsufficientData::NoExecutions));
         }
 
         let mine: Vec<&ExecutionTelemetryRow> = all
@@ -381,12 +556,22 @@ impl QaMemoryReader {
             .filter(|r| r.test_case_id.map(|c| c.to_string()).as_deref() == Some(test_case_id))
             .collect();
         if mine.is_empty() {
-            return Retrieved::empty(project_id, InsufficientData::UnknownSubject);
+            return Ok(Retrieved::empty(
+                project_id,
+                InsufficientData::UnknownSubject,
+            ));
         }
 
         let passed = mine.iter().filter(|r| Self::is_pass(r)).count();
         let failed = mine.iter().filter(|r| Self::is_failure(r)).count();
         let other = mine.len() - passed - failed;
+        // Phase 7.1 (P7-D2): the outcomes that qualify as a *completed* execution, and therefore
+        // the only ones a failure rate may be computed over. Computed once here because this view
+        // reports the same rate twice -- as the `failure_rate` field and as a `failure_rate`
+        // signal -- and when they were computed separately they disagreed: the field used the
+        // eligible count while the signal still divided by every recorded row, so one struct
+        // could say 100% in one place and 50% in the other for the same case.
+        let completed = passed + failed;
 
         let fingerprints: BTreeSet<String> = mine
             .iter()
@@ -435,18 +620,29 @@ impl QaMemoryReader {
         let window = Self::window(&owned);
         let test_name = mine.first().map(|r| r.task_name.clone());
 
+        // One rate, two consumers. `None` when nothing completed, in which case neither the signal
+        // nor the field claims a rate -- an unmeasured outcome stays unmeasured.
+        let rate = Self::rate(failed, completed);
         let mut signals = Vec::new();
-        if let Some(f) = Self::rate(failed, mine.len()) {
+        if let Some(f) = rate {
             signals.push(Signal {
                 kind: "failure_rate".into(),
+                // The numerator and denominator are the completed executions, matching the
+                // `failure_rate` field above. The excluded rows are named rather than dropped, so
+                // a reader can still see that other outcomes exist.
                 statement: format!(
-                    "{} of {} recorded executions failed ({f:.1}%)",
-                    failed,
-                    mine.len()
+                    "{} of {completed} completed executions failed ({f:.1}%)",
+                    failed
                 ),
                 evidence_runs: runs.clone(),
-                confidence: if mine.len() >= 5 { 0.9 } else { 0.5 },
-                basis: format!("{} execution_telemetry rows for this test case", mine.len()),
+                confidence: if completed >= 5 { 0.9 } else { 0.5 },
+                basis: format!(
+                    "{completed} completed execution_telemetry row(s) (PASSED/FAILED/TIMEOUT) out of \
+                     {} recorded for this test case; the {} other outcome(s) were never \
+                     executions and are excluded from the rate",
+                    mine.len(),
+                    other
+                ),
             });
         }
         if fingerprints.len() > 1 {
@@ -462,7 +658,7 @@ impl QaMemoryReader {
             });
         }
 
-        Retrieved::found(
+        Ok(Retrieved::found(
             project_id,
             TestStabilityView {
                 test_case_id: test_case_id.to_string(),
@@ -472,7 +668,23 @@ impl QaMemoryReader {
                 passed,
                 failed,
                 other_outcomes: other,
-                failure_rate: Self::rate(failed, mine.len()),
+                // Phase 7.1 (P7-D2). The denominator used to be `mine.len()` -- *every*
+                // recorded outcome, including ones where the step never ran at all. A step
+                // blocked by a failed prerequisite produces one `BLOCKED` row, so it read as
+                // `failed = 0` over `1`: a measured **0% failure rate**, for a case that had
+                // never executed. The denominator is now the outcomes that qualify as a
+                // completed execution -- the same rows `is_pass` and `is_failure` count -- so a
+                // non-execution outcome can neither create a rate nor dilute one. With only a
+                // blocked row the denominator is zero and `rate` answers `None`.
+                //
+                // What deliberately did NOT change: a single genuine `PASSED` execution still
+                // reports `Some(0.0)`. That is arithmetically true and is an existing tested
+                // contract ("a 0% failure rate over one execution is arithmetically true",
+                // `qa_memory_retrieval_tests`), so no minimum-sample rule was invented here.
+                //
+                // The same `rate` the `failure_rate` signal above was built from, so the two can
+                // never disagree.
+                failure_rate: rate,
                 flakiness_score,
                 first_seen: window.from,
                 last_seen: window.to,
@@ -481,7 +693,7 @@ impl QaMemoryReader {
                 window,
                 signals,
             },
-        )
+        ))
     }
 
     // -------------------------------------------------- module risk history
@@ -494,10 +706,10 @@ impl QaMemoryReader {
         &self,
         project_id: &str,
         module_ref: &str,
-    ) -> Retrieved<ModuleRiskHistory> {
-        let all = self.telemetry_for(project_id).await;
+    ) -> anyhow::Result<Retrieved<ModuleRiskHistory>> {
+        let all = self.telemetry_for(project_id).await?;
         if !Self::has_history(&all) {
-            return Retrieved::empty(project_id, InsufficientData::NoExecutions);
+            return Ok(Retrieved::empty(project_id, InsufficientData::NoExecutions));
         }
 
         // module vertex -> its `covers` edges -> the case vertices on the other end.
@@ -508,14 +720,22 @@ impl QaMemoryReader {
                 .await,
         ) {
             (Ok(n), Ok(r)) => (n, r),
-            _ => return Retrieved::empty(project_id, InsufficientData::NoMatchingHistory),
+            _ => {
+                return Ok(Retrieved::empty(
+                    project_id,
+                    InsufficientData::NoMatchingHistory,
+                ))
+            }
         };
 
         let Some(module_node) = nodes
             .iter()
             .find(|n| n.node_type == "module" && n.external_ref.as_deref() == Some(module_ref))
         else {
-            return Retrieved::empty(project_id, InsufficientData::UnknownSubject);
+            return Ok(Retrieved::empty(
+                project_id,
+                InsufficientData::UnknownSubject,
+            ));
         };
 
         let linked_cases: BTreeSet<Uuid> = relations
@@ -545,7 +765,10 @@ impl QaMemoryReader {
             })
             .collect();
         if mine.is_empty() {
-            return Retrieved::empty(project_id, InsufficientData::NoMatchingHistory);
+            return Ok(Retrieved::empty(
+                project_id,
+                InsufficientData::NoMatchingHistory,
+            ));
         }
 
         let failed_rows: Vec<&&ExecutionTelemetryRow> =
@@ -617,14 +840,14 @@ impl QaMemoryReader {
         // which releases the affected executions belong to
         let run_ids: BTreeSet<Uuid> = mine.iter().map(|r| r.run_id).collect();
         let mut affected_releases: Vec<String> = Vec::new();
-        if let Ok(releases) = self.store.list_releases(project_id).await {
-            for rel in releases {
-                if let Ok(runs) = self.store.runs_for_release(rel.id).await {
-                    if runs.iter().any(|r| run_ids.contains(r)) {
-                        if let Some(label) = rel.label.clone().or(rel.version.clone()) {
-                            affected_releases.push(label);
-                        }
-                    }
+        // Both reads used to be `if let Ok(..)`, so a storage fault produced an empty
+        // `affected_releases` -- "this module's failures touch no release" -- which is a claim about
+        // the data that the store never answered. Both propagate now.
+        for rel in self.store.list_releases(project_id).await? {
+            let runs = self.store.runs_for_release(rel.id).await?;
+            if runs.iter().any(|r| run_ids.contains(r)) {
+                if let Some(label) = rel.label.clone().or(rel.version.clone()) {
+                    affected_releases.push(label);
                 }
             }
         }
@@ -677,7 +900,7 @@ impl QaMemoryReader {
         }
         signals.truncate(MAX_SIGNALS);
 
-        Retrieved::found(
+        Ok(Retrieved::found(
             project_id,
             ModuleRiskHistory {
                 module_ref: module_ref.to_string(),
@@ -687,13 +910,17 @@ impl QaMemoryReader {
                 executions: mine.len(),
                 failures,
                 failure_rate: Self::rate(failures, mine.len()),
+                // B3/Q1: the second, explicitly named rate. A caller reads either one knowingly.
+                completed_failure_rate_percent: Self::completed_failure_rate(&mine),
+                // Q2: counted and reported, never inside either rate.
+                infrastructure_errors: Self::infra_errors(&mine),
                 affected_tests,
                 recurring_failures: recurring,
                 affected_releases,
                 window,
                 signals,
             },
-        )
+        ))
     }
 
     // -------------------------------------------------- release history
@@ -708,21 +935,27 @@ impl QaMemoryReader {
         &self,
         project_id: &str,
         release_id: Uuid,
-    ) -> Retrieved<ReleaseHistory> {
-        let all = self.telemetry_for(project_id).await;
-        let releases = self
-            .store
-            .list_releases(project_id)
-            .await
-            .unwrap_or_default();
+    ) -> anyhow::Result<Retrieved<ReleaseHistory>> {
+        let all = self.telemetry_for(project_id).await?;
+        let releases = self.store.list_releases(project_id).await?;
 
         let Some(target) = releases.iter().find(|r| r.id == release_id) else {
-            return Retrieved::empty(project_id, InsufficientData::UnknownSubject);
+            return Ok(Retrieved::empty(
+                project_id,
+                InsufficientData::UnknownSubject,
+            ));
         };
 
-        let Ok(target_runs) = self.store.runs_for_release(release_id).await else {
-            return Retrieved::empty(project_id, InsufficientData::NoMatchingHistory);
-        };
+        // A failed `runs_for_release` used to be reported as `NO_MATCHING_HISTORY`, i.e. "this release
+        // has never been run" -- indistinguishable from a genuine empty. Only the genuine empty is
+        // still that answer; a failed read propagates.
+        let target_runs = self.store.runs_for_release(release_id).await?;
+        if target_runs.is_empty() {
+            return Ok(Retrieved::empty(
+                project_id,
+                InsufficientData::NoMatchingHistory,
+            ));
+        }
         let target_run_ids: BTreeSet<Uuid> = target_runs.iter().copied().collect();
         let mine: Vec<&ExecutionTelemetryRow> = all
             .iter()
@@ -732,7 +965,10 @@ impl QaMemoryReader {
         if mine.is_empty() {
             // A release that exists with no executions is a real, reportable state:
             // it has been recorded but not yet exercised.
-            return Retrieved::empty(project_id, InsufficientData::NoMatchingHistory);
+            return Ok(Retrieved::empty(
+                project_id,
+                InsufficientData::NoMatchingHistory,
+            ));
         }
 
         let failures = mine.iter().filter(|r| Self::is_failure(r)).count();
@@ -744,9 +980,9 @@ impl QaMemoryReader {
 
         let mut compared_against = Vec::new();
         for other in releases.iter().filter(|r| r.id != release_id) {
-            let Ok(runs) = self.store.runs_for_release(other.id).await else {
-                continue;
-            };
+            // A failure here used to `continue`, silently dropping that release from the
+            // comparison -- which biases the trend this view exists to produce. It propagates.
+            let runs = self.store.runs_for_release(other.id).await?;
             let ids: BTreeSet<Uuid> = runs.iter().copied().collect();
             let rows: Vec<&ExecutionTelemetryRow> =
                 all.iter().filter(|r| ids.contains(&r.run_id)).collect();
@@ -761,6 +997,9 @@ impl QaMemoryReader {
                 executions: rows.len(),
                 failures: f,
                 failure_rate: Self::rate(f, rows.len()),
+                // B3/Q1: both rates, so a comparison cannot silently mix the two definitions.
+                completed_failure_rate_percent: Self::completed_failure_rate(&rows),
+                infrastructure_errors: Self::infra_errors(&rows),
             });
         }
         compared_against.sort_by(|a, b| b.label.cmp(&a.label));
@@ -795,7 +1034,7 @@ impl QaMemoryReader {
         }
         signals.truncate(MAX_SIGNALS);
 
-        Retrieved::found(
+        Ok(Retrieved::found(
             project_id,
             ReleaseHistory {
                 release_id: release_id.to_string(),
@@ -805,12 +1044,16 @@ impl QaMemoryReader {
                 executions: mine.len(),
                 failures,
                 failure_rate: Self::rate(failures, mine.len()),
+                // B3/Q1 + Q2: the completed-execution rate and the executor-error count sit
+                // beside the all-recorded rate rather than replacing it.
+                completed_failure_rate_percent: Self::completed_failure_rate(&mine),
+                infrastructure_errors: Self::infra_errors(&mine),
                 distinct_fingerprints: fingerprints.len(),
                 compared_against,
                 window,
                 signals,
             },
-        )
+        ))
     }
 
     // -------------------------------------------------- requirement history
@@ -820,17 +1063,21 @@ impl QaMemoryReader {
         &self,
         project_id: &str,
         requirement_key: &str,
-    ) -> Retrieved<RequirementHistory> {
-        let all = self.telemetry_for(project_id).await;
+    ) -> anyhow::Result<Retrieved<RequirementHistory>> {
+        let all = self.telemetry_for(project_id).await?;
         if !Self::has_history(&all) {
-            return Retrieved::empty(project_id, InsufficientData::NoExecutions);
+            return Ok(Retrieved::empty(project_id, InsufficientData::NoExecutions));
         }
 
-        let Ok(requirements) = self.store.list_requirements(project_id, &[]).await else {
-            return Retrieved::empty(project_id, InsufficientData::NoMatchingHistory);
-        };
+        // A failed read used to answer `NO_MATCHING_HISTORY`, i.e. "this requirement was never
+        // exercised" -- which is exactly what a genuine empty says. A failure now propagates; the
+        // genuine empty falls through to the `find` below and is answered there, as it always was.
+        let requirements = self.store.list_requirements(project_id, &[]).await?;
         let Some(req) = requirements.iter().find(|r| r.key == requirement_key) else {
-            return Retrieved::empty(project_id, InsufficientData::UnknownSubject);
+            return Ok(Retrieved::empty(
+                project_id,
+                InsufficientData::UnknownSubject,
+            ));
         };
 
         // The requirement's own node on the graph is linked to its cases by `validates`.
@@ -841,7 +1088,12 @@ impl QaMemoryReader {
                 .await,
         ) {
             (Ok(n), Ok(r)) => (n, r),
-            _ => return Retrieved::empty(project_id, InsufficientData::NoMatchingHistory),
+            _ => {
+                return Ok(Retrieved::empty(
+                    project_id,
+                    InsufficientData::NoMatchingHistory,
+                ))
+            }
         };
 
         let req_node = nodes.iter().find(|n| {
@@ -874,7 +1126,10 @@ impl QaMemoryReader {
             .collect();
 
         if mine.is_empty() {
-            return Retrieved::empty(project_id, InsufficientData::NoMatchingHistory);
+            return Ok(Retrieved::empty(
+                project_id,
+                InsufficientData::NoMatchingHistory,
+            ));
         }
 
         let failures = mine.iter().filter(|r| Self::is_failure(r)).count();
@@ -924,7 +1179,7 @@ impl QaMemoryReader {
         }
         signals.truncate(MAX_SIGNALS);
 
-        Retrieved::found(
+        Ok(Retrieved::found(
             project_id,
             RequirementHistory {
                 requirement_key: requirement_key.to_string(),
@@ -934,11 +1189,14 @@ impl QaMemoryReader {
                 executions: mine.len(),
                 failures,
                 failure_rate: Self::rate(failures, mine.len()),
+                // B3/Q1 + Q2: same pair, for the same reason.
+                completed_failure_rate_percent: Self::completed_failure_rate(&mine),
+                infrastructure_errors: Self::infra_errors(&mine),
                 distinct_failure_fingerprints: fingerprints.len(),
                 window,
                 signals,
             },
-        )
+        ))
     }
 
     // -------------------------------------------------- bug history
@@ -947,22 +1205,20 @@ impl QaMemoryReader {
     ///
     /// Recurrence is read from the **cluster** (`occurrence_count`), not from the
     /// draft, because the draft is a review artefact and the count is the evidence.
-    pub async fn bug_history(&self, project_id: &str) -> Vec<RecurringDefect> {
-        let Ok(drafts) = self.store.list_bug_drafts(Some(project_id)).await else {
-            return Vec::new();
-        };
+    pub async fn bug_history(&self, project_id: &str) -> anyhow::Result<Vec<RecurringDefect>> {
+        // All three reads below used to fail silently: a failed `list_bug_drafts` returned an
+        // empty list, and the node and relation reads used `unwrap_or_default()`. A storage fault
+        // therefore produced "this project has no recurring defects" - a confident claim about
+        // the project that the store never answered. This function already returned `Result` for
+        // its telemetry read, so the error channel existed and these three were not using it.
+        let drafts = self.store.list_bug_drafts(Some(project_id)).await?;
 
-        let nodes = self
-            .store
-            .list_quality_nodes(project_id)
-            .await
-            .unwrap_or_default();
+        let nodes = self.store.list_quality_nodes(project_id).await?;
         let relations = self
             .store
             .list_quality_relations_for_project(project_id)
-            .await
-            .unwrap_or_default();
-        let telemetry = self.telemetry_for(project_id).await;
+            .await?;
+        let telemetry = self.telemetry_for(project_id).await?;
 
         let mut out = Vec::new();
         for draft in drafts {
@@ -1100,7 +1356,7 @@ impl QaMemoryReader {
                 .then(b.last_seen.cmp(&a.last_seen))
         });
         out.truncate(MAX_SIGNALS);
-        out
+        Ok(out)
     }
 
     /// The whole picture for one project, in a single call.
@@ -1109,25 +1365,23 @@ impl QaMemoryReader {
     /// asking the same question: each field is exactly what the matching function
     /// returns, and each reports its own `insufficient_data` reason when it has
     /// nothing.
-    pub async fn project_memory_summary(&self, project_id: &str) -> ProjectMemorySummary {
-        let telemetry = self.telemetry_for(project_id).await;
-        let releases = self
-            .store
-            .list_releases(project_id)
-            .await
-            .unwrap_or_default();
+    pub async fn project_memory_summary(
+        &self,
+        project_id: &str,
+    ) -> anyhow::Result<ProjectMemorySummary> {
+        let telemetry = self.telemetry_for(project_id).await?;
+        let releases = self.store.list_releases(project_id).await?;
 
         let module_refs: Vec<String> = self
             .store
             .list_quality_nodes(project_id)
-            .await
-            .unwrap_or_default()
+            .await?
             .into_iter()
             .filter(|n| n.node_type == "module")
             .filter_map(|n| n.external_ref)
             .collect();
 
-        ProjectMemorySummary {
+        Ok(ProjectMemorySummary {
             project_id: project_id.to_string(),
             has_history: !telemetry.is_empty(),
             executions: telemetry.len(),
@@ -1144,9 +1398,9 @@ impl QaMemoryReader {
                 .len(),
             releases: releases.len(),
             modules: module_refs.len(),
-            recurring_defects: self.bug_history(project_id).await.len(),
+            recurring_defects: self.bug_history(project_id).await?.len(),
             window: Self::window(&telemetry),
-        }
+        })
     }
 }
 
@@ -1233,10 +1487,10 @@ impl QaMemoryReader {
     /// [`PLANNING_SIGNAL_WINDOW_DAYS`]. That is the important property: memory must
     /// not influence planning when there is no evidence to influence it, so an empty
     /// project produces no signals rather than neutral-sounding ones.
-    pub async fn planning_signals(&self, project_id: &str) -> Vec<PlanningSignal> {
-        let all = self.telemetry_for(project_id).await;
+    pub async fn planning_signals(&self, project_id: &str) -> anyhow::Result<Vec<PlanningSignal>> {
+        let all = self.telemetry_for(project_id).await?;
         if all.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
 
         let cutoff = Utc::now() - Duration::days(PLANNING_SIGNAL_WINDOW_DAYS);
@@ -1245,22 +1499,17 @@ impl QaMemoryReader {
         if recent.is_empty() {
             // History exists but none of it is recent enough to plan from. Saying
             // nothing is correct; re-surfacing year-old failures is not.
-            return Vec::new();
+            return Ok(Vec::new());
         }
 
         let mut signals: Vec<PlanningSignal> = Vec::new();
 
         // ---- module risk -------------------------------------------------
-        let nodes = self
-            .store
-            .list_quality_nodes(project_id)
-            .await
-            .unwrap_or_default();
+        let nodes = self.store.list_quality_nodes(project_id).await?;
         let relations = self
             .store
             .list_quality_relations_for_project(project_id)
-            .await
-            .unwrap_or_default();
+            .await?;
         let case_ref_by_node: HashMap<Uuid, String> = nodes
             .iter()
             .filter(|n| n.node_type == "test")
@@ -1291,31 +1540,61 @@ impl QaMemoryReader {
                 continue;
             }
             let failures = rows.iter().filter(|r| Self::is_failure(r)).count();
-            let rate = Self::rate(failures, rows.len());
-            let Some(rate) = rate else { continue };
+            // B3/Q1: both rates, so the sentence says which definition it is quoting instead of
+            // leaving the reader to assume. `all_rate` keeps this signal's existing value and
+            // therefore every existing consumer of it; `completed_rate` is the rate over
+            // executions that actually ran.
+            let all_rate = Self::rate(failures, rows.len());
+            let completed_rate = Self::completed_failure_rate(&rows);
+            let infra = Self::infra_errors(&rows);
+            let Some(all_rate) = all_rate else { continue };
 
             let from = rows.iter().map(|r| r.created_at).min();
             let to = rows.iter().map(|r| r.created_at).max();
+            // Q2: an executor failure is named in its own right, never inside a failure count.
+            let infra_note = if infra > 0 {
+                format!(
+                    "; {infra} recorded outcome(s) were infrastructure errors, counted \
+                          separately and excluded from both rates"
+                )
+            } else {
+                String::new()
+            };
             signals.push(PlanningSignal {
                 kind: "module_risk".into(),
                 subject: ref_name.clone(),
-                metric: format!(
-                    "{failures} of {} executions of this module's tests failed ({rate:.1}%)",
-                    rows.len()
-                ),
+                metric: match completed_rate {
+                    Some(c) => format!(
+                        "{failures} of {} completed executions of this module's tests failed \
+                         ({c:.1}%); of all {} recorded execution rows the all-outcome rate is \
+                         {all_rate:.1}%{infra_note}",
+                        failures + rows.iter().filter(|r| Self::is_pass(r)).count(),
+                        rows.len()
+                    ),
+                    None => format!(
+                        "{failures} of {} recorded executions of this module's tests failed \
+                         ({all_rate:.1}%); no execution completed, so there is no \
+                         completed-execution rate{infra_note}",
+                        rows.len()
+                    ),
+                },
                 evidence_runs: rows.iter().map(|r| r.run_id).collect(),
                 confidence: confidence_from_sample(rows.len()),
                 window: format_window(from, to, rows.len()),
                 basis: format!(
-                    "{} linked test case(s) via `covers` edges, {} recent execution rows",
+                    "{} linked test case(s) via `covers` edges, {} recent execution rows, of \
+                     which {} completed as a pass or failure",
                     cases.len(),
-                    rows.len()
+                    rows.len(),
+                    rows.iter()
+                        .filter(|r| Self::is_pass(r) || Self::is_failure(r))
+                        .count()
                 ),
             });
         }
 
         // ---- recurring defects -------------------------------------------
-        for defect in self.bug_history(project_id).await {
+        for defect in self.bug_history(project_id).await? {
             if defect.occurrences < 2 {
                 continue;
             }
@@ -1341,15 +1620,11 @@ impl QaMemoryReader {
         }
 
         // ---- release regression -------------------------------------------
-        let releases = self
-            .store
-            .list_releases(project_id)
-            .await
-            .unwrap_or_default();
+        let releases = self.store.list_releases(project_id).await?;
         for release in releases.iter().take(MAX_RELEASES_COMPARED) {
-            let Ok(runs) = self.store.runs_for_release(release.id).await else {
-                continue;
-            };
+            // Used to `continue` on failure, silently dropping a release from the regression
+            // signal this section exists to compute. It propagates.
+            let runs = self.store.runs_for_release(release.id).await?;
             if runs.is_empty() {
                 continue;
             }
@@ -1363,11 +1638,26 @@ impl QaMemoryReader {
                 continue; // one execution cannot show a regression
             }
             let failures = rows.iter().filter(|r| Self::is_failure(r)).count();
-            let Some(rate) = Self::rate(failures, rows.len()) else {
+            // B3/Q1 + Q2: both rates and the executor-error count, all named. This signal exists
+            // to say "this release got worse", and an all-outcome denominator lets blocked rows
+            // pull it toward zero -- so the completed-execution rate leads, and the all-outcome
+            // figure is quoted alongside rather than instead.
+            let all_rate = Self::rate(failures, rows.len());
+            let completed_rate = Self::completed_failure_rate(&rows);
+            let infra = Self::infra_errors(&rows);
+            let Some(all_rate) = all_rate else {
                 continue;
             };
             let from = rows.iter().map(|r| r.created_at).min();
             let to = rows.iter().map(|r| r.created_at).max();
+            let infra_note = if infra > 0 {
+                format!(
+                    "; {infra} recorded outcome(s) were infrastructure errors, counted separately \
+                     and excluded from both rates"
+                )
+            } else {
+                String::new()
+            };
             signals.push(PlanningSignal {
                 kind: "release_regression".into(),
                 subject: release
@@ -1375,17 +1665,32 @@ impl QaMemoryReader {
                     .clone()
                     .or_else(|| release.version.clone())
                     .unwrap_or_else(|| release.id.to_string()),
-                metric: format!(
-                    "{failures} of {} executions in this release failed ({rate:.1}%)",
-                    rows.len()
-                ),
+                metric: match completed_rate {
+                    Some(c) => format!(
+                        "{failures} of {} completed executions in this release failed ({c:.1}%); \
+                         across all {} recorded execution rows the all-outcome rate is \
+                         {all_rate:.1}%{infra_note}",
+                        failures + rows.iter().filter(|r| Self::is_pass(r)).count(),
+                        rows.len()
+                    ),
+                    None => format!(
+                        "{failures} of {} recorded executions in this release failed \
+                         ({all_rate:.1}%); nothing completed, so no completed-execution rate \
+                         exists{infra_note}",
+                        rows.len()
+                    ),
+                },
                 evidence_runs: rows.iter().map(|r| r.run_id).collect(),
                 confidence: confidence_from_sample(rows.len()),
                 window: format_window(from, to, rows.len()),
                 basis: format!(
-                    "{} run(s) associated with release {}",
+                    "{} run(s) associated with release {}, of which {} recorded outcome(s) \
+                     completed as a pass or failure",
                     runs.len(),
-                    release.id
+                    release.id,
+                    rows.iter()
+                        .filter(|r| Self::is_pass(r) || Self::is_failure(r))
+                        .count()
                 ),
             });
         }
@@ -1405,7 +1710,7 @@ impl QaMemoryReader {
                 .then(by_subject)
         });
         signals.truncate(MAX_SIGNALS);
-        signals
+        Ok(signals)
     }
 }
 

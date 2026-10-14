@@ -8154,23 +8154,25 @@ async fn phase1_custom_testing_generation_is_grounded_by_a_real_similar_approved
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(body["generation_source"], "REAL_AI", "body={body}");
 
-    let prompts = cases_executor.prompts.lock().unwrap();
-    assert_eq!(
-        prompts.len(),
-        1,
-        "the cases call must have run exactly once"
-    );
-    assert!(
-        prompts[0].contains("Reject invalid password"),
-        "the real prompt sent to the cases call must include this project's own real approved \
-         case as a similar-case grounding example: {}",
-        prompts[0]
-    );
-    assert!(
-        prompts[0].to_lowercase().contains("already-approved"),
-        "the real similar-cases prompt section must be present: {}",
-        prompts[0]
-    );
+    {
+        let prompts = cases_executor.prompts.lock().unwrap();
+        assert_eq!(
+            prompts.len(),
+            1,
+            "the cases call must have run exactly once"
+        );
+        assert!(
+            prompts[0].contains("Reject invalid password"),
+            "the real prompt sent to the cases call must include this project's own real approved \
+             case as a similar-case grounding example: {}",
+            prompts[0]
+        );
+        assert!(
+            prompts[0].to_lowercase().contains("already-approved"),
+            "the real similar-cases prompt section must be present: {}",
+            prompts[0]
+        );
+    }
 }
 
 // ============================================================ Phase 4 — API Testing
@@ -12372,6 +12374,116 @@ async fn list_logs_returns_recent_history_and_respects_project_scoping() {
     assert_eq!(proj_logs.as_array().unwrap().len(), 2);
 }
 
+/// A storage failure must not be answered with a plausible risk score.
+///
+/// ## The defect this pins
+///
+/// `get_project_risk_handler` read the project's quality-graph relations with
+/// `.unwrap_or_default()`. A failed read therefore produced `dependency_count == 0`, which was
+/// then declared `Factor::measured(.., 0.0, .., evidence: 0)` — the endpoint asserting it had
+/// measured dependency risk and found none, when it had never looked. `measured_weight` was
+/// inflated by a 0.10 that nothing backed, so a storage fault produced a *more* confident answer,
+/// not a less complete one.
+///
+/// The handler's three sibling reads already propagated via `ApiError::internal`, so this brings
+/// the fourth into line rather than inventing a new response shape: the failure modes a caller of
+/// this endpoint already sees now include this read.
+///
+/// `state.store.pool.close()` is a genuine read failure — the same technique `engine_tests` uses —
+/// not a mock and not a fabricated state.
+#[tokio::test]
+async fn a_storage_failure_is_reported_rather_than_a_risk_answer() {
+    let (state, _dir) = test_state().await;
+    let proj_id = Uuid::new_v4();
+    state
+        .store
+        .insert_project(proj_id, "Risk Storage Fail Proj", None)
+        .await
+        .unwrap();
+    let admin = mint_key(&state, "admin", None).await;
+    let url = format!("/api/v1/projects/{proj_id}/intelligence/risk");
+
+    // Healthy first, so the failure below is attributable to the closed pool and nothing else.
+    let (status, body) = send(&state, req("GET", &url, Some(&admin), None)).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a healthy store must still answer: {body}"
+    );
+    assert_eq!(body["risk_level"], "INSUFFICIENT_DATA");
+
+
+    let (status, body) = send(&state, req("GET", &url, Some(&admin), None)).await;
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "a storage failure must not return a successful risk assessment: {body}"
+    );
+    assert!(
+        status.is_server_error(),
+        "and it must be a server error, not a client error: got {status}"
+    );
+    assert!(
+        body.get("risk_score").is_none()
+            && body.get("factors").is_none()
+            && body.get("measured_weight").is_none(),
+        "a failed response must not carry a risk answer at all: {body}"
+    );
+}
+
+/// The healthy path is unaffected by removing the silent fallback.
+///
+/// This is the control on the test above: if closing the pool had not been the cause of that
+/// error, the failure test would pass for the wrong reason. A healthy read must still answer
+/// normally, and must still return a `factors` block rather than degrading.
+///
+/// The measured-zero / unmeasured distinction itself is not asserted here, because this endpoint's
+/// no-history branch returns the `RiskFactors` struct, which is all `f64` and so cannot express
+/// "unmeasured". That distinction is established properly in `risk_signal_tests`
+/// (`a_measured_zero_is_distinguishable_from_an_unmeasured_signal` and
+/// `the_signals_that_were_already_real_are_unaffected`), which reach the scoring branch with real
+/// telemetry recorded.
+#[tokio::test]
+async fn a_healthy_risk_read_is_unaffected_by_removing_the_silent_fallback() {
+    let (state, _dir) = test_state().await;
+    let proj_id = Uuid::new_v4();
+    state
+        .store
+        .insert_project(proj_id, "Risk Healthy Proj", None)
+        .await
+        .unwrap();
+    let admin = mint_key(&state, "admin", None).await;
+
+    let (status, body) = send(
+        &state,
+        req(
+            "GET",
+            &format!("/api/v1/projects/{proj_id}/intelligence/risk"),
+            Some(&admin),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a healthy read must succeed: {body}"
+    );
+    assert_eq!(
+        body["risk_level"], "INSUFFICIENT_DATA",
+        "a project with no history has no risk conclusion to give"
+    );
+    assert!(
+        body.get("factors").is_some(),
+        "the factors block must still be reported: {body}"
+    );
+    assert_eq!(
+        body["task_name"],
+        proj_id.to_string(),
+        "and the answer must still name the project it is about"
+    );
+}
+
 #[tokio::test]
 async fn test_project_risk_intelligence_endpoint() {
     let (state, _dir) = test_state().await;
@@ -12700,6 +12812,64 @@ async fn planning_test_plan_still_accepts_an_inline_schema() {
             .iter()
             .any(|a| a == "/widgets"),
         "the plan must be built from the inline schema: {plan}"
+    );
+}
+
+/// ## R1b: a failed grounding read must not return a plan
+///
+/// `generate_test_plan_scoped` fetches two grounding inputs before it plans — the healing
+/// calibration and the QA feedback. Both were fetched fail-soft (`.unwrap_or_default()` and
+/// `.ok()`), so a store that could not answer produced a `200` with a plan built against signals
+/// and a calibration that had never been loaded, indistinguishable from a well-grounded plan.
+/// Both now propagate.
+///
+/// ## What this test does and does not prove
+///
+/// It pins the endpoint contract: a closed store yields an error response, and **no plan payload
+/// accompanies it**.
+///
+/// It does **not** isolate either grounding read, and that was verified by mutation rather than
+/// assumed. Reverting `qa_feedback` to `.ok()` leaves this test passing, because
+/// `generate_test_plan` — called later in the same handler — also fails on a closed pool and
+/// returns `5xx` either way. One closed pool cannot single out one read among several. The
+/// per-read propagation is pinned at the reader level instead; see
+/// `adaptive_intelligence_tests::r1b_planning_feedback_reports_a_failed_read_rather_than_no_signals`
+/// and `qa_memory_risk_tests::r1b_no_affected_view_reports_a_failed_read_as_an_empty_answer`.
+///
+/// The healthy case is asserted first so the failure cannot pass for the wrong reason.
+#[tokio::test]
+async fn a_storage_failure_is_not_reported_as_a_grounded_test_plan() {
+    let (state, _dir) = test_state().await;
+    let project = make_project(&state, "Planning Storage Fail").await;
+    let operator = mint_key(&state, "operator", Some(&project.to_string())).await;
+    let url = format!("/api/v1/projects/{project}/planning/test-plan");
+    let body = serde_json::json!({
+        "project_id": project.to_string(),
+        "schema_content": planning_openapi_json(),
+    });
+
+    // Healthy first, so the failure below is attributable to the closed pool and nothing else.
+    let (status, plan) = send(
+        &state,
+        req("POST", &url, Some(&operator), Some(body.clone())),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a healthy store must still produce a plan: {plan}"
+    );
+
+
+    let (status, failed) = send(&state, req("POST", &url, Some(&operator), Some(body))).await;
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "a failed grounding read must not return a plan that looks grounded: {failed}"
+    );
+    assert!(
+        failed.get("api_areas_considered").is_none(),
+        "no plan payload may be returned alongside the failure: {failed}"
     );
 }
 

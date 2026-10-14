@@ -23,6 +23,445 @@ async fn temp_store() -> (Store, tempfile::TempDir) {
     (store, dir)
 }
 
+/// Phase 9.2B Batch 5: the same fixture, rooted in a caller-owned directory so a test can measure
+/// exactly what *this* fixture leaves behind. Counting global `.tmp*` entries is not a valid
+/// assertion -- `cargo test` runs these tests concurrently, so any other suite's fixture perturbs
+/// the total and the result would depend on scheduling order.
+///
+/// `temp_store()` above is left untouched and keeps using `tempfile::tempdir()`, so the 33 existing
+/// call sites keep their existing behaviour and directory location exactly.
+async fn temp_store_in(root: &std::path::Path) -> (Store, tempfile::TempDir) {
+    let dir = tempfile::tempdir_in(root).expect("tempdir");
+    let store = Store::connect(&dir.path().join("engine.sqlite3"))
+        .await
+        .expect("connect");
+    (store, dir)
+}
+
+// ===========================================================================
+// Phase 9.2B Batch 5 — temp_store() lifecycle
+// ===========================================================================
+//
+// These test cleanup and execution completion, not engine logic. A green suite is not evidence that
+// a directory was removed: `tempfile` swallows the Windows removal error that causes the leak in the
+// first place. Every assertion reads the filesystem or the database directly.
+//
+// Three outcomes are tracked separately and must not be conflated:
+//   1. successful fixture cleanup       -- the directory is gone afterwards
+//   2. successful background completion -- the spawned run settled and its writes landed
+//   3. successful functional assertions -- engine behaviour is still correct
+//
+// `p92b5_spawned_run_writes_persist_before_the_pool_closes` pins (2) down independently of (1): it
+// proves the run's writes are readable while the pool is still open, so cleanup can never conceal a
+// failed background write behind a passing test.
+
+/// The private measurement root owned by one test. Only this namespace is ever removed.
+fn p92b5_root(test_name: &str) -> std::path::PathBuf {
+    let root = std::env::temp_dir()
+        .join("aiqa_p92b5_artifacts")
+        .join(test_name);
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("create isolated artifact root");
+    root
+}
+
+fn p92b5_dir_count(root: &std::path::Path) -> usize {
+    std::fs::read_dir(root)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .filter(|e| e.path().is_dir())
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+fn p92b5_registry() -> Arc<ExecutorRegistry> {
+    Arc::new(ExecutorRegistry::new(Arc::new(SimulatedExecutor)))
+}
+
+/// **A + B.** The fixture must still produce a genuinely migrated, writable database.
+#[tokio::test]
+async fn p92b5_fixture_is_usable_and_fully_migrated() {
+    let root = p92b5_root("usable_and_migrated");
+    let (store, dir) = temp_store_in(&root).await;
+
+    let tables: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN \
+         ('projects','runs','tasks','run_events','quality_nodes')",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .expect("query sqlite_master");
+    assert_eq!(
+        tables.0, 5,
+        "the engine fixture must run the real migrations"
+    );
+
+    let run_id = Uuid::new_v4();
+    store
+        .insert_run(
+            run_id,
+            &plan("migrated", vec![sim_task("t1", SimOutcome::Pass, 0)], 1),
+            Some("p1"),
+            Some("tester"),
+            RunState::Scheduled,
+            None,
+        )
+        .await
+        .expect("insert_run");
+    let summary = store
+        .get_run_summary(run_id)
+        .await
+        .expect("get_run_summary")
+        .expect("run exists");
+    assert_eq!(
+        summary.run_id, run_id,
+        "the fixture must accept a real write and read it back"
+    );
+    assert!(
+        dir.path().join("engine.sqlite3").exists(),
+        "the database file must exist while the fixture is live"
+    );
+
+    store.pool.close().await;
+}
+
+/// **C + L.** A fixture that starts no background execution must keep behaving exactly as before:
+/// seeding and reading still work, and teardown does not disturb either.
+#[tokio::test]
+async fn p92b5_non_executing_fixture_behaviour_is_unchanged() {
+    let root = p92b5_root("non_executing_behaviour");
+    let (store, dir) = temp_store_in(&root).await;
+
+    let run_id = Uuid::new_v4();
+    store
+        .insert_run(
+            run_id,
+            &plan(
+                "no-exec",
+                vec![
+                    sim_task("a", SimOutcome::Pass, 0),
+                    sim_task("b", SimOutcome::Fail, 0),
+                ],
+                2,
+            ),
+            Some("p1"),
+            Some("tester"),
+            RunState::Running,
+            None,
+        )
+        .await
+        .expect("insert_run");
+
+    let tasks = store
+        .list_tasks_for_run(run_id)
+        .await
+        .expect("list_tasks_for_run");
+    assert_eq!(
+        tasks.len(),
+        2,
+        "seeding must still materialise every planned task: {tasks:?}"
+    );
+    assert!(dir.path().exists(), "the fixture stays alive until dropped");
+
+    store.pool.close().await;
+}
+
+/// **I + J — the central test of this batch.** A real run is started through the same
+/// `run_to_completion` helper the suite already uses, which polls `record.engine.is_finished()`
+/// rather than sleeping a fixed amount. The test then proves the run's own database writes are
+/// readable **while the pool is still open**, and only then closes the pool.
+///
+/// Ordering is the point: a green cleanup test must not be able to hide a failed background write.
+#[tokio::test]
+async fn p92b5_spawned_run_writes_persist_before_the_pool_closes() {
+    let root = p92b5_root("spawned_run_writes");
+    let (store, dir) = temp_store_in(&root).await;
+    let evidence = evidence_store(&dir);
+
+    let run_id = run_to_completion(
+        &store,
+        evidence,
+        p92b5_registry(),
+        plan(
+            "p92b5-run",
+            vec![
+                sim_task("t-pass", SimOutcome::Pass, 0),
+                sim_task("t-fail", SimOutcome::Fail, 0),
+            ],
+            2,
+        ),
+        std::time::Duration::from_secs(10),
+    )
+    .await;
+
+    // (I) The run reached a terminal state -- this is what `run_to_completion` waited for.
+    let summary = store
+        .get_run_summary(run_id)
+        .await
+        .expect("get_run_summary")
+        .expect("run exists after execution");
+    assert_eq!(
+        summary.state,
+        RunState::Failed,
+        "a run with a failed task must be recorded as FAILED; if this fails the background write \
+         never landed"
+    );
+
+    // (J) The task rows are written by the spawned run, not by this test. If the run's writes had
+    // failed, this list would be empty or show no terminal status -- and a closed pool must never
+    // be able to hide that behind a passing cleanup assertion.
+    let tasks = store
+        .list_tasks_for_run(run_id)
+        .await
+        .expect("list_tasks_for_run");
+    assert_eq!(
+        tasks.len(),
+        2,
+        "the spawned run must have persisted both task rows: {tasks:?}"
+    );
+    assert!(
+        tasks.iter().any(|t| t.status == TaskStatus::Passed)
+            && tasks.iter().any(|t| t.status == TaskStatus::Failed),
+        "the spawned run must have persisted per-task outcomes, not just the run row: {tasks:?}"
+    );
+
+    let events: Vec<(String,)> =
+        sqlx::query_as("SELECT event_type FROM run_events WHERE run_id = ?")
+            .bind(run_id.to_string())
+            .fetch_all(&store.pool)
+            .await
+            .expect("query run_events");
+    assert!(
+        events.iter().any(|(e,)| e == "RUN_COMPLETED"),
+        "the run's completion event must be persisted before teardown; got {events:?}"
+    );
+
+    // Only now is it safe to release the pool.
+    store.pool.close().await;
+}
+
+/// **D + E + F.** The close must complete before the directory is removed, and the SQLite file plus
+/// its WAL/SHM sidecars must not block the removal.
+#[tokio::test]
+async fn p92b5_close_removes_the_directory_despite_wal_and_shm() {
+    let root = p92b5_root("close_removes_directory");
+    let (store, dir) = temp_store_in(&root).await;
+    let path = dir.path().to_path_buf();
+
+    // A real write, so the WAL/SHM sidecars genuinely exist rather than this being an easy case.
+    store
+        .insert_run(
+            Uuid::new_v4(),
+            &plan("wal", vec![sim_task("t1", SimOutcome::Pass, 0)], 1),
+            Some("p1"),
+            Some("tester"),
+            RunState::Scheduled,
+            None,
+        )
+        .await
+        .expect("insert_run");
+
+    let live: Vec<String> = std::fs::read_dir(&path)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        live.iter()
+            .any(|f| f.ends_with("-wal") || f.ends_with("-shm")),
+        "WAL/SHM sidecars must exist while the fixture is live, else this test proves nothing: \
+         {live:?}"
+    );
+
+    store.pool.close().await;
+    drop(dir);
+
+    assert!(
+        !path.exists(),
+        "after an awaited `pool.close()` the directory must be gone. If it remains, an open \
+         SQLite handle -- not the fixture -- is what blocked removal."
+    );
+    assert_eq!(
+        p92b5_dir_count(&root),
+        0,
+        "the measurement root must be empty"
+    );
+}
+
+/// **G.** Repeated creation and teardown must not accumulate artifacts in the isolated root.
+#[tokio::test]
+async fn p92b5_repeated_fixtures_accumulate_nothing() {
+    let root = p92b5_root("repeated_fixtures");
+    assert_eq!(
+        p92b5_dir_count(&root),
+        0,
+        "the measurement root starts empty"
+    );
+    for _ in 0..10 {
+        let (store, dir) = temp_store_in(&root).await;
+        store
+            .insert_run(
+                Uuid::new_v4(),
+                &plan("repeat", vec![sim_task("t1", SimOutcome::Pass, 0)], 1),
+                Some("p1"),
+                Some("tester"),
+                RunState::Scheduled,
+                None,
+            )
+            .await
+            .expect("insert_run");
+        store.pool.close().await;
+        drop(dir);
+    }
+    let after = p92b5_dir_count(&root);
+    assert_eq!(
+        after, 0,
+        "ten fixture cycles must leave zero directories in the isolated root; {after} remained"
+    );
+}
+
+/// **H.** Concurrent fixtures must each remove exactly their own directory, never another's.
+#[tokio::test]
+async fn p92b5_concurrent_fixtures_do_not_interfere() {
+    let root = p92b5_root("concurrent_fixtures");
+    assert_eq!(
+        p92b5_dir_count(&root),
+        0,
+        "the measurement root starts empty"
+    );
+
+    let mut handles = Vec::new();
+    for i in 0..8 {
+        let root = root.clone();
+        handles.push(tokio::spawn(async move {
+            let (store, dir) = temp_store_in(&root).await;
+            let path = dir.path().to_path_buf();
+            // Prove the fixture was real before releasing it, so a fixture that never created its
+            // database cannot pass by never existing.
+            assert!(
+                path.join("engine.sqlite3").exists(),
+                "concurrent fixture {i} must have created its database before teardown"
+            );
+            store
+                .insert_run(
+                    Uuid::new_v4(),
+                    &plan("concurrent", vec![sim_task("t1", SimOutcome::Pass, 0)], 1),
+                    Some("p1"),
+                    Some("tester"),
+                    RunState::Scheduled,
+                    None,
+                )
+                .await
+                .expect("insert_run");
+            store.pool.close().await;
+            drop(dir);
+            path
+        }));
+    }
+
+    let mut paths = Vec::new();
+    for h in handles {
+        paths.push(h.await.expect("concurrent fixture task must not panic"));
+    }
+    assert_eq!(
+        p92b5_dir_count(&root),
+        0,
+        "eight concurrent fixtures must leave nothing behind -- neither their own nor each \
+         other's"
+    );
+    for p in &paths {
+        assert!(
+            !p.exists(),
+            "each fixture must remove exactly its own directory; {} survived",
+            p.display()
+        );
+    }
+}
+
+/// Teardown failure must remain observable rather than silently suppressed. `TempDir::close()` is
+/// the fallible form and returns the real removal error; asserting on it is what stops a future
+/// regression from passing quietly. Under this repository's retention policy a directory that
+/// genuinely cannot be removed is left in place rather than force-deleted, so it must still be
+/// *inspectable* -- which is exactly what a returned `Err` tells us.
+#[tokio::test]
+async fn p92b5_teardown_failure_is_observable() {
+    let root = p92b5_root("teardown_failure_observable");
+    let (store, dir) = temp_store_in(&root).await;
+    let path = dir.path().to_path_buf();
+    store
+        .insert_run(
+            Uuid::new_v4(),
+            &plan("diag", vec![sim_task("t1", SimOutcome::Pass, 0)], 1),
+            Some("p1"),
+            Some("tester"),
+            RunState::Scheduled,
+            None,
+        )
+        .await
+        .expect("insert_run");
+
+    store.pool.close().await;
+    let result = dir.close();
+    assert!(
+        result.is_ok(),
+        "an awaited pool close must let TempDir::close() succeed; got {:?}",
+        result.err()
+    );
+    assert!(
+        !path.exists(),
+        "and the directory must really be gone, not merely reported as closed"
+    );
+}
+
+/// The last leak in this suite came from a *second* pool opened on the same file, which the original
+/// teardown never closed. This test reproduces that shape directly so it cannot regress unnoticed.
+#[tokio::test]
+async fn p92b5_a_second_pool_on_the_same_file_must_also_be_closed() {
+    let root = p92b5_root("second_pool_must_close");
+    let (store, dir) = temp_store_in(&root).await;
+    let db_path = dir.path().join("engine.sqlite3");
+    let path = dir.path().to_path_buf();
+
+    store
+        .insert_run(
+            Uuid::new_v4(),
+            &plan("restart", vec![sim_task("t1", SimOutcome::Pass, 0)], 1),
+            Some("p1"),
+            Some("tester"),
+            RunState::Scheduled,
+            None,
+        )
+        .await
+        .expect("insert_run");
+
+    // Simulate the "process restart" shape used by d2/d3: reconnect to the SAME file.
+    store.pool.close().await;
+    let restarted = Store::connect(&db_path).await.expect("reconnect");
+    let n: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM runs")
+        .fetch_one(&restarted.pool)
+        .await
+        .expect("count runs");
+    assert_eq!(n.0, 1, "the reconnected pool must see the same database");
+
+    // Closing only `store` would leave `restarted` holding the file, and the directory would leak.
+    restarted.pool.close().await;
+    drop(dir);
+
+    assert!(
+        !path.exists(),
+        "every pool opened on the file must be closed before the TempDir is removed; a second, \
+         unclosed pool is exactly what leaked in d2/d3"
+    );
+    assert_eq!(
+        p92b5_dir_count(&root),
+        0,
+        "the measurement root must be empty"
+    );
+}
+
 fn evidence_store(dir: &tempfile::TempDir) -> Arc<LocalEvidenceStore> {
     Arc::new(LocalEvidenceStore::new(dir.path().join("evidence")).expect("evidence store"))
 }
@@ -159,6 +598,7 @@ async fn b2_recovery_of_all_passed_run_yields_completed_not_failed() {
         summary.passed, 2,
         "task states must be preserved by recovery"
     );
+    store.pool.close().await;
 }
 
 /// B2: a genuinely interrupted run (tasks left QUEUED/RUNNING) must still be
@@ -233,6 +673,7 @@ async fn b2_recovery_marks_orphaned_tasks_and_preserves_terminal_ones() {
         RunState::Partial,
         "a run with an infrastructure outcome recovers as PARTIAL"
     );
+    store.pool.close().await;
 }
 
 /// B2: a run containing a real product failure must recover as FAILED, not
@@ -300,6 +741,7 @@ async fn b2_recovery_of_run_with_product_failure_yields_failed() {
     );
     assert_eq!(summary.failed, 1);
     assert_eq!(summary.passed, 1);
+    store.pool.close().await;
 }
 
 // -------------------------------------------------------------------- B4
@@ -355,6 +797,7 @@ async fn b4_started_at_reflects_real_execution_start_under_concurrency_1() {
             t.id
         );
     }
+    store.pool.close().await;
 }
 
 // -------------------------------------------------------------------- B5
@@ -432,6 +875,7 @@ async fn b5_hung_executor_times_out_releases_permit_and_run_continues() {
         TaskStatus::Passed,
         "the permit must be released so unrelated work still runs (continue-on-failure)"
     );
+    store.pool.close().await;
 }
 
 // -------------------------------------------------------------------- D1
@@ -689,6 +1133,7 @@ async fn d1_successful_approval_persists_and_spawns() {
         .expect("run exists");
     assert_eq!(summary.approved_by, Some("approver_alice".to_string()));
     assert!(summary.approved_at.is_some());
+    store.pool.close().await;
 }
 
 /// D1: successful rejection persists durably and updates in-memory state.
@@ -749,6 +1194,7 @@ async fn d1_successful_rejection_persists_and_mutates_state() {
     assert_eq!(summary.state, RunState::Rejected);
     assert_eq!(summary.approved_by, Some("rejector_bob".to_string()));
     assert_eq!(summary.policy_notes, Some("policy violation".to_string()));
+    store.pool.close().await;
 }
 
 // -------------------------------------------------------------------- D2
@@ -884,6 +1330,11 @@ async fn d2_persistence_failure_reason_is_durable_and_survives_restart() {
         recovered_summary.policy_notes, db_summary.policy_notes,
         "recovered reason must be identical to pre-restart database reason"
     );
+
+    // Phase 9.2B Batch 5: this test simulates a process restart, so `restarted_store` is a SECOND
+    // pool opened on the same file. Closing `store` above is not enough -- without closing this one
+    // too, its handle keeps the SQLite file open when the TempDir drops and the directory leaks.
+    restarted_store.pool.close().await;
 }
 
 // -------------------------------------------------------------------- D3
@@ -1111,6 +1562,12 @@ async fn d3_orphaned_task_under_terminal_run_is_repaired_by_recovery() {
                     .contains("run recovered at startup")),
         "recovery's own reconciliation must be durably auditable as an event, not silent"
     );
+
+    // Phase 9.2B Batch 5: this test also simulates a process restart, so `restarted_store` is a
+    // SECOND pool opened on the same file. Closing `store` is not enough -- without closing this
+    // one too, its handle keeps the SQLite file open when the TempDir drops and the directory
+    // leaks. This was the last remaining leak in the suite.
+    restarted_store.pool.close().await;
 }
 
 // -------------------------------------------------------------------- D4
@@ -1269,6 +1726,7 @@ async fn d4_live_run_with_failed_task_matches_recovery_derived_state() {
         recovered, live_state,
         "recovery-derived state must match live-finalisation state for the same tasks"
     );
+    store.pool.close().await;
 }
 
 /// D4 Test 2 — BLOCKED: a dependent task blocked by a failed prerequisite
@@ -1377,6 +1835,7 @@ async fn d4_live_run_with_blocked_task_matches_recovery_derived_state() {
         recovered, live_state,
         "recovery-derived state must match live-finalisation state for the same tasks"
     );
+    store.pool.close().await;
 }
 
 /// D4 Test 3 — TIMEOUT: a run whose only infrastructure outcome is a
@@ -1493,6 +1952,7 @@ async fn d4_live_run_with_timeout_task_matches_recovery_derived_state() {
         recovered, live_state,
         "recovery-derived state must match live-finalisation state for the same tasks"
     );
+    store.pool.close().await;
 }
 
 // -------------------------------------------------------------------- D5
@@ -1652,6 +2112,7 @@ async fn d5_insert_evidence_failure_is_escalated_with_no_false_success_row() {
         has_log_file,
         "the evidence file itself must have been written (only the DB row failed)"
     );
+    store.pool.close().await;
 }
 
 /// D5-B — `set_run_state`: a real SQLite write failure on the transition to
@@ -1758,6 +2219,7 @@ async fn d5_set_run_state_running_failure_is_escalated_and_run_finishes_failed()
         db_state, live_state,
         "database state must durably agree with the live state"
     );
+    store.pool.close().await;
 }
 
 /// D5-C — `set_run_started`: a real SQLite write failure on the write that
@@ -1873,6 +2335,7 @@ async fn d5_set_run_started_failure_is_escalated_and_started_at_stays_null() {
             .await
             .expect("query started_at");
     assert_eq!(row_started_at, None, "started_at must remain NULL in the database — the write that would have set it genuinely failed");
+    store.pool.close().await;
 }
 
 /// D5-D — concurrent recovery: two recovery passes racing against the same
@@ -1991,6 +2454,7 @@ async fn d5_concurrent_recovery_of_multiple_orphaned_runs_is_consistent_and_non_
             "run {label}: exactly one recovery-completion event may durably exist, never zero and never a true duplicate"
         );
     }
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ BE-13
@@ -2094,6 +2558,7 @@ async fn be13_cancel_actually_interrupts_an_in_flight_task_rather_than_waiting_i
         TaskStatus::Cancelled,
         "durable task status must also be CANCELLED"
     );
+    store.pool.close().await;
 }
 
 /// BE-13 — a task that was never dispatched (still QUEUED, waiting for a
@@ -2182,6 +2647,7 @@ async fn be13_cancel_prevents_a_not_yet_started_queued_task_from_ever_running() 
         engine.tasks["second"].started_at.is_none(),
         "a task cancelled before dispatch must never have a started_at"
     );
+    store.pool.close().await;
 }
 
 /// BE-13 durability — a `CANCELLED` task status, once actually persisted,
@@ -2243,6 +2709,7 @@ async fn be13_recovery_reports_cancelled_run_as_cancelled_not_completed() {
         RunState::Cancelled,
         "a run with any CANCELLED task must recover as CANCELLED, not COMPLETED/PARTIAL"
     );
+    store.pool.close().await;
 }
 
 // ============================================================================
@@ -2359,6 +2826,7 @@ async fn phase10_recurring_failure_with_selector_autonomously_proposes_healing()
         p.state, "PENDING_APPROVAL",
         "the existing approval gate must hold for an autonomous proposal exactly like a human one"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -2383,6 +2851,7 @@ async fn phase10_single_failure_does_not_autonomously_propose_healing() {
         proposals.is_empty(),
         "a single failure must never autonomously create a healing proposal"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -2413,6 +2882,7 @@ async fn phase10_recurring_failure_without_selector_does_not_autonomously_propos
         proposals.is_empty(),
         "a recurring failure with no selector must never autonomously create a healing proposal"
     );
+    store.pool.close().await;
 }
 
 /// What `healingLocator` printed in a real Playwright run for a selector it could not resolve
@@ -2518,6 +2988,7 @@ async fn phase10_proposes_the_selector_read_from_the_failed_tasks_own_output() {
         proposals[0].original_actions
     );
     assert_eq!(proposals[0].state, "PENDING_APPROVAL");
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -2536,6 +3007,7 @@ async fn phase10_does_not_guess_a_selector_when_the_output_names_none() {
         poll_healing_proposals(&store, "p1").await.is_empty(),
         "a failure that names no selector has nothing to heal and must not get a made-up one"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -2571,6 +3043,7 @@ async fn phase10_a_task_with_a_live_proposal_is_not_proposed_again() {
          it must not pile up another (got {})",
         proposals.len()
     );
+    store.pool.close().await;
 }
 
 fn proposal_row(
@@ -2687,6 +3160,7 @@ async fn phase10_open_proposal_check_counts_only_live_proposals_for_the_same_tas
             "a {state} proposal is finished and must not block a new one"
         );
     }
+    store.pool.close().await;
 }
 
 // ---------------------------------------------------------------- crawl evidence
@@ -2721,10 +3195,24 @@ async fn seed_run(
         )
         .await
         .expect("insert run");
+    // Two calls, one flag each, because that is the contract `Store::set_task_status` documents
+    // (in `store.rs`, and again in `store_tests`): `set_started` and `set_finished` are mutually
+    // exclusive, so a combined `(true, true)` takes only the first branch and leaves `finished_at`
+    // NULL.
+    //
+    // This used to be a single `(true, true)` call, which silently produced a task row invisible to
+    // `task_history_by_name` — that reader filters on `finished_at IS NOT NULL`. Nothing failed,
+    // because nothing was asserting on the seeded runs' history; the seed simply stopped meaning
+    // what its name said. The production engine has always made two calls (`engine.rs`, three
+    // sites), so no production code changed here.
     store
-        .set_task_status(run_id, &task_id, task_status, None, true, true)
+        .set_task_status(run_id, &task_id, TaskStatus::Running, None, true, false)
         .await
-        .expect("set task status");
+        .expect("start task");
+    store
+        .set_task_status(run_id, &task_id, task_status, None, false, true)
+        .await
+        .expect("finish task");
     (run_id, task_id)
 }
 
@@ -2841,6 +3329,7 @@ async fn phase10_recent_crawls_are_the_projects_own_finished_ones_newest_first()
         vec![other_project.id.clone()],
         "another project's crawl is never offered as evidence"
     );
+    store.pool.close().await;
 }
 
 /// The `AIQA_HEALING_EVENT` line `healingLocator` prints for a selector it could not resolve,
@@ -2897,6 +3386,7 @@ async fn phase10_a_readable_crawl_turns_the_signal_into_a_replacement_suggestion
         p.requires_approval,
         "a crawl-grounded proposal is still held for a person"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -2920,6 +3410,7 @@ async fn phase10_an_unreadable_crawl_falls_back_to_the_advisory_proposal() {
         p.original_actions, p.proposed_actions,
         "with nothing to diagnose from, it proposes no change"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -2944,6 +3435,7 @@ async fn phase10_an_older_readable_crawl_is_used_when_the_newest_result_is_gone(
         proposals[0].diagnosis_category, "SelectorRenamedOrRelocated",
         "one crawl whose result file was deleted must not hide an older usable one"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -2970,4 +3462,5 @@ async fn phase10_a_diagnosis_that_is_refused_falls_back_to_the_advisory_proposal
         "the refused selector must not reach a stored proposal, got {}",
         p.proposed_actions
     );
+    store.pool.close().await;
 }

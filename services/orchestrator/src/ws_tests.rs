@@ -200,13 +200,14 @@ async fn be14_authorized_subscriber_can_connect_to_project_stream() {
     let (state, _dir) = test_state().await;
     let project = make_project(&state, "WS Auth OK").await;
     let key = mint_key(&state, "operator", Some(&project.to_string())).await;
-    let base = spawn_server(state).await;
+    let base = spawn_server(state.clone()).await;
 
     let ws = try_connect_project_stream(&base, project, Some(&key)).await;
     assert!(
         ws.is_ok(),
         "authorized subscriber must be able to connect: {ws:?}"
     );
+    state.store.pool.close().await;
 }
 
 /// Category: missing authentication is rejected.
@@ -214,12 +215,13 @@ async fn be14_authorized_subscriber_can_connect_to_project_stream() {
 async fn be14_missing_key_is_rejected() {
     let (state, _dir) = test_state().await;
     let project = make_project(&state, "WS No Key").await;
-    let base = spawn_server(state).await;
+    let base = spawn_server(state.clone()).await;
 
     let err = try_connect_project_stream(&base, project, None)
         .await
         .expect_err("must be rejected");
     assert_eq!(rejection_status(&err), Some(401), "err={err:?}");
+    state.store.pool.close().await;
 }
 
 /// Category: nonexistent project is rejected with structured behavior
@@ -231,13 +233,14 @@ async fn be14_missing_key_is_rejected() {
 async fn be14_nonexistent_project_is_rejected() {
     let (state, _dir) = test_state().await;
     let admin_key = mint_key(&state, "admin", None).await;
-    let base = spawn_server(state).await;
+    let base = spawn_server(state.clone()).await;
     let phantom = Uuid::new_v4();
 
     let err = try_connect_project_stream(&base, phantom, Some(&admin_key))
         .await
         .expect_err("must be rejected");
     assert_eq!(rejection_status(&err), Some(404), "err={err:?}");
+    state.store.pool.close().await;
 }
 
 /// Category: Project-A-scoped caller cannot subscribe to Project B.
@@ -247,7 +250,7 @@ async fn be14_cross_project_subscription_is_rejected() {
     let project_a = make_project(&state, "WS Tenant A").await;
     let project_b = make_project(&state, "WS Tenant B").await;
     let key_a = mint_key(&state, "operator", Some(&project_a.to_string())).await;
-    let base = spawn_server(state).await;
+    let base = spawn_server(state.clone()).await;
 
     let err = try_connect_project_stream(&base, project_b, Some(&key_a))
         .await
@@ -257,6 +260,7 @@ async fn be14_cross_project_subscription_is_rejected() {
         Some(403),
         "a project-A-scoped key must not reach project B's stream; err={err:?}"
     );
+    state.store.pool.close().await;
 }
 
 /// Category: two real projects produce distinct execution events; each
@@ -271,7 +275,7 @@ async fn be14_subscribers_receive_only_their_own_projects_real_events() {
     let project_b = make_project(&state, "WS Isolation B").await;
     let key_a = mint_key(&state, "operator", Some(&project_a.to_string())).await;
     let key_b = mint_key(&state, "operator", Some(&project_b.to_string())).await;
-    let base = spawn_server(state).await;
+    let base = spawn_server(state.clone()).await;
     let client = reqwest::Client::new();
 
     let mut ws_a = try_connect_project_stream(&base, project_a, Some(&key_a))
@@ -322,6 +326,7 @@ async fn be14_subscribers_receive_only_their_own_projects_real_events() {
             _ => break,
         }
     }
+    state.store.pool.close().await;
 }
 
 /// Category: disconnect/resource cleanup. After the client disconnects,
@@ -334,7 +339,7 @@ async fn be14_disconnect_releases_the_subscriber() {
     let project = make_project(&state, "WS Disconnect").await;
     let key = mint_key(&state, "operator", Some(&project.to_string())).await;
     let state_handle = state.clone();
-    let base = spawn_server(state).await;
+    let base = spawn_server(state.clone()).await;
 
     let ws = try_connect_project_stream(&base, project, Some(&key))
         .await
@@ -380,6 +385,7 @@ async fn be14_disconnect_releases_the_subscriber() {
         released,
         "disconnecting the client must release its subscription (no leaked receiver)"
     );
+    state.store.pool.close().await;
 }
 
 /// Category: existing per-run catch-up REST endpoint must continue to
@@ -389,7 +395,7 @@ async fn be14_per_run_events_rest_endpoint_still_works() {
     let (state, _dir) = test_state().await;
     let project = make_project(&state, "REST Regression").await;
     let key = mint_key(&state, "operator", Some(&project.to_string())).await;
-    let base = spawn_server(state).await;
+    let base = spawn_server(state.clone()).await;
     let client = reqwest::Client::new();
 
     let run_id = create_run(&client, &base, project, &key, simple_plan("rest-check")).await;
@@ -410,6 +416,7 @@ async fn be14_per_run_events_rest_endpoint_still_works() {
         "a completed run must have real persisted/in-memory events"
     );
     assert!(events.iter().all(|e| e.run_id == run_id));
+    state.store.pool.close().await;
 }
 
 /// The Lagged-path fix (Integration Plan §11.2 item 5 / audit M5): a
@@ -479,6 +486,7 @@ async fn be14_lagging_subscriber_is_closed_with_distinct_code_not_silently_skipp
         }
         other => panic!("expected a Close(4001) frame after lagging, got: {other:?}"),
     }
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -531,6 +539,7 @@ async fn orchestrator_logs_ws_receives_live_emitted_logs() {
         }
         other => panic!("expected WsMessage::Text, got {other:?}"),
     }
+    state.store.pool.close().await;
 }
 
 // Phase B cleanup: `be14_legacy_per_run_websocket_still_works` was removed

@@ -122,6 +122,61 @@ async fn setup_healing_harness() -> (
     (store, registry, evidence, service, dir)
 }
 
+/// Phase 9.2B Batch 4: the same fixture, rooted in a caller-owned directory so a test can measure
+/// exactly what *this* fixture leaves behind. Counting global `.tmp*` entries is not a valid
+/// assertion -- `cargo test` runs these tests concurrently, so any other suite's fixture perturbs
+/// the total and the result would depend on scheduling order.
+///
+/// `setup_healing_harness()` above is left untouched and keeps using `tempfile::tempdir()`, so the
+/// 43 existing call sites keep their existing behaviour and directory location exactly.
+async fn setup_healing_harness_in(
+    root: &std::path::Path,
+) -> (
+    Store,
+    Arc<ExecutorRegistry>,
+    Arc<LocalEvidenceStore>,
+    GovernedHealingService,
+    tempfile::TempDir,
+) {
+    let dir = tempfile::tempdir_in(root).expect("tempdir");
+    let db_path = dir.path().join("healing_test.sqlite3");
+    let store = Store::connect(&db_path).await.expect("connect store");
+
+    let evidence_dir = dir.path().join("evidence");
+    let evidence = Arc::new(LocalEvidenceStore::new(evidence_dir).expect("evidence store"));
+
+    let registry = Arc::new(
+        ExecutorRegistry::new(Arc::new(crate::executor::SimulatedExecutor))
+            .register("simulated", Arc::new(crate::executor::SimulatedExecutor))
+            .register(
+                "compiled-api",
+                Arc::new(crate::executor::CompiledApiExecutor::from_env()),
+            ),
+    );
+
+    let mut policy = PolicyConfig::from_env();
+    policy.require_approval_for = HashSet::from(["maestro".to_string()]);
+    let policy_arc = Arc::new(policy.clone());
+
+    let dispatcher = AgentExecutionDispatcher::new(
+        store.clone(),
+        policy,
+        registry.clone(),
+        evidence.clone(),
+        None,
+    );
+
+    let service = GovernedHealingService::new(
+        store.clone(),
+        dispatcher,
+        evidence.clone(),
+        policy_arc,
+        None,
+    );
+
+    (store, registry, evidence, service, dir)
+}
+
 fn sample_proposal_request(
     project_id: &str,
     run_id: Uuid,
@@ -231,6 +286,7 @@ async fn test_02_diagnosis_to_healing_proposal() {
     assert_eq!(proposal.confidence, 0.90);
     assert_eq!(proposal.risk_level, HealingRiskLevel::Low);
     assert!(!proposal.rationale.is_empty());
+    service.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -282,6 +338,7 @@ async fn test_04_valid_proposal_passes_validation() {
         .await
         .expect("valid proposal");
     assert_eq!(proposal.state, HealingState::PendingApproval);
+    service.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -297,6 +354,7 @@ async fn test_05_invalid_ast_rejected() {
         res.unwrap_err(),
         GovernedHealingError::ValidationError(_)
     ));
+    service.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -376,6 +434,7 @@ async fn test_08_ssrf_rejected() {
         res.unwrap_err(),
         GovernedHealingError::SecurityViolation(_)
     ));
+    service.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -393,6 +452,7 @@ async fn test_09_injection_rejected() {
         res.unwrap_err(),
         GovernedHealingError::SecurityViolation(_)
     ));
+    service.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -407,6 +467,7 @@ async fn test_10_cross_project_proposal_rejected() {
         res.unwrap_err(),
         GovernedHealingError::CrossProjectForbidden(_)
     ));
+    service.store.pool.close().await;
 }
 
 // ============================================================================
@@ -425,6 +486,7 @@ async fn test_11_cross_tenant_proposal_rejected() {
         res.unwrap_err(),
         GovernedHealingError::CrossProjectForbidden(_)
     ));
+    service.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -446,6 +508,7 @@ async fn test_12_environment_change_rejected() {
         check.unwrap_err(),
         GovernedHealingError::SecurityViolation(_)
     ));
+    _service.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -480,6 +543,7 @@ async fn test_14_executor_change_rejected() {
         check.unwrap_err(),
         GovernedHealingError::SecurityViolation(_)
     ));
+    _service.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -498,6 +562,7 @@ async fn test_15_credential_security_boundary_change_rejected() {
         res.unwrap_err(),
         GovernedHealingError::SecurityViolation(_)
     ));
+    service.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -514,6 +579,7 @@ async fn test_16_low_confidence_proposal_requires_approval() {
         .expect("proposal created");
     assert!(proposal.requires_approval);
     assert_eq!(proposal.state, HealingState::PendingApproval);
+    service.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -539,6 +605,7 @@ async fn test_17_high_risk_proposal_requires_approval() {
     assert_eq!(proposal.risk_level, HealingRiskLevel::High);
     assert!(proposal.requires_approval);
     assert_eq!(proposal.state, HealingState::PendingApproval);
+    service.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -556,6 +623,7 @@ async fn test_18_production_always_requires_approval() {
         .expect("proposal created");
     assert!(proposal.requires_approval);
     assert_eq!(proposal.state, HealingState::PendingApproval);
+    service.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -575,6 +643,7 @@ async fn test_19_viewer_cannot_approve() {
         res.unwrap_err(),
         GovernedHealingError::Unauthorized(_)
     ));
+    service.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -593,6 +662,7 @@ async fn test_20_operator_approval_works() {
         .expect("approval succeeds");
     assert_eq!(approved.state, HealingState::Approved);
     assert_eq!(approved.approved_by, Some(ctx.name));
+    service.store.pool.close().await;
 }
 
 // ============================================================================
@@ -615,6 +685,7 @@ async fn test_21_admin_approval_works() {
         .await
         .expect("admin approval succeeds");
     assert_eq!(approved.state, HealingState::Approved);
+    service.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -639,6 +710,7 @@ async fn test_22_rejected_proposal_cannot_execute() {
         exec_res.unwrap_err(),
         GovernedHealingError::Conflict(_)
     ));
+    service.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -665,6 +737,7 @@ async fn test_23_expired_proposal_cannot_execute() {
         res.unwrap_err(),
         GovernedHealingError::ProposalExpired(_)
     ));
+    service.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -696,6 +769,7 @@ async fn test_24_cancelled_proposal_cannot_execute() {
         res.unwrap_err(),
         GovernedHealingError::Conflict(_)
     ));
+    service.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -721,6 +795,7 @@ async fn test_25_exactly_one_healing_attempt_allowed() {
         res2.unwrap_err(),
         GovernedHealingError::MaxHealingAttemptsExceeded(_)
     ));
+    service.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -752,6 +827,7 @@ async fn test_26_no_infinite_healing_loop() {
         res_distinct.unwrap_err(),
         GovernedHealingError::MaxHealingAttemptsExceeded(_)
     ));
+    service.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -773,6 +849,7 @@ async fn test_27_duplicate_proposal_is_idempotent() {
 
     assert_eq!(p1.id, p2.id);
     assert_eq!(p1.idempotency_key, p2.idempotency_key);
+    service.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -796,6 +873,12 @@ async fn test_28_successful_healing_verification() {
         .expect("executed");
 
     let healing_run_id = executed.healing_run_id.expect("healing_run_id exists");
+
+    // Phase 9.2B Batch 4: the fixed 50 ms sleep below was a race -- the detached run had not
+    // necessarily written yet, and in `test_29`/`test_30` the statement that follows can be
+    // overwritten by the run's own write. Settle the run through this file's own completion
+    // signal first, so every assertion below reads committed state deterministically.
+    wait_until_run_settles(&service.store, healing_run_id).await;
     // Wait for in-memory simulated run execution
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
@@ -805,6 +888,7 @@ async fn test_28_successful_healing_verification() {
     assert!(verification.original_failure_resolved);
     assert!(verification.revised_task_passed);
     assert!(!verification.regression_detected);
+    service.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -828,6 +912,12 @@ async fn test_29_failed_healing_verification() {
         .expect("executed");
 
     let healing_run_id = executed.healing_run_id.expect("run id");
+
+    // Phase 9.2B Batch 4: the fixed 50 ms sleep below was a race -- the detached run had not
+    // necessarily written yet, and in `test_29`/`test_30` the statement that follows can be
+    // overwritten by the run's own write. Settle the run through this file's own completion
+    // signal first, so every assertion below reads committed state deterministically.
+    wait_until_run_settles(&service.store, healing_run_id).await;
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     // Simulate task failure in DB
@@ -844,6 +934,7 @@ async fn test_29_failed_healing_verification() {
         .expect("verify called");
     assert_eq!(verification.outcome, VerificationOutcome::NotVerified);
     assert!(!verification.revised_task_passed);
+    service.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -867,6 +958,12 @@ async fn test_30_regression_introduced_detection() {
         .expect("executed");
 
     let healing_run_id = executed.healing_run_id.expect("run id");
+
+    // Phase 9.2B Batch 4: the fixed 50 ms sleep below was a race -- the detached run had not
+    // necessarily written yet, and in `test_29`/`test_30` the statement that follows can be
+    // overwritten by the run's own write. Settle the run through this file's own completion
+    // signal first, so every assertion below reads committed state deterministically.
+    wait_until_run_settles(&service.store, healing_run_id).await;
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     // Insert an additional failed task representing a regression
@@ -887,6 +984,7 @@ async fn test_30_regression_introduced_detection() {
     );
     assert!(verification.regression_detected);
     assert_eq!(verification.new_failures_introduced, 1);
+    service.store.pool.close().await;
 }
 
 // ============================================================================
@@ -918,6 +1016,7 @@ async fn test_31_evidence_traceability() {
         .await
         .expect("proposal created");
     assert_eq!(proposal.evidence_refs, vec![key]);
+    service.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -944,6 +1043,7 @@ async fn test_32_audit_log_traceability() {
         audit_count >= 2,
         "audit log must record creation and approval"
     );
+    service.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -961,10 +1061,20 @@ async fn test_33_quality_graph_calibration() {
         .approve_proposal(&ctx, p.id)
         .await
         .expect("approved");
-    let _ = service
+    let executed = service
         .execute_approved(&ctx, approved.id)
         .await
         .expect("executed");
+    // Phase 9.2B Batch 4: capture the run id so teardown can wait for this run to settle before
+    // the pool is closed. The assertions below read persisted telemetry that the detached run
+    // writes, so closing the pool first would let them pass or fail for the wrong reason.
+    let healing_run_id = executed.healing_run_id.expect("healing run id");
+
+    // Phase 9.2B Batch 4: the fixed 50 ms sleep below was a race -- the detached run had not
+    // necessarily written yet, and in `test_29`/`test_30` the statement that follows can be
+    // overwritten by the run's own write. Settle the run through this file's own completion
+    // signal first, so every assertion below reads committed state deterministically.
+    wait_until_run_settles(&service.store, healing_run_id).await;
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     let _ = service.verify_healing(&ctx, p.id).await.expect("verified");
@@ -977,6 +1087,7 @@ async fn test_33_quality_graph_calibration() {
     assert!(!metrics.is_empty());
     assert_eq!(metrics[0].historical_success_count, 1);
     assert!(metrics[0].confidence >= 0.80);
+    service.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -1060,6 +1171,7 @@ async fn test_37_no_executor_bypass() {
     // Governed healing routes directly through AgentExecutionDispatcher and ExecutorRegistry
     let (_store, _reg, _ev, service, _dir) = setup_healing_harness().await;
     assert_eq!(service.dispatcher.budget.max_retries, 0);
+    service.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -1074,6 +1186,7 @@ async fn test_38_no_policy_bypass() {
         proposal.requires_approval,
         "policy-gated executor must require human approval"
     );
+    service.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -1088,6 +1201,7 @@ async fn test_39_no_rbac_bypass() {
         res.unwrap_err(),
         GovernedHealingError::Unauthorized(_)
     ));
+    service.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -1144,6 +1258,7 @@ async fn test_42_existing_phase4_execution_remains_functional() {
         .expect("Phase 4 dispatch succeeds");
     assert_eq!(resp.project_id, "proj-p4");
     assert_eq!(resp.tasks_count, 1);
+    service.store.pool.close().await;
 }
 
 // ============================================================================
@@ -1257,6 +1372,7 @@ async fn test_43_auto_diagnosis_wires_real_agent_into_healing_proposal() {
     assert_eq!(proposal.risk_level, HealingRiskLevel::Low);
     assert!(!proposal.requires_approval);
     assert_eq!(proposal.state, HealingState::Approved);
+    service.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -1271,6 +1387,7 @@ async fn test_44_auto_diagnosis_requires_failed_selector() {
         res.unwrap_err(),
         GovernedHealingError::ValidationError(_)
     ));
+    service.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -1285,6 +1402,7 @@ async fn test_45_auto_diagnosis_requires_crawl_evidence() {
         res.unwrap_err(),
         GovernedHealingError::ValidationError(_)
     ));
+    service.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -1316,6 +1434,7 @@ async fn test_46_inconclusive_auto_diagnosis_still_requires_approval() {
     // No confident replacement was found, so the original action is
     // proposed unchanged rather than a fabricated guess.
     assert_eq!(proposal.proposed_actions, proposal.original_actions);
+    service.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -1347,6 +1466,7 @@ async fn test_47_manual_diagnosis_takes_priority_over_auto_diagnosis() {
             selector: "#manually-chosen-selector".to_string()
         }]
     );
+    service.store.pool.close().await;
 }
 
 // ============================================================================
@@ -1410,6 +1530,7 @@ async fn a_reloaded_proposal_keeps_the_context_it_was_raised_with() {
         reloaded.custom_params,
         Some(serde_json::json!({ "browser": "chromium" }))
     );
+    service.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -1450,6 +1571,7 @@ async fn an_approved_proposal_is_executed_on_the_executor_it_was_raised_for() {
     let spec = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../executors/playwright/tests/generated/compiled-heal-task-exec-ctx.spec.ts");
     let _ = std::fs::remove_file(spec);
+    service.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -1483,6 +1605,7 @@ async fn a_production_proposal_is_executed_as_production_so_its_run_is_held_for_
         RunState::PendingApproval,
         "a production plan is always held for a person; reloading it as `test` skipped that gate"
     );
+    service.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -1510,6 +1633,7 @@ async fn a_proposal_stored_before_the_context_column_existed_is_rebuilt_with_the
     assert_eq!(reloaded.target_url, None);
     assert_eq!(reloaded.task_name, "Task task-legacy");
     assert_eq!(reloaded.timeout_secs, Some(30));
+    service.store.pool.close().await;
 }
 
 // ============================================================================
@@ -1547,6 +1671,7 @@ async fn a_proposal_that_changes_nothing_cannot_be_approved() {
         HealingState::PendingApproval,
         "a refused approval must leave the proposal as it was"
     );
+    service.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -1585,4 +1710,364 @@ async fn a_proposal_that_changes_nothing_is_not_executed_even_when_auto_approved
         "no healing run may be dispatched for a proposal that changes nothing"
     );
     assert_eq!(row.state, "APPROVED");
+    service.store.pool.close().await;
+}
+
+// ===========================================================================
+// Phase 9.2B Batch 4 — setup_healing_harness() lifecycle
+// ===========================================================================
+//
+// These test cleanup and background-work completion, not governed-healing logic. A green suite is
+// not evidence that a directory was removed: `tempfile` swallows the Windows removal error that
+// causes the leak in the first place. Every assertion reads the filesystem or the database directly.
+//
+// **Three outcomes are tracked separately and must not be conflated:**
+//   1. successful fixture cleanup       -- the directory is gone afterwards
+//   2. successful background completion -- the detached run settled and its writes landed
+//   3. successful functional assertions -- the healing behaviour is still correct
+//
+// `p92b4_settled_run_writes_persist_before_the_pool_closes` pins (2) and (3) down independently of
+// (1): it proves the background writes happened *before* the close, so a later cleanup pass can
+// never conceal a failed write behind a passing test.
+
+/// The private measurement root owned by one test. Only this namespace is ever removed.
+fn p92b4_root(test_name: &str) -> std::path::PathBuf {
+    let root = std::env::temp_dir()
+        .join("aiqa_p92b4_artifacts")
+        .join(test_name);
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("create isolated artifact root");
+    root
+}
+
+fn p92b4_dir_count(root: &std::path::Path) -> usize {
+    std::fs::read_dir(root)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .filter(|e| e.path().is_dir())
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// **A + B.** The fixture must still produce a genuinely migrated, writable database.
+#[tokio::test]
+async fn p92b4_fixture_is_usable_and_fully_migrated() {
+    let root = p92b4_root("usable_and_migrated");
+    let (store, _reg, _ev, service, dir) = setup_healing_harness_in(&root).await;
+
+    let tables: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN \
+         ('projects','runs','tasks','healing_proposals','execution_telemetry')",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .expect("query sqlite_master");
+    assert_eq!(
+        tables.0, 5,
+        "the healing fixture must run the real migrations"
+    );
+
+    let pid = Uuid::new_v4();
+    store
+        .insert_project(pid, "P92B4 lifecycle", None)
+        .await
+        .expect("insert_project");
+    assert!(
+        dir.path().join("evidence").exists(),
+        "the evidence root must be a real directory inside the fixture"
+    );
+
+    service.store.pool.close().await;
+}
+
+/// **C + K.** Governed-healing behaviour must be unchanged: a proposal still has to be raised,
+/// approved and executed, and the governed refusal still has to hold.
+#[tokio::test]
+async fn p92b4_governed_healing_behaviour_is_unchanged() {
+    let root = p92b4_root("governed_healing_behaviour");
+    let (_store, _reg, _ev, service, _dir) = setup_healing_harness_in(&root).await;
+    let ctx = make_auth_ctx(Role::Operator, Some("proj-b4"));
+
+    let proposal = service
+        .propose_healing(
+            &ctx,
+            sample_proposal_request("proj-b4", Uuid::new_v4(), "task-b4"),
+        )
+        .await
+        .expect("proposal created");
+    assert!(
+        !proposal.id.is_nil(),
+        "a raised proposal must have a real id"
+    );
+
+    let approved = service
+        .approve_proposal(&ctx, proposal.id)
+        .await
+        .expect("approved");
+    assert_eq!(
+        approved.state,
+        HealingState::Approved,
+        "the governed approval gate must still move a proposal to APPROVED"
+    );
+
+    let row = service
+        .store
+        .get_healing_proposal(proposal.id)
+        .await
+        .expect("query")
+        .expect("the proposal must be persisted");
+    assert_eq!(
+        row.id, proposal.id,
+        "the approved proposal must be readable back from the database"
+    );
+
+    service.store.pool.close().await;
+}
+
+/// **D + E + J — the central test of this batch.** A full propose -> approve -> execute cycle starts
+/// a **detached** run that writes to the database. This test waits for it through the file's own
+/// completion signal, then proves its writes actually landed, and only then closes the pool.
+///
+/// The ordering is the point: the assertions on persisted telemetry happen *before*
+/// `pool.close()`, so a closed pool can never conceal a failed background write behind a green
+/// test. If the detached run's writes failed, `metrics` would be empty and this test would fail.
+#[tokio::test]
+async fn p92b4_settled_run_writes_persist_before_the_pool_closes() {
+    let root = p92b4_root("settled_run_writes");
+    let (_store, _reg, _ev, service, _dir) = setup_healing_harness_in(&root).await;
+    let ctx = make_auth_ctx(Role::Operator, Some("proj-b4-settle"));
+
+    let proposal = service
+        .propose_healing(
+            &ctx,
+            sample_proposal_request("proj-b4-settle", Uuid::new_v4(), "task-b4-settle"),
+        )
+        .await
+        .expect("proposal created");
+    let approved = service
+        .approve_proposal(&ctx, proposal.id)
+        .await
+        .expect("approved");
+    let executed = service
+        .execute_approved(&ctx, approved.id)
+        .await
+        .expect("executed");
+    let healing_run_id = executed.healing_run_id.expect("healing run id");
+
+    // (D) Wait for the detached run through the real completion signal, not a fixed sleep.
+    wait_until_run_settles(&service.store, healing_run_id).await;
+
+    // (E) The detached run's writes must be readable NOW, while the pool is still open.
+    let summary = service
+        .store
+        .get_run_summary(healing_run_id)
+        .await
+        .expect("summary")
+        .expect("run exists");
+    assert!(
+        !matches!(
+            summary.state,
+            crate::domain::RunState::Created
+                | crate::domain::RunState::Scheduled
+                | crate::domain::RunState::Running
+        ),
+        "the run must have settled before teardown, still {:?}",
+        summary.state
+    );
+
+    // (E) The detached run's own writes must be readable NOW, while the pool is still open.
+    // These `tasks` rows are created and updated by the detached run, not by this test.
+    // `tasks.run_id` is a TEXT column, so the run id binds as a string.
+    let task_statuses: Vec<(String,)> = sqlx::query_as("SELECT status FROM tasks WHERE run_id = ?")
+        .bind(healing_run_id.to_string())
+        .fetch_all(&service.store.pool)
+        .await
+        .expect("query tasks");
+    assert!(
+        !task_statuses.is_empty(),
+        "the detached run must have written its tasks before teardown; an empty set means the \
+         background database write never happened"
+    );
+    assert!(
+        task_statuses
+            .iter()
+            .all(|(s,)| s != "QUEUED" && s != "RUNNING"),
+        "after settling, every task the detached run wrote must be terminal; got {task_statuses:?}"
+    );
+
+    // (J) `verify_healing` reads back the outcome the detached run persisted. If the background
+    // write had failed or not happened, this cannot report the revised task as passed -- a closed
+    // pool must never be able to hide that behind a green cleanup test.
+    let verification = service
+        .verify_healing(&ctx, proposal.id)
+        .await
+        .expect("verified");
+    assert_eq!(
+        verification.healing_run_id, healing_run_id,
+        "verification must be about the run this test started"
+    );
+    assert_eq!(
+        verification.outcome,
+        VerificationOutcome::Verified,
+        "the detached run must have produced a verifiable healing outcome"
+    );
+    assert!(
+        verification.revised_task_passed,
+        "the revised task's PASSED status is written by the detached run; if this is false the \
+         background database write did not land before teardown"
+    );
+
+    // Only now is it safe to release the pool.
+    service.store.pool.close().await;
+}
+
+/// **F + G.** The close must complete before the directory is removed, and the SQLite file plus its
+/// WAL/SHM sidecars must not block the removal.
+#[tokio::test]
+async fn p92b4_close_removes_the_directory_despite_wal_and_shm() {
+    let root = p92b4_root("close_removes_directory");
+    let (store, _reg, _ev, service, dir) = setup_healing_harness_in(&root).await;
+    let path = dir.path().to_path_buf();
+
+    // Real writes, so the WAL/SHM sidecars genuinely exist rather than this being an easy case.
+    let pid = Uuid::new_v4();
+    store
+        .insert_project(pid, "P92B4 wal", None)
+        .await
+        .expect("insert_project");
+
+    let live: Vec<String> = std::fs::read_dir(&path)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        live.iter()
+            .any(|f| f.ends_with("-wal") || f.ends_with("-shm")),
+        "WAL/SHM sidecars must exist while the fixture is live, else this test proves nothing: \
+         {live:?}"
+    );
+
+    service.store.pool.close().await;
+    drop(dir);
+
+    assert!(
+        !path.exists(),
+        "after an awaited `pool.close()` the directory must be gone. If it remains, an open \
+         SQLite handle -- not the fixture -- is what blocked removal."
+    );
+    assert_eq!(
+        p92b4_dir_count(&root),
+        0,
+        "the measurement root must be empty"
+    );
+}
+
+/// **H.** Repeated creation and teardown must not accumulate artifacts in the isolated root.
+#[tokio::test]
+async fn p92b4_repeated_fixtures_accumulate_nothing() {
+    let root = p92b4_root("repeated_fixtures");
+    assert_eq!(
+        p92b4_dir_count(&root),
+        0,
+        "the measurement root starts empty"
+    );
+    for _ in 0..10 {
+        let (store, _reg, _ev, service, dir) = setup_healing_harness_in(&root).await;
+        let pid = Uuid::new_v4();
+        store
+            .insert_project(pid, "P92B4 repeat", None)
+            .await
+            .expect("insert_project");
+        service.store.pool.close().await;
+        drop(dir);
+    }
+    let after = p92b4_dir_count(&root);
+    assert_eq!(
+        after, 0,
+        "ten fixture cycles must leave zero directories in the isolated root; {after} remained"
+    );
+}
+
+/// **I.** Concurrent fixtures must each remove exactly their own directory, never another's.
+#[tokio::test]
+async fn p92b4_concurrent_fixtures_do_not_interfere() {
+    let root = p92b4_root("concurrent_fixtures");
+    assert_eq!(
+        p92b4_dir_count(&root),
+        0,
+        "the measurement root starts empty"
+    );
+
+    let mut handles = Vec::new();
+    for i in 0..8 {
+        let root = root.clone();
+        handles.push(tokio::spawn(async move {
+            let (store, _reg, _ev, service, dir) = setup_healing_harness_in(&root).await;
+            let path = dir.path().to_path_buf();
+            // Prove the fixture was real before releasing it, so a fixture that never created its
+            // database cannot pass by never existing.
+            assert!(
+                path.join("healing_test.sqlite3").exists(),
+                "concurrent fixture {i} must have created its database before teardown"
+            );
+            let pid = Uuid::new_v4();
+            store
+                .insert_project(pid, "P92B4 concurrent", None)
+                .await
+                .expect("insert_project");
+            service.store.pool.close().await;
+            drop(dir);
+            path
+        }));
+    }
+
+    let mut paths = Vec::new();
+    for h in handles {
+        paths.push(h.await.expect("concurrent fixture task must not panic"));
+    }
+    assert_eq!(
+        p92b4_dir_count(&root),
+        0,
+        "eight concurrent fixtures must leave nothing behind -- neither their own nor each other's"
+    );
+    for p in &paths {
+        assert!(
+            !p.exists(),
+            "each fixture must remove exactly its own directory; {} survived",
+            p.display()
+        );
+    }
+}
+
+/// **K.** A teardown failure must remain observable rather than silently suppressed.
+/// `TempDir::close()` is the fallible form and returns the real removal error; asserting on it is
+/// what stops a future regression from passing quietly. Under this repository's retention policy a
+/// directory that genuinely cannot be removed is left in place rather than force-deleted, so it
+/// must still be *inspectable* -- which is exactly what a returned `Err` tells us.
+#[tokio::test]
+async fn p92b4_teardown_failure_is_observable() {
+    let root = p92b4_root("teardown_failure_observable");
+    let (store, _reg, _ev, service, dir) = setup_healing_harness_in(&root).await;
+    let path = dir.path().to_path_buf();
+    let pid = Uuid::new_v4();
+    store
+        .insert_project(pid, "P92B4 diagnostics", None)
+        .await
+        .expect("insert_project");
+
+    service.store.pool.close().await;
+    let result = dir.close();
+    assert!(
+        result.is_ok(),
+        "an awaited pool close must let TempDir::close() succeed; got {:?}",
+        result.err()
+    );
+    assert!(
+        !path.exists(),
+        "and the directory must really be gone, not merely reported as closed"
+    );
 }

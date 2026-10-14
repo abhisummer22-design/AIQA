@@ -175,7 +175,25 @@ pub struct AffectedTestRisk {
     pub test_case_id: String,
     pub executions: usize,
     pub failures: usize,
+    /// **All-recorded-outcome rate** (B3, Q1): failures over every recorded execution row for
+    /// this case. Unchanged from before Phase 7.3, so every existing consumer keeps its value.
     pub failure_rate: Option<f64>,
+    /// **Completed-execution failure rate, as a PERCENTAGE (0..100).**
+    ///
+    /// Renamed from `completed_failure_rate` (pre-Phase-8 follow-up): the API response carried
+    /// a key of that name holding a 0..1 *fraction*, so one name meant two units. The API key
+    /// keeps its fraction value and its name for compatibility; this field now says which of
+    /// the two it is.
+    /// Numerator and denominator count only `PASSED` / `FAILED` /
+    /// `TIMEOUT` rows. `None` when this case has no completed execution, which is the case
+    /// where the all-outcome rate reads as reassuring and means nothing.
+    ///
+    /// Additive on purpose: `AffectedTestRisk` is a display list, not a risk-`Factor` input, so
+    /// adding a field here changes no score. See the module doc on `FACTOR_WEIGHTS` for why the
+    /// weighted model itself is untouched in this phase.
+    pub completed_failure_rate_percent: Option<f64>,
+    /// Executor-failure count for this case (Q2). A count, not a rate.
+    pub infrastructure_errors: usize,
 }
 
 /// One point on a release's timeline.
@@ -221,34 +239,41 @@ pub struct ReleaseRisk {
 
 impl QaMemoryReader {
     /// Risk for one module, from its recorded executions.
-    pub async fn module_risk(&self, project_id: &str, module_ref: &str) -> Retrieved<ModuleRisk> {
+    pub async fn module_risk(
+        &self,
+        project_id: &str,
+        module_ref: &str,
+    ) -> anyhow::Result<Retrieved<ModuleRisk>> {
         // Phase 4 performance: the evidence is gathered **once** here and every case is
         // answered from it. The per-case path used to re-read telemetry, healing
         // proposals and bug drafts for each case, which made prioritising a project of
         // 500 cases cost 2,000+ reads returning identical rows.
-        let evidence = self.test_evidence(project_id).await;
+        let evidence = self.test_evidence(project_id).await?;
         if evidence.all.is_empty() {
-            return Retrieved::empty(project_id, InsufficientData::NoExecutions);
+            return Ok(Retrieved::empty(project_id, InsufficientData::NoExecutions));
         }
         if evidence.all.is_empty() {
-            return Retrieved::empty(project_id, InsufficientData::NoExecutions);
+            return Ok(Retrieved::empty(project_id, InsufficientData::NoExecutions));
         }
         let all = evidence.all.clone();
 
-        let (nodes, relations) = match (
-            self.store.list_quality_nodes(project_id).await,
-            self.store
-                .list_quality_relations_for_project(project_id)
-                .await,
-        ) {
-            (Ok(n), Ok(r)) => (n, r),
-            _ => return Retrieved::empty(project_id, InsufficientData::NoMatchingHistory),
-        };
+        // This was a `match` over the two `Result`s whose wildcard arm returned
+        // `NoMatchingHistory` — so a storage failure on either read was reported as "this module
+        // has no recorded history", which is a claim about the subject the store never answered.
+        // Both reads now propagate.
+        let nodes = self.store.list_quality_nodes(project_id).await?;
+        let relations = self
+            .store
+            .list_quality_relations_for_project(project_id)
+            .await?;
         let Some(module_node) = nodes
             .iter()
             .find(|n| n.node_type == "module" && n.external_ref.as_deref() == Some(module_ref))
         else {
-            return Retrieved::empty(project_id, InsufficientData::UnknownSubject);
+            return Ok(Retrieved::empty(
+                project_id,
+                InsufficientData::UnknownSubject,
+            ));
         };
 
         let case_refs: BTreeSet<String> = relations
@@ -272,11 +297,22 @@ impl QaMemoryReader {
             })
             .collect();
         if rows.is_empty() {
-            return Retrieved::empty(project_id, InsufficientData::NoMatchingHistory);
+            return Ok(Retrieved::empty(
+                project_id,
+                InsufficientData::NoMatchingHistory,
+            ));
         }
 
         let failures = rows.iter().filter(|r| Self::is_failure(r)).count();
-        let failure_rate = (failures as f64 / rows.len() as f64).clamp(0.0, 1.0);
+        // **Phase 7.4, Decision 1.** The risk `failure_rate` factor now consumes the
+        // COMPLETED-execution rate. It was `failures / rows.len()`, over *all* recorded
+        // executions, which let a blocked step dilute the factor and an `INFRA_ERROR` inflate
+        // it -- both are outcomes in which the test never reached a verdict.
+        //
+        // The denominator logic lives once, in `qa_memory::completed_failure_rate_fraction`
+        // (0..1, matching what `Factor::contribution` expects). `None` when nothing completed;
+        // the factor below represents that as `unmeasured`, never a measured zero.
+        let failure_rate = QaMemoryReader::completed_failure_rate_fraction(&rows);
 
         // Flakiness, from the existing evaluation, per test case then averaged.
         let per_case = per_case_counts(&rows);
@@ -287,12 +323,27 @@ impl QaMemoryReader {
         let severity = failure_severity(&rows);
 
         let factors = vec![
-            Factor::measured(
-                "failure_rate",
-                failure_rate,
-                &format!("{failures} failed of {} recorded executions", rows.len()),
-                rows.len(),
-            ),
+            match failure_rate {
+                Some(v) => Factor::measured(
+                    "failure_rate",
+                    v,
+                    &format!(
+                        "{failures} failed of {} completed executions \
+                         (PASSED/FAILED/TIMEOUT) of {} recorded executions for this module's cases",
+                        QaMemoryReader::completed_count(&rows),
+                        rows.len()
+                    ),
+                    QaMemoryReader::completed_count(&rows),
+                ),
+                None => Factor::unmeasured(
+                    "failure_rate",
+                    &format!(
+                        "none of the {} recorded executions for this module's cases \
+                         completed as a pass or failure, so there is no failure rate to measure",
+                        rows.len()
+                    ),
+                ),
+            },
             Factor::measured(
                 "flakiness_score",
                 flakiness,
@@ -333,15 +384,29 @@ impl QaMemoryReader {
         let mut affected_tests: Vec<AffectedTestRisk> = per_case
             .iter()
             .filter(|(_, (_, f))| *f > 0)
-            .map(|(id, (n, f))| AffectedTestRisk {
-                test_case_id: id.clone(),
-                executions: *n,
-                failures: *f,
-                failure_rate: (if *n > 0 {
-                    Some((*f as f64 / *n as f64) * 100.0)
-                } else {
-                    None
-                }),
+            .map(|(id, (n, f))| {
+                // The completed-execution rate and the executor-error count for this one case,
+                // from the same rows the all-outcome counts came from.
+                let mine: Vec<&ExecutionTelemetryRow> = rows
+                    .iter()
+                    .copied()
+                    .filter(|r| {
+                        r.test_case_id.map(|c| c.to_string()).as_deref() == Some(id.as_str())
+                    })
+                    .collect();
+                AffectedTestRisk {
+                    test_case_id: id.clone(),
+                    executions: *n,
+                    failures: *f,
+                    failure_rate: (if *n > 0 {
+                        Some((*f as f64 / *n as f64) * 100.0)
+                    } else {
+                        None
+                    }),
+                    // B3/Q1 + Q2, from the shared definitions so these views cannot drift.
+                    completed_failure_rate_percent: QaMemoryReader::completed_failure_rate(&mine),
+                    infrastructure_errors: QaMemoryReader::infra_errors(&mine),
+                }
             })
             .collect();
         affected_tests.sort_by(|a, b| {
@@ -357,7 +422,7 @@ impl QaMemoryReader {
             .collect();
         let recurring = self
             .module_risk_history(project_id, module_ref)
-            .await
+            .await?
             .view
             .map(|v| v.recurring_failures.len())
             .unwrap_or(
@@ -371,10 +436,13 @@ impl QaMemoryReader {
         let mut signals = Vec::new();
         signals.push(Signal {
             kind: "module_failure_rate".into(),
+            // The signal reports the ALL-RECORDED rate, unchanged from before Phase 7.4. Only
+            // the risk factor moved to the completed-execution definition, and this sentence is
+            // not that factor -- so it keeps its established meaning (Decision 3).
             statement: format!(
                 "{failures} of {} recorded executions of this module's tests failed ({:.1}%)",
                 rows.len(),
-                failure_rate * 100.0
+                QaMemoryReader::rate(failures, rows.len()).unwrap_or(0.0)
             ),
             evidence_runs: rows.iter().map(|r| r.run_id).collect(),
             confidence: if rows.len() >= 5 { 0.85 } else { 0.5 },
@@ -397,7 +465,7 @@ impl QaMemoryReader {
             });
         }
 
-        Retrieved::found(
+        Ok(Retrieved::found(
             project_id,
             ModuleRisk {
                 module_ref: module_ref.to_string(),
@@ -417,45 +485,74 @@ impl QaMemoryReader {
                 window,
                 signals,
             },
-        )
+        ))
     }
 
     /// Risk for one release, plus a trend against this project's other releases.
-    pub async fn release_risk(&self, project_id: &str, release_id: Uuid) -> Retrieved<ReleaseRisk> {
-        let all = self.telemetry_for(project_id).await;
-        let releases = self
-            .store
-            .list_releases(project_id)
-            .await
-            .unwrap_or_default();
+    pub async fn release_risk(
+        &self,
+        project_id: &str,
+        release_id: Uuid,
+    ) -> anyhow::Result<Retrieved<ReleaseRisk>> {
+        let all = self.telemetry_for(project_id).await?;
+        // Both reads below were `unwrap_or_default()` / "treat a read failure as no rows", which
+        // turned a storage fault into `UNKNOWN_SUBJECT` or `NO_MATCHING_HISTORY` — statements about
+        // the subject that the store never actually answered. `release_risk` now propagates both.
+        let releases = self.store.list_releases(project_id).await?;
         let Some(target) = releases.iter().find(|r| r.id == release_id) else {
-            return Retrieved::empty(project_id, InsufficientData::UnknownSubject);
+            return Ok(Retrieved::empty(
+                project_id,
+                InsufficientData::UnknownSubject,
+            ));
         };
-        let Ok(target_runs) = self.store.runs_for_release(release_id).await else {
-            return Retrieved::empty(project_id, InsufficientData::NoMatchingHistory);
-        };
+        let target_runs = self.store.runs_for_release(release_id).await?;
+        if target_runs.is_empty() {
+            return Ok(Retrieved::empty(
+                project_id,
+                InsufficientData::NoMatchingHistory,
+            ));
+        }
 
         let ids: BTreeSet<Uuid> = target_runs.iter().copied().collect();
         let rows: Vec<&ExecutionTelemetryRow> =
             all.iter().filter(|r| ids.contains(&r.run_id)).collect();
         if rows.is_empty() {
             // A recorded-but-unexercised release is a true state, reported as such.
-            return Retrieved::empty(project_id, InsufficientData::NoMatchingHistory);
+            return Ok(Retrieved::empty(
+                project_id,
+                InsufficientData::NoMatchingHistory,
+            ));
         }
 
         let failures = rows.iter().filter(|r| Self::is_failure(r)).count();
-        let failure_rate = (failures as f64 / rows.len() as f64).clamp(0.0, 1.0);
+        // **Phase 7.4, Decision 1** -- the same shared completed-execution definition.
+        let failure_rate = QaMemoryReader::completed_failure_rate_fraction(&rows);
         let per_case = per_case_counts(&rows);
         let flakiness = average_flakiness(&rows, &per_case);
         let severity = failure_severity(&rows);
 
         let factors = vec![
-            Factor::measured(
-                "failure_rate",
-                failure_rate,
-                &format!("{failures} failed of {} recorded executions", rows.len()),
-                rows.len(),
-            ),
+            match failure_rate {
+                Some(v) => Factor::measured(
+                    "failure_rate",
+                    v,
+                    &format!(
+                        "{failures} failed of {} completed executions \
+                         (PASSED/FAILED/TIMEOUT) of {} recorded executions for this release",
+                        QaMemoryReader::completed_count(&rows),
+                        rows.len()
+                    ),
+                    QaMemoryReader::completed_count(&rows),
+                ),
+                None => Factor::unmeasured(
+                    "failure_rate",
+                    &format!(
+                        "none of the {} recorded executions for this release completed as \
+                         a pass or failure, so there is no failure rate to measure",
+                        rows.len()
+                    ),
+                ),
+            },
             Factor::measured(
                 "flakiness_score",
                 flakiness,
@@ -499,9 +596,9 @@ impl QaMemoryReader {
         // value would then be averaged against itself as one of the "earlier"
         // points.
         for other in releases.iter().filter(|r| r.id != release_id) {
-            let Ok(runs) = self.store.runs_for_release(other.id).await else {
-                continue;
-            };
+            // A failed read used to `continue`, silently dropping a release from the trend this
+            // view exists to produce. It propagates.
+            let runs = self.store.runs_for_release(other.id).await?;
             let oids: BTreeSet<Uuid> = runs.iter().copied().collect();
             let orows: Vec<&ExecutionTelemetryRow> =
                 all.iter().filter(|r| oids.contains(&r.run_id)).collect();
@@ -510,11 +607,19 @@ impl QaMemoryReader {
                 continue;
             }
             let of = orows.iter().filter(|r| Self::is_failure(r)).count();
+            // **Phase 7.4, Decision 1.** Two different figures, deliberately:
+            //
+            // * `orate` -- all-recorded. It fills `ReleaseTrendPoint::failure_rate`, a REPORTED
+            //   field, and every other point in this same trend uses the same definition, so
+            //   changing only some of them would make the trend incomparable with itself (D3).
+            // * `ofactor_rate` -- completed-execution. It is what the `failure_rate` RISK FACTOR
+            //   receives, via `release_factors` into `calibrate_or_none`.
             let orate = of as f64 / orows.len() as f64;
+            let ofactor_rate = QaMemoryReader::completed_failure_rate_fraction(&orows);
             let opc = per_case_counts(&orows);
             let ofl = average_flakiness(&orows, &opc);
             let osev = failure_severity(&orows);
-            let ofactors = release_factors(orate, ofl, osev);
+            let ofactors = release_factors(ofactor_rate, ofl, osev);
             let (ocal, _) = calibrate_or_none(&other.id.to_string(), &ofactors);
             points.push(ReleaseTrendPoint {
                 release_id: other.id.to_string(),
@@ -541,12 +646,17 @@ impl QaMemoryReader {
         points.truncate(MAX_TREND_POINTS);
 
         // The target's own point, so a caller sees it in the same shape as the rest.
+        //
+        // `ReleaseTrendPoint::failure_rate` is a REPORTED figure in 0..100, not the risk factor.
+        // It therefore keeps the all-recorded definition (Decision 3), which is also what the
+        // other points in this same trend use -- mixing the two here would make the trend's own
+        // points incomparable with each other.
         points.push(ReleaseTrendPoint {
             release_id: release_id.to_string(),
             label: target.label.clone().or(target.version.clone()),
             executions: rows.len(),
             failures,
-            failure_rate: Some(failure_rate * 100.0),
+            failure_rate: QaMemoryReader::rate(failures, rows.len()),
             risk_score: calibration.as_ref().map(|c| c.risk_score),
         });
 
@@ -557,10 +667,11 @@ impl QaMemoryReader {
         let mut signals = Vec::new();
         signals.push(Signal {
             kind: "release_failure_rate".into(),
+            // All-recorded rate, unchanged (Decision 3) -- the same contract as the trend point.
             statement: format!(
                 "{failures} of {} recorded executions in this release failed ({:.1}%)",
                 rows.len(),
-                failure_rate * 100.0
+                QaMemoryReader::rate(failures, rows.len()).unwrap_or(0.0)
             ),
             evidence_runs: rows.iter().map(|r| r.run_id).collect(),
             confidence: if rows.len() >= 5 { 0.85 } else { 0.5 },
@@ -591,7 +702,7 @@ impl QaMemoryReader {
             });
         }
 
-        Retrieved::found(
+        Ok(Retrieved::found(
             project_id,
             ReleaseRisk {
                 release_id: release_id.to_string(),
@@ -606,28 +717,31 @@ impl QaMemoryReader {
                 runs: target_runs.len(),
                 executions: rows.len(),
                 failures,
-                failure_rate: Some(failure_rate * 100.0),
+                // Reported figure, unchanged (Decision 3). The completed-execution rate that now
+                // feeds the risk factor is available as `factor("failure_rate")`.
+                failure_rate: QaMemoryReader::rate(failures, rows.len()),
                 trend,
                 trend_points: points,
                 window,
                 signals,
             },
-        )
+        ))
     }
 
     /// Every release of a project that has recorded executions, with its risk.
     ///
     /// The project-level view: which of its releases is currently the riskiest,
     /// on evidence. A release with no executions is **absent**, not listed as LOW.
-    pub async fn release_risk_overview(&self, project_id: &str) -> Vec<ReleaseRisk> {
-        let releases = self
-            .store
-            .list_releases(project_id)
-            .await
-            .unwrap_or_default();
+    pub async fn release_risk_overview(
+        &self,
+        project_id: &str,
+    ) -> anyhow::Result<Vec<ReleaseRisk>> {
+        // Masked read: a failed `list_releases` produced an empty overview, which reads as "this
+        // project has no releases" rather than "we could not find out". Propagated.
+        let releases = self.store.list_releases(project_id).await?;
         let mut out = Vec::new();
         for r in releases {
-            if let Retrieved { view: Some(v), .. } = self.release_risk(project_id, r.id).await {
+            if let Retrieved { view: Some(v), .. } = self.release_risk(project_id, r.id).await? {
                 out.push(v);
             }
         }
@@ -640,7 +754,7 @@ impl QaMemoryReader {
                 .then_with(|| a.label.cmp(&b.label))
                 .then(a.label.cmp(&b.label))
         });
-        out
+        Ok(out)
     }
 }
 
@@ -770,9 +884,25 @@ fn category_weight(cat: crate::adaptive_intelligence::FailureCategory) -> f64 {
 }
 
 /// The three measurable factors, for the trend comparison.
-fn release_factors(failure_rate: f64, flakiness: f64, severity: Option<f64>) -> Vec<Factor> {
+///
+/// `failure_rate` is `Option` for the same reason the other factors are: **Phase 7.4, Decision
+/// 1.** It carries the *completed-execution* rate (`completed_failure_rate_fraction`), which is
+/// `None` when a release recorded executions but none of them completed as a pass or failure.
+/// There is no failure rate to report in that case, so the factor is `unmeasured` rather than a
+/// measured `0.0` -- a release that never ran is not a release with a perfect record.
+fn release_factors(
+    failure_rate: Option<f64>,
+    flakiness: f64,
+    severity: Option<f64>,
+) -> Vec<Factor> {
     vec![
-        Factor::measured("failure_rate", failure_rate, "derived", 0),
+        match failure_rate {
+            Some(v) => Factor::measured("failure_rate", v, "derived (completed executions)", 0),
+            None => Factor::unmeasured(
+                "failure_rate",
+                "no execution of this release completed as a pass or failure",
+            ),
+        },
         Factor::measured("flakiness_score", flakiness, "derived", 0),
         match severity {
             Some(v) => Factor::measured("failure_severity", v, "derived", 0),
@@ -1101,6 +1231,12 @@ pub struct TestRisk {
     pub measured_ratio: Option<f64>,
     pub executions: usize,
     pub failures: usize,
+    /// **The completed-execution failure rate, 0.0-1.0** (Phase 7.4, Decision 1) -- the same
+    /// value the `failure_rate` factor above carries, so the view cannot contradict its own
+    /// scoring input. `None` when no execution of this case completed as a pass or a failure.
+    ///
+    /// The *all-recorded* rate is unchanged and still available: divide [`Self::failures`] by
+    /// [`Self::executions`], or read it in the `failure_rate` signal below.
     pub failure_rate: Option<f64>,
     pub flakiness_score: Option<f64>,
     /// Bug drafts whose cluster this case's failures produced.
@@ -1228,27 +1364,36 @@ impl QaMemoryReader {
     ///
     /// Project-scoped: the telemetry read is the same `telemetry_for(project_id)` every
     /// other surface here uses, so one tenant's history cannot reach another's case.
-    pub async fn test_risk(&self, project_id: &str, test_case_id: &str) -> Retrieved<TestRisk> {
+    pub async fn test_risk(
+        &self,
+        project_id: &str,
+        test_case_id: &str,
+    ) -> anyhow::Result<Retrieved<TestRisk>> {
         // Checked before the evidence read, and reported separately from
         // "no matching history": a caller who passed a malformed id made a mistake, which
         // is a different answer from "this project has nothing about that case". Phase 0
         // records `UnknownSubject` as its own reason for exactly this reason.
         if Uuid::parse_str(test_case_id).is_err() {
-            return Retrieved::empty(project_id, InsufficientData::UnknownSubject);
+            return Ok(Retrieved::empty(
+                project_id,
+                InsufficientData::UnknownSubject,
+            ));
         }
 
-        let evidence = self.test_evidence(project_id).await;
+        let evidence = self.test_evidence(project_id).await?;
+        // A genuine empty read is `Ok` and empty, so `NO_EXECUTIONS` here is a real answer. A
+        // failed read never reaches this line: `test_evidence` propagated it above.
         if evidence.all.is_empty() {
-            return Retrieved::empty(project_id, InsufficientData::NoExecutions);
+            return Ok(Retrieved::empty(project_id, InsufficientData::NoExecutions));
         }
-        match self.test_risk_from(&evidence, test_case_id) {
+        Ok(match self.test_risk_from(&evidence, test_case_id) {
             Some(risk) => Retrieved {
                 project_id: project_id.to_string(),
                 insufficient_data: None,
                 view: Some(risk),
             },
             None => Retrieved::empty(project_id, InsufficientData::NoMatchingHistory),
-        }
+        })
     }
 
     /// Everything `test_risk_from` needs, read **once**.
@@ -1265,49 +1410,46 @@ impl QaMemoryReader {
     ///
     /// Clusters are resolved eagerly, so the draft→cluster hop is one indexed lookup per
     /// distinct cluster instead of per (case, draft) pair.
-    async fn test_evidence(&self, project_id: &str) -> TestEvidence {
-        let all = self.telemetry_for(project_id).await;
-        let proposals = self
-            .store
-            .list_healing_proposals(project_id, None)
-            .await
-            .unwrap_or_default();
-        let drafts = self
-            .store
-            .list_bug_drafts(Some(project_id))
-            .await
-            .unwrap_or_default();
+    /// Every read the per-test and prioritisation views need, gathered once.
+    ///
+    /// ## Why this returns a `Result`
+    ///
+    /// Four of its five reads used `unwrap_or_default()`, and one used `.ok().flatten()`. With a
+    /// failing store the whole `TestEvidence` came back empty, and `prioritise_tests` then
+    /// reported `NO_EXECUTIONS` for a project that had executions — because the "is there any
+    /// history?" guard consulted evidence that had failed to load rather than evidence that was
+    /// genuinely empty.
+    ///
+    /// That guard is the crux: it is the difference between *"the store answered, and there is
+    /// nothing"* and *"the store did not answer"*. Only the first may produce `NO_EXECUTIONS`.
+    async fn test_evidence(&self, project_id: &str) -> anyhow::Result<TestEvidence> {
+        let all = self.telemetry_for(project_id).await?;
+        let proposals = self.store.list_healing_proposals(project_id, None).await?;
+        let drafts = self.store.list_bug_drafts(Some(project_id)).await?;
 
         let mut clusters: BTreeMap<Uuid, crate::store::FailureClusterRow> = BTreeMap::new();
         for d in &drafts {
             if let Some(cluster) = self
                 .store
                 .get_failure_cluster_by_id(d.failure_cluster_id)
-                .await
-                .ok()
-                .flatten()
+                .await?
             {
                 clusters.insert(d.failure_cluster_id, cluster);
             }
         }
 
         let mut titles: BTreeMap<Uuid, String> = BTreeMap::new();
-        for c in self
-            .store
-            .list_test_cases(project_id, None, None)
-            .await
-            .unwrap_or_default()
-        {
+        for c in self.store.list_test_cases(project_id, None, None).await? {
             titles.insert(c.id, c.title);
         }
 
-        TestEvidence {
+        Ok(TestEvidence {
             all,
             proposals,
             drafts,
             clusters,
             titles,
-        }
+        })
     }
 
     /// `test_risk` over evidence already read. `None` when the case has no rows.
@@ -1327,7 +1469,11 @@ impl QaMemoryReader {
             .iter()
             .filter(|r| QaMemoryReader::is_failure(r))
             .count();
-        let failure_rate = failures as f64 / rows.len() as f64;
+        // **Phase 7.4, Decision 1.** Was `failures / rows.len()` over all recorded executions.
+        // Now the shared completed-execution rate, exactly as `module_risk` and `release_risk`
+        // use it: a blocked or infrastructure-errored execution is a record that the test did not
+        // reach a verdict, and counting it in the denominator let it dilute the factor.
+        let failure_rate = QaMemoryReader::completed_failure_rate_fraction(&rows);
 
         // Reused exactly as modules and releases use it: rows plus the per-case counts,
         // and it returns 0.0 when no case has two samples. A single-execution case would
@@ -1399,15 +1545,29 @@ impl QaMemoryReader {
         };
 
         let factors = vec![
-            Factor::measured(
-                "failure_rate",
-                failure_rate,
-                &format!(
-                    "{failures} failed of {} recorded executions of this case",
-                    rows.len()
+            // Decision 1: completed-execution denominator, and `unmeasured` -- never a measured
+            // zero -- when this case has no execution that completed as a pass or a failure.
+            match failure_rate {
+                Some(v) => Factor::measured(
+                    "failure_rate",
+                    v,
+                    &format!(
+                        "{failures} failed of {} completed executions \
+                         (PASSED/FAILED/TIMEOUT) of {} recorded executions of this case",
+                        QaMemoryReader::completed_count(&rows),
+                        rows.len()
+                    ),
+                    QaMemoryReader::completed_count(&rows),
                 ),
-                rows.len(),
-            ),
+                None => Factor::unmeasured(
+                    "failure_rate",
+                    &format!(
+                        "none of this case's {} recorded executions completed as a pass or \
+                         failure, so there is no failure rate to measure",
+                        rows.len()
+                    ),
+                ),
+            },
             match flakiness {
                 Some(v) => Factor::measured(
                     "flakiness_score",
@@ -1519,7 +1679,10 @@ impl QaMemoryReader {
             measured_ratio,
             executions: rows.len(),
             failures,
-            failure_rate: Some(failure_rate),
+            // Already the completed-execution rate, and already an `Option`. Previously this site
+            // wrapped the all-recorded fraction in `Some(..)`, so a case whose executions all
+            // blocked read as a measured 0.0 -- i.e. as a test with a perfect record.
+            failure_rate,
             flakiness_score: flakiness,
             recurring_defects,
             healing_attempts,
@@ -1551,18 +1714,18 @@ impl QaMemoryReader {
         &self,
         project_id: &str,
         change_ref: Option<&str>,
-    ) -> Retrieved<TestPrioritisation> {
+    ) -> anyhow::Result<Retrieved<TestPrioritisation>> {
         // Phase 4 performance: the evidence is gathered **once** here and every case is
         // answered from it. The per-case path used to re-read telemetry, healing
         // proposals and bug drafts for each case, which made prioritising a project of
         // 500 cases cost 2,000+ reads returning identical rows.
-        let evidence = self.test_evidence(project_id).await;
+        let evidence = self.test_evidence(project_id).await?;
         if evidence.all.is_empty() {
-            return Retrieved::empty(project_id, InsufficientData::NoExecutions);
+            return Ok(Retrieved::empty(project_id, InsufficientData::NoExecutions));
         }
-        let all = self.telemetry_for(project_id).await;
+        let all = self.telemetry_for(project_id).await?;
         if all.is_empty() {
-            return Retrieved::empty(project_id, InsufficientData::NoExecutions);
+            return Ok(Retrieved::empty(project_id, InsufficientData::NoExecutions));
         }
 
         // Which cases the named change impacts, from the Phase 3 records. The stored id
@@ -1570,11 +1733,7 @@ impl QaMemoryReader {
         let changed: BTreeSet<String> = match change_ref {
             None => BTreeSet::new(),
             Some(reference) => {
-                let nodes = self
-                    .store
-                    .list_quality_nodes(project_id)
-                    .await
-                    .unwrap_or_default();
+                let nodes = self.store.list_quality_nodes(project_id).await?;
                 let case_of: BTreeMap<Uuid, String> = nodes
                     .iter()
                     .filter(|n| {
@@ -1589,8 +1748,7 @@ impl QaMemoryReader {
                     .collect();
                 self.store
                     .list_change_impacts(project_id, 5000)
-                    .await
-                    .unwrap_or_default()
+                    .await?
                     .into_iter()
                     .filter(|r| r.change_ref == reference)
                     .filter_map(|r| r.selected_test_node_id)
@@ -1712,7 +1870,7 @@ impl QaMemoryReader {
 
         let window = Self::window(&all.iter().map(|r| (*r).clone()).collect::<Vec<_>>());
 
-        Retrieved {
+        Ok(Retrieved {
             project_id: project_id.to_string(),
             view: Some(TestPrioritisation {
                 project_id: project_id.to_string(),
@@ -1732,6 +1890,6 @@ impl QaMemoryReader {
                 }],
             }),
             insufficient_data: None,
-        }
+        })
     }
 }

@@ -181,6 +181,10 @@ async fn a_project_scoped_admin_never_ends_up_with_a_global_key_however_it_asks(
              That is the whole bug -- such a key satisfies require_project_access for \
              every project in the deployment."
         );
+        // One fixture is built per loop iteration, so the close must sit inside the
+        // loop; at the end of the test body only the last iteration's store would be
+        // in scope, and the earlier one would keep its directory alive.
+        state.store.pool.close().await;
     }
 }
 
@@ -207,6 +211,7 @@ async fn a_project_scoped_admin_cannot_mint_a_key_for_a_different_project() {
     assert!(!all_key_names(&state)
         .await
         .contains(&"cross-tenant".to_string()));
+    state.store.pool.close().await;
 }
 
 // ------------------------------------------------- what must still work
@@ -241,6 +246,7 @@ async fn a_project_scoped_admin_can_still_mint_a_key_inside_its_own_project() {
         Some(Some("project-a".to_string())),
         "the new key must be persisted scoped to project-a"
     );
+    state.store.pool.close().await;
 }
 
 /// Naming its own project explicitly, or naming none, both mean the same thing to
@@ -264,6 +270,7 @@ async fn a_scoped_admin_naming_no_project_gets_a_key_scoped_to_its_own() {
         Some(Some("project-a".to_string())),
         "a scoped caller must never produce an unscoped key, whatever it asked for"
     );
+    state.store.pool.close().await;
 }
 
 /// A global admin is the bootstrap case (`bootstrap_admin_key` issues exactly
@@ -291,6 +298,7 @@ async fn a_global_admin_can_still_mint_global_keys() {
         Some(None),
         "a global admin's key really is global"
     );
+    state.store.pool.close().await;
 }
 
 /// And a global admin may still scope a key to a project, which is the feature
@@ -313,6 +321,7 @@ async fn a_global_admin_can_still_mint_a_project_scoped_key() {
         scope_of_key(&state, &raw).await,
         Some(Some("project-b".to_string()))
     );
+    state.store.pool.close().await;
 }
 
 // ----------------------------------------------------------- role unchanged
@@ -333,6 +342,7 @@ async fn an_operator_still_cannot_mint_keys_at_all() {
     .await;
 
     assert_eq!(status, StatusCode::FORBIDDEN, "body: {body}");
+    state.store.pool.close().await;
 }
 
 /// A refused mint must be visible in the audit trail. An escalation attempt that
@@ -377,6 +387,7 @@ async fn a_refused_mint_is_recorded_in_the_audit_trail() {
         detail.contains("project-b"),
         "the audit row must record the project that was attempted: {detail}"
     );
+    state.store.pool.close().await;
 }
 
 // ---------------------------------------------------- the invariant, stated

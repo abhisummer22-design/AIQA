@@ -817,7 +817,9 @@ pub fn build_feedback_context(
 /// .sql`'s own comment on why `dimensions` is stored per row) or either
 /// vector being all-zero returns `0.0` — the honest "no real basis to
 /// compare" answer, never a panic on a real, if unusual, stored row.
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+/// **Phase 8 visibility.** `test_quality::duplicate_similarity` reuses this exact comparison so
+/// Phase 8 cannot introduce a second, contradictory idea of "similar".
+pub(crate) fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
     }

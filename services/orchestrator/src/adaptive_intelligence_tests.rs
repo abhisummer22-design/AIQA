@@ -779,3 +779,55 @@ async fn test_40_existing_phase1_5_tests_remain_functional() {
         .unwrap();
     assert_ne!(node_id, Uuid::nil());
 }
+
+// ============================================================================
+// R1b -- the planning-feedback endpoint contract
+// ============================================================================
+
+/// ## What this test does and does not prove
+///
+/// `generate_test_plan_scoped` grounds a plan in two readers and must not return a plan it could
+/// not ground. This pins that endpoint contract: a store that cannot answer produces an error
+/// response, never a `200` carrying a plan.
+///
+/// **It does not isolate the `planning_signals` read inside `generate_planning_feedback`, and this
+/// test was checked by mutation to confirm that.** Removing that read's propagation — reverting it
+/// to `unwrap_or_default()` — leaves this test still passing, because
+/// `generate_planning_feedback` reads `list_execution_telemetry` *first*, and a closed pool fails
+/// there before `planning_signals` is ever reached. A closed pool cannot single out one read in a
+/// function that makes several; distinguishing them would need a mock the store does not offer.
+///
+/// The `planning_signals` propagation itself is pinned structurally instead: the audit in the R1b
+/// report records zero remaining masked store reads across every `Result`-returning view, and
+/// `qa_memory_risk_tests::r1b_no_affected_view_reports_a_failed_read_as_an_empty_answer` drives
+/// `planning_signals` directly against a closed pool. That test was confirmed to fail when
+/// `bug_history` was still masking, so it discriminates.
+///
+/// Asserted here anyway, because the endpoint contract is worth pinning regardless of which read
+/// fails first: the store is closed, and the caller must not receive a plan.
+#[tokio::test]
+async fn r1b_planning_feedback_reports_a_failed_read_rather_than_no_signals() {
+    let (store, _d) = setup_test_store().await;
+    let service = AdaptiveIntelligenceService::new(store.clone());
+
+    // --- state 1: healthy store, genuinely no history ---
+    let empty = service
+        .generate_planning_feedback("proj-no-history")
+        .await
+        .expect("a project with no history is not a failure");
+    assert!(
+        empty.planning_signals.is_empty(),
+        "no history must still produce an honest empty signal list: {:?}",
+        empty.planning_signals
+    );
+
+    // --- state 2: the store cannot answer ---
+    store.pool.close().await;
+
+    let failed = service.generate_planning_feedback("proj-no-history").await;
+    assert!(
+        failed.is_err(),
+        "a failed read must be an error, not an empty signal list: {:?}",
+        failed.as_ref().map(|f| f.planning_signals.len())
+    );
+}

@@ -207,6 +207,7 @@ async fn the_telemetry_read_the_retrieval_layer_issues_uses_an_index() {
         "a bare scan of execution_telemetry would make every retrieval O(history); \
          SQLite chose: {plan}"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -234,6 +235,7 @@ async fn the_per_test_case_telemetry_read_uses_the_index_phase_two_added() {
         !plan.to_uppercase().contains("SCAN EXECUTION_TELEMETRY"),
         "a bare scan here would make every per-case read O(all history); {plan}"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -271,6 +273,7 @@ async fn the_per_task_and_per_release_reads_use_an_index() {
         plan.to_uppercase().contains("USING INDEX"),
         "listing releases must not scan; SQLite chose: {plan}"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -291,6 +294,7 @@ async fn the_cluster_to_telemetry_join_phase_six_added_uses_an_index() {
         plan.to_uppercase().contains("USING INDEX"),
         "correlating a defect with its executions must not scan; SQLite chose: {plan}"
     );
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ latency
@@ -313,13 +317,19 @@ async fn retrieval_over_a_large_history_stays_far_below_the_ceiling() {
     assert_eq!(total, 480, "the fixture must be the size it claims");
 
     // Warm once so the measurement is of retrieval, not of first-touch page faults.
-    let _ = reader.test_stability(&pid, &cases[0].to_string()).await;
+    let _ = reader
+        .test_stability(&pid, &cases[0].to_string())
+        .await
+        .expect("test_stability");
 
     let mut worst = std::time::Duration::ZERO;
     let mut reads = 0usize;
     for case in cases.iter().take(40) {
         let t0 = Instant::now();
-        let r = reader.test_stability(&pid, &case.to_string()).await;
+        let r = reader
+            .test_stability(&pid, &case.to_string())
+            .await
+            .expect("test_stability");
         let took = t0.elapsed();
         assert!(r.is_found(), "every fixture case must be found");
         worst = worst.max(took);
@@ -328,7 +338,10 @@ async fn retrieval_over_a_large_history_stays_far_below_the_ceiling() {
 
     let module = {
         let t0 = Instant::now();
-        let r = reader.module_risk_history(&pid, "module-0").await;
+        let r = reader
+            .module_risk_history(&pid, "module-0")
+            .await
+            .expect("module_risk_history");
         let took = t0.elapsed();
         assert!(r.is_found());
         worst = worst.max(took);
@@ -337,7 +350,10 @@ async fn retrieval_over_a_large_history_stays_far_below_the_ceiling() {
     };
     let planning = {
         let t0 = Instant::now();
-        let s = reader.planning_signals(&pid).await;
+        let s = reader
+            .planning_signals(&pid)
+            .await
+            .expect("planning_signals");
         assert!(!s.is_empty());
         let took = t0.elapsed();
         worst = worst.max(took);
@@ -346,7 +362,10 @@ async fn retrieval_over_a_large_history_stays_far_below_the_ceiling() {
     };
     let risk = {
         let t0 = Instant::now();
-        let r = reader.module_risk(&pid, "module-0").await;
+        let r = reader
+            .module_risk(&pid, "module-0")
+            .await
+            .expect("module_risk");
         assert!(r.is_found());
         let took = t0.elapsed();
         worst = worst.max(took);
@@ -370,6 +389,7 @@ async fn retrieval_over_a_large_history_stays_far_below_the_ceiling() {
          {CEILING:?} ceiling. Every read here is one bounded scan, so anything near \
          this ceiling means a query changed shape."
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -379,7 +399,10 @@ async fn planning_signal_count_stays_bounded_as_history_grows() {
     build_history(&store, &pid, 60, 30, 10, 4).await;
 
     let reader = QaMemoryReader::new(store.clone());
-    let signals = reader.planning_signals(&pid).await;
+    let signals = reader
+        .planning_signals(&pid)
+        .await
+        .expect("planning_signals");
 
     // 30 modules and 10 releases exist; the planner must offer a bounded, ranked
     // subset rather than everything, or the prompt grows without limit.
@@ -405,6 +428,7 @@ async fn planning_signal_count_stays_bounded_as_history_grows() {
         signals.len(),
         confidences
     );
+    store.pool.close().await;
 }
 
 // ----------------------------------------------------------- storage growth
@@ -471,4 +495,5 @@ async fn the_storage_cost_of_one_remembered_execution_is_measured_not_guessed() 
         telemetry_bytes < total_bytes,
         "telemetry is a part of the database, not all of it: {telemetry_bytes} vs {total_bytes}"
     );
+    store.pool.close().await;
 }

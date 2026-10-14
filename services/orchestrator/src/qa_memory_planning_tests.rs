@@ -144,7 +144,10 @@ async fn a_module_with_failures_produces_a_planning_signal() {
         execute(&store, &pid, case, "PASSED", None, 2).await;
     }
 
-    let signals = reader.planning_signals(&pid).await;
+    let signals = reader
+        .planning_signals(&pid)
+        .await
+        .expect("planning_signals");
     let module_signal = signals
         .iter()
         .find(|s| s.kind == "module_risk" && s.subject == "payment")
@@ -171,6 +174,7 @@ async fn a_module_with_failures_produces_a_planning_signal() {
         module_signal.window
     );
     assert!(!module_signal.basis.is_empty());
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -194,7 +198,10 @@ async fn a_recurring_defect_produces_a_planning_signal() {
     // `ingest_run` does.
     record_failure_twice(&store, &pid).await;
 
-    let signals = reader.planning_signals(&pid).await;
+    let signals = reader
+        .planning_signals(&pid)
+        .await
+        .expect("planning_signals");
     let defect = signals
         .iter()
         .find(|s| s.kind == "recurring_defect")
@@ -205,6 +212,7 @@ async fn a_recurring_defect_produces_a_planning_signal() {
         defect.metric
     );
     assert!(defect.basis.contains("occurrence_count"));
+    store.pool.close().await;
 }
 
 /// Drive the real failure-recording path so a cluster and a bug draft genuinely
@@ -271,13 +279,17 @@ async fn a_release_with_repeated_failures_produces_a_planning_signal() {
             .expect("attach release");
     }
 
-    let signals = reader.planning_signals(&pid).await;
+    let signals = reader
+        .planning_signals(&pid)
+        .await
+        .expect("planning_signals");
     let rel = signals
         .iter()
         .find(|s| s.kind == "release_regression")
         .expect("a release_regression signal");
     assert_eq!(rel.subject, "2026.10");
     assert!(rel.metric.contains("4 of 4"), "{}", rel.metric);
+    store.pool.close().await;
 }
 
 // -------------------------------------- memory does NOT influence when no evidence
@@ -300,9 +312,14 @@ async fn a_project_with_no_history_produces_no_signals_at_all() {
         .unwrap();
 
     assert!(
-        reader.planning_signals(&pid).await.is_empty(),
+        reader
+            .planning_signals(&pid)
+            .await
+            .expect("planning_signals")
+            .is_empty(),
         "with no executions there is nothing to plan from, so nothing may be offered"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -321,6 +338,7 @@ async fn the_planning_agent_receives_no_signals_for_a_project_with_no_history() 
     );
     // The pre-existing string fields keep their old behaviour.
     assert!(feedback.fragile_tests.is_empty());
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -350,6 +368,7 @@ async fn the_planning_agent_receives_the_signals_when_evidence_exists() {
         "the agent must receive what memory knows: {:?}",
         feedback.planning_signals
     );
+    store.pool.close().await;
 }
 
 // ------------------------------------------------- old history does not dominate
@@ -379,10 +398,15 @@ async fn history_older_than_the_window_produces_no_signal() {
     }
 
     assert!(
-        reader.planning_signals(&pid).await.is_empty(),
+        reader
+            .planning_signals(&pid)
+            .await
+            .expect("planning_signals")
+            .is_empty(),
         "history older than the {PLANNING_SIGNAL_WINDOW_DAYS}-day window must not drive planning, \
          however many rows it has"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -412,7 +436,10 @@ async fn a_recent_failure_outranks_old_history_in_the_same_module() {
     execute(&store, &pid, case, "PASSED", None, 1).await;
     execute(&store, &pid, case, "FAILED", Some("fp-recent"), 1).await;
 
-    let signals = reader.planning_signals(&pid).await;
+    let signals = reader
+        .planning_signals(&pid)
+        .await
+        .expect("planning_signals");
     let mixed = signals
         .iter()
         .find(|s| s.subject == "mixed")
@@ -427,6 +454,7 @@ async fn a_recent_failure_outranks_old_history_in_the_same_module() {
         2,
         "ten ancient rows must not be cited as evidence for a current signal"
     );
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ isolation
@@ -452,13 +480,22 @@ async fn signals_never_cross_a_project_boundary() {
     // that `theirs` was NON-empty, which would have meant the very leak it
     // exists to catch.)
     assert!(
-        !reader.planning_signals(&mine).await.is_empty(),
+        !reader
+            .planning_signals(&mine)
+            .await
+            .expect("planning_signals")
+            .is_empty(),
         "the project that owns the history must see its own signals"
     );
     assert!(
-        reader.planning_signals(&theirs).await.is_empty(),
+        reader
+            .planning_signals(&theirs)
+            .await
+            .expect("planning_signals")
+            .is_empty(),
         "another project's failures must not become this project's planning input"
     );
+    store.pool.close().await;
 }
 
 // ---------------------------------------------------- requirement-specific
@@ -480,13 +517,17 @@ async fn a_signal_names_the_subject_it_is_about() {
         }
     }
 
-    let signals = reader.planning_signals(&pid).await;
+    let signals = reader
+        .planning_signals(&pid)
+        .await
+        .expect("planning_signals");
     let subjects: std::collections::BTreeSet<&str> =
         signals.iter().map(|s| s.subject.as_str()).collect();
     assert!(
         subjects.contains("alpha") && subjects.contains("beta"),
         "each module must be reported under its own name: {subjects:?}"
     );
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------ risk prioritization
@@ -514,7 +555,10 @@ async fn the_best_evidenced_signal_is_offered_first() {
         execute(&store, &pid, thick, "FAILED", Some("fp"), 1).await;
     }
 
-    let signals = reader.planning_signals(&pid).await;
+    let signals = reader
+        .planning_signals(&pid)
+        .await
+        .expect("planning_signals");
     let first = signals
         .iter()
         .find(|s| s.subject == "thick")
@@ -533,6 +577,7 @@ async fn the_best_evidenced_signal_is_offered_first() {
             .collect::<Vec<_>>()
     );
     assert!(first.confidence > second.confidence);
+    store.pool.close().await;
 }
 
 // --------------------------------------------------------------- explainability
@@ -551,7 +596,10 @@ async fn every_signal_carries_the_five_fields_the_plan_requires() {
         execute(&store, &pid, case, "FAILED", Some("fp"), 2).await;
     }
 
-    let signals = reader.planning_signals(&pid).await;
+    let signals = reader
+        .planning_signals(&pid)
+        .await
+        .expect("planning_signals");
     assert!(!signals.is_empty());
     for s in &signals {
         // historical signal (kind + subject)
@@ -578,6 +626,7 @@ async fn every_signal_carries_the_five_fields_the_plan_requires() {
         // and what it was computed from
         assert!(!s.basis.is_empty(), "{s:?}");
     }
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -594,7 +643,13 @@ async fn no_signal_carries_a_field_that_looks_like_hidden_reasoning() {
         execute(&store, &pid, case, "FAILED", Some("fp"), 1).await;
     }
 
-    let json = serde_json::to_string(&reader.planning_signals(&pid).await).unwrap();
+    let json = serde_json::to_string(
+        &reader
+            .planning_signals(&pid)
+            .await
+            .expect("planning_signals"),
+    )
+    .unwrap();
     for needle in [
         "chain_of_thought",
         "chainOfThought",
@@ -608,6 +663,7 @@ async fn no_signal_carries_a_field_that_looks_like_hidden_reasoning() {
             "a planning signal exposed {needle}, which §1.5 forbids: {json}"
         );
     }
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -626,10 +682,23 @@ async fn signals_are_deterministic_for_the_same_history() {
         }
     }
 
-    let first = serde_json::to_string(&reader.planning_signals(&pid).await).unwrap();
-    let second = serde_json::to_string(&reader.planning_signals(&pid).await).unwrap();
+    let first = serde_json::to_string(
+        &reader
+            .planning_signals(&pid)
+            .await
+            .expect("planning_signals"),
+    )
+    .unwrap();
+    let second = serde_json::to_string(
+        &reader
+            .planning_signals(&pid)
+            .await
+            .expect("planning_signals"),
+    )
+    .unwrap();
     assert_eq!(
         first, second,
         "planning input must be reproducible, or two identical plans could differ"
     );
+    store.pool.close().await;
 }

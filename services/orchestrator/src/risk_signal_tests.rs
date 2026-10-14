@@ -231,6 +231,7 @@ async fn unavailable_signals_are_persisted_as_null_not_zero() {
         biz, None,
         "business_criticality has no signal source and must be NULL, not 0.0"
     );
+    store.pool.close().await;
 }
 
 /// Neither signal was *invented*. This test would fail if anyone wired a proxy — a
@@ -293,6 +294,7 @@ async fn neither_signal_is_invented_from_a_proxy() {
         "a P0 priority must NOT become a measured business_criticality — priority is an \
          authoring choice, not a measurement of importance"
     );
+    store.pool.close().await;
 }
 
 // ============================================================================
@@ -358,6 +360,7 @@ async fn a_measured_zero_is_distinguishable_from_an_unmeasured_signal() {
     assert_eq!(sec2, None, "the reader must not invent a 0.0 for NULL");
     assert_eq!(biz2, None);
     assert_eq!(chg2, Some(0.0));
+    store.pool.close().await;
 }
 
 /// A node that *has* been changed reads above zero, which is what proves the source is wired
@@ -415,6 +418,7 @@ async fn change_frequency_reads_from_the_real_change_impact_records() {
         Some(3.0),
         "three distinct declared changes must be read from change_impacts"
     );
+    store.pool.close().await;
 }
 
 /// The source is tenant-scoped: another project's changes must not move this project's number.
@@ -479,6 +483,7 @@ async fn change_frequency_is_project_scoped() {
             .is_empty(),
         "another tenant's rows must not appear in this reader"
     );
+    store.pool.close().await;
 }
 
 // ============================================================================
@@ -822,6 +827,7 @@ async fn the_stored_score_agrees_with_its_own_recorded_coverage() {
         "the assumption must be recorded in the row: {}",
         inputs["score_normalisation"]
     );
+    store.pool.close().await;
 }
 
 // ============================================================================
@@ -869,6 +875,7 @@ async fn the_signals_that_were_already_real_are_unaffected() {
     assert_eq!(inputs["weights"]["flakiness"].as_f64(), Some(0.20));
     assert_eq!(inputs["weights"]["dependency_count"].as_f64(), Some(0.15));
     assert_eq!(inputs["weights"]["execution_cost"].as_f64(), Some(0.15));
+    store.pool.close().await;
 }
 
 /// Phase 4's own surface is untouched: it never read `risk_assessments`, so its refusal to emit
@@ -900,7 +907,10 @@ async fn phase_fours_surface_is_unchanged() {
     }
 
     let reader = crate::qa_memory::QaMemoryReader::new(store.clone());
-    let ranking = reader.prioritise_tests(&pid, None).await;
+    let ranking = reader
+        .prioritise_tests(&pid, None)
+        .await
+        .expect("prioritise_tests");
     let view = ranking
         .view
         .expect("a project with history must produce a prioritisation");
@@ -932,6 +942,7 @@ async fn phase_fours_surface_is_unchanged() {
         view.mandatory_floor.contains(&c.to_string()),
         "the safety floor must still contain the failing case"
     );
+    store.pool.close().await;
 }
 
 /// Phase 6's detector reports the remediated state, and still catches a recurrence.
@@ -1005,6 +1016,7 @@ async fn phase_six_detector_sees_the_remediated_state_and_still_catches_a_recurr
         "a supplied 0.0 is a fabrication and must be reported as one: {}",
         regressed.detail
     );
+    store.pool.close().await;
 }
 
 // ============================================================================
@@ -1092,6 +1104,7 @@ async fn risk_signals_remain_project_scoped() {
         1,
         "our project has one scored case, and none of theirs may appear in it"
     );
+    store.pool.close().await;
 }
 
 // ============================================================================
@@ -1170,6 +1183,7 @@ async fn exploration_still_records_a_remediated_risk_row() {
         "measured_weight must be 0.90 of the model, exactly as before the remediation: {}",
         inputs["measured_weight"]
     );
+    store.pool.close().await;
 }
 
 /// `RiskCalibration` is still constructible in the shape callers expect, so the remediation did

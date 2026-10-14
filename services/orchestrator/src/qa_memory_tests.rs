@@ -128,6 +128,7 @@ async fn the_test_case_link_migration_applies_to_a_fresh_database() {
         tddl.contains("test_case_id"),
         "execution_telemetry lost its test_case_id column"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -157,6 +158,7 @@ async fn the_release_migration_applies_to_a_fresh_database() {
         runs.contains("release_id"),
         "migration 0029 did not add runs.release_id; DDL was: {runs}"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -171,7 +173,13 @@ async fn migrations_preserve_rows_written_before_them() {
     let run_id = {
         let store = Store::connect(&path).await.expect("connect");
         let pid = project(&store, "Existing Project").await;
-        run_with(&store, &pid, vec![sim_task("pre-task")], None).await
+        let id = run_with(&store, &pid, vec![sim_task("pre-task")], None).await;
+        // Phase 9.2B Batch 6: this fixture opens TWO stores on the same file (the block above
+        // and the reconnect below). Dropping a `Store` does not close its pool, so the first pool
+        // is closed explicitly before the second is opened -- otherwise its handle keeps the file
+        // open and the TempDir leaks.
+        store.pool.close().await;
+        id
     };
 
     let store = Store::connect(&path).await.expect("reconnect");
@@ -190,6 +198,10 @@ async fn migrations_preserve_rows_written_before_them() {
         tasks[0].test_case_id.is_none(),
         "a row that predates the link must not be given one"
     );
+
+    // Phase 9.2B Batch 6: the reconnected pool is the one still holding the file open at the end
+    // of this test; without this close the directory leaks even though the first store was closed.
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------- forward link
@@ -212,6 +224,7 @@ async fn a_task_built_from_a_test_case_carries_that_case_on_the_task_row() {
         Some(CASE_A),
         "the case id given to the plan must reach the task row"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -225,6 +238,7 @@ async fn a_task_that_is_not_a_case_execution_is_left_unlinked() {
         tasks[0].test_case_id.is_none(),
         "a task that is not a case's execution must not be attributed to one"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -253,6 +267,7 @@ async fn a_malformed_case_id_is_stored_verbatim_but_never_reaches_telemetry_as_a
         uuid::Uuid::parse_str("not-a-uuid").is_err(),
         "and such a value must not parse, so telemetry records no link"
     );
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------ backfill (§10)
@@ -291,6 +306,7 @@ async fn the_backfill_recovers_an_unambiguous_historical_link_and_is_idempotent(
         .await
         .expect("second backfill");
     assert_eq!(second, 0, "a second run must change nothing");
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -334,6 +350,7 @@ async fn the_backfill_maps_each_task_to_its_own_case_when_the_plan_says_so() {
         seen, expected,
         "each task must get its own case, not a shared one"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -363,6 +380,7 @@ async fn the_backfill_refuses_a_plan_naming_a_case_id_that_is_not_a_uuid() {
             .is_none(),
         "the task must stay unlinked"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -399,6 +417,7 @@ async fn a_pre_phase2_plan_naming_no_case_recovers_nothing() {
     for t in store.list_tasks_for_run(run_id).await.unwrap() {
         assert!(t.test_case_id.is_none());
     }
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -431,6 +450,7 @@ async fn the_backfill_skips_a_plan_where_one_task_has_no_case_id() {
         recovered, 0,
         "a partially-attributable run must be skipped whole, not filled in part"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -467,6 +487,7 @@ async fn the_backfill_does_not_cross_project_boundaries() {
             .expect("own backfill"),
         1
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -484,6 +505,7 @@ async fn the_backfill_ignores_an_unreadable_plan() {
         0,
         "an unreadable plan is not evidence and must be skipped"
     );
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ release
@@ -525,6 +547,7 @@ async fn a_release_round_trips_and_is_listed_newest_first() {
     assert_eq!(listed[1].version.as_deref(), Some("2026.10.1"));
     assert_eq!(listed[1].notes.as_deref(), Some("first"));
     assert_eq!(listed[0].id, second.id);
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -550,6 +573,7 @@ async fn a_release_label_is_unique_within_a_project_but_not_across_projects() {
         .create_release(&b, Some("2026.10"), None, None, None)
         .await
         .expect("the same label in another project is a different release");
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -569,6 +593,7 @@ async fn two_unlabelled_releases_coexist() {
         .unwrap();
 
     assert_eq!(store.list_releases(&pid).await.unwrap().len(), 2);
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -599,6 +624,7 @@ async fn a_run_can_be_associated_with_a_release_and_a_release_less_run_is_fine()
 
     let all = store.list_run_ids(None).await.expect("all runs");
     assert!(all.contains(&unlinked), "but it is still a real run");
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -631,6 +657,7 @@ async fn associating_a_run_with_another_projects_release_is_refused() {
         result.is_err(),
         "a release from another project must not attach to this project's run"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -653,6 +680,7 @@ async fn releases_are_listed_only_within_their_own_project() {
     assert_eq!(of_a[0].label.as_deref(), Some("a-1"));
     assert_eq!(of_b.len(), 1);
     assert_eq!(of_b[0].label.as_deref(), Some("b-1"));
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -674,6 +702,7 @@ async fn a_partial_release_is_legitimate_not_an_error() {
         .unwrap();
     assert!(only_version.label.is_none());
     assert_eq!(only_version.version.as_deref(), Some("1.2.3"));
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -687,6 +716,7 @@ async fn runs_for_an_unknown_release_are_empty_not_an_error() {
             .is_empty(),
         "an unknown release simply has no runs"
     );
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ module
@@ -724,6 +754,7 @@ async fn a_module_is_a_quality_graph_vertex_not_a_table() {
         "the case -> module edge must exist; got {:?}",
         rels.iter().map(|r| &r.relation_type).collect::<Vec<_>>()
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -756,6 +787,7 @@ async fn linking_a_case_to_a_module_is_idempotent() {
         1,
         "repeating the link must not duplicate the edge"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -774,6 +806,7 @@ async fn modules_are_scoped_to_their_project() {
         of_b.is_empty(),
         "another project must not see this project's module"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -786,5 +819,318 @@ async fn a_blank_module_reference_is_refused() {
             .await
             .is_err(),
         "an unnamed module vertex must not be created"
+    );
+    store.pool.close().await;
+}
+
+// ===========================================================================
+// Phase 9.2B Batch 6 — temp_store() lifecycle
+// ===========================================================================
+//
+// These test cleanup, not QA Memory logic. A green suite is not evidence that a directory was
+// removed: `tempfile` swallows the Windows removal error that causes the leak in the first place.
+// Every assertion reads the filesystem or the database directly.
+//
+// Background work: this file contains no `tokio::spawn`, no `spawn_blocking`, no `JoinHandle`, no
+// `tokio::time::sleep`, and references no engine or dispatch entry point at all. Every test drives
+// `Store` synchronously, so there is no detached task that could still be writing when the test
+// body returns. That was verified by inspection of the current source, not assumed from a report.
+
+/// The private measurement root owned by one test. Only this namespace is ever removed.
+fn p92b6_root(test_name: &str) -> std::path::PathBuf {
+    let root = std::env::temp_dir()
+        .join("aiqa_p92b6_artifacts")
+        .join(test_name);
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("create isolated artifact root");
+    root
+}
+
+fn p92b6_dir_count(root: &std::path::Path) -> usize {
+    std::fs::read_dir(root)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .filter(|e| e.path().is_dir())
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// The same fixture, rooted in a caller-owned directory so a test can measure exactly what *this*
+/// fixture leaves behind. Counting global `.tmp*` entries is not a valid assertion -- `cargo test`
+/// runs these tests concurrently, so any other suite's fixture perturbs the total.
+///
+/// `temp_store()` above is left untouched and keeps using `tempfile::tempdir()`, so the 24 existing
+/// call sites keep their existing behaviour and directory location exactly.
+async fn temp_store_in(root: &std::path::Path) -> (Store, tempfile::TempDir) {
+    let dir = tempfile::tempdir_in(root).expect("tempdir");
+    let path = dir.path().join("qa-memory.sqlite3");
+    let store = Store::connect(&path).await.expect("connect");
+    (store, dir)
+}
+
+/// **A + B.** The fixture must produce a genuinely migrated, writable database.
+#[tokio::test]
+async fn p92b6_fixture_is_usable_and_fully_migrated() {
+    let root = p92b6_root("usable_and_migrated");
+    let (store, dir) = temp_store_in(&root).await;
+
+    let tables: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN          ('projects','runs','tasks','test_cases','execution_telemetry')",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .expect("query sqlite_master");
+    assert_eq!(
+        tables.0, 5,
+        "the qa-memory fixture must run the real migrations"
+    );
+
+    let pid = project(&store, "P92B6 lifecycle").await;
+    let runs = store.list_run_ids(Some(&pid)).await.expect("list_run_ids");
+    assert!(
+        runs.is_empty(),
+        "a fresh migrated fixture must start with no runs for a new project"
+    );
+    assert!(
+        dir.path().join("qa-memory.sqlite3").exists(),
+        "the database file must exist while the fixture is live"
+    );
+
+    store.pool.close().await;
+}
+
+/// **C + I.** QA Memory reads and project scoping must retain their established behaviour: a run is
+/// visible inside its own project and not another project's.
+#[tokio::test]
+async fn p92b6_qa_memory_reads_and_project_scoping_are_unchanged() {
+    let root = p92b6_root("reads_and_scoping");
+    let (store, _d) = temp_store_in(&root).await;
+
+    let mine = project(&store, "P92B6 mine").await;
+    let theirs = project(&store, "P92B6 theirs").await;
+    let mine_run = run_with(&store, &mine, vec![sim_task("mine-task")], None).await;
+    let theirs_run = run_with(&store, &theirs, vec![sim_task("their-task")], None).await;
+
+    let scoped = store
+        .list_run_ids(Some(&mine))
+        .await
+        .expect("list_run_ids scoped to my project");
+    assert_eq!(
+        scoped,
+        vec![mine_run],
+        "a project must see exactly its own runs, not another project's"
+    );
+
+    let unscoped = store
+        .list_run_ids(None)
+        .await
+        .expect("list_run_ids unscoped");
+    assert!(
+        unscoped.contains(&mine_run) && unscoped.contains(&theirs_run),
+        "the unscoped read must still return both projects' runs: {unscoped:?}"
+    );
+
+    let tasks = store
+        .list_tasks_for_run(theirs_run)
+        .await
+        .expect("list_tasks_for_run");
+    assert_eq!(
+        tasks.len(),
+        1,
+        "the other project's task row must be readable"
+    );
+
+    store.pool.close().await;
+}
+
+/// **K.** A storage failure must remain observable rather than being disguised as an empty QA Memory
+/// result. Closing the pool is the same fault injection the file's `d1`-style tests rely on, and a
+/// read against a closed pool must surface as an error, not as "no runs found".
+#[tokio::test]
+async fn p92b6_storage_failure_is_not_disguised_as_an_empty_result() {
+    let root = p92b6_root("storage_failure_visible");
+    let (store, _d) = temp_store_in(&root).await;
+    let pid = project(&store, "P92B6 storage").await;
+    run_with(&store, &pid, vec![sim_task("task")], None).await;
+
+    // Genuine unreachability, not a mocked error.
+    store.pool.close().await;
+    let result = store.list_run_ids(Some(&pid)).await;
+    assert!(
+        result.is_err(),
+        "a read against a closed pool must return Err, not an empty list: {result:?}"
+    );
+
+    store.pool.close().await;
+}
+
+/// **D + E + F.** The close must complete before the directory is removed, and the SQLite file plus
+/// its WAL/SHM sidecars must not block the removal.
+#[tokio::test]
+async fn p92b6_close_removes_the_directory_despite_wal_and_shm() {
+    let root = p92b6_root("close_removes_directory");
+    let (store, dir) = temp_store_in(&root).await;
+    let path = dir.path().to_path_buf();
+
+    // A real write, so the WAL/SHM sidecars genuinely exist rather than this being an easy case.
+    let pid = project(&store, "P92B6 wal").await;
+    run_with(&store, &pid, vec![sim_task("t1")], None).await;
+
+    let live: Vec<String> = std::fs::read_dir(&path)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        live.iter().any(|f| f.ends_with("-wal") || f.ends_with("-shm")),
+        "WAL/SHM sidecars must exist while the fixture is live, else this test proves nothing:          {live:?}"
+    );
+
+    store.pool.close().await;
+    drop(dir);
+
+    assert!(
+        !path.exists(),
+        "after an awaited `pool.close()` the directory must be gone. If it remains, an open          SQLite handle -- not the fixture -- is what blocked removal."
+    );
+    assert_eq!(
+        p92b6_dir_count(&root),
+        0,
+        "the measurement root must be empty"
+    );
+}
+
+/// **G.** Repeated creation and teardown must not accumulate artifacts in the isolated root.
+#[tokio::test]
+async fn p92b6_repeated_fixtures_accumulate_nothing() {
+    let root = p92b6_root("repeated_fixtures");
+    assert_eq!(
+        p92b6_dir_count(&root),
+        0,
+        "the measurement root starts empty"
+    );
+    for _ in 0..10 {
+        let (store, dir) = temp_store_in(&root).await;
+        let pid = project(&store, "P92B6 repeat").await;
+        run_with(&store, &pid, vec![sim_task("t1")], None).await;
+        store.pool.close().await;
+        drop(dir);
+    }
+    let after = p92b6_dir_count(&root);
+    assert_eq!(
+        after, 0,
+        "ten fixture cycles must leave zero directories in the isolated root; {after} remained"
+    );
+}
+
+/// **H.** Concurrent fixtures must each remove exactly their own directory, never another's.
+#[tokio::test]
+async fn p92b6_concurrent_fixtures_do_not_interfere() {
+    let root = p92b6_root("concurrent_fixtures");
+    assert_eq!(
+        p92b6_dir_count(&root),
+        0,
+        "the measurement root starts empty"
+    );
+
+    let mut handles = Vec::new();
+    for i in 0..8 {
+        let root = root.clone();
+        handles.push(tokio::spawn(async move {
+            let (store, dir) = temp_store_in(&root).await;
+            let path = dir.path().to_path_buf();
+            // Prove the fixture was real before releasing it, so a fixture that never created its
+            // database cannot pass by never existing.
+            assert!(
+                path.join("qa-memory.sqlite3").exists(),
+                "concurrent fixture {i} must have created its database before teardown"
+            );
+            let pid = project(&store, "P92B6 concurrent").await;
+            run_with(&store, &pid, vec![sim_task("t1")], None).await;
+            store.pool.close().await;
+            drop(dir);
+            path
+        }));
+    }
+
+    let mut paths = Vec::new();
+    for h in handles {
+        paths.push(h.await.expect("concurrent fixture task must not panic"));
+    }
+    assert_eq!(
+        p92b6_dir_count(&root),
+        0,
+        "eight concurrent fixtures must leave nothing behind -- neither their own nor each          other's"
+    );
+    for p in &paths {
+        assert!(
+            !p.exists(),
+            "each fixture must remove exactly its own directory; {} survived",
+            p.display()
+        );
+    }
+}
+
+/// Teardown failure must remain observable rather than silently suppressed. `TempDir::close()` is
+/// the fallible form and returns the real removal error; asserting on it is what stops a future
+/// regression from passing quietly. Under this repository's retention policy a directory that
+/// genuinely cannot be removed is left in place rather than force-deleted, so it must still be
+/// *inspectable* -- which is exactly what a returned `Err` tells us.
+#[tokio::test]
+async fn p92b6_teardown_failure_is_observable() {
+    let root = p92b6_root("teardown_failure_observable");
+    let (store, dir) = temp_store_in(&root).await;
+    let path = dir.path().to_path_buf();
+    let pid = project(&store, "P92B6 diagnostics").await;
+    run_with(&store, &pid, vec![sim_task("t1")], None).await;
+
+    store.pool.close().await;
+    let result = dir.close();
+    assert!(
+        result.is_ok(),
+        "an awaited pool close must let TempDir::close() succeed; got {:?}",
+        result.err()
+    );
+    assert!(
+        !path.exists(),
+        "and the directory must really be gone, not merely reported as closed"
+    );
+}
+
+/// The last leak in this suite came from a fixture that opened TWO stores on the same file, so a
+/// `store`-only teardown missed one. This test reproduces that shape directly.
+#[tokio::test]
+async fn p92b6_a_second_pool_on_the_same_file_must_also_be_closed() {
+    let root = p92b6_root("second_pool_must_close");
+    let (store, dir) = temp_store_in(&root).await;
+    let path_buf = dir.path().join("qa-memory.sqlite3");
+    let path = dir.path().to_path_buf();
+
+    let pid = project(&store, "P92B6 restart").await;
+    run_with(&store, &pid, vec![sim_task("t1")], None).await;
+
+    // The shape used by `migrations_preserve_rows_written_before_them`: close one pool, reconnect.
+    store.pool.close().await;
+    let reconnected = Store::connect(&path_buf).await.expect("reconnect");
+    let n: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM runs")
+        .fetch_one(&reconnected.pool)
+        .await
+        .expect("count runs");
+    assert_eq!(n.0, 1, "the reconnected pool must see the same database");
+
+    reconnected.pool.close().await;
+    drop(dir);
+
+    assert!(
+        !path.exists(),
+        "every pool opened on the file must be closed before the TempDir is removed; a second,          unclosed pool is exactly what leaked in this suite"
+    );
+    assert_eq!(
+        p92b6_dir_count(&root),
+        0,
+        "the measurement root must be empty"
     );
 }

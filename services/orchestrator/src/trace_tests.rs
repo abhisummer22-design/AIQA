@@ -218,6 +218,7 @@ async fn requirement_edge_persists_to_the_canonical_node_and_is_readable() {
         .expect("requirement impact");
     assert_eq!(found.len(), 1, "the persisted edge must be readable");
     assert_eq!(found[0].id, case_id);
+    store.pool.close().await;
 }
 
 /// Edges written under the old node type must remain visible. Dropping the legacy
@@ -262,6 +263,7 @@ async fn a_legacy_node_type_edge_is_still_readable() {
         "an edge persisted before Phase 1 must still resolve"
     );
     assert_eq!(found[0].id, case_id);
+    store.pool.close().await;
 }
 
 /// A case with no requirement writes nothing at all. This is pre-existing, correct
@@ -288,6 +290,7 @@ async fn a_case_with_no_requirement_writes_no_edge_at_all() {
         0,
         "no requirement means no requirement vertex, and no fabricated edge"
     );
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ persistence: covers
@@ -347,6 +350,7 @@ async fn module_edge_persists_and_joins_the_same_vertex_as_the_requirement_edge(
     let modules = trace.step("module").expect("module hop present");
     assert_eq!(modules.len(), 1);
     assert_eq!(modules[0].label.as_deref(), Some("services/checkout"));
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ persistence: fails_with
@@ -428,6 +432,7 @@ async fn failure_edge_uses_the_stable_case_id_when_the_telemetry_row_carries_one
             .is_none(),
         "with a case id present, no name-keyed task vertex may be written"
     );
+    store.pool.close().await;
 }
 
 /// Without a case id there is no identity to use, so the vertex must be namespaced as
@@ -455,6 +460,7 @@ async fn failure_edge_without_a_case_id_uses_the_task_namespace() {
             .is_some(),
         "an unlinked task must be recorded under the task namespace"
     );
+    store.pool.close().await;
 }
 
 /// Regression guard for the panic found in Phase 1.
@@ -502,6 +508,7 @@ async fn a_short_or_multibyte_fingerprint_does_not_panic_the_ingest() {
         4,
         "every recorded failure must still produce its edge"
     );
+    store.pool.close().await;
 }
 
 /// A passing execution has no failure to link. No fingerprint means no `fails_with`
@@ -528,6 +535,7 @@ async fn a_passing_execution_writes_no_failure_edge() {
         0,
         "a pass has no failure, and none may be invented"
     );
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ idempotence
@@ -566,6 +574,7 @@ async fn writing_the_same_edge_twice_is_idempotent() {
         .await
         .expect("requirement impact");
     assert_eq!(found.len(), 1);
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ isolation
@@ -639,6 +648,7 @@ async fn a_project_cannot_trace_another_projects_case() {
         crossed.step("requirement").is_none(),
         "cross-tenant walk must not resolve another tenant's requirement edge"
     );
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ the walk
@@ -777,6 +787,7 @@ async fn the_walk_returns_the_chain_that_is_actually_persisted() {
             trace.incomplete
         );
     }
+    store.pool.close().await;
 }
 
 /// The index must describe the real graph, including which hops are absent.
@@ -834,6 +845,7 @@ async fn the_index_lists_real_cases_and_their_gaps() {
             .any(|e| e.test_case_id.as_deref() == Some(bare.to_string().as_str())),
         "a case with no graph vertex must not be fabricated into the index"
     );
+    store.pool.close().await;
 }
 
 /// An empty project reports an empty index, not a placeholder.
@@ -841,11 +853,12 @@ async fn the_index_lists_real_cases_and_their_gaps() {
 async fn an_empty_project_reports_an_empty_index() {
     let (store, _d) = temp_store().await;
     let pid = project(&store, "Trace Empty").await;
-    let index = TraceReader::new(store).index(&pid).await;
+    let index = TraceReader::new(store.clone()).index(&pid).await;
     assert!(
         index.test_cases.is_empty(),
         "an empty project has nothing to trace; it must not be summarised anyway"
     );
+    store.pool.close().await;
 }
 
 /// A case with no history must report every hop as missing rather than a short chain
@@ -886,6 +899,7 @@ async fn a_case_with_no_history_names_every_missing_hop() {
         );
     }
     assert_eq!(trace.incomplete.len(), 8, "every hop must be accounted for");
+    store.pool.close().await;
 }
 
 /// A fingerprint with no cluster row behind it is still reported as a failure hop,
@@ -921,6 +935,7 @@ async fn a_fingerprint_with_no_cluster_row_is_reported_as_incomplete() {
         !failures[0].evidence.missing.is_empty(),
         "the absent cluster row must be stated, not glossed over"
     );
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ run/task linkage
@@ -981,6 +996,7 @@ async fn a_task_resolves_its_case_id_and_respects_the_project() {
         None,
         "another tenant must not resolve this run's task"
     );
+    store.pool.close().await;
 }
 
 /// A task with no case resolves to `None`, and stays `None` — not a guess.
@@ -1026,6 +1042,7 @@ async fn a_task_with_no_case_resolves_to_none() {
         None,
         "a crawl task has no case, and none may be inferred"
     );
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ migration safety
@@ -1088,4 +1105,5 @@ async fn phase_one_introduces_no_new_migration() {
             "{table}.{column} is required by the walk and must already exist"
         );
     }
+    store.pool.close().await;
 }

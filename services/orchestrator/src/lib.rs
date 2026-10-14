@@ -142,6 +142,36 @@ mod trace_tests;
 #[cfg(test)]
 mod integrity_tests;
 
+/// Phase 6.2 — real-data end-to-end integration validation. Drives the production writers over a
+/// migrated database, then reads back through the production readers and downstream consumers, so
+/// the chain is validated *together* rather than component by component.
+#[cfg(test)]
+mod integration_e2e_tests;
+
+/// Phase 7 — production-like user journeys. Multi-step workflows over real persistence, built on
+/// the DAG, suite and change-impact machinery that exists today rather than on a new abstraction.
+#[cfg(test)]
+mod journey_tests;
+
+/// Phase 7.1 — regression tests for P7-D1 (the integrity verifier masking storage failures) and
+/// P7-D2 (a blocked step publishing a 0% failure rate), plus the neighbouring behaviours each fix
+/// must not disturb.
+#[cfg(test)]
+mod phase_7_1_regression_tests;
+
+/// Phase 7.3 — tests for the approved decisions Q1–Q7: the B3 dual failure-rate contract, Q2
+/// `INFRA_ERROR` semantics, the single authoritative supported-change-target set, deferred module
+/// support, refused-change auditability, and the existing `set_task_status` flag patterns.
+#[cfg(test)]
+mod phase_7_3_decision_tests;
+
+/// Phase 7.4 contracts: the completed-execution failure rate as the risk `failure_rate` factor's
+/// input, `INFRA_ERROR` excluded from both halves of it and independently visible, missing
+/// measurements staying unmeasured, and the all-recorded rate keeping its meaning everywhere it is
+/// reported.
+#[cfg(test)]
+mod phase_7_4_decision_tests;
+
 /// Risk Signal Correctness Review / Remediation — a later finding against Phase 4, not part of
 /// it. Proves that a measured zero is distinguishable from an unmeasured signal, that an
 /// unavailable signal no longer becomes 0.0, and that the score is no longer understated.

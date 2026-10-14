@@ -7823,7 +7823,13 @@ async fn get_test_risk_scoped(
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        let result = reader.test_risk(&pid, case_id).await;
+        // A storage failure while reading the evidence is a server error, not a `200` carrying a
+        // partial risk answer. `insufficient_data` stays reserved for the honest "the store
+        // answered and there is nothing" case.
+        let result = reader
+            .test_risk(&pid, case_id)
+            .await
+            .map_err(ApiError::internal)?;
         return Ok(Json(serde_json::json!({
             "project_id": pid,
             "scope": "test_case",
@@ -7839,7 +7845,10 @@ async fn get_test_risk_scoped(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
-    let result = reader.prioritise_tests(&pid, change_ref).await;
+    let result = reader
+        .prioritise_tests(&pid, change_ref)
+        .await
+        .map_err(ApiError::internal)?;
     Ok(Json(serde_json::json!({
         "project_id": pid,
         "scope": "project",
@@ -7911,7 +7920,14 @@ async fn get_run_integrity_scoped(
         },
     };
 
-    let report = verifier.verify_run(&pid, run_id, crawl.as_ref()).await;
+    // P7-D1: a verification that could not read its evidence must not be returned as a 200 with
+    // `defects_established: 0`. That shape is what a clean run looks like, so it told the caller
+    // "this run agreed with itself" when in fact nothing had been compared. `to_500` keeps the
+    // storage failure visible at the boundary instead of converting it into a quiet success.
+    let report = verifier
+        .verify_run(&pid, run_id, crawl.as_ref())
+        .await
+        .map_err(to_500)?;
     Ok(Json(serde_json::json!({
         "project_id": pid,
         "run_id": run_id.to_string(),
@@ -8092,7 +8108,8 @@ async fn post_change_impact_scoped(
             body.change_type.trim(),
             &body.targets,
         )
-        .await;
+        .await
+        .map_err(ApiError::internal)?;
 
     // 201 when this call wrote something, 200 when it only confirmed what was already
     // recorded - so a caller can tell a new finding from a re-run.
@@ -8808,8 +8825,10 @@ async fn create_healing_proposal_scoped(
 /// fragile-test/risk signals (`AdaptiveIntelligenceService::generate_planning_feedback`,
 /// Phase 6) — both already built expressly to feed this agent, but never
 /// previously reachable outside their own tests. Missing history in either
-/// (a brand-new project) is a legitimate, honest state, not an error, so
-/// both are fetched best-effort rather than failing the whole request.
+/// (a brand-new project) is a legitimate, honest state, not an error: each
+/// reader returns `Ok` with an empty signal list, and that `Ok` is carried
+/// straight through. A *failed read* is different and is reported as a server
+/// error — see `generate_planning_feedback` below.
 ///
 /// `schema_file_path` is the one field that names something on the server's
 /// own disk, so it is confined to `AIQA_SCHEMA_ROOT` before anything else
@@ -8826,16 +8845,28 @@ async fn generate_test_plan_scoped(
 
     let project_id_str = project_id.to_string();
     let healing_service = make_healing_service(&state);
+    // Same reasoning as `qa_feedback` below: a project with no healing calibration already returns
+    // `Ok(vec![])`, so an empty list is the honest "nothing measured" case and stays a `200`. A
+    // failed read used to become that same empty list via `unwrap_or_default()`, and the plan was
+    // built as though the agent had been grounded in a calibration that was never loaded.
     req.healing_feedback = healing_service
         .get_feedback_for_planning(&project_id_str)
         .await
-        .unwrap_or_default();
+        .map_err(healing_err_to_api_err)?;
     let qa_service =
         crate::adaptive_intelligence::AdaptiveIntelligenceService::new(state.store.clone());
-    req.qa_feedback = qa_service
-        .generate_planning_feedback(&project_id_str)
-        .await
-        .ok();
+    // R1b: this used to be `.ok()`, which merged two different things. A project with genuinely
+    // no history already arrives here as `Ok` with an empty signal list -- that is the honest
+    // "nothing to add" case and it is deliberately not an error. A *failed read* is a storage
+    // fault, and returning `200` with a plan built against a QA signal set that was never loaded
+    // would present that plan as fully grounded. It is a server error instead, matching the
+    // `generate_test_plan` call below it.
+    req.qa_feedback = Some(
+        qa_service
+            .generate_planning_feedback(&project_id_str)
+            .await
+            .map_err(ApiError::internal)?,
+    );
 
     let plan =
         crate::agents::planning::generate_test_plan(state.store.clone(), &project_id_str, req)
@@ -9157,15 +9188,58 @@ async fn get_project_risk_handler(
         .map_err(ApiError::internal)?;
 
     let total_runs = telemetry.len();
-    let failed_runs = telemetry
+    // Q2 (Phase 7.3), completed as Phase 7.4 Decision 2.
+    //
+    // `INFRA_ERROR` is an **executor** failure, not a product-test failure. Phase 7.3 counted it
+    // separately for reporting but deliberately left it inside the risk factor's numerator,
+    // because changing that input changes the returned `risk_score` and required approval. That
+    // approval is Decision 2, so the factor no longer sees it at all: `completed_failure_rate_
+    // fraction` admits only `PASSED` / `FAILED` / `TIMEOUT`, putting an `INFRA_ERROR` in neither
+    // the numerator nor the denominator.
+    //
+    // The count below is unchanged and still reported, so an infrastructure problem stays visible
+    // (Step 4: it is never silently removed, and never silently becomes a pass either).
+    let telemetry_refs: Vec<&crate::store::ExecutionTelemetryRow> = telemetry.iter().collect();
+    let infrastructure_errors = crate::qa_memory::QaMemoryReader::infra_errors(&telemetry_refs);
+
+    // **Genuine product-test failures**, via the shared `is_failure`: `FAILED` or `TIMEOUT`.
+    //
+    // This used to count `INFRA_ERROR` as well, and that count gated the `failure_severity`
+    // factor. The consequence, measured before this change: a project whose *only* outcome was
+    // infrastructure errors reported `failure_severity = 0.8` -- the highest product-defect
+    // bucket -- at full 0.15 weight, with the infrastructure-error count as its evidence. The
+    // shared `qa_memory_risk::failure_severity` reports the same evidence as **unmeasured**.
+    //
+    // An infrastructure error is the absence of a verdict, not a verdict, so it does not say
+    // anything about product-defect severity. `TIMEOUT` stays: it is a completed execution that
+    // did not pass, which is the established contract and is not what this change touches.
+    let product_failures = telemetry_refs
         .iter()
-        .filter(|t| matches!(t.status.as_str(), "FAILED" | "TIMEOUT" | "INFRA_ERROR"))
+        .filter(|t| crate::qa_memory::QaMemoryReader::is_failure(t))
         .count();
-    let failure_rate = if total_runs > 0 {
-        failed_runs as f64 / total_runs as f64
-    } else {
-        0.0
-    };
+
+    // **Phase 7.4, Decision 1 -- the change to a risk-score input.** The `failure_rate` FACTOR now
+    // consumes the established completed-execution rate, through the one shared definition in
+    // `qa_memory`, rather than a denominator this handler used to re-derive for itself.
+    //
+    // It was `failed_runs / total_runs`: every `BLOCKED`, `SKIPPED` and `CANCELLED` execution
+    // diluted the factor toward zero, and every `INFRA_ERROR` inflated it, in a model where a
+    // never-ran step and a real failure are the same thing. `None` when nothing completed, which
+    // the factor below reports as unmeasured rather than as a measured 0.0.
+    let failure_rate =
+        crate::qa_memory::QaMemoryReader::completed_failure_rate_fraction(&telemetry_refs);
+
+    // **The response key, unchanged in name and in value** (Phase 7.3 Q1): the same completed-
+    // execution rate, now sourced from that one shared definition instead of a second local copy
+    // of the same arithmetic.
+    //
+    // The SCALE question this comment used to defer is resolved below, at the response: this
+    // local is a 0..1 **fraction** and keeps its value, while `completed_failure_rate` on the
+    // QA-memory views was a 0..100 **percentage** under the same name. Those view fields are
+    // renamed `completed_failure_rate_percent` and the response gains explicit
+    // `_fraction` / `_percent` siblings, so no name carries two units. This is a naming and
+    // serialization fix, not a scoring decision -- D3 is untouched.
+    let completed_failure_rate = failure_rate;
 
     let flakiness_score = if !flakiness.is_empty() {
         let sum: f64 = flakiness.iter().map(|f| f.flakiness_score).sum();
@@ -9174,12 +9248,18 @@ async fn get_project_risk_handler(
         0.0
     };
 
-    let failure_severity = if failed_runs > 0 {
-        let infra_fails = telemetry
-            .iter()
-            .filter(|t| matches!(t.status.as_str(), "INFRA_ERROR" | "TIMEOUT"))
-            .count();
-        if infra_fails > 0 {
+    // This handler's severity is a two-bucket heuristic, NOT the category-weighted average the
+    // shared `qa_memory_risk::failure_severity` computes. Reconciling those two algorithms is a
+    // D3 decision (which formula is canonical) and is NOT made here -- see the report.
+    //
+    // What IS fixed is only which outcomes may raise it. It previously went to 0.8 on
+    // `INFRA_ERROR` as readily as on `TIMEOUT`, so an executor problem -- no browser, a dead
+    // subprocess -- was reported as a severe product defect. It now goes to 0.8 on a genuine
+    // completed failure that timed out, and to 0.4 on any other genuine failure, exactly as
+    // before. Both genuine-failure buckets keep their established values.
+    let failure_severity = if product_failures > 0 {
+        let timeouts = telemetry.iter().filter(|t| t.status == "TIMEOUT").count();
+        if timeouts > 0 {
             0.8
         } else {
             0.4
@@ -9188,11 +9268,21 @@ async fn get_project_risk_handler(
         0.0
     };
 
+    // A failed read is NOT zero dependencies. Reported as the storage failure it is, using the
+    // same `ApiError::internal` the three reads above already use — so this handler has one rule
+    // for "the store could not answer" rather than one that quietly differs per read.
+    //
+    // The alternative — keeping `unwrap_or_default()` and declaring `dependency_count` measured
+    // at 0.0 — made a storage fault indistinguishable from a project with no quality-graph
+    // relations, and inflated `measured_weight` by a factor nothing had measured. Deciding instead
+    // to report the factor as unmeasured would have kept a `200`, but a partial risk answer that
+    // claims to be a complete one; this endpoint's siblings already fail on a read error, so
+    // failing here matches the contract the caller already sees.
     let relations = state
         .store
         .list_quality_relations_for_project(&pid)
         .await
-        .unwrap_or_default();
+        .map_err(ApiError::internal)?;
     let dependency_count = relations.len();
 
     let total_attempts: i64 = strategies.iter().map(|s| s.attempts_count).sum();
@@ -9233,18 +9323,33 @@ async fn get_project_risk_handler(
         // 0.0, ..)` in the first draft of this remediation, which claimed a measurement on the
         // strength of no evidence -- the same defect as the fabricated `0.0` it replaced, one
         // level up. They are now unmeasured whenever their denominator is empty.
-        if total_runs > 0 {
-            Factor::measured(
+        // Decision 1, and the `Option` matters: the old guard was `total_runs > 0`, which was
+        // satisfied by a project whose every execution was blocked or infrastructure-errored --
+        // those recorded rows produced a *measured 0.0*, i.e. a perfect record for a project that
+        // has never had a passing test. `None` now reaches `unmeasured`.
+        match failure_rate {
+            Some(v) => Factor::measured(
                 "failure_rate",
-                failure_rate,
-                "failed executions over recorded executions for this project",
-                total_runs as usize,
-            )
-        } else {
-            Factor::unmeasured(
+                v,
+                &format!(
+                    "{} failed of {} completed executions (PASSED/FAILED/TIMEOUT) of \
+                     {} recorded executions for this project",
+                    telemetry
+                        .iter()
+                        .filter(|t| matches!(t.status.as_str(), "FAILED" | "TIMEOUT"))
+                        .count(),
+                    crate::qa_memory::QaMemoryReader::completed_count(&telemetry_refs),
+                    total_runs
+                ),
+                crate::qa_memory::QaMemoryReader::completed_count(&telemetry_refs),
+            ),
+            None => Factor::unmeasured(
                 "failure_rate",
-                "this project has no recorded execution, so no failure rate exists to measure",
-            )
+                &format!(
+                    "none of this project's {total_runs} recorded executions completed as a pass \
+                     or failure, so no failure rate exists to measure"
+                ),
+            ),
         },
         if !flakiness.is_empty() {
             Factor::measured(
@@ -9259,17 +9364,27 @@ async fn get_project_risk_handler(
                 "this project has no stored flakiness metric, so no flakiness exists to measure",
             )
         },
-        if failed_runs > 0 {
+        // Gated on genuine failures, so a project whose executions were all infrastructure-
+        // errored reports this factor as **unmeasured** rather than claiming 0.15 of the model
+        // on evidence that says nothing about product defects.
+        //
+        // The basis is corrected too: the previous string claimed "failure categories ... weighted
+        // by share", which this handler never computed -- it reads no `failure_category` at all.
+        // It now states what it actually did.
+        if product_failures > 0 {
             Factor::measured(
                 "failure_severity",
                 failure_severity,
-                "failure categories of this project's failures, weighted by share",
-                failed_runs as usize,
+                "this handler's two-bucket severity: 0.8 when a genuine failure timed out, else \
+                 0.4. It does not read failure_category; see the D3 note on the shared path",
+                product_failures,
             )
         } else {
             Factor::unmeasured(
                 "failure_severity",
-                "this project has no recorded failure, so no failure carries a category",
+                "this project has no completed pass-or-failure outcome (PASSED/FAILED/TIMEOUT), \
+                 so no product-defect severity exists to measure. Any infrastructure errors are \
+                 reported separately as `infrastructure_errors`",
             )
         },
         Factor::measured(
@@ -9333,6 +9448,47 @@ async fn get_project_risk_handler(
         obj.insert(
             "factors_detail".to_string(),
             serde_json::json!(project_factors),
+        );
+        // B3 (Q1) and Q2: both additive keys, so nothing that read this response before changes.
+        // **Unit contract for this key, stated once so it is never guessed.**
+        //
+        // * `completed_failure_rate`            -- **0..1 fraction.** Unchanged since Phase 7.3.
+        //   Preserved verbatim: it is a live public response key, and compatibility rule 1 is that
+        //   an existing public field's numerical meaning does not change silently. The two
+        //   unit-named keys below carry the same numbers, so a consumer that wants an unambiguous
+        //   name has one without any existing consumer breaking.
+        // * `completed_failure_rate_fraction`  -- **0..1 fraction.** The same value, named
+        //   explicitly. This is also the exact input the `failure_rate` risk factor consumes.
+        // * `completed_failure_rate_percent`   -- **0..100 percentage.** The same measurement
+        //   scaled the way every other rate on the QA-memory views is scaled.
+        //
+        // The five view structs that carry a field of this name now call it
+        // `completed_failure_rate_percent`, which is what they always meant. They are internal
+        // (no handler returns them, and no production code reads the field), so the rename is not
+        // a breaking change -- but it removes the ambiguity that made the API key look wrong.
+        obj.insert(
+            "completed_failure_rate".to_string(),
+            serde_json::json!(completed_failure_rate),
+        );
+        obj.insert(
+            "completed_failure_rate_fraction".to_string(),
+            serde_json::json!(completed_failure_rate),
+        );
+        obj.insert(
+            "completed_failure_rate_percent".to_string(),
+            serde_json::json!(crate::qa_memory::QaMemoryReader::completed_failure_rate(
+                &telemetry_refs
+            )),
+        );
+        obj.insert(
+            "infrastructure_errors".to_string(),
+            serde_json::json!(infrastructure_errors),
+        );
+        obj.insert(
+            "completed_executions".to_string(),
+            serde_json::json!(crate::qa_memory::QaMemoryReader::completed_count(
+                &telemetry_refs
+            )),
         );
     }
     Ok(Json(body))

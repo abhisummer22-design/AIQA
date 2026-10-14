@@ -62,6 +62,39 @@ async fn setup_harness() -> (
     (store, Arc::new(registry), evidence, dir)
 }
 
+/// Phase 9.2B Batch 3: the same fixture, rooted in a caller-owned directory so a test can measure
+/// exactly what *this* fixture leaves behind. Counting global `.tmp*` entries is not a valid
+/// assertion -- `cargo test` runs these tests concurrently, so any other suite's fixture perturbs
+/// the total and the result would depend on scheduling order.
+///
+/// `setup_harness()` above is left untouched and keeps using `tempfile::tempdir()`, so the 15
+/// existing call sites keep their existing behaviour and directory location exactly. The two
+/// differ only in that this one takes an explicit parent directory.
+async fn setup_harness_in(
+    root: &std::path::Path,
+) -> (
+    Store,
+    Arc<ExecutorRegistry>,
+    Arc<LocalEvidenceStore>,
+    tempfile::TempDir,
+) {
+    let dir = tempfile::tempdir_in(root).expect("tempdir");
+    let db_path = dir.path().join("agent_exec_test.sqlite3");
+    let store = Store::connect(&db_path).await.expect("connect store");
+
+    let evidence_dir = dir.path().join("evidence");
+    let evidence = Arc::new(LocalEvidenceStore::new(evidence_dir).expect("evidence store"));
+
+    let registry = ExecutorRegistry::new(Arc::new(crate::executor::SimulatedExecutor))
+        .register("simulated", Arc::new(crate::executor::SimulatedExecutor))
+        .register(
+            "compiled-api",
+            Arc::new(crate::executor::CompiledApiExecutor::from_env()),
+        );
+
+    (store, Arc::new(registry), evidence, dir)
+}
+
 fn sample_valid_plan(project_id: &str) -> AgentExecutionPlan {
     AgentExecutionPlan {
         project_id: project_id.to_string(),
@@ -413,6 +446,7 @@ async fn test_17_viewer_role_cannot_dispatch_execution() {
         }
         other => panic!("expected Unauthorized, got {other:?}"),
     }
+    dispatcher.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -441,6 +475,7 @@ async fn test_18_cross_project_dispatch_rejected() {
         }
         other => panic!("expected CrossProjectForbidden, got {other:?}"),
     }
+    dispatcher.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -463,6 +498,7 @@ async fn test_19_admin_key_can_dispatch_any_project() {
 
     let res = dispatcher.dispatch(&admin_ctx, req).await;
     assert!(res.is_ok(), "admin dispatch must succeed: {:?}", res.err());
+    dispatcher.store.pool.close().await;
 }
 
 // ============================================================================
@@ -493,6 +529,7 @@ async fn test_20_allowed_plan_auto_spawns_and_executes() {
     assert_eq!(res.lifecycle_state, AgentExecutionLifecycle::Executing);
     assert_eq!(res.requires_human_approval, false);
     assert_eq!(res.tasks_count, 2);
+    dispatcher.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -523,6 +560,7 @@ async fn test_21_policy_blocked_executor_denied() {
         }
         other => panic!("expected PolicyDenied, got {other:?}"),
     }
+    dispatcher.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -555,6 +593,7 @@ async fn test_22_gated_executor_holds_in_pending_approval() {
     );
     assert_eq!(res.requires_human_approval, true);
     assert!(res.policy_notes.unwrap().contains("require human approval"));
+    dispatcher.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -584,6 +623,7 @@ async fn test_23_production_environment_forces_approval() {
     );
     assert_eq!(res.requires_human_approval, true);
     assert!(res.policy_notes.unwrap().contains("production"));
+    dispatcher.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -626,6 +666,7 @@ async fn test_24_operator_can_approve_held_execution() {
         AgentExecutionLifecycle::Executing
     );
     assert_eq!(approve_res.requires_human_approval, false);
+    dispatcher.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -672,6 +713,7 @@ async fn test_25_operator_can_reject_held_execution() {
         AgentExecutionLifecycle::Rejected
     );
     assert!(reject_res.policy_notes.unwrap().contains("unverified risk"));
+    dispatcher.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -709,6 +751,7 @@ async fn test_26_viewer_cannot_approve_held_execution() {
         }
         other => panic!("expected Unauthorized, got {other:?}"),
     }
+    dispatcher.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -740,6 +783,7 @@ async fn test_27_cross_project_approval_rejected() {
         AgentExecutionError::CrossProjectForbidden(_) => {}
         other => panic!("expected CrossProjectForbidden, got {other:?}"),
     }
+    dispatcher.store.pool.close().await;
 }
 
 // ============================================================================
@@ -852,6 +896,7 @@ async fn test_28_traceability_links_requirement_and_test_case() {
     );
 
     assert_eq!(res.lifecycle_state, AgentExecutionLifecycle::Executing);
+    dispatcher.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -874,6 +919,7 @@ async fn test_29_evidence_captured_in_local_evidence_store() {
     let read_back = evidence.read(&obj_key).expect("evidence read");
     let content = String::from_utf8(read_back).unwrap();
     assert!(content.contains("Login successful"));
+    _store.pool.close().await;
 }
 
 #[tokio::test]
@@ -907,6 +953,7 @@ async fn test_30_observation_returns_sanitized_metrics_without_secrets() {
     assert_eq!(obs.run_id, res.run_id.to_string());
     assert_eq!(obs.project_id, "proj-obs");
     assert_eq!(obs.tasks_total, 2);
+    dispatcher.store.pool.close().await;
 }
 
 // ============================================================================
@@ -952,6 +999,7 @@ async fn test_31_idempotency_key_prevents_duplicate_dispatch() {
         res1.run_id, res2.run_id,
         "idempotency key must prevent duplicate run creation"
     );
+    dispatcher.store.pool.close().await;
 }
 
 // ============================================================================
@@ -993,5 +1041,314 @@ async fn test_33_boundary_zero_openjarvis_or_python_dependencies() {
     assert!(
         !python_runtime_detected,
         "Python/PyO3 dependencies must not exist"
+    );
+}
+
+// ===========================================================================
+// Phase 9.2B Batch 3 — setup_harness() lifecycle
+// ===========================================================================
+//
+// These test cleanup, not agent-execution logic. A green suite is not evidence that a directory was
+// removed: `tempfile` swallows the Windows removal error that causes the leak in the first place.
+// Every assertion below reads the filesystem directly, and each measures only inside a root it
+// owns, so it is immune to the other suites running concurrently.
+//
+// **The complication unique to this suite.** `AgentExecutionDispatcher::dispatch` calls
+// `engine::spawn_run(..)`, which is fire-and-forget: it `tokio::spawn`s and returns no handle,
+// capturing a `Store` clone. So a detached task can still be running when the test body ends.
+// `p92b3_detached_run_does_not_block_cleanup` is the test that pins this relationship down.
+
+/// The private measurement root owned by one test. Only this namespace is ever removed.
+fn p92b3_root(test_name: &str) -> std::path::PathBuf {
+    let root = std::env::temp_dir()
+        .join("aiqa_p92b3_artifacts")
+        .join(test_name);
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("create isolated artifact root");
+    root
+}
+
+fn p92b3_dir_count(root: &std::path::Path) -> usize {
+    std::fs::read_dir(root)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .filter(|e| e.path().is_dir())
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+fn p92b3_permissive_policy() -> PolicyConfig {
+    PolicyConfig {
+        max_concurrency: 8,
+        require_approval_for: HashSet::new(),
+        blocked_executors: HashSet::new(),
+    }
+}
+
+/// **A + B.** The fixture must still produce a genuinely migrated, writable database.
+#[tokio::test]
+async fn p92b3_fixture_is_usable_and_fully_migrated() {
+    let root = p92b3_root("usable_and_migrated");
+    let (store, _registry, _evidence, dir) = setup_harness_in(&root).await;
+
+    let tables: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN \
+         ('projects','test_cases','runs','execution_telemetry','quality_nodes')",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .expect("query sqlite_master");
+    assert_eq!(
+        tables.0, 5,
+        "the agent-execution fixture must run the real migrations"
+    );
+
+    let pid = uuid::Uuid::new_v4();
+    store
+        .insert_project(pid, "P92B3 lifecycle", None)
+        .await
+        .expect("insert_project");
+    let projects = store.list_projects(None).await.expect("list_projects");
+    assert!(
+        projects.iter().any(|p| p.id == pid),
+        "the fixture must accept a real write and read it back"
+    );
+    assert!(
+        dir.path().join("evidence").exists(),
+        "the evidence root must be a real directory inside the fixture"
+    );
+
+    store.pool.close().await;
+}
+
+/// **C + J.** Agent-execution behaviour must be unchanged by the teardown work: a real dispatch
+/// must still be accepted and produce a real run.
+#[tokio::test]
+async fn p92b3_agent_execution_behaviour_is_unchanged() {
+    let root = p92b3_root("agent_execution_behaviour");
+    let (store, registry, evidence, _dir) = setup_harness_in(&root).await;
+    let dispatcher =
+        AgentExecutionDispatcher::new(store, p92b3_permissive_policy(), registry, evidence, None);
+
+    let operator_ctx = make_auth_ctx(Role::Operator, Some("proj-alpha"));
+    let res = dispatcher
+        .dispatch(
+            &operator_ctx,
+            AgentExecutionRequest {
+                plan: sample_valid_plan("proj-alpha"),
+                idempotency_key: None,
+                auto_approve_safe: true,
+            },
+        )
+        .await
+        .expect("dispatched");
+
+    assert_eq!(
+        res.lifecycle_state,
+        AgentExecutionLifecycle::Executing,
+        "a permitted plan must still dispatch into EXECUTING"
+    );
+    assert_eq!(
+        res.tasks_count, 2,
+        "the plan's task count must be preserved"
+    );
+
+    dispatcher.store.pool.close().await;
+}
+
+/// **D + E + I.** The one test that matters most for this suite. A successful dispatch leaves a
+/// **detached** task holding a `Store` clone; this proves that task does not prevent the fixture's
+/// directory from being removed, and that the awaited close completes regardless.
+#[tokio::test]
+async fn p92b3_detached_run_does_not_block_cleanup() {
+    let root = p92b3_root("detached_run_cleanup");
+    let (store, registry, evidence, dir) = setup_harness_in(&root).await;
+    let path = dir.path().to_path_buf();
+
+    let dispatcher =
+        AgentExecutionDispatcher::new(store, p92b3_permissive_policy(), registry, evidence, None);
+    let operator_ctx = make_auth_ctx(Role::Operator, Some("proj-detached"));
+    let res = dispatcher
+        .dispatch(
+            &operator_ctx,
+            AgentExecutionRequest {
+                plan: sample_valid_plan("proj-detached"),
+                idempotency_key: None,
+                auto_approve_safe: true,
+            },
+        )
+        .await
+        .expect("dispatched");
+    assert_eq!(
+        res.lifecycle_state,
+        AgentExecutionLifecycle::Executing,
+        "this dispatch must actually spawn the detached run, else the test proves nothing"
+    );
+
+    // The detached task still holds a Store clone at this point. The close must still complete
+    // and must still release the file handles.
+    dispatcher.store.pool.close().await;
+    drop(dir);
+
+    assert!(
+        !path.exists(),
+        "a detached run holding a Store clone must not keep the fixture directory alive. If it \
+         does, the leak survives this phase for every test that dispatches successfully."
+    );
+    assert_eq!(
+        p92b3_dir_count(&root),
+        0,
+        "the measurement root must be empty"
+    );
+}
+
+/// **E + F.** The close must complete before the directory is removed, and the SQLite file plus its
+/// WAL/SHM sidecars must not block the removal.
+#[tokio::test]
+async fn p92b3_close_removes_the_directory_despite_wal_and_shm() {
+    let root = p92b3_root("close_removes_directory");
+    let (store, _registry, _evidence, dir) = setup_harness_in(&root).await;
+    let path = dir.path().to_path_buf();
+
+    // A real write, so the WAL/SHM sidecars genuinely exist rather than this being an easy case.
+    let pid = uuid::Uuid::new_v4();
+    store
+        .insert_project(pid, "P92B3 wal", None)
+        .await
+        .expect("insert_project");
+
+    let live: Vec<String> = std::fs::read_dir(&path)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        live.iter()
+            .any(|f| f.ends_with("-wal") || f.ends_with("-shm")),
+        "WAL/SHM sidecars must exist while the fixture is live, else this test proves nothing: \
+         {live:?}"
+    );
+
+    store.pool.close().await;
+    drop(dir);
+
+    assert!(
+        !path.exists(),
+        "after an awaited `pool.close()` the directory must be gone. If it remains, an open \
+         SQLite handle -- not the fixture -- is what blocked removal."
+    );
+    assert_eq!(
+        p92b3_dir_count(&root),
+        0,
+        "the measurement root must be empty"
+    );
+}
+
+/// **G.** Repeated creation and teardown must not accumulate artifacts in the isolated root.
+#[tokio::test]
+async fn p92b3_repeated_fixtures_accumulate_nothing() {
+    let root = p92b3_root("repeated_fixtures");
+    assert_eq!(
+        p92b3_dir_count(&root),
+        0,
+        "the measurement root starts empty"
+    );
+    for _ in 0..10 {
+        let (store, _registry, _evidence, dir) = setup_harness_in(&root).await;
+        let pid = uuid::Uuid::new_v4();
+        store
+            .insert_project(pid, "P92B3 repeat", None)
+            .await
+            .expect("insert_project");
+        store.pool.close().await;
+        drop(dir);
+    }
+    let after = p92b3_dir_count(&root);
+    assert_eq!(
+        after, 0,
+        "ten fixture cycles must leave zero directories in the isolated root; {after} remained"
+    );
+}
+
+/// **H.** Parallel fixture instances must each remove exactly their own directory, never another's.
+#[tokio::test]
+async fn p92b3_parallel_fixtures_remain_isolated() {
+    let root = p92b3_root("parallel_isolation");
+    assert_eq!(
+        p92b3_dir_count(&root),
+        0,
+        "the measurement root starts empty"
+    );
+
+    let mut handles = Vec::new();
+    for i in 0..8 {
+        let root = root.clone();
+        handles.push(tokio::spawn(async move {
+            let (store, _registry, _evidence, dir) = setup_harness_in(&root).await;
+            let path = dir.path().to_path_buf();
+            // Prove the fixture was real before releasing it, so a fixture that never created its
+            // database cannot pass by never existing.
+            assert!(
+                path.join("agent_exec_test.sqlite3").exists(),
+                "parallel fixture {i} must have created its database before teardown"
+            );
+            let pid = uuid::Uuid::new_v4();
+            store
+                .insert_project(pid, "P92B3 parallel", None)
+                .await
+                .expect("insert_project");
+            store.pool.close().await;
+            drop(dir);
+            path
+        }));
+    }
+
+    let mut paths = Vec::new();
+    for h in handles {
+        paths.push(h.await.expect("parallel fixture task must not panic"));
+    }
+    assert_eq!(
+        p92b3_dir_count(&root),
+        0,
+        "eight parallel fixtures must leave nothing behind -- neither their own nor each other's"
+    );
+    for p in &paths {
+        assert!(
+            !p.exists(),
+            "each fixture must remove exactly its own directory; {} survived",
+            p.display()
+        );
+    }
+}
+
+/// **K.** A teardown failure must remain observable rather than silently suppressed.
+/// `TempDir::close()` is the fallible form and returns the real removal error; asserting on it is
+/// what stops a future regression from passing quietly. Under this repository's retention policy a
+/// directory that genuinely cannot be removed is left in place rather than force-deleted, so it
+/// must still be *inspectable* -- which is exactly what a returned `Err` tells us.
+#[tokio::test]
+async fn p92b3_teardown_failure_is_observable() {
+    let root = p92b3_root("teardown_failure_observable");
+    let (store, _registry, _evidence, dir) = setup_harness_in(&root).await;
+    let path = dir.path().to_path_buf();
+    let pid = uuid::Uuid::new_v4();
+    store
+        .insert_project(pid, "P92B3 diagnostics", None)
+        .await
+        .expect("insert_project");
+
+    store.pool.close().await;
+    let result = dir.close();
+    assert!(
+        result.is_ok(),
+        "an awaited pool close must let TempDir::close() succeed; got {:?}",
+        result.err()
+    );
+    assert!(
+        !path.exists(),
+        "and the directory must really be gone, not merely reported as closed"
     );
 }

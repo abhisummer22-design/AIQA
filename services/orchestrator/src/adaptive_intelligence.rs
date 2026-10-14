@@ -1020,8 +1020,12 @@ impl AdaptiveIntelligenceService {
         // definition of what the history means and one window rule - not a
         // second interpretation here.
         //
-        // A read failure must not fail planning: the feedback is an input, and
-        // the existing behaviour is that a missing signal is simply absent.
+        // R1b: this read used to fail soft -- the comment claimed "a read failure must not fail
+        // planning", and the code backed that up by dropping the failure, which produced a
+        // feedback object with an empty `planning_signals` and no indication that the history
+        // was never loaded. Planning cannot distinguish that from a project with no signals, so
+        // it would plan against a silently missing input. It now propagates, like the telemetry
+        // read above it.
         let planning_signals = crate::qa_memory::QaMemoryReader::new(self.store.clone())
             .planning_signals(project_id)
             .await;
@@ -1032,7 +1036,9 @@ impl AdaptiveIntelligenceService {
             high_risk_components: Vec::new(),
             top_failure_clusters,
             recommended_priorities,
-            planning_signals,
+            // `planning_signals` returns `anyhow::Result`; this view's error type is
+            // `String`, so the failure is rendered rather than swallowed.
+            planning_signals: planning_signals.map_err(|e| e.to_string())?,
         })
     }
 }

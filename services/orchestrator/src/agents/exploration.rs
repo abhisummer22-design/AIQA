@@ -2131,7 +2131,10 @@ impl ExplorationService {
     /// exactly the model the rest of the product reports.
     async fn prioritisation(&self, project_id: &str) -> Option<Value> {
         let reader = crate::qa_memory::QaMemoryReader::new(self.store.clone());
-        let result = reader.prioritise_tests(project_id, None).await;
+        // A storage failure here must not be read as "this project has no prioritisation", which
+        // is what a silent default would have produced: exploration would then simply proceed
+        // with no ranking and say nothing about why.
+        let result = reader.prioritise_tests(project_id, None).await.ok()?;
         let view = result.view?;
         // Only the signal set is handed to the agent. The full per-case risk views are the
         // API's business; exploration needs to know which areas matter, not re-read every

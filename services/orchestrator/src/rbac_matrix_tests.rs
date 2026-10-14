@@ -229,6 +229,7 @@ async fn metrics_is_refused_to_a_viewer_and_an_operator() {
             "a {label} read deployment-wide metrics: {body}"
         );
     }
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -242,6 +243,7 @@ async fn metrics_is_still_readable_by_an_admin() {
         body.contains("http_request_duration_seconds"),
         "the body must still be the exposition format, not an error envelope"
     );
+    state.store.pool.close().await;
 }
 
 // --------------------------- healing: the URL's project must own the resource
@@ -294,6 +296,7 @@ async fn a_proposal_from_another_project_cannot_be_acted_on_through_this_project
         stored.state
     );
     assert!(stored.approved_by.is_none(), "and it recorded an approver");
+    state.store.pool.close().await;
 }
 
 /// The read siblings already did this; pinned so the three mutations cannot be
@@ -315,6 +318,7 @@ async fn a_proposal_from_another_project_cannot_be_read_through_this_projects_ur
             "GET {suffix} leaked another project: {resp}"
         );
     }
+    state.store.pool.close().await;
 }
 
 /// The proposal's own project must still work — a guard that refuses everything is
@@ -329,6 +333,7 @@ async fn a_proposal_can_still_be_read_through_its_own_projects_url() {
     let path = format!("/api/v1/projects/{project}/healing/proposals/{proposal}/diff");
     let (status, body) = send(&state, "GET", &path, Some(&admin), None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
+    state.store.pool.close().await;
 }
 
 // ------------------------------------------------- the admin surface, by role
@@ -362,6 +367,7 @@ async fn minting_an_api_key_is_refused_to_a_viewer_and_an_operator() {
         .await
         .unwrap();
     assert_eq!(keys, 2, "only the two test keys should exist");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -372,6 +378,7 @@ async fn the_admin_audit_log_is_refused_to_a_non_admin() {
 
     let (status, body) = send(&state, "GET", "/admin/audit-log", Some(&operator), None).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    state.store.pool.close().await;
 }
 
 // ------------------------------------------------- auth.rs, on its own terms
@@ -494,4 +501,5 @@ async fn the_helpers_this_matrix_uses_exist_with_the_signatures_assumed() {
         .await
         .expect("get_project")
         .is_some());
+    state.store.pool.close().await;
 }

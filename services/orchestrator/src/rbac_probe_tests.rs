@@ -400,6 +400,7 @@ async fn every_target_is_probed_for_real_and_its_answer_classified_correctly() {
         "expected {} probes, ran {checked}",
         TARGETS.len() * 3
     );
+    h.state.store.pool.close().await;
 }
 
 /// The check that the bodies in `rbac_probe` exist for.
@@ -441,6 +442,7 @@ async fn every_post_target_reaches_its_gate_rather_than_the_extractor() {
             body.trim()
         );
     }
+    h.state.store.pool.close().await;
 }
 
 /// A sweep must not be able to leave anything behind.
@@ -603,6 +605,7 @@ async fn no_role_is_allowed_something_a_weaker_role_was_refused() {
          stronger role was allowed:\n  {}",
         inversions.join("\n  ")
     );
+    h.state.store.pool.close().await;
 }
 
 /// Probing is itself a privileged capability, so it needs its own gate.
@@ -631,4 +634,5 @@ async fn a_viewer_cannot_reach_the_probe_or_its_target_list() {
         status, 403,
         "a viewer must not be able to make the server send authenticated requests"
     );
+    h.state.store.pool.close().await;
 }

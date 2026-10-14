@@ -325,6 +325,90 @@ impl Observation {
     }
 }
 
+/// Relative tolerance between two independently recorded durations.
+///
+/// Kept at the original 10 % so a genuine proportional divergence on a long-running test is still
+/// reported.
+pub const DURATION_RELATIVE_TOLERANCE: f64 = 0.10;
+
+/// Absolute tolerance floor, in **milliseconds**.
+///
+/// ## Why this exists
+///
+/// The two durations compared here are **independently measured**, and neither is a copy of the
+/// other:
+///
+/// * the backend's is `(tasks.finished_at - tasks.started_at)`, taken by `store::set_task_status`
+///   stamping each end at the moment it performs that write;
+/// * the API's is `execution_telemetry.duration_ms`, derived by
+///   `ExecutionTelemetry::from_task_state` from the `TaskState` timestamps.
+///
+/// Two `now()` calls microseconds apart are therefore two different instants, and the difference
+/// between them is scheduling noise rather than a cross-layer defect.
+///
+/// ## Why a *relative* tolerance alone is not enough
+///
+/// Both sides are integers in **milliseconds** — `num_milliseconds()` on one side, a `u64` column
+/// on the other — so 1 ms is the smallest non-zero difference the data can express. Under a
+/// relative tolerance alone, a 0 ms span is treated as *infinitely* sensitive: any non-zero
+/// reading on the other side counts as a 100 % divergence. That made the verdict a function of
+/// whether two writes happened to land in the same millisecond — precisely the scheduling
+/// question a cross-layer verifier must not be answering.
+///
+/// ## Why 10 ms
+///
+/// 10 ms is ten times the 1 ms quantum, so it absorbs the inter-write gap without reaching any
+/// duration a reader would call different: the existing genuine-disagreement case is 0 ms against
+/// 5 000 ms, leaving a 500x margin. It is a stated policy constant, not a value fitted to any
+/// observed dataset, and both components are reported in each comparison's detail.
+pub const DURATION_ABSOLUTE_FLOOR_MS: f64 = 10.0;
+
+/// What comparing two independently recorded durations concluded.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DurationAgreement {
+    /// The difference is within the effective tolerance — measurement noise.
+    WithinTolerance {
+        difference_ms: f64,
+        tolerance_ms: f64,
+    },
+    /// The difference exceeds the effective tolerance — a real disagreement.
+    BeyondTolerance {
+        difference_ms: f64,
+        tolerance_ms: f64,
+    },
+}
+
+/// The effective tolerance for a pair of durations: the larger of the absolute floor and the
+/// relative allowance.
+///
+/// The absolute floor governs while the measurements are small, which is exactly where a relative
+/// fraction stops meaning anything. The relative allowance governs on long durations, where a flat
+/// 10 ms would be finer than either clock resolves.
+pub fn duration_tolerance_ms(backend_ms: f64, api_ms: f64) -> f64 {
+    let relative_ms = DURATION_RELATIVE_TOLERANCE * backend_ms.abs().max(api_ms.abs());
+    DURATION_ABSOLUTE_FLOOR_MS.max(relative_ms)
+}
+
+/// Compare two independently recorded durations.
+///
+/// The boundary is deliberate and inclusive: a difference **equal** to the effective tolerance is
+/// treated as agreeing, so a boundary test can sit exactly on it and get a stated answer.
+pub fn compare_durations(backend_ms: f64, api_ms: f64) -> DurationAgreement {
+    let difference_ms = (backend_ms - api_ms).abs();
+    let tolerance_ms = duration_tolerance_ms(backend_ms, api_ms);
+    if difference_ms <= tolerance_ms {
+        DurationAgreement::WithinTolerance {
+            difference_ms,
+            tolerance_ms,
+        }
+    } else {
+        DurationAgreement::BeyondTolerance {
+            difference_ms,
+            tolerance_ms,
+        }
+    }
+}
+
 /// How far apart two observations may be in time and still be comparable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ComparisonWindow {
@@ -429,6 +513,28 @@ pub struct IntegrityReport {
     /// Layers with no evidence at all, named rather than silently absent.
     pub layers_unavailable: Vec<Layer>,
     pub window: ComparisonWindow,
+    /// Checks that could not be completed, for the one comparator that is deliberately
+    /// best-effort.
+    ///
+    /// Empty in the normal case, because every *required* read now propagates as `Err` from
+    /// [`IntegrityVerifier::verify_run`] instead. A non-empty list means the report is
+    /// **incomplete**: the absence of that comparison is a failed read, not a clean layer.
+    /// [`IntegrityReport::is_complete`] is the single check for it.
+    #[serde(default)]
+    pub read_failures: Vec<String>,
+}
+
+impl IntegrityReport {
+    /// `true` when every check this report needed actually ran.
+    ///
+    /// This is the distinction P7-D1 removed by accident: with a closed pool the verifier
+    /// returned a *successful* report with zero comparisons and zero defects, which a reader
+    /// checking `defects_established == 0` could not tell from a run that agreed with itself.
+    /// Required reads now fail loudly instead; this covers the one best-effort check that
+    /// deliberately does not.
+    pub fn is_complete(&self) -> bool {
+        self.read_failures.is_empty()
+    }
 }
 
 // ============================================================================
@@ -471,18 +577,26 @@ impl<'a> IntegrityVerifier<'a> {
     ///
     /// `list_execution_telemetry` is project-scoped, so a run id belonging to another tenant
     /// resolves to nothing rather than to another tenant's rows.
+    /// Telemetry rows for one run.
+    ///
+    /// **Phase 7.1 (P7-D1).** This read used to end in `unwrap_or_default()`, so a storage
+    /// fault produced an empty vector -- indistinguishable from a run that recorded no
+    /// telemetry, and from a run that therefore had nothing to criticise. Five comparators
+    /// route through here, so a single fault silenced five of the ten checks in
+    /// [`Self::verify_run`] at once. The error now propagates, and the caller decides what an
+    /// unreadable run means.
     async fn telemetry_for_run(
         &self,
         project_id: &str,
         run_id: RunId,
-    ) -> Vec<ExecutionTelemetryRow> {
-        self.store
+    ) -> anyhow::Result<Vec<ExecutionTelemetryRow>> {
+        Ok(self
+            .store
             .list_execution_telemetry(project_id, 20_000)
-            .await
-            .unwrap_or_default()
+            .await?
             .into_iter()
             .filter(|r| r.run_id == run_id)
-            .collect()
+            .collect())
     }
 
     /// Skew between two observations, in milliseconds.
@@ -615,21 +729,19 @@ impl<'a> IntegrityVerifier<'a> {
         &self,
         project_id: &str,
         run_id: RunId,
-    ) -> Vec<IntegrityComparison> {
-        let Some(run) = self.store.get_run_summary(run_id).await.ok().flatten() else {
-            return Vec::new();
+    ) -> anyhow::Result<Vec<IntegrityComparison>> {
+        // P7-D1: `.ok().flatten()` conflated "no such run" with "the read failed". Only the
+        // first is an empty answer; the second is now an error the caller cannot mistake for one.
+        let Some(run) = self.store.get_run_summary(run_id).await? else {
+            return Ok(Vec::new());
         };
         if run.project_id.as_deref() != Some(project_id) {
             // Another tenant's run: no observations at all, rather than another tenant's rows.
-            return Vec::new();
+            return Ok(Vec::new());
         }
 
-        let tasks = self
-            .store
-            .list_tasks_for_run(run_id)
-            .await
-            .unwrap_or_default();
-        let telemetry = self.telemetry_for_run(project_id, run_id).await;
+        let tasks = self.store.list_tasks_for_run(run_id).await?;
+        let telemetry = self.telemetry_for_run(project_id, run_id).await?;
         let mut out = Vec::new();
 
         for task in &tasks {
@@ -703,7 +815,7 @@ impl<'a> IntegrityVerifier<'a> {
                 )),
             }
         }
-        out
+        Ok(out)
     }
 
     // ------------------------------------------------- 2. duration: two clocks
@@ -717,16 +829,9 @@ impl<'a> IntegrityVerifier<'a> {
         &self,
         project_id: &str,
         run_id: RunId,
-    ) -> Vec<IntegrityComparison> {
-        let tasks = self
-            .store
-            .list_tasks_for_run(run_id)
-            .await
-            .unwrap_or_default();
-        let telemetry = self.telemetry_for_run(project_id, run_id).await;
-
-        /// Two clocks differing by up to this fraction are agreeing, not disagreeing.
-        const TOLERANCE: f64 = 0.10;
+    ) -> anyhow::Result<Vec<IntegrityComparison>> {
+        let tasks = self.store.list_tasks_for_run(run_id).await?;
+        let telemetry = self.telemetry_for_run(project_id, run_id).await?;
 
         let mut out = Vec::new();
         for task in &tasks {
@@ -783,23 +888,44 @@ impl<'a> IntegrityVerifier<'a> {
                 let a = c.observations[0].value.as_ref().and_then(Value::as_f64);
                 let b = c.observations[1].value.as_ref().and_then(Value::as_f64);
                 if let (Some(a), Some(b)) = (a, b) {
-                    let spread = (a - b).abs() / a.max(b).max(1.0);
-                    if spread <= TOLERANCE {
-                        c.outcome = IntegrityOutcome::Consistent;
-                        c.defect_established = false;
-                        c.detail = format!(
-                            "the two clocks differ by {spread:.1}%, within the {TOLERANCE:.0} \
-                             tolerance for two independently recorded measurements ({a} ms vs \
-                             {b} ms)"
-                        );
-                        c.defect_caveat =
-                            Some("the difference is within the stated clock tolerance".to_string());
+                    // `Unanswered` never reaches here, so the staleness rule in `decide_pair`
+                    // keeps its precedence: a pair recorded too far apart to compare is reported
+                    // as staleness and is never rescued by the tolerance below.
+                    match compare_durations(a, b) {
+                        DurationAgreement::WithinTolerance {
+                            difference_ms,
+                            tolerance_ms,
+                        } => {
+                            c.outcome = IntegrityOutcome::Consistent;
+                            c.defect_established = false;
+                            c.detail = format!(
+                                "the two clocks differ by {difference_ms:.1} ms ({a} ms vs \
+                                 {b} ms), within the {tolerance_ms:.1} ms effective tolerance \
+                                 for two independently recorded measurements"
+                            );
+                            c.defect_caveat = Some(
+                                "the difference is within the stated clock tolerance, so it is \
+                                 measurement noise rather than a cross-layer disagreement"
+                                    .to_string(),
+                            );
+                        }
+                        DurationAgreement::BeyondTolerance {
+                            difference_ms,
+                            tolerance_ms,
+                        } => {
+                            c.detail = format!(
+                                "the two clocks differ by {difference_ms:.1} ms ({a} ms vs \
+                                 {b} ms), beyond the {tolerance_ms:.1} ms effective tolerance, \
+                                 so this is a disagreement between two recorded measurements \
+                                 rather than clock noise"
+                            );
+                        }
                     }
                 }
             }
             out.push(c);
         }
-        out
+        Ok(out)
     }
 
     // ------------------------------------------------- 3. reason: backend vs api
@@ -813,13 +939,9 @@ impl<'a> IntegrityVerifier<'a> {
         &self,
         project_id: &str,
         run_id: RunId,
-    ) -> Vec<IntegrityComparison> {
-        let tasks = self
-            .store
-            .list_tasks_for_run(run_id)
-            .await
-            .unwrap_or_default();
-        let telemetry = self.telemetry_for_run(project_id, run_id).await;
+    ) -> anyhow::Result<Vec<IntegrityComparison>> {
+        let tasks = self.store.list_tasks_for_run(run_id).await?;
+        let telemetry = self.telemetry_for_run(project_id, run_id).await?;
 
         let mut out = Vec::new();
         for task in &tasks {
@@ -908,7 +1030,7 @@ impl<'a> IntegrityVerifier<'a> {
                 trace_key: None,
             });
         }
-        out
+        Ok(out)
     }
 
     // ------------------------------------------------- 4. run state vs its tasks
@@ -921,16 +1043,16 @@ impl<'a> IntegrityVerifier<'a> {
         &self,
         project_id: &str,
         run_id: RunId,
-    ) -> Option<IntegrityComparison> {
-        let run = self.store.get_run_summary(run_id).await.ok().flatten()?;
+    ) -> anyhow::Result<Option<IntegrityComparison>> {
+        // P7-D1: a failed read used to become `None` -- the same value as "not this tenant's
+        // run" -- so the derived run state was silently never compared.
+        let Some(run) = self.store.get_run_summary(run_id).await? else {
+            return Ok(None);
+        };
         if run.project_id.as_deref() != Some(project_id) {
-            return None;
+            return Ok(None);
         }
-        let tasks = self
-            .store
-            .list_tasks_for_run(run_id)
-            .await
-            .unwrap_or_default();
+        let tasks = self.store.list_tasks_for_run(run_id).await?;
         let identity = IdentitySource::RunKey { run_id };
 
         let open: Vec<&TaskState> = tasks
@@ -975,7 +1097,7 @@ impl<'a> IntegrityVerifier<'a> {
         );
         let consistent = !(terminal && !open.is_empty());
 
-        Some(IntegrityComparison {
+        Ok(Some(IntegrityComparison {
             kind: ComparisonKind::BusinessStateConsistency,
             identity: Some(identity.clone()),
             entity: identity.key(),
@@ -1012,7 +1134,7 @@ impl<'a> IntegrityVerifier<'a> {
                     .to_string(),
             ),
             trace_key: None,
-        })
+        }))
     }
 
     // ------------------------------------------------- 5. fingerprint: api vs db
@@ -1026,13 +1148,9 @@ impl<'a> IntegrityVerifier<'a> {
         &self,
         project_id: &str,
         run_id: RunId,
-    ) -> Vec<IntegrityComparison> {
-        let telemetry = self.telemetry_for_run(project_id, run_id).await;
-        let clusters = self
-            .store
-            .list_failure_clusters(Some(project_id))
-            .await
-            .unwrap_or_default();
+    ) -> anyhow::Result<Vec<IntegrityComparison>> {
+        let telemetry = self.telemetry_for_run(project_id, run_id).await?;
+        let clusters = self.store.list_failure_clusters(Some(project_id)).await?;
         let known: BTreeMap<&str, &crate::store::FailureClusterRow> = clusters
             .iter()
             .filter_map(|c| c.failure_fingerprint.as_deref().map(|fp| (fp, c)))
@@ -1122,7 +1240,7 @@ impl<'a> IntegrityVerifier<'a> {
                 }
             }
         }
-        out
+        Ok(out)
     }
 
     // ------------------------------------------------- 6. event log vs backend
@@ -1135,23 +1253,15 @@ impl<'a> IntegrityVerifier<'a> {
         &self,
         project_id: &str,
         run_id: RunId,
-    ) -> Vec<IntegrityComparison> {
-        let Some(run) = self.store.get_run_summary(run_id).await.ok().flatten() else {
-            return Vec::new();
+    ) -> anyhow::Result<Vec<IntegrityComparison>> {
+        let Some(run) = self.store.get_run_summary(run_id).await? else {
+            return Ok(Vec::new());
         };
         if run.project_id.as_deref() != Some(project_id) {
-            return Vec::new();
+            return Ok(Vec::new());
         }
-        let events = self
-            .store
-            .list_events_since(run_id, 0)
-            .await
-            .unwrap_or_default();
-        let tasks = self
-            .store
-            .list_tasks_for_run(run_id)
-            .await
-            .unwrap_or_default();
+        let events = self.store.list_events_since(run_id, 0).await?;
+        let tasks = self.store.list_tasks_for_run(run_id).await?;
 
         let mut out = Vec::new();
         for event in &events {
@@ -1203,7 +1313,7 @@ impl<'a> IntegrityVerifier<'a> {
                 backend,
             ));
         }
-        out
+        Ok(out)
     }
 
     // ------------------------------------------------- 7. audit trail vs reality
@@ -1217,17 +1327,12 @@ impl<'a> IntegrityVerifier<'a> {
         &self,
         project_id: &str,
         limit: i64,
-    ) -> Vec<IntegrityComparison> {
-        let audit = self
-            .store
-            .list_audit(Some(project_id), limit, 0)
-            .await
-            .unwrap_or_default();
+    ) -> anyhow::Result<Vec<IntegrityComparison>> {
+        let audit = self.store.list_audit(Some(project_id), limit, 0).await?;
         let telemetry = self
             .store
             .list_execution_telemetry(project_id, 20_000)
-            .await
-            .unwrap_or_default();
+            .await?;
 
         let mut out = Vec::new();
         for row in &audit {
@@ -1278,7 +1383,7 @@ impl<'a> IntegrityVerifier<'a> {
             );
             out.push(c);
         }
-        out
+        Ok(out)
     }
 
     // ------------------------------------------------- 8. evidence index vs store
@@ -1288,15 +1393,16 @@ impl<'a> IntegrityVerifier<'a> {
     /// A genuine cross-layer check: the database claims an artifact exists, and the evidence
     /// store is asked. A row pointing at nothing means a later reader would follow the key and
     /// find silence.
-    pub async fn evidence_index_consistency(&self, run_id: RunId) -> Vec<IntegrityComparison> {
+    pub async fn evidence_index_consistency(
+        &self,
+        run_id: RunId,
+    ) -> anyhow::Result<Vec<IntegrityComparison>> {
+        // An unconfigured evidence store is genuine insufficient evidence (this verifier was
+        // built without one), not a failed read, so it remains an empty answer.
         let Some(evidence_store) = self.evidence else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
-        let rows = self
-            .store
-            .list_evidence_for_run(run_id)
-            .await
-            .unwrap_or_default();
+        let rows = self.store.list_evidence_for_run(run_id).await?;
         let mut out = Vec::new();
         for row in rows {
             let identity = IdentitySource::ObjectKey {
@@ -1338,7 +1444,7 @@ impl<'a> IntegrityVerifier<'a> {
             );
             out.push(c);
         }
-        out
+        Ok(out)
     }
 
     // ------------------------------------------------- 9. UI vs API
@@ -1356,8 +1462,8 @@ impl<'a> IntegrityVerifier<'a> {
         project_id: &str,
         run_id: RunId,
         crawl: &crate::crawler::CrawlOutput,
-    ) -> Vec<IntegrityComparison> {
-        let telemetry = self.telemetry_for_run(project_id, run_id).await;
+    ) -> anyhow::Result<Vec<IntegrityComparison>> {
+        let telemetry = self.telemetry_for_run(project_id, run_id).await?;
         let surface = crate::agents::exploration::ExplorationSurface::from_crawl(crawl);
 
         let mut out = Vec::new();
@@ -1448,7 +1554,7 @@ impl<'a> IntegrityVerifier<'a> {
                 out.push(c);
             }
         }
-        out
+        Ok(out)
     }
 
     // ------------------------------------------------- 10. before / after
@@ -1463,24 +1569,23 @@ impl<'a> IntegrityVerifier<'a> {
         &self,
         project_id: &str,
         test_case_id: &str,
-    ) -> Option<IntegrityComparison> {
+    ) -> anyhow::Result<Option<IntegrityComparison>> {
         let all = self
             .store
             .list_execution_telemetry(project_id, 20_000)
-            .await
-            .unwrap_or_default();
+            .await?;
         let mut rows: Vec<&ExecutionTelemetryRow> = all
             .iter()
             .filter(|r| r.test_case_id.map(|c| c.to_string()).as_deref() == Some(test_case_id))
             .collect();
         if rows.len() < 2 {
-            return None;
+            return Ok(None);
         }
         rows.sort_by_key(|r| r.created_at);
         let before = rows[0];
         let after = rows[rows.len() - 1];
         if before.run_id == after.run_id {
-            return None;
+            return Ok(None);
         }
 
         let identity = IdentitySource::TestCaseKey {
@@ -1520,7 +1625,7 @@ impl<'a> IntegrityVerifier<'a> {
              of a product defect"
                 .to_string(),
         );
-        Some(c)
+        Ok(Some(c))
     }
 
     // ------------------------------------------------- 11. the audit finding
@@ -1688,28 +1793,38 @@ impl<'a> IntegrityVerifier<'a> {
         project_id: &str,
         run_id: RunId,
         crawl: Option<&crate::crawler::CrawlOutput>,
-    ) -> IntegrityReport {
+    ) -> anyhow::Result<IntegrityReport> {
+        // P7-D1. Every read below used to end in `unwrap_or_default()` / `.ok().flatten()`,
+        // so a storage fault produced an *empty* comparison list. An empty list is also what a
+        // genuinely clean run produces, and `defects_established == 0` is true of both -- so a
+        // failed verification was indistinguishable from a passing one, and a closed pool
+        // produced a confident all-clear. Required reads now propagate: if storage cannot be
+        // read, the caller learns that instead of receiving a report that says nothing is wrong.
         let mut comparisons = Vec::new();
-        comparisons.extend(self.task_status_consistency(project_id, run_id).await);
-        comparisons.extend(self.task_duration_consistency(project_id, run_id).await);
-        comparisons.extend(self.task_reason_consistency(project_id, run_id).await);
-        comparisons.extend(self.fingerprint_registration(project_id, run_id).await);
-        comparisons.extend(self.event_log_consistency(project_id, run_id).await);
-        comparisons.extend(self.evidence_index_consistency(run_id).await);
-        comparisons.extend(self.audit_trail_consistency(project_id, 200).await);
-        // A read failure here must not fail the whole report: the other comparisons are
-        // independent, and losing them because one optional reader hiccupped would be a
-        // worse failure than the one being reported.
-        comparisons.extend(
-            self.fabricated_constant_check(project_id)
-                .await
-                .unwrap_or_default(),
-        );
-        if let Some(c) = self.run_state_consistency(project_id, run_id).await {
+        comparisons.extend(self.task_status_consistency(project_id, run_id).await?);
+        comparisons.extend(self.task_duration_consistency(project_id, run_id).await?);
+        comparisons.extend(self.task_reason_consistency(project_id, run_id).await?);
+        comparisons.extend(self.fingerprint_registration(project_id, run_id).await?);
+        comparisons.extend(self.event_log_consistency(project_id, run_id).await?);
+        comparisons.extend(self.evidence_index_consistency(run_id).await?);
+        comparisons.extend(self.audit_trail_consistency(project_id, 200).await?);
+
+        // The one deliberately best-effort check, and the reason it stays that way: the eight
+        // comparisons above are independent of it, and discarding all of them because an optional
+        // reader hiccupped would lose more information than it protects. But "independent" is not
+        // the same as "invisible" -- a failed read is recorded in the report rather than dropped,
+        // which is exactly the vanishing P7-D1 was about.
+        let mut read_failures: Vec<String> = Vec::new();
+        match self.fabricated_constant_check(project_id).await {
+            Ok(found) => comparisons.extend(found),
+            Err(e) => read_failures.push(format!("fabricated_constant_check: {e}")),
+        }
+
+        if let Some(c) = self.run_state_consistency(project_id, run_id).await? {
             comparisons.push(c);
         }
         if let Some(c) = crawl {
-            comparisons.extend(self.ui_api_consistency(project_id, run_id, c).await);
+            comparisons.extend(self.ui_api_consistency(project_id, run_id, c).await?);
         }
 
         let mut counts: BTreeMap<String, usize> = BTreeMap::new();
@@ -1738,7 +1853,7 @@ impl<'a> IntegrityVerifier<'a> {
             }
         }
 
-        IntegrityReport {
+        Ok(IntegrityReport {
             project_id: project_id.to_string(),
             run_id,
             comparisons,
@@ -1748,7 +1863,8 @@ impl<'a> IntegrityVerifier<'a> {
             layers_observed,
             layers_unavailable,
             window: self.window,
-        }
+            read_failures,
+        })
     }
 }
 

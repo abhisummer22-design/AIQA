@@ -452,6 +452,7 @@ async fn a_cluster_and_its_telemetry_agree_even_with_a_failing_selector() {
         "the cluster must describe the executions that produced it; a selector-bearing \
          failure previously produced two different fingerprints"
     );
+    h.store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ bug -> fix
@@ -524,6 +525,7 @@ async fn a_real_healing_proposal_joins_a_real_bug_through_the_cluster() {
         proposal_fp, cluster_fp,
         "Bug -> Fix joins on this value; if it differs the chain is broken again"
     );
+    h.store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ the whole chain
@@ -633,6 +635,7 @@ async fn the_whole_chain_is_persisted_and_retrievable_end_to_end() {
         "module must be named as missing: {:?}",
         trace.incomplete
     );
+    h.store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ retest honesty
@@ -660,6 +663,7 @@ async fn a_fix_that_was_never_verified_has_no_retest() {
         "the reason must be stated: {:?}",
         trace.incomplete
     );
+    h.store.pool.close().await;
 }
 
 /// A retest that **failed** is real evidence and must be reported, not hidden.
@@ -718,6 +722,7 @@ async fn a_failed_retest_is_reported_rather_than_hidden() {
         "the outcome must be visible on the hop: {:?}",
         retests[0].label
     );
+    h.store.pool.close().await;
 }
 
 /// A regression introduced by a fix is the most important negative result in the chain.
@@ -762,6 +767,7 @@ async fn a_regression_introduced_by_a_fix_is_surfaced_as_not_passed() {
         "a passed revised task does not make the retest a pass when the original \
          failure was not resolved and a regression was introduced"
     );
+    h.store.pool.close().await;
 }
 
 /// An unreadable verification must be surfaced, not treated as "no retest happened".
@@ -805,6 +811,7 @@ async fn a_corrupt_verification_record_is_reported_not_dropped() {
         Some(false),
         "an unreadable verification is not a pass"
     );
+    h.store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ missing links
@@ -860,6 +867,7 @@ async fn a_fix_without_a_bug_draft_is_still_reported_with_the_gap_named() {
         !fixes[0].evidence.missing.is_empty(),
         "the absent bug must be named on the fix hop"
     );
+    h.store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ isolation
@@ -923,6 +931,7 @@ async fn the_chain_does_not_cross_projects() {
         "another tenant's case must not appear in our index"
     );
     let _ = their_release;
+    h.store.pool.close().await;
 }
 
 /// A proposal from another project must never attach to our failure, even when both
@@ -989,6 +998,7 @@ async fn a_proposal_from_another_project_never_joins_our_failure() {
         Some(their_proposal.to_string().as_str()),
         "another tenant's proposal attached to our failure"
     );
+    h.store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ idempotence
@@ -1047,6 +1057,7 @@ async fn repeating_the_chain_does_not_duplicate_relations() {
         Some(1),
         "one failure, one fix hop"
     );
+    h.store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ migration
@@ -1114,4 +1125,5 @@ async fn a_fresh_migration_supplies_every_table_the_chain_traverses() {
                 .expect("column check");
         assert!(present > 0, "{table}.{column} is required by the chain");
     }
+    store.pool.close().await;
 }

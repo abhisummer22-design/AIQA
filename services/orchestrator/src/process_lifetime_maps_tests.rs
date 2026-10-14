@@ -85,6 +85,7 @@ async fn forgetting_a_project_releases_its_event_channel() {
         0,
         "the project's stream is still resident after it was forgotten"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -93,6 +94,7 @@ async fn forgetting_a_project_that_has_no_stream_is_not_an_error() {
     // The delete handler calls this unconditionally, and must not fail when the
     // project never had a subscriber.
     assert!(!state.forget_project_stream("never-existed").await);
+    state.store.pool.close().await;
 }
 
 /// A subscriber that connected before the forget keeps working: `tokio`'s
@@ -116,6 +118,7 @@ async fn an_existing_subscriber_survives_its_projects_stream_being_forgotten() {
     );
     let replacement = state.project_stream("proj-a").await;
     assert!(!Arc::ptr_eq(&stream, &replacement));
+    state.store.pool.close().await;
 }
 
 // ------------------------------------------------------- performance_tests
@@ -131,6 +134,7 @@ async fn a_running_performance_test_handle_is_never_evicted() {
 
     assert_eq!(state.prune_finished_performance_tests().await, 0);
     assert!(state.performance_tests.read().await.contains_key(&id));
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -150,6 +154,7 @@ async fn a_just_finished_performance_test_handle_is_still_readable() {
         "precondition: one handle held"
     );
     assert!(FINISHED_PERF_RETENTION_SECS > 0);
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -175,6 +180,7 @@ async fn an_old_finished_performance_test_handle_is_evicted() {
     // so it is exercised through the `events_after` and breaker tests below rather
     // than asserted here with a fake.
     assert_eq!(state.prune_finished_performance_tests().await, 0);
+    state.store.pool.close().await;
 }
 
 // ---------------------------------------------------------- RunRecord.events
@@ -223,6 +229,7 @@ async fn the_in_memory_event_window_answers_a_since_that_it_still_covers() {
     let events = record.events_after(2).await.expect("window still covers 2");
     assert_eq!(events.len(), 3);
     assert_eq!(events[0].sequence, 2);
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -251,6 +258,7 @@ async fn asking_for_events_before_the_retained_window_defers_to_the_store() {
         "a since=0 read returned only the tail, with no indication anything was \
          dropped -- the caller would have believed it had the whole history"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -261,6 +269,7 @@ async fn a_record_with_no_events_defers_rather_than_claiming_an_empty_history() 
     // Nothing retained means nothing *known* -- an empty list here would be
     // indistinguishable from a run that genuinely emitted no events.
     assert!(record.events_after(0).await.is_none());
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -296,6 +305,7 @@ async fn the_event_window_is_capped_rather_than_unbounded() {
         .expect("the tail is always covered");
     assert_eq!(newest.len(), 1);
     assert_eq!(newest[0].sequence, (over - 1) as u64);
+    state.store.pool.close().await;
 }
 
 // ----------------------------------------------------------------- breakers

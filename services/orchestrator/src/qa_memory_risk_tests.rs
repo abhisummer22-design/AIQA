@@ -142,6 +142,7 @@ async fn a_module_with_failing_history_reports_its_measured_factors() {
     let view = reader
         .module_risk(&pid, "payment")
         .await
+        .expect("module_risk")
         .view
         .expect("found");
 
@@ -174,6 +175,7 @@ async fn a_module_with_failing_history_reports_its_measured_factors() {
             .is_some(),
         "categorised failures must produce a measured severity"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -200,7 +202,12 @@ async fn no_zero_to_one_score_is_invented_from_partial_evidence() {
         .await;
     }
 
-    let view = reader.module_risk(&pid, "m").await.view.expect("found");
+    let view = reader
+        .module_risk(&pid, "m")
+        .await
+        .expect("module_risk")
+        .view
+        .expect("found");
 
     assert!(
         view.calibration.is_none(),
@@ -256,6 +263,7 @@ async fn no_zero_to_one_score_is_invented_from_partial_evidence() {
         view.signals.iter().any(|s| s.kind == "partial_score"),
         "the missing 30% must be stated, not left for a reader to work out"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -280,7 +288,12 @@ async fn every_factor_names_itself_its_weight_and_its_evidence() {
         .await;
     }
 
-    let view = reader.module_risk(&pid, "m").await.view.expect("found");
+    let view = reader
+        .module_risk(&pid, "m")
+        .await
+        .expect("module_risk")
+        .view
+        .expect("found");
     assert_eq!(
         view.factors.len(),
         FACTOR_WEIGHTS.len(),
@@ -319,6 +332,7 @@ async fn every_factor_names_itself_its_weight_and_its_evidence() {
             );
         }
     }
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -380,8 +394,18 @@ async fn a_module_with_more_recent_failures_weighs_more() {
         .await;
     }
 
-    let a = reader.module_risk(&pid, "broken").await.view.unwrap();
-    let b = reader.module_risk(&pid, "clean").await.view.unwrap();
+    let a = reader
+        .module_risk(&pid, "broken")
+        .await
+        .expect("module_risk")
+        .view
+        .unwrap();
+    let b = reader
+        .module_risk(&pid, "clean")
+        .await
+        .expect("module_risk")
+        .view
+        .unwrap();
 
     assert!(
         a.weighted_contribution > b.weighted_contribution,
@@ -395,6 +419,7 @@ async fn a_module_with_more_recent_failures_weighs_more() {
         b.weighted_contribution, 0.0,
         "no failures means nothing to weigh"
     );
+    store.pool.close().await;
 }
 
 // ----------------------------------------------------------- release risk
@@ -425,6 +450,7 @@ async fn a_release_with_regression_history_reports_its_own_counts() {
     let view = reader
         .release_risk(&pid, release.id)
         .await
+        .expect("release_risk")
         .view
         .expect("found");
     assert_eq!(view.label.as_deref(), Some("2026.10"));
@@ -441,6 +467,7 @@ async fn a_release_with_regression_history_reports_its_own_counts() {
         "one release cannot show a trend; got {:?}",
         view.trend
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -477,7 +504,12 @@ async fn a_release_whose_failures_got_worse_is_reported_as_worsening() {
         .await;
     }
 
-    let view = reader.release_risk(&pid, ids[2]).await.view.expect("found");
+    let view = reader
+        .release_risk(&pid, ids[2])
+        .await
+        .expect("release_risk")
+        .view
+        .expect("found");
 
     assert_eq!(
         view.trend.as_deref(),
@@ -491,6 +523,7 @@ async fn a_release_whose_failures_got_worse_is_reported_as_worsening() {
         3,
         "every release with executions appears, including the target"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -533,13 +566,19 @@ async fn a_release_whose_failures_cleared_is_reported_as_improving() {
         execute(&store, &pid, case, Some(ids[2]), TaskStatus::Passed, None).await;
     }
 
-    let view = reader.release_risk(&pid, ids[2]).await.view.expect("found");
+    let view = reader
+        .release_risk(&pid, ids[2])
+        .await
+        .expect("release_risk")
+        .view
+        .expect("found");
     assert_eq!(
         view.trend.as_deref(),
         Some("improving"),
         "two failing releases then a clean one is an improving trend: {:?}",
         view.trend
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -576,13 +615,19 @@ async fn a_release_needing_the_same_rate_every_time_is_steady() {
         }
     }
 
-    let view = reader.release_risk(&pid, ids[2]).await.view.unwrap();
+    let view = reader
+        .release_risk(&pid, ids[2])
+        .await
+        .expect("release_risk")
+        .view
+        .unwrap();
     assert_eq!(
         view.trend.as_deref(),
         Some("steady"),
         "an unchanged failure rate is not a trend: {:?}",
         view.trend
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -604,7 +649,12 @@ async fn a_release_with_no_executions_is_never_counted_as_a_clean_release() {
         execute(&store, &pid, case, Some(run.id), TaskStatus::Passed, None).await;
     }
 
-    let view = reader.release_risk(&pid, run.id).await.view.unwrap();
+    let view = reader
+        .release_risk(&pid, run.id)
+        .await
+        .expect("release_risk")
+        .view
+        .unwrap();
     assert!(
         !view
             .trend_points
@@ -615,12 +665,16 @@ async fn a_release_with_no_executions_is_never_counted_as_a_clean_release() {
     );
 
     // And asked about directly, it says it has nothing rather than reporting zero.
-    let direct = reader.release_risk(&pid, empty.id).await;
+    let direct = reader
+        .release_risk(&pid, empty.id)
+        .await
+        .expect("release_risk");
     assert_eq!(
         direct.insufficient_data,
         Some(InsufficientData::NoMatchingHistory)
     );
     assert!(direct.view.is_none());
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------ comparisons
@@ -664,7 +718,10 @@ async fn releases_are_ranked_by_their_measured_contribution() {
         .await;
     }
 
-    let overview = reader.release_risk_overview(&pid).await;
+    let overview = reader
+        .release_risk_overview(&pid)
+        .await
+        .expect("release_risk_overview");
     assert_eq!(overview.len(), 2, "both releases have executions");
     assert_eq!(
         overview[0].label.as_deref(),
@@ -676,6 +733,7 @@ async fn releases_are_ranked_by_their_measured_contribution() {
         overview[0].weighted_contribution >= overview[1].weighted_contribution,
         "ranking must follow the measurement"
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -692,12 +750,16 @@ async fn a_module_that_does_not_exist_is_unknown_not_low_risk() {
         execute(&store, &pid, case, None, TaskStatus::Passed, None).await;
     }
 
-    let result = reader.module_risk(&pid, "no-such-module").await;
+    let result = reader
+        .module_risk(&pid, "no-such-module")
+        .await
+        .expect("module_risk");
     assert_eq!(
         result.insufficient_data,
         Some(InsufficientData::UnknownSubject),
         "a module that does not exist must not be reported as low risk"
     );
+    store.pool.close().await;
 }
 
 // ------------------------------------------------- insufficient data cases
@@ -708,20 +770,31 @@ async fn no_history_means_no_risk_conclusion_not_a_low_one() {
     let pid = project(&store, "Empty").await;
     let reader = QaMemoryReader::new(store.clone());
 
-    let module = reader.module_risk(&pid, "anything").await;
+    let module = reader
+        .module_risk(&pid, "anything")
+        .await
+        .expect("module_risk");
     assert_eq!(
         module.insufficient_data,
         Some(InsufficientData::NoExecutions)
     );
     assert!(module.view.is_none());
 
-    let release = reader.release_risk(&pid, Uuid::new_v4()).await;
+    let release = reader
+        .release_risk(&pid, Uuid::new_v4())
+        .await
+        .expect("release_risk");
     assert_eq!(
         release.insufficient_data,
         Some(InsufficientData::UnknownSubject),
         "an unknown release is unknown even on an empty project"
     );
-    assert!(reader.release_risk_overview(&pid).await.is_empty());
+    assert!(reader
+        .release_risk_overview(&pid)
+        .await
+        .expect("release_risk_overview")
+        .is_empty());
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -735,11 +808,12 @@ async fn a_module_whose_cases_never_ran_reports_no_matching_history() {
         .await
         .expect("link");
 
-    let result = reader.module_risk(&pid, "m").await;
+    let result = reader.module_risk(&pid, "m").await.expect("module_risk");
     assert_eq!(
         result.insufficient_data,
         Some(InsufficientData::NoExecutions)
     );
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -756,7 +830,12 @@ async fn a_failure_without_a_category_leaves_severity_unmeasured() {
         execute(&store, &pid, case, None, TaskStatus::Failed, None).await;
     }
 
-    let view = reader.module_risk(&pid, "m").await.view.unwrap();
+    let view = reader
+        .module_risk(&pid, "m")
+        .await
+        .expect("module_risk")
+        .view
+        .unwrap();
     let sev = view
         .factors
         .iter()
@@ -778,6 +857,7 @@ async fn a_failure_without_a_category_leaves_severity_unmeasured() {
         .find(|f| f.name == "failure_rate")
         .and_then(|f| f.measured)
         .is_some());
+    store.pool.close().await;
 }
 
 // ---------------------------------------------------------------- isolation
@@ -811,13 +891,18 @@ async fn one_projects_risk_is_never_visible_from_another() {
     }
 
     assert!(
-        reader.module_risk(&mine, "secret").await.is_found(),
+        reader
+            .module_risk(&mine, "secret")
+            .await
+            .expect("module_risk")
+            .is_found(),
         "the owning project must see its own module"
     );
     assert_eq!(
         reader
             .module_risk(&theirs, "secret")
             .await
+            .expect("module_risk")
             .insufficient_data,
         Some(InsufficientData::NoExecutions),
         "another project must not see this module's failures"
@@ -826,10 +911,16 @@ async fn one_projects_risk_is_never_visible_from_another() {
         reader
             .release_risk(&theirs, release.id)
             .await
+            .expect("release_risk")
             .insufficient_data,
         Some(InsufficientData::UnknownSubject)
     );
-    assert!(reader.release_risk_overview(&theirs).await.is_empty());
+    assert!(reader
+        .release_risk_overview(&theirs)
+        .await
+        .expect("release_risk_overview")
+        .is_empty());
+    store.pool.close().await;
 }
 
 // ------------------------------------------------- determinism & no CoT
@@ -860,9 +951,12 @@ async fn repeated_risk_reads_return_identical_answers() {
         .await;
     }
 
-    let a = serde_json::to_string(&reader.module_risk(&pid, "m").await).unwrap();
-    let b = serde_json::to_string(&reader.module_risk(&pid, "m").await).unwrap();
+    let a =
+        serde_json::to_string(&reader.module_risk(&pid, "m").await.expect("module_risk")).unwrap();
+    let b =
+        serde_json::to_string(&reader.module_risk(&pid, "m").await.expect("module_risk")).unwrap();
     assert_eq!(a, b, "risk must be reproducible from the same stored rows");
+    store.pool.close().await;
 }
 
 #[tokio::test]
@@ -892,8 +986,14 @@ async fn no_risk_view_carries_a_field_that_looks_like_hidden_reasoning() {
         .unwrap();
 
     let rendered = [
-        serde_json::to_string(&reader.module_risk(&pid, "m").await).unwrap(),
-        serde_json::to_string(&reader.release_risk(&pid, release.id).await).unwrap(),
+        serde_json::to_string(&reader.module_risk(&pid, "m").await.expect("module_risk")).unwrap(),
+        serde_json::to_string(
+            &reader
+                .release_risk(&pid, release.id)
+                .await
+                .expect("release_risk"),
+        )
+        .unwrap(),
     ];
 
     for needle in [
@@ -911,4 +1011,267 @@ async fn no_risk_view_carries_a_field_that_looks_like_hidden_reasoning() {
             );
         }
     }
+    store.pool.close().await;
+}
+
+// ============================================================================
+// R1b -- a failed read must never be reported as NO_EXECUTIONS
+// ============================================================================
+
+/// The three states that were previously conflated, all three now distinguished.
+///
+/// Before R1b, `QaMemoryReader::telemetry_for` and `test_evidence` returned plain collections
+/// and swallowed their reads with `unwrap_or_default()`. A closed pool therefore produced an
+/// **empty** evidence set, and the `evidence.all.is_empty()` guard that produces `NO_EXECUTIONS`
+/// was consulted against evidence that had failed to load. A project with real executions was
+/// reported as having none.
+///
+/// `store.pool.close()` is a genuine read failure -- the same technique `engine_tests` uses -- so
+/// nothing here depends on a mock or on timing.
+#[tokio::test]
+async fn r1b_a_failed_read_is_never_reported_as_no_executions() {
+    // --- state 1: healthy store, genuinely no history ---
+    let (store, _d) = temp_store().await;
+    let bare = project(&store, "R1b NoHistory").await;
+    let reader = QaMemoryReader::new(store.clone());
+
+    let per_case = reader
+        .test_risk(&bare, &Uuid::new_v4().to_string())
+        .await
+        .expect("an empty project is not a failure");
+    assert_eq!(
+        per_case.insufficient_data,
+        Some(InsufficientData::NoExecutions),
+        "a project with no history still reports NO_EXECUTIONS, and that behaviour is preserved"
+    );
+    assert!(
+        per_case.view.is_none(),
+        "and still invents no ordering from no history"
+    );
+
+    // --- state 2: healthy store, real history ---
+    let (store2, _d2) = temp_store().await;
+    let with_history = project(&store2, "R1b WithHistory").await;
+    let widget = Uuid::new_v4();
+    execute(
+        &store2,
+        &with_history,
+        widget,
+        None,
+        TaskStatus::Failed,
+        Some("assertion"),
+    )
+    .await;
+    let reader2 = QaMemoryReader::new(store2.clone());
+
+    // `test_stability` matches on `execution_telemetry.test_case_id`, which `execute` set to
+    // the `case_id` passed in -- so the lookup key is the case UUID string, not a task name.
+    let real = reader2
+        .test_stability(&with_history, &widget.to_string())
+        .await
+        .expect("a healthy read must succeed");
+    assert!(
+        real.view.is_some(),
+        "with recorded executions a real view must be produced: {real:?}"
+    );
+
+    // --- state 3: the store cannot answer ---
+    store2.pool.close().await;
+
+    let failed = reader2
+        .test_stability(&with_history, &widget.to_string())
+        .await;
+    assert!(
+        failed.is_err(),
+        "a failed read must be an error, never NO_EXECUTIONS for a project with history: {:?}",
+        failed.as_ref().map(|r| r.insufficient_data)
+    );
+    store.pool.close().await;
+    store2.pool.close().await;
+}
+
+/// The gate is that *no* caller may still convert a required read failure into an empty answer, so
+/// every view whose return type changed is exercised here.
+///
+/// Each is asserted twice: once on a healthy store (so the fixture is known good, and the later
+/// failure cannot pass for the wrong reason) and once with the pool closed.
+#[tokio::test]
+async fn r1b_no_affected_view_reports_a_failed_read_as_an_empty_answer() {
+    let (store, _d) = temp_store().await;
+    let pid = project(&store, "R1b AllViews").await;
+    let gadget = Uuid::new_v4();
+    execute(
+        &store,
+        &pid,
+        gadget,
+        None,
+        TaskStatus::Failed,
+        Some("assertion"),
+    )
+    .await;
+    let reader = QaMemoryReader::new(store.clone());
+    let release_id = Uuid::new_v4();
+    let case_id = Uuid::new_v4().to_string();
+
+    // Healthy: every one of these must succeed, or the fixture is wrong.
+    reader.bug_history(&pid).await.expect("bug_history");
+    reader
+        .test_stability(&pid, "gadget")
+        .await
+        .expect("test_stability");
+    reader
+        .module_risk_history(&pid, "m1")
+        .await
+        .expect("module_risk_history");
+    reader
+        .release_history(&pid, release_id)
+        .await
+        .expect("release_history");
+    reader
+        .requirement_history(&pid, "REQ-1")
+        .await
+        .expect("requirement_history");
+    reader
+        .project_memory_summary(&pid)
+        .await
+        .expect("project_memory_summary");
+    reader
+        .planning_signals(&pid)
+        .await
+        .expect("planning_signals");
+    reader.module_risk(&pid, "m1").await.expect("module_risk");
+    reader.test_risk(&pid, &case_id).await.expect("test_risk");
+    reader
+        .release_risk(&pid, release_id)
+        .await
+        .expect("release_risk");
+    reader
+        .release_risk_overview(&pid)
+        .await
+        .expect("release_risk_overview");
+
+    store.pool.close().await;
+
+    // Every arm maps to one uniform type so the table has a single type.
+    let cases: Vec<(&str, Result<bool, anyhow::Error>)> = vec![
+        (
+            "test_stability",
+            reader
+                .test_stability(&pid, &gadget.to_string())
+                .await
+                .map(|v| v.insufficient_data.is_some()),
+        ),
+        (
+            "module_risk_history",
+            reader
+                .module_risk_history(&pid, "m1")
+                .await
+                .map(|v| v.insufficient_data.is_some()),
+        ),
+        (
+            "release_history",
+            reader
+                .release_history(&pid, release_id)
+                .await
+                .map(|v| v.insufficient_data.is_some()),
+        ),
+        (
+            "requirement_history",
+            reader
+                .requirement_history(&pid, "REQ-1")
+                .await
+                .map(|v| v.insufficient_data.is_some()),
+        ),
+        (
+            "module_risk",
+            reader
+                .module_risk(&pid, "m1")
+                .await
+                .map(|v| v.insufficient_data.is_some()),
+        ),
+        (
+            "test_risk",
+            reader
+                .test_risk(&pid, &case_id)
+                .await
+                .map(|v| v.insufficient_data.is_some()),
+        ),
+        (
+            "release_risk",
+            reader
+                .release_risk(&pid, release_id)
+                .await
+                .map(|v| v.insufficient_data.is_some()),
+        ),
+        (
+            "release_risk_overview",
+            reader
+                .release_risk_overview(&pid)
+                .await
+                .map(|v| v.is_empty()),
+        ),
+        (
+            "bug_history",
+            reader.bug_history(&pid).await.map(|v| v.is_empty()),
+        ),
+        (
+            "project_memory_summary",
+            reader
+                .project_memory_summary(&pid)
+                .await
+                .map(|v| v.executions == 0),
+        ),
+        (
+            "planning_signals",
+            reader.planning_signals(&pid).await.map(|v| v.is_empty()),
+        ),
+    ];
+    for (name, res) in cases {
+        assert!(
+            res.is_err(),
+            "{name} converted a failed read into an empty answer: {:?}",
+            res.as_ref().ok()
+        );
+    }
+    store.pool.close().await;
+}
+
+/// R1b must not have disturbed Phase 4's refusal to score a partially measured model, nor turned an
+/// unmeasured factor into a measured zero while propagating the error channel.
+#[tokio::test]
+async fn r1b_unmeasured_factors_stay_unmeasured_through_the_new_error_path() {
+    let (store, _d) = temp_store().await;
+    let pid = project(&store, "R1b Unmeasured").await;
+    let thing = Uuid::new_v4();
+    execute(
+        &store,
+        &pid,
+        thing,
+        None,
+        TaskStatus::Failed,
+        Some("assertion"),
+    )
+    .await;
+    let reader = QaMemoryReader::new(store.clone());
+
+    let risk = reader
+        .test_risk(&pid, &thing.to_string())
+        .await
+        .expect("a healthy read must succeed");
+    let view = risk.view.as_ref().expect("a risk view");
+    assert!(
+        view.calibration.is_none(),
+        "Phase 4 still refuses a calibration from a partially measured model"
+    );
+    assert!(
+        view.unmeasured_weight > 0.0,
+        "and still reports the unbacked weight rather than absorbing it"
+    );
+    assert!(
+        view.factors
+            .iter()
+            .any(|f| f.name == "security_sensitivity" && f.measured.is_none()),
+        "security_sensitivity must still be unmeasured with a reason, never a fabricated zero"
+    );
+    store.pool.close().await;
 }

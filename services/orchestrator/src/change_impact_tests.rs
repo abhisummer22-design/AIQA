@@ -184,7 +184,8 @@ async fn a_changed_requirement_reaches_its_linked_cases() {
             "requirement",
             &[target("requirement", "REQ-P3-1")],
         )
-        .await;
+        .await
+        .expect("analyse");
 
     assert!(
         analysis.insufficient_reason.is_none(),
@@ -222,6 +223,7 @@ async fn a_changed_requirement_reaches_its_linked_cases() {
             i.via
         );
     }
+    store.pool.close().await;
 }
 
 /// A changed test case reaches itself, and only itself as *direct* impact.
@@ -240,7 +242,8 @@ async fn a_changed_test_case_reaches_itself() {
             "code",
             &[target("test_case", &a.to_string())],
         )
-        .await;
+        .await
+        .expect("analyse");
 
     let direct: Vec<Uuid> = analysis
         .impacted_tests
@@ -253,6 +256,7 @@ async fn a_changed_test_case_reaches_itself() {
         vec![a],
         "only the changed case is directly impacted: {direct:?}"
     );
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ indirect impact
@@ -282,7 +286,8 @@ async fn a_case_sharing_a_recorded_failure_is_reached_indirectly() {
             "code",
             &[target("test_case", &target_case.to_string())],
         )
-        .await;
+        .await
+        .expect("analyse");
 
     let sibling_hop = analysis
         .impacted_tests
@@ -299,6 +304,7 @@ async fn a_case_sharing_a_recorded_failure_is_reached_indirectly() {
         "the claim must name the stored edge: {}",
         sibling_hop.via
     );
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ missing links
@@ -330,7 +336,8 @@ async fn every_unresolvable_change_kind_is_refused_with_a_reason() {
                 "code",
                 &[target(kind, ref_id)],
             )
-            .await;
+            .await
+            .expect("analyse");
         let t = &outcome.targets[0];
         match &t.resolution {
             Resolution::Insufficient { marker, reason } => {
@@ -352,6 +359,7 @@ async fn every_unresolvable_change_kind_is_refused_with_a_reason() {
             "{kind} must not manufacture impact"
         );
     }
+    store.pool.close().await;
 }
 
 /// A requirement key that merely *resembles* a real one must not match.
@@ -372,7 +380,8 @@ async fn a_near_miss_requirement_key_does_not_match() {
                 "requirement",
                 &[target("requirement", near_miss)],
             )
-            .await;
+            .await
+            .expect("analyse");
         // A trailing space is trimmed by design; everything else is a genuine near miss.
         if near_miss.trim() == near_miss {
             assert!(
@@ -389,6 +398,7 @@ async fn a_near_miss_requirement_key_does_not_match() {
             );
         }
     }
+    store.pool.close().await;
 }
 
 /// A malformed test-case id is a clear refusal, not a silent no-match.
@@ -404,7 +414,8 @@ async fn a_malformed_test_case_target_is_refused() {
             "code",
             &[target("test_case", "not-a-uuid")],
         )
-        .await;
+        .await
+        .expect("analyse");
     match &outcome.targets[0].resolution {
         Resolution::Insufficient { reason, .. } => assert!(
             reason.contains("UUID"),
@@ -412,6 +423,7 @@ async fn a_malformed_test_case_target_is_refused() {
         ),
         other => panic!("expected insufficient, got {other:?}"),
     }
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ unrelated / empty
@@ -431,12 +443,14 @@ async fn an_unrelated_change_yields_no_impact() {
             "requirement",
             &[target("requirement", "REQ-NOT-IN-THIS-PROJECT")],
         )
-        .await;
+        .await
+        .expect("analyse");
     assert!(analysis.impacted_tests.is_empty());
     assert!(
         analysis.insufficient_reason.is_some(),
         "nothing resolved, so the answer must be reported as insufficient"
     );
+    store.pool.close().await;
 }
 
 /// A project with no cases and no history yields an empty selection.
@@ -452,10 +466,12 @@ async fn an_empty_project_yields_an_empty_selection() {
             "code",
             &[target("code_file", "src/x.rs")],
         )
-        .await;
+        .await
+        .expect("analyse");
     assert!(analysis.impacted_tests.is_empty());
     assert!(analysis.not_selected.is_empty());
     assert!(analysis.safety_floor.is_empty());
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ safety floor
@@ -487,7 +503,8 @@ async fn a_failing_case_is_retained_even_when_the_change_does_not_touch_it() {
             "requirement",
             &[target("requirement", "REQ-P3-A")],
         )
-        .await;
+        .await
+        .expect("analyse");
 
     let selected: Vec<Uuid> = analysis
         .impacted_tests
@@ -532,6 +549,7 @@ async fn a_failing_case_is_retained_even_when_the_change_does_not_touch_it() {
         "exactly the one evidence-free case is dropped: {:?}",
         analysis.not_selected
     );
+    store.pool.close().await;
 }
 
 /// The risk tier retains a case on its own recorded risk.
@@ -581,7 +599,8 @@ async fn a_high_risk_case_is_retained_on_its_own_risk() {
             "requirement",
             &[target("requirement", "REQ-P3-R1")],
         )
-        .await;
+        .await
+        .expect("analyse");
 
     let selected: Vec<Uuid> = analysis
         .impacted_tests
@@ -603,6 +622,7 @@ async fn a_high_risk_case_is_retained_on_its_own_risk() {
         .expect("risk hop");
     assert_eq!(hop.tier, Tier::HighRisk);
     assert!(hop.via.contains("risk score"), "{}", hop.via);
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ persistence
@@ -621,7 +641,8 @@ async fn impact_records_are_written_once_per_change() {
 
     let first = reader
         .analyse(&pid, "commit-persist", "requirement", &targets)
-        .await;
+        .await
+        .expect("analyse");
     assert!(first.recorded > 0, "the first analysis must write rows");
     assert_eq!(first.already_recorded, 0);
     assert_eq!(first.impacted_tests.len(), 2);
@@ -635,7 +656,8 @@ async fn impact_records_are_written_once_per_change() {
     // Re-analyse: idempotent, not additive.
     let second = reader
         .analyse(&pid, "commit-persist", "requirement", &targets)
-        .await;
+        .await
+        .expect("analyse");
     assert_eq!(second.recorded, 0, "a repeat must not write new rows");
     assert_eq!(second.already_recorded, 2);
     assert_eq!(second.impacted_tests.len(), 2, "the answer is unchanged");
@@ -664,6 +686,7 @@ async fn impact_records_are_written_once_per_change() {
         .collect();
     assert_eq!(selected.len(), 2);
     let _ = a;
+    store.pool.close().await;
 }
 
 /// A resolved node with no linked test is recorded as a negative result, not skipped.
@@ -686,7 +709,8 @@ async fn a_resolved_node_with_no_linked_test_is_recorded_as_a_negative_result() 
             "requirement",
             &[target("requirement", "REQ-P3-N1")],
         )
-        .await;
+        .await
+        .expect("analyse");
 
     assert!(
         analysis.impacted_tests.is_empty(),
@@ -711,6 +735,7 @@ async fn a_resolved_node_with_no_linked_test_is_recorded_as_a_negative_result() 
         "the record must say why: {:?}",
         rows[0].rationale
     );
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ isolation
@@ -753,7 +778,8 @@ async fn change_impact_does_not_cross_projects() {
             "requirement",
             &[target("requirement", "REQ-P3-X")],
         )
-        .await;
+        .await
+        .expect("analyse");
 
     let selected: Vec<Uuid> = analysis
         .impacted_tests
@@ -789,8 +815,10 @@ async fn change_impact_does_not_cross_projects() {
             "code",
             &[target("test_case", &their_case.to_string())],
         )
-        .await;
+        .await
+        .expect("analyse");
     assert!(crossed.impacted_tests.is_empty());
+    store.pool.close().await;
 }
 
 // ------------------------------------------------------------------ the existing engine
@@ -971,4 +999,114 @@ async fn phase_three_added_one_additive_migration() {
     .expect("index lookup")
     .expect("the unique index must exist, or duplicate records are unbounded");
     assert_eq!(idx, "uq_change_impacts_record");
+    store.pool.close().await;
+}
+
+/// A storage failure must not be reported as "this change affects nothing".
+///
+/// This is the difference between "there is no impact" and "we could not look". Before the
+/// remediation every read in this reader used `.unwrap_or_default()`, so a closed pool produced a
+/// clean, empty, entirely plausible `ChangeImpact` — and, worst, an **empty safety floor**. The
+/// floor is the tier that exists so a case with recorded failure evidence is never dropped for
+/// speed; silently emptying it means a storage fault makes AIQA test *less*.
+///
+/// `store.pool.close()` is the same technique `engine_tests` uses to induce a genuine persistence
+/// failure: it is a real read failure, not a mock.
+#[tokio::test]
+async fn a_storage_failure_is_reported_rather_than_returning_an_empty_selection() {
+    let (store, _d) = temp_store().await;
+    let pid = project(&store, "P61 StorageFail").await;
+    let reader = crate::change_impact::ChangeImpactReader::new(store.clone());
+
+    // A real declaration against a real project, so the only thing missing is the store.
+    let res = reader
+        .analyse(
+            &pid,
+            "commit-storage",
+            "requirement",
+            &[crate::change_impact::ChangeTarget {
+                kind: "requirement".into(),
+                ref_id: "REQ-P61-1".into(),
+            }],
+        )
+        .await;
+    assert!(
+        res.is_ok(),
+        "a healthy store must still produce an analysis: {:?}",
+        res.err()
+    );
+
+    store.pool.close().await;
+
+    let res = reader
+        .analyse(
+            &pid,
+            "commit-storage-2",
+            "requirement",
+            &[crate::change_impact::ChangeTarget {
+                kind: "requirement".into(),
+                ref_id: "REQ-P61-1".into(),
+            }],
+        )
+        .await;
+
+    assert!(
+        res.is_err(),
+        "a storage failure must be an error, never an empty ChangeImpact: {:?}",
+        res.as_ref().err()
+    );
+    store.pool.close().await;
+}
+
+/// The same for the safety floor on its own, because it is the tier that must never be silently
+/// emptied.
+#[tokio::test]
+async fn a_storage_failure_cannot_silently_empty_the_safety_floor() {
+    let (store, _d) = temp_store().await;
+    let pid = project(&store, "P61 FloorFail").await;
+    let reader = crate::change_impact::ChangeImpactReader::new(store.clone());
+
+    assert!(
+        reader
+            .safety_floor(&pid)
+            .await
+            .expect("healthy read")
+            .is_empty(),
+        "the fixture has no failures yet, so the floor starts empty for a real reason"
+    );
+
+    store.pool.close().await;
+
+    assert!(
+        reader.safety_floor(&pid).await.is_err(),
+        "an unreadable floor must be an error, not an empty map that reads as \"nothing has \
+         ever failed\""
+    );
+    store.pool.close().await;
+}
+
+/// And for the risk tier: a failed read must not select zero high-risk cases while reporting a
+/// successful analysis.
+#[tokio::test]
+async fn a_storage_failure_cannot_silently_empty_the_high_risk_tier() {
+    let (store, _d) = temp_store().await;
+    let pid = project(&store, "P61 RiskFail").await;
+    let reader = crate::change_impact::ChangeImpactReader::new(store.clone());
+
+    assert!(
+        reader
+            .risk_scores(&pid)
+            .await
+            .expect("healthy read")
+            .is_empty(),
+        "no scored cases yet"
+    );
+
+    store.pool.close().await;
+
+    assert!(
+        reader.risk_scores(&pid).await.is_err(),
+        "an unreadable risk read must be an error, not an empty map that selects nothing"
+    );
+    store.pool.close().await;
 }
