@@ -21,7 +21,7 @@
 //!   used to manufacture a state. (The one raw statement in Phase 6.1's F2 fix pinned a clock on
 //!   rows the store had already written; nothing here does anything like it.)
 //! * **Real migrations.** Every scenario calls `Store::connect`, which runs
-//!   `sqlx::migrate!("./migrations")` — all 32 migrations, on a fresh file, per scenario.
+//!   `sqlx::migrate!("./migrations")` — all 33 migrations, on a fresh file, per scenario.
 //! * **Identifiers, not names.** Assertions check stored ids, foreign keys and relationship rows.
 //!   Two entities with the same title must still be distinguishable.
 //! * **Honest outcomes.** A scenario asserts a PASS result, an honest `INSUFFICIENT_DATA`, or an

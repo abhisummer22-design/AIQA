@@ -1064,6 +1064,9 @@ async fn phase_one_introduces_no_new_migration() {
     // The Phase 1 report documents this number. If it changes, the report must too.
     assert_eq!(
         applied,
+        // 33 since AI Usage Monitoring Phase 3: migration 0033 (`ai_usage` error rollups,
+        // additive columns with default 0 -- nothing altered or dropped).
+        //
         // 32 since Phase 5: migration 0032 (`exploration_sessions` +
         // `exploration_findings`, both new and additive -- nothing altered or dropped).
         //
@@ -1072,7 +1075,7 @@ async fn phase_one_introduces_no_new_migration() {
         // rewritten. Phase 1 and Phase 2 each pinned 30 and each declared no migration;
         // this count moved exactly once, for one additive migration, and both guards
         // noticed rather than being quietly relaxed.
-        32,
+        33,
         "Phase 1 was specified as additive with no schema change; \
          if the migration count moved, Phase 1 did something it did not claim"
     );

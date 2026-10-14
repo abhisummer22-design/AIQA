@@ -963,12 +963,15 @@ async fn phase_three_added_one_additive_migration() {
         .fetch_one(&store.pool)
         .await
         .expect("migration count");
+    // 33 since AI Usage Monitoring Phase 3: migration 0033 added `ai_usage` error rollups
+    // (http_429_calls, http_5xx_calls, timeout_calls) -- additive columns with default 0.
+    //
     // 32 since Phase 5: migration 0032 added `exploration_sessions` and
     // `exploration_findings`. Both are brand-new tables -- nothing altered, nothing
     // dropped, no table recreated -- so this guard moves rather than being silenced.
     assert_eq!(
-        applied, 32,
-        "30 plus exactly one Phase 3 migration, plus one Phase 5 migration",
+        applied, 33,
+        "30 plus one Phase 3 migration, plus one Phase 5 migration, plus one AI monitoring migration",
     );
 
     // The columns the feature relies on.

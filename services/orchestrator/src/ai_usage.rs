@@ -203,7 +203,7 @@ pub(crate) fn slot_of(at: DateTime<Utc>) -> String {
 
 macro_rules! usage_columns {
     () => {
-        "slot, project_id, provider, model, task, calls, failed_calls, answered_ms, failed_ms, token_calls, prompt_tokens, completion_tokens, metered_calls, priced_calls, cost_micros"
+        "slot, project_id, provider, model, task, calls, failed_calls, answered_ms, failed_ms, token_calls, prompt_tokens, completion_tokens, metered_calls, priced_calls, cost_micros, http_429_calls, http_5xx_calls, timeout_calls"
     };
 }
 
@@ -225,6 +225,9 @@ pub struct AiUsageRow {
     pub metered_calls: i64,
     pub priced_calls: i64,
     pub cost_micros: i64,
+    pub http_429_calls: i64,
+    pub http_5xx_calls: i64,
+    pub timeout_calls: i64,
 }
 
 impl AiUsageRow {
@@ -245,6 +248,9 @@ impl AiUsageRow {
             metered_calls: r.get("metered_calls"),
             priced_calls: r.get("priced_calls"),
             cost_micros: r.get("cost_micros"),
+            http_429_calls: r.try_get("http_429_calls").unwrap_or(0),
+            http_5xx_calls: r.try_get("http_5xx_calls").unwrap_or(0),
+            timeout_calls: r.try_get("timeout_calls").unwrap_or(0),
         }
     }
 }
@@ -262,11 +268,22 @@ impl Store {
         let (answered_ms, failed_ms) = if event.answered { (took, 0) } else { (0, took) };
         let both_counts = event.prompt_tokens.is_some() && event.completion_tokens.is_some();
         let cost = event.cost_micros();
+        let is_429 = i64::from(!event.answered && event.http_status == Some(429));
+        let is_5xx = i64::from(
+            !event.answered
+                && event
+                    .http_status
+                    .map_or(false, |s| (500..=599).contains(&s)),
+        );
+        let is_timeout = i64::from(
+            !event.answered && event.error_category == Some(AiErrorCategory::Timeout),
+        );
         sqlx::query(
             "INSERT INTO ai_usage
                  (slot, project_id, provider, model, task, calls, failed_calls, answered_ms, failed_ms, token_calls,
-                  prompt_tokens, completion_tokens, metered_calls, priced_calls, cost_micros)
-             VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  prompt_tokens, completion_tokens, metered_calls, priced_calls, cost_micros,
+                  http_429_calls, http_5xx_calls, timeout_calls)
+             VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT (slot, project_id, provider, model, task) DO UPDATE SET
                  calls = calls + 1,
                  failed_calls = failed_calls + excluded.failed_calls,
@@ -277,7 +294,10 @@ impl Store {
                  completion_tokens = completion_tokens + excluded.completion_tokens,
                  metered_calls = metered_calls + excluded.metered_calls,
                  priced_calls = priced_calls + excluded.priced_calls,
-                 cost_micros = cost_micros + excluded.cost_micros",
+                 cost_micros = cost_micros + excluded.cost_micros,
+                 http_429_calls = http_429_calls + excluded.http_429_calls,
+                 http_5xx_calls = http_5xx_calls + excluded.http_5xx_calls,
+                 timeout_calls = timeout_calls + excluded.timeout_calls",
         )
         .bind(slot)
         .bind(project_id)
@@ -293,6 +313,9 @@ impl Store {
         .bind(i64::from(event.metered()))
         .bind(i64::from(cost.is_some()))
         .bind(cost.unwrap_or(0))
+        .bind(is_429)
+        .bind(is_5xx)
+        .bind(is_timeout)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -389,6 +412,9 @@ struct Tally {
     metered: i64,
     priced: i64,
     cost_micros: i64,
+    http_429_calls: i64,
+    http_5xx_calls: i64,
+    timeout_calls: i64,
 }
 
 impl Tally {
@@ -403,6 +429,9 @@ impl Tally {
         self.metered += row.metered_calls;
         self.priced += row.priced_calls;
         self.cost_micros += row.cost_micros;
+        self.http_429_calls += row.http_429_calls;
+        self.http_5xx_calls += row.http_5xx_calls;
+        self.timeout_calls += row.timeout_calls;
     }
 
     fn answered(&self) -> i64 {
@@ -440,6 +469,9 @@ impl Tally {
             "no_price_calls": self.without_price(),
             "no_tokens_calls": self.without_tokens(),
             "cost_usd": self.cost_micros as f64 / 1_000_000.0,
+            "http_429_calls": self.http_429_calls,
+            "http_5xx_calls": self.http_5xx_calls,
+            "timeout_calls": self.timeout_calls,
         })
     }
 
@@ -972,6 +1004,9 @@ mod tests {
                 priced_calls: 2,
                 // 300 for the first call, 75 + 75 = 150 for the second.
                 cost_micros: 450,
+                http_429_calls: 0,
+                http_5xx_calls: 0,
+                timeout_calls: 1,
             }
         );
     }
@@ -1530,5 +1565,156 @@ mod tests {
                 "2 calls did not answer; nothing is counted as their cost.",
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn error_rollups_429_5xx_timeout_success_and_upsert_isolation() {
+        let (store, _dir) = store().await;
+        let slot = "2026-09-26T14:00";
+        let task = AiTask::TestCaseGeneration;
+
+        // 1. Success call
+        let success_event = call(
+            "groq",
+            "llama",
+            task,
+            answered(Some(100), Some(50)),
+            250,
+            priced(),
+        );
+        store.add_ai_usage(slot, "p1", &success_event).await.unwrap();
+
+        let rows = store.ai_usage_since(slot, Some("p1")).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].calls, 1);
+        assert_eq!(rows[0].failed_calls, 0);
+        assert_eq!(rows[0].http_429_calls, 0);
+        assert_eq!(rows[0].http_5xx_calls, 0);
+        assert_eq!(rows[0].timeout_calls, 0);
+
+        // 2. HTTP 429 Rate Limit (ProviderRejected)
+        let rate_limit_event = call(
+            "groq",
+            "llama",
+            task,
+            Err(ExecutionError::ProviderRejected {
+                status: 429,
+                message: "rate limit".to_string(),
+            }),
+            100,
+            priced(),
+        );
+        store.add_ai_usage(slot, "p1", &rate_limit_event).await.unwrap();
+
+        let rows = store.ai_usage_since(slot, Some("p1")).await.unwrap();
+        assert_eq!(rows[0].calls, 2);
+        assert_eq!(rows[0].failed_calls, 1);
+        assert_eq!(rows[0].http_429_calls, 1, "429 must increment exactly once");
+        assert_eq!(rows[0].http_5xx_calls, 0, "429 must not increment 5xx");
+        assert_eq!(rows[0].timeout_calls, 0, "429 must not increment timeout");
+
+        // 3. HTTP 503 Server Error
+        let server_error_event = call(
+            "groq",
+            "llama",
+            task,
+            Err(ExecutionError::NonSuccessStatus(503)),
+            200,
+            priced(),
+        );
+        store.add_ai_usage(slot, "p1", &server_error_event).await.unwrap();
+
+        // 4. HTTP 500 Server Error
+        let internal_error_event = call(
+            "groq",
+            "llama",
+            task,
+            Err(ExecutionError::NonSuccessStatus(500)),
+            200,
+            priced(),
+        );
+        store.add_ai_usage(slot, "p1", &internal_error_event).await.unwrap();
+
+        let rows = store.ai_usage_since(slot, Some("p1")).await.unwrap();
+        assert_eq!(rows[0].calls, 4);
+        assert_eq!(rows[0].failed_calls, 3);
+        assert_eq!(rows[0].http_429_calls, 1);
+        assert_eq!(rows[0].http_5xx_calls, 2, "503 and 500 must both increment 5xx");
+        assert_eq!(rows[0].timeout_calls, 0);
+
+        // 5. Timeout
+        let timeout_event = call(
+            "groq",
+            "llama",
+            task,
+            Err(ExecutionError::Timeout),
+            30_000,
+            priced(),
+        );
+        store.add_ai_usage(slot, "p1", &timeout_event).await.unwrap();
+
+        let rows = store.ai_usage_since(slot, Some("p1")).await.unwrap();
+        assert_eq!(rows[0].calls, 5);
+        assert_eq!(rows[0].failed_calls, 4);
+        assert_eq!(rows[0].http_429_calls, 1);
+        assert_eq!(rows[0].http_5xx_calls, 2);
+        assert_eq!(rows[0].timeout_calls, 1, "timeout must increment exactly once");
+
+        // 6. Non-HTTP error (e.g. InvalidResponse)
+        let invalid_resp_event = call(
+            "groq",
+            "llama",
+            task,
+            Err(ExecutionError::InvalidResponse("corrupt".to_string())),
+            50,
+            priced(),
+        );
+        store.add_ai_usage(slot, "p1", &invalid_resp_event).await.unwrap();
+
+        let rows = store.ai_usage_since(slot, Some("p1")).await.unwrap();
+        assert_eq!(rows[0].calls, 6);
+        assert_eq!(rows[0].failed_calls, 5);
+        assert_eq!(rows[0].http_429_calls, 1);
+        assert_eq!(rows[0].http_5xx_calls, 2);
+        assert_eq!(rows[0].timeout_calls, 1);
+
+        // 7. Separate slot isolation
+        let other_slot = "2026-09-26T14:15";
+        store.add_ai_usage(other_slot, "p1", &timeout_event).await.unwrap();
+
+        let rows = store.ai_usage_since(slot, Some("p1")).await.unwrap();
+        assert_eq!(rows.len(), 2, "separate slot must produce separate row");
+        let other_row = rows.iter().find(|r| r.slot == other_slot).unwrap();
+        assert_eq!(other_row.calls, 1);
+        assert_eq!(other_row.timeout_calls, 1);
+        assert_eq!(other_row.http_429_calls, 0);
+        assert_eq!(other_row.http_5xx_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn error_rollups_build_report_aggregation_and_backward_compatibility() {
+        let (window, mut rows) = week();
+        // Add error counters to some rows
+        rows[1].http_429_calls = 3;
+        rows[1].http_5xx_calls = 2;
+        rows[1].timeout_calls = 1;
+
+        let report = build_report(&rows, &window, true);
+
+        // Totals must include additive error rollups
+        assert_eq!(report["totals"]["http_429_calls"], 3);
+        assert_eq!(report["totals"]["http_5xx_calls"], 2);
+        assert_eq!(report["totals"]["timeout_calls"], 1);
+
+        // Standard fields must remain identical
+        assert_eq!(report["totals"]["calls"], 12);
+        assert_eq!(report["totals"]["answered"], 11);
+        assert_eq!(report["totals"]["failed"], 1);
+
+        // Providers, tasks, and projects must also carry the rollup fields
+        assert!(report["by_provider"][0].get("http_429_calls").is_some());
+        assert!(report["by_task"][0].get("http_5xx_calls").is_some());
+        assert!(report["by_day"][0].get("timeout_calls").is_some());
+        assert!(report["by_project"][0].get("http_429_calls").is_some());
     }
 }
