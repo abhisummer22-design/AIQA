@@ -190,6 +190,34 @@ pub mod release_readiness;
 #[cfg(test)]
 mod phase_9_readiness_tests;
 
+/// Phase 10: AI QA Copilot intent classification and query dispatch architecture.
+/// Pure, deterministic intent mapping over the eight roadmap-defined questions without
+/// database or external model calls.
+pub mod copilot_intent;
+
+#[cfg(test)]
+mod copilot_intent_tests;
+
+/// Phase 10 (Batch 2): AI QA Copilot project-scoped evidence retrieval coordinator.
+/// Bounded, project-scoped queries over existing intelligence readers without memory database.
+pub mod copilot_retrieval;
+
+#[cfg(test)]
+mod copilot_retrieval_tests;
+
+/// Phase 10 (Batch 3): AI QA Copilot grounded answer synthesis, fact/inference separation & citations.
+/// Grounded natural language answers with strict citation validation and credential redaction.
+pub mod copilot_synthesizer;
+
+#[cfg(test)]
+mod copilot_synthesizer_tests;
+
+/// Phase 10 (Batch 4): AI QA Copilot API route, RBAC governance & integration tests.
+pub mod copilot_api;
+
+#[cfg(test)]
+mod copilot_api_tests;
+
 /// Phase 9.2A: focused test-fixture lifecycle tests. Every filesystem assertion counts
 /// directories directly, so a green exit code is never the evidence.
 #[cfg(test)]

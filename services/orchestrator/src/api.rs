@@ -368,6 +368,12 @@ fn protected_routes() -> Router<AppState> {
             "/api/v1/projects/:project_id/integrity/:run_id",
             get(get_run_integrity_scoped),
         )
+        // Phase 10 (AI QA Copilot) — conversational interface over existing QA evidence
+        // without duplicate memory stores or arbitrary SQL. Role::Viewer or above.
+        .route(
+            "/api/v1/projects/:project_id/copilot/ask",
+            post(crate::copilot_api::ask_copilot_handler),
+        )
         // Gap-closing — real TestPlanningAgent (Phase 3) wiring, grounded in
         // real Phase 5 healing-strategy calibration and Phase 6 adaptive
         // intelligence risk signals. See `generate_test_plan_scoped`'s doc
