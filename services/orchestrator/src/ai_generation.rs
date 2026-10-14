@@ -1705,6 +1705,7 @@ async fn generate_one_wave(
         prompt,
         preferred_provider: None,
         preferred_model: None,
+        trace_id: None,
     };
 
     // One retry on a degenerate response: real models occasionally return

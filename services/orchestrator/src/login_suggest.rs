@@ -719,6 +719,7 @@ pub async fn suggest_with_ai(
         prompt,
         preferred_provider: None,
         preferred_model: None,
+        trace_id: None,
     };
     match infra.generate(request).await {
         crate::ai_router::GenerationOutcome2::Ok(result) => {

@@ -1100,6 +1100,7 @@ impl<'a> CopilotSynthesizer<'a> {
                 prompt,
                 preferred_provider: None,
                 preferred_model: None,
+                trace_id: None,
             };
 
             if let GenerationOutcome2::Ok(res) = infra.generate(request).await {

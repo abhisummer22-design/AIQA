@@ -622,6 +622,7 @@ pub async fn verify(
             prompt,
             preferred_provider: None,
             preferred_model: None,
+            trace_id: None,
         };
 
         let mut answered: Option<(Vec<Judged>, String)> = None;

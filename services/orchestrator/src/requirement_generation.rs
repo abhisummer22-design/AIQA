@@ -564,6 +564,7 @@ async fn generate_call(
         prompt,
         preferred_provider: None,
         preferred_model: None,
+        trace_id: None,
     };
     let batch_text = batch
         .iter()

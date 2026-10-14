@@ -952,6 +952,7 @@ pub async fn generate_ai_hypothesis(
         prompt,
         preferred_provider: None,
         preferred_model: None,
+        trace_id: None,
     };
     let result = match infra.generate(request).await {
         GenerationOutcome2::Ok(r) => r,

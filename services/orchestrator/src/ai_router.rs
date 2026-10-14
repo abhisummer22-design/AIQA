@@ -852,6 +852,17 @@ pub trait AiExecutor: Send + Sync {
         let _ = task;
         self.execute(provider_id, model_id, prompt).await
     }
+
+    async fn execute_task_with_trace(
+        &self,
+        provider_id: &str,
+        model_id: &str,
+        prompt: &str,
+        task: AiTask,
+        _trace_id: Option<&str>,
+    ) -> Result<ExecutionOutput, ExecutionError> {
+        self.execute_task(provider_id, model_id, prompt, task).await
+    }
 }
 
 pub struct OllamaExecutor {
@@ -1646,6 +1657,18 @@ impl AiExecutor for GroqExecutor {
         prompt: &str,
         task: AiTask,
     ) -> Result<ExecutionOutput, ExecutionError> {
+        self.execute_task_with_trace(provider_id, model_id, prompt, task, None)
+            .await
+    }
+
+    async fn execute_task_with_trace(
+        &self,
+        provider_id: &str,
+        model_id: &str,
+        prompt: &str,
+        task: AiTask,
+        trace_id: Option<&str>,
+    ) -> Result<ExecutionOutput, ExecutionError> {
         if provider_id != GroqDiscovery::PROVIDER_ID {
             return Err(ExecutionError::ProviderUnavailable(provider_id.to_string()));
         }
@@ -1686,11 +1709,18 @@ impl AiExecutor for GroqExecutor {
             ) {
                 body["response_format"] = serde_json::json!({ "type": "json_object" });
             }
-            let resp = client
+            let mut req_builder = client
                 .post(&url)
                 .bearer_auth(key)
                 .json(&body)
-                .timeout(self.timeout)
+                .timeout(self.timeout);
+            if let Some(tid) = trace_id {
+                let trimmed = tid.trim();
+                if !trimmed.is_empty() && trimmed.bytes().all(|b| b >= 32 && b <= 126) {
+                    req_builder = req_builder.header("x-request-id", trimmed);
+                }
+            }
+            let resp = req_builder
                 .send()
                 .await
                 .map_err(|e| {
@@ -2628,6 +2658,34 @@ pub struct AiRequest {
     pub prompt: String,
     pub preferred_provider: Option<String>,
     pub preferred_model: Option<String>,
+    pub trace_id: Option<String>,
+}
+
+impl AiRequest {
+    pub fn new(task: AiTask, prompt: impl Into<String>) -> Self {
+        Self {
+            task,
+            prompt: prompt.into(),
+            preferred_provider: None,
+            preferred_model: None,
+            trace_id: None,
+        }
+    }
+
+    pub fn with_trace_id(mut self, trace_id: impl Into<String>) -> Self {
+        self.trace_id = Some(trace_id.into());
+        self
+    }
+
+    pub fn with_preferred(
+        mut self,
+        provider: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
+        self.preferred_provider = Some(provider.into());
+        self.preferred_model = Some(model.into());
+        self
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2755,6 +2813,7 @@ impl AiInfrastructure {
         task: AiTask,
         took: Duration,
         result: &Result<ExecutionOutput, ExecutionError>,
+        trace_id: Option<&str>,
     ) {
         let pricing = self
             .providers
@@ -2764,7 +2823,7 @@ impl AiInfrastructure {
             .find(|p| p.id == provider_id)
             .map(|p| p.pricing)
             .unwrap_or_default();
-        let event = AiCallEvent::of_call(
+        let mut event = AiCallEvent::of_call(
             provider_id,
             model_id,
             task,
@@ -2772,6 +2831,7 @@ impl AiInfrastructure {
             result,
             pricing,
         );
+        event.trace_id = trace_id.map(|s| s.to_string());
 
         crate::metrics::observe_ai_provider_call(&event);
 
@@ -2988,6 +3048,7 @@ impl AiInfrastructure {
     /// found there. The one real chokepoint both `generate`'s primary
     /// attempt and its fallback loop call through, so a custom provider
     /// participates in both exactly like every built-in one already does.
+    #[allow(dead_code)]
     async fn execute_for(
         &self,
         provider_id: &str,
@@ -2995,11 +3056,32 @@ impl AiInfrastructure {
         prompt: &str,
         task: AiTask,
     ) -> Result<ExecutionOutput, ExecutionError> {
+        self.execute_for_with_trace(provider_id, model_id, prompt, task, None)
+            .await
+    }
+
+    async fn execute_for_with_trace(
+        &self,
+        provider_id: &str,
+        model_id: &str,
+        prompt: &str,
+        task: AiTask,
+        trace_id: Option<&str>,
+    ) -> Result<ExecutionOutput, ExecutionError> {
         let started = Instant::now();
-        let result = self.run_executor(provider_id, model_id, prompt, task).await;
-        self.record_outcome(provider_id, &result);
-        self.count_call(provider_id, model_id, task, started.elapsed(), &result)
+        let result = self
+            .run_executor(provider_id, model_id, prompt, task, trace_id)
             .await;
+        self.record_outcome(provider_id, &result);
+        self.count_call(
+            provider_id,
+            model_id,
+            task,
+            started.elapsed(),
+            &result,
+            trace_id,
+        )
+        .await;
         result
     }
 
@@ -3009,10 +3091,11 @@ impl AiInfrastructure {
         model_id: &str,
         prompt: &str,
         task: AiTask,
+        trace_id: Option<&str>,
     ) -> Result<ExecutionOutput, ExecutionError> {
         if let Some(executor) = self.executors.get(provider_id) {
             return executor
-                .execute_task(provider_id, model_id, prompt, task)
+                .execute_task_with_trace(provider_id, model_id, prompt, task, trace_id)
                 .await;
         }
         if let Some(cfg) = self.find_custom_provider(provider_id).await {
@@ -3246,6 +3329,7 @@ impl AiInfrastructure {
         request: &AiRequest,
         settings: &AiSettings,
         skipped_note: Option<&str>,
+        trace_id: &str,
     ) -> GenerationOutcome2 {
         let mut attempts: Vec<String> = Vec::new();
         for (index, target) in chain.iter().enumerate() {
@@ -3260,7 +3344,13 @@ impl AiInfrastructure {
             };
             let started = Instant::now();
             match self
-                .execute_for(&provider.id, &model.id, &request.prompt, request.task)
+                .execute_for_with_trace(
+                    &provider.id,
+                    &model.id,
+                    &request.prompt,
+                    request.task,
+                    Some(trace_id),
+                )
                 .await
             {
                 Ok(output) => {
@@ -3298,6 +3388,12 @@ impl AiInfrastructure {
         let (providers, skipped_note) = self.without_open_breakers(self.ensure_fresh().await);
         let settings = self.settings().await;
 
+        let trace_id = request
+            .trace_id
+            .clone()
+            .or_else(crate::auth::request_trace_id)
+            .unwrap_or_else(|| format!("req_{}", uuid::Uuid::new_v4().simple()));
+
         // A task's explicit chain answers it on its own (a per-request
         // preference, being a hard demand by the caller, still wins).
         if request.preferred_provider.is_none() && request.preferred_model.is_none() {
@@ -3314,6 +3410,7 @@ impl AiInfrastructure {
                         &request,
                         &settings,
                         skipped_note.as_deref(),
+                        &trace_id,
                     )
                     .await;
             }
@@ -3373,11 +3470,12 @@ impl AiInfrastructure {
 
         let started = Instant::now();
         match self
-            .execute_for(
+            .execute_for_with_trace(
                 &decision.provider_id,
                 &decision.model_id,
                 &request.prompt,
                 request.task,
+                Some(&trace_id),
             )
             .await
         {
@@ -3414,7 +3512,13 @@ impl AiInfrastructure {
                     for (provider, model, score) in candidates {
                         let fallback_started = Instant::now();
                         if let Ok(output) = self
-                            .execute_for(&provider.id, &model.id, &request.prompt, request.task)
+                            .execute_for_with_trace(
+                                &provider.id,
+                                &model.id,
+                                &request.prompt,
+                                request.task,
+                                Some(&trace_id),
+                            )
                             .await
                         {
                             let latency_ms = fallback_started.elapsed().as_millis() as u64;
@@ -4357,6 +4461,7 @@ mod tests {
                 prompt: "hi".to_string(),
                 preferred_provider: None,
                 preferred_model: None,
+                trace_id: None,
             })
             .await;
         match outcome {
@@ -4505,6 +4610,7 @@ mod tests {
                 prompt: "hi".to_string(),
                 preferred_provider: None,
                 preferred_model: None,
+                trace_id: None,
             })
             .await;
         match outcome {
@@ -4563,6 +4669,7 @@ mod tests {
                 prompt: "hi".to_string(),
                 preferred_provider: Some("primary".to_string()),
                 preferred_model: None,
+                trace_id: None,
             })
             .await;
         match outcome {
@@ -4609,6 +4716,7 @@ mod tests {
                 prompt: "hi".to_string(),
                 preferred_provider: None,
                 preferred_model: None,
+                trace_id: None,
             })
             .await;
         assert!(matches!(outcome, GenerationOutcome2::Failed { .. }), "with fallback disabled, a primary failure must be reported honestly, not silently retried");
@@ -4623,6 +4731,7 @@ mod tests {
                 prompt: "hi".to_string(),
                 preferred_provider: None,
                 preferred_model: None,
+                trace_id: None,
             })
             .await;
         match outcome {
@@ -4905,6 +5014,7 @@ mod tests {
                 prompt: "hi".to_string(),
                 preferred_provider: Some(MjGatewayDiscovery::PROVIDER_ID.to_string()),
                 preferred_model: Some("mj-default".to_string()),
+                trace_id: None,
             })
             .await;
         match outcome {
@@ -5751,6 +5861,7 @@ mod tests {
                 prompt: "hi".to_string(),
                 preferred_provider: Some(GroqDiscovery::PROVIDER_ID.to_string()),
                 preferred_model: Some("gpt-oss-20b".to_string()),
+                trace_id: None,
             })
             .await;
         match outcome {
@@ -5959,6 +6070,7 @@ mod tests {
                 prompt: "hi".to_string(),
                 preferred_provider: Some(GeminiDiscovery::PROVIDER_ID.to_string()),
                 preferred_model: Some("gemini-2.5-flash".to_string()),
+                trace_id: None,
             })
             .await;
         match outcome {
@@ -6163,6 +6275,7 @@ mod tests {
                         prompt: "hi".to_string(),
                         preferred_provider: Some(id),
                         preferred_model: Some("custom-model-1".to_string()),
+                        trace_id: None,
                     })
                     .await
                 {
@@ -6276,6 +6389,7 @@ mod tests {
                 prompt: "hi".to_string(),
                 preferred_provider: Some("custom-ai-test".to_string()),
                 preferred_model: Some("custom-model-1".to_string()),
+                trace_id: None,
             })
             .await;
         match outcome {
@@ -7027,6 +7141,7 @@ mod tests {
             prompt: "hi".to_string(),
             preferred_provider: None,
             preferred_model: None,
+            trace_id: None,
         }
     }
 
@@ -7610,6 +7725,7 @@ mod tests {
                 prompt: "hi".to_string(),
                 preferred_provider: None,
                 preferred_model: None,
+                trace_id: None,
             })
             .await;
         match outcome {
@@ -7677,6 +7793,7 @@ mod tests {
                 prompt: "hi".to_string(),
                 preferred_provider: Some("primary".to_string()),
                 preferred_model: None,
+                trace_id: None,
             })
             .await;
         match outcome {
@@ -8003,5 +8120,198 @@ mod tests {
                 serde_json::Value::String(task.name().to_string())
             );
         }
+    }
+
+    #[tokio::test]
+    async fn existing_trace_id_passes_from_request_to_usage_event() {
+        let sink = Arc::new(CollectingSink::default());
+        let infra = down_and_priced_up(
+            Arc::new(RecordingExecutor::sequence(vec![ok_output("ans")])),
+            Arc::new(RecordingExecutor::sequence(vec![])),
+        );
+        infra.set_usage_sink(sink.clone());
+
+        let req = AiRequest::new(AiTask::GeneralAi, "prompt")
+            .with_trace_id("custom-trace-id-1234");
+        let outcome = infra.generate(req).await;
+        assert!(matches!(outcome, GenerationOutcome2::Ok(_)));
+
+        let events = sink.events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].trace_id, Some("custom-trace-id-1234".to_string()));
+    }
+
+    #[tokio::test]
+    async fn agent_context_trace_id_propagates_to_ai_request() {
+        let sink = Arc::new(CollectingSink::default());
+        let infra = down_and_priced_up(
+            Arc::new(RecordingExecutor::sequence(vec![ok_output("ans")])),
+            Arc::new(RecordingExecutor::sequence(vec![])),
+        );
+        infra.set_usage_sink(sink.clone());
+
+        let context = crate::agent::AgentContext::new(
+            "task-42",
+            Some("proj-99".to_string()),
+            "sess-1",
+            crate::agent::AgentLimits::default(),
+            None,
+        );
+        let expected_trace = context.trace_id.clone();
+
+        // 1. Explicit request builder via AgentContext helper
+        let explicit_req = context.create_ai_request(AiTask::GeneralAi, "agent prompt");
+        assert_eq!(explicit_req.trace_id, Some(expected_trace.clone()));
+
+        // 2. Task-local scope inheritance during agent turn
+        crate::auth::with_request_trace_id(Some(expected_trace.clone()), async {
+            let req = AiRequest::new(AiTask::GeneralAi, "turn prompt");
+            let _ = infra.generate(req).await;
+        })
+        .await;
+
+        let events = sink.events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].trace_id, Some(expected_trace));
+    }
+
+    #[tokio::test]
+    async fn missing_trace_id_generates_valid_scoped_fallback_id() {
+        let sink = Arc::new(CollectingSink::default());
+        let infra = down_and_priced_up(
+            Arc::new(RecordingExecutor::sequence(vec![ok_output("ans")])),
+            Arc::new(RecordingExecutor::sequence(vec![])),
+        );
+        infra.set_usage_sink(sink.clone());
+
+        let req = AiRequest::new(AiTask::GeneralAi, "no-trace");
+        let outcome = infra.generate(req).await;
+        assert!(matches!(outcome, GenerationOutcome2::Ok(_)));
+
+        let events = sink.events();
+        assert_eq!(events.len(), 1);
+        let tid = events[0].trace_id.as_ref().expect("fallback trace_id generated");
+        assert!(!tid.is_empty(), "fallback trace_id must not be empty");
+        assert!(tid.starts_with("req_"), "fallback trace_id should follow req_ convention: {tid}");
+    }
+
+    #[tokio::test]
+    async fn groq_executor_attaches_outbound_x_request_id_header() {
+        use axum::{routing::post, Router};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let header_received = Arc::new(AtomicBool::new(false));
+        let header_received_clone = header_received.clone();
+
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(move |headers: axum::http::HeaderMap, _body: axum::Json<serde_json::Value>| {
+                let h_clone = header_received_clone.clone();
+                async move {
+                    if let Some(val) = headers.get("x-request-id") {
+                        if val == "groq-trace-header-777" {
+                            h_clone.store(true, Ordering::SeqCst);
+                        }
+                    }
+                    (
+                        axum::http::StatusCode::OK,
+                        [(axum::http::header::CONTENT_TYPE, "application/json")],
+                        r#"{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}"#,
+                    )
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let executor = GroqExecutor {
+            base_url: format!("http://127.0.0.1:{port}"),
+            api_key: Some("gsk_test".to_string()),
+            timeout: Duration::from_secs(3),
+            max_tokens: 1024,
+        };
+
+        let res = executor
+            .execute_task_with_trace(
+                GroqDiscovery::PROVIDER_ID,
+                "llama",
+                "hello",
+                AiTask::GeneralAi,
+                Some("groq-trace-header-777"),
+            )
+            .await;
+        server.abort();
+
+        assert!(res.is_ok(), "groq execution must succeed");
+        assert!(
+            header_received.load(Ordering::SeqCst),
+            "GroqExecutor must attach outbound x-request-id header"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_independent_requests_do_not_share_trace_ids() {
+        let sink = Arc::new(CollectingSink::default());
+        let infra = Arc::new(down_and_priced_up(
+            Arc::new(RecordingExecutor::sequence(vec![ok_output("ans1"), ok_output("ans2")])),
+            Arc::new(RecordingExecutor::sequence(vec![])),
+        ));
+        infra.set_usage_sink(sink.clone());
+
+        let infra1 = infra.clone();
+        let t1 = tokio::spawn(async move {
+            crate::auth::with_request_trace_id(Some("trace-alpha-111".to_string()), async move {
+                let req = AiRequest::new(AiTask::GeneralAi, "alpha");
+                infra1.generate(req).await
+            })
+            .await
+        });
+
+        let infra2 = infra.clone();
+        let t2 = tokio::spawn(async move {
+            crate::auth::with_request_trace_id(Some("trace-beta-222".to_string()), async move {
+                let req = AiRequest::new(AiTask::GeneralAi, "beta");
+                infra2.generate(req).await
+            })
+            .await
+        });
+
+        let (res1, res2) = tokio::join!(t1, t2);
+        assert!(matches!(res1.unwrap(), GenerationOutcome2::Ok(_)));
+        assert!(matches!(res2.unwrap(), GenerationOutcome2::Ok(_)));
+
+        let events = sink.events();
+        assert_eq!(events.len(), 2);
+        let traces: Vec<String> = events.into_iter().filter_map(|e| e.trace_id).collect();
+        assert!(traces.contains(&"trace-alpha-111".to_string()));
+        assert!(traces.contains(&"trace-beta-222".to_string()));
+    }
+
+    #[tokio::test]
+    async fn trace_ids_never_become_prometheus_metric_labels() {
+        let event = AiCallEvent {
+            provider: "groq".to_string(),
+            model: "llama-3".to_string(),
+            task: AiTask::TestCaseGeneration,
+            took_ms: 120,
+            answered: true,
+            prompt_tokens: Some(10),
+            completion_tokens: Some(20),
+            pricing: ProviderPricing::Unmetered,
+            http_status: Some(200),
+            error_category: None,
+            trace_id: Some("super-secret-user-trace-999".to_string()),
+        };
+
+        crate::metrics::observe_ai_provider_call(&event);
+
+        let mut out = String::new();
+        crate::metrics::push_ai_metrics(&mut out);
+
+        assert!(!out.contains("super-secret-user-trace-999"), "trace ID must never appear in Prometheus metric labels or exposition text");
     }
 }

@@ -66,6 +66,8 @@ pub struct AiCallEvent {
     pub http_status: Option<u16>,
     /// Bounded category of error, if the call was not successful.
     pub error_category: Option<AiErrorCategory>,
+    /// Correlation trace identifier propagating through the AI request lifecycle.
+    pub trace_id: Option<String>,
 }
 
 impl AiCallEvent {
@@ -111,7 +113,14 @@ impl AiCallEvent {
             pricing,
             http_status,
             error_category,
+            trace_id: None,
         }
+    }
+
+    /// Attaches an optional correlation trace ID to this call event.
+    pub fn with_trace_id(mut self, trace_id: Option<String>) -> Self {
+        self.trace_id = trace_id;
+        self
     }
 
     /// A call that answered, to a provider that has a price. What a provider charges for a call that failed, if anything,
@@ -159,6 +168,16 @@ impl UsageLedger {
 impl UsageSink for UsageLedger {
     async fn record(&self, event: AiCallEvent) {
         let project = crate::auth::request_project().unwrap_or_default();
+        tracing::info!(
+            target: "ai_usage",
+            trace_id = event.trace_id.as_deref().unwrap_or(""),
+            provider = %event.provider,
+            model = %event.model,
+            task = %event.task.name(),
+            answered = event.answered,
+            took_ms = event.took_ms,
+            "ai_call_recorded"
+        );
         if let Err(e) = self
             .store
             .add_ai_usage(&slot_of(Utc::now()), &project, &event)
@@ -616,6 +635,7 @@ mod tests {
                 pricing: priced(),
                 http_status: Some(200),
                 error_category: None,
+                trace_id: None,
             }
         );
     }

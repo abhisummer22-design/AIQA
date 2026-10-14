@@ -73,11 +73,27 @@ tokio::task_local! {
     /// audit row written while it acts inside a project was attributed to no project, and never showed up in
     /// that project's own audit trail.
     static REQUEST_PROJECT: Option<String>;
+
+    /// Correlation trace identifier for the active request context, propagated into AI requests and usage events.
+    static REQUEST_TRACE_ID: Option<String>;
 }
 
 /// The project named in the current request's URL, if there is one.
 pub fn request_project() -> Option<String> {
     REQUEST_PROJECT.try_with(|p| p.clone()).ok().flatten()
+}
+
+/// The active trace/correlation ID for the current request, if set.
+pub fn request_trace_id() -> Option<String> {
+    REQUEST_TRACE_ID.try_with(|t| t.clone()).ok().flatten()
+}
+
+/// Runs `fut` with the given trace identifier active in task-local storage.
+pub(crate) async fn with_request_trace_id<F: std::future::Future>(
+    trace_id: Option<String>,
+    fut: F,
+) -> F::Output {
+    REQUEST_TRACE_ID.scope(trace_id, fut).await
 }
 
 /// Runs `fut` the way a request to `path` runs: with the project its URL names available to `request_project`.
@@ -196,9 +212,23 @@ pub async fn require_auth(
             let actor = ctx.name.clone();
             let actor_role = ctx.role.as_str();
             let actor_project = ctx.project_id.clone();
+
+            let trace_id = req
+                .headers()
+                .get("x-request-id")
+                .or_else(|| req.headers().get("traceparent"))
+                .and_then(|h| h.to_str().ok())
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| s.trim().to_string())
+                .unwrap_or_else(|| format!("req_{}", Uuid::new_v4().simple()));
+
             req.extensions_mut().insert(ctx);
 
-            let response = with_request_path(&path, next.run(req)).await;
+            let response = with_request_trace_id(
+                Some(trace_id),
+                with_request_path(&path, next.run(req)),
+            )
+            .await;
 
             // Authorization denials (403) are produced by `require_role` /
             // `require_project_access`, which are pure functions with no

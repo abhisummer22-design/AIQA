@@ -492,6 +492,7 @@ async fn ai_provider_execution_is_recorded_in_metrics_and_ledger_compatibly() {
             prompt: "hello".to_string(),
             preferred_provider: Some("mock".to_string()),
             preferred_model: Some("mock-model".to_string()),
+            trace_id: None,
         })
         .await;
     match outcome {

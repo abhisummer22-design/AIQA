@@ -165,6 +165,7 @@ async fn analyze_requirement(
         prompt: build_analysis_prompt(requirement_text, scope, skills),
         preferred_provider: None,
         preferred_model: None,
+        trace_id: None,
     };
     let result = match infra.generate(request).await {
         GenerationOutcome2::Ok(r) => r,

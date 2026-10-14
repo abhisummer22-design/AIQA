@@ -19157,6 +19157,7 @@ fn general_ai_request() -> crate::ai_router::AiRequest {
         prompt: "hi".to_string(),
         preferred_provider: None,
         preferred_model: None,
+        trace_id: None,
     }
 }
 

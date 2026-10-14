@@ -561,6 +561,7 @@ async fn compile_with_ai(
         prompt: build_compiler_prompt(case, grounding),
         preferred_provider: None,
         preferred_model: None,
+        trace_id: None,
     };
     let result = match infra.generate(request).await {
         GenerationOutcome2::Ok(r) => r,

@@ -248,6 +248,21 @@ impl AgentContext {
         self
     }
 
+    /// Creates an AI request carrying this agent's trace ID for end-to-end correlation.
+    pub fn create_ai_request(
+        &self,
+        task: crate::ai_router::AiTask,
+        prompt: impl Into<String>,
+    ) -> crate::ai_router::AiRequest {
+        crate::ai_router::AiRequest {
+            task,
+            prompt: prompt.into(),
+            preferred_provider: None,
+            preferred_model: None,
+            trace_id: Some(self.trace_id.clone()),
+        }
+    }
+
     /// Checks if this execution context is authorized to access the specified project.
     ///
     /// Respects project scoping and RBAC:
@@ -413,8 +428,12 @@ pub async fn run_agent_loop(
 
         let turn_start = Instant::now();
 
-        // Execute step
-        let decision_res = agent.step(context, tools, ai).await;
+        // Execute step with agent context trace ID active in task-local storage
+        let decision_res = crate::auth::with_request_trace_id(
+            Some(context.trace_id.clone()),
+            agent.step(context, tools, ai),
+        )
+        .await;
 
         let decision = match decision_res {
             Ok(d) => d,
