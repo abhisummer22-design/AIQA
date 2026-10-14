@@ -8,7 +8,7 @@
 use crate::api::{
     audit, build_autopilot_estimate, require_scoped_project, scoped_run_summary, to_500,
 };
-use crate::auth::{self, AuthContext, RequireAdmin, RequireOperator, RequireViewer, Role};
+use crate::auth::{AuthContext, RequireOperator};
 use crate::autopilot::{check_acceptance, event, AutopilotConfig, RunState};
 use crate::autopilot_store::{
     AutopilotEventRow, AutopilotRunRow, AutopilotStepRow, CancelOutcome, NewAutopilotRun,

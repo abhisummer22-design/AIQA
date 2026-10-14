@@ -31,7 +31,7 @@ use crate::domain::{
 };
 use crate::intelligence::Intelligence;
 use crate::qa_memory::QaMemoryReader;
-use crate::qa_memory_risk::{Factor, ModuleRisk};
+use crate::qa_memory_risk::Factor;
 use crate::store::{ExecutionTelemetryRow, Store};
 use serde_json::json;
 use tempfile::TempDir;
@@ -43,6 +43,7 @@ use uuid::Uuid;
 
 struct Db {
     store: Store,
+    #[allow(dead_code)]
     dir: TempDir,
 }
 

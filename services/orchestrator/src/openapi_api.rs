@@ -12,7 +12,7 @@ use crate::agent_tools::ToolError;
 use crate::api::{
     audit, create_run_core, require_scoped_project, scoped_run_summary, scoped_run_tasks, to_500,
 };
-use crate::auth::{self, AuthContext, RequireAdmin, RequireOperator, RequireViewer, Role};
+use crate::auth::{AuthContext, RequireOperator};
 use crate::domain::{RunPlan, TaskStatus};
 use crate::errors::{ApiError, ApiJson, ApiPath, ApiQuery};
 use crate::openapi_cases::{self, Case, CaseKind, Derived, Options};

@@ -800,7 +800,7 @@ pub(crate) fn to_500<E: std::fmt::Display>(e: E) -> ApiError {
 /// surface most worth probing.
 async fn list_rbac_probe_targets(
     _authz: RequireOperator,
-    Extension(ctx): Extension<AuthContext>,
+    Extension(_ctx): Extension<AuthContext>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     Ok(Json(serde_json::json!({
         "targets": crate::rbac_probe::TARGETS,
@@ -819,7 +819,7 @@ async fn list_rbac_probe_targets(
 /// reach, which is a far more interesting capability than the one on offer.
 async fn run_rbac_probe(
     _authz: RequireOperator,
-    Extension(ctx): Extension<AuthContext>,
+    Extension(_ctx): Extension<AuthContext>,
     headers: HeaderMap,
     ApiJson(body): ApiJson<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
@@ -8351,7 +8351,7 @@ async fn create_api_key(
 async fn list_api_keys_handler(
     _authz: RequireAdmin,
     State(state): State<AppState>,
-    Extension(ctx): Extension<AuthContext>,
+    Extension(_ctx): Extension<AuthContext>,
 ) -> Result<Json<Vec<crate::store::ApiKeyListRow>>, ApiError> {
     let rows = state.store.list_api_keys().await.map_err(to_500)?;
     Ok(Json(rows))
@@ -8408,7 +8408,7 @@ struct AuditQuery {
 async fn get_audit_log(
     _authz: RequireAdmin,
     State(state): State<AppState>,
-    Extension(ctx): Extension<AuthContext>,
+    Extension(_ctx): Extension<AuthContext>,
     ApiQuery(q): ApiQuery<AuditQuery>,
 ) -> Result<Json<Vec<crate::store::AuditRow>>, ApiError> {
     let rows = state
@@ -8428,7 +8428,7 @@ async fn get_audit_log(
 async fn get_metrics(
     _authz: RequireAdmin,
     State(state): State<AppState>,
-    Extension(ctx): Extension<AuthContext>,
+    Extension(_ctx): Extension<AuthContext>,
 ) -> Result<Response, ApiError> {
     // Was authenticated and nothing more, so the least-privileged key in the
     // deployment -- a project-scoped Viewer -- could read every counter here. Those

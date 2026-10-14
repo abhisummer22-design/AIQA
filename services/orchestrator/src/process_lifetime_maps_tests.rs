@@ -107,7 +107,7 @@ async fn an_existing_subscriber_survives_its_projects_stream_being_forgotten() {
     // ProjectStream exposes its roadcast::Sender directly; that is what a
     // subscriber holds, and it is what keeps the channel alive after the map
     // entry is dropped.
-    let mut receiver = stream.tx.subscribe();
+    let receiver = stream.tx.subscribe();
 
     state.forget_project_stream("proj-a").await;
 
@@ -264,7 +264,6 @@ async fn asking_for_events_before_the_retained_window_defers_to_the_store() {
 #[tokio::test]
 async fn a_record_with_no_events_defers_rather_than_claiming_an_empty_history() {
     let (state, _dir) = test_state().await;
-    let store = state.store.clone();
     let (record, _) = a_record();
     // Nothing retained means nothing *known* -- an empty list here would be
     // indistinguishable from a run that genuinely emitted no events.

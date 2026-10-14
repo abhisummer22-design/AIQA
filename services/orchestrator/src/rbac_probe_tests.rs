@@ -13,7 +13,7 @@
 //! not exist, that test is what notices -- not this file's own expectations about
 //! which role is allowed what.
 
-use crate::auth::{AuthContext, Role};
+use crate::auth::Role;
 use crate::evidence::LocalEvidenceStore;
 use crate::executor::{ExecutorRegistry, SimulatedExecutor};
 use crate::policy::PolicyConfig;
@@ -21,7 +21,7 @@ use crate::rbac_probe::{classify, concrete_path, loopback_base, Gate, GHOST_ID, 
 use crate::state::AppState;
 use crate::store::Store;
 use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::Request;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tower::ServiceExt;

@@ -52,6 +52,7 @@ use uuid::Uuid;
 
 struct Db {
     store: Store,
+    #[allow(dead_code)]
     dir: TempDir,
 }
 

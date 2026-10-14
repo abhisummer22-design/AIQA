@@ -1025,7 +1025,7 @@ async fn p9_contract_unavailable_roadmap_signals_are_declared_not_invented() {
 /// The private measurement root owned by one test. Only this namespace is ever removed.
 fn p92b_root(test_name: &str) -> std::path::PathBuf {
     let root = std::env::temp_dir()
-        .join("aiqa_p92b_artifacts")
+        .join("aiqa_p92b_readiness_artifacts")
         .join(test_name);
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("create isolated artifact root");

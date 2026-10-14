@@ -226,7 +226,6 @@ async fn run_tool(program: &PathBuf, args: &[&str]) -> Result<std::process::Outp
     cmd.kill_on_drop(true);
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
         // CREATE_NO_WINDOW — device discovery must never flash a console.
         cmd.creation_flags(0x0800_0000);
     }
@@ -700,7 +699,6 @@ pub async fn boot_avd(name: &str) -> Result<String, String> {
     cmd.args(["-avd", name]);
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
         // DETACHED_PROCESS | CREATE_NO_WINDOW — the emulator must outlive
         // this request without holding a console.
         cmd.creation_flags(0x0000_0008 | 0x0800_0000);

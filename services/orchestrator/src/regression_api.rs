@@ -6,7 +6,7 @@
 use crate::api::{
     audit, require_scoped_project, scoped_run_summary, scoped_run_tasks, scoped_test_suite, to_500,
 };
-use crate::auth::{self, AuthContext, RequireAdmin, RequireOperator, RequireViewer, Role};
+use crate::auth::{AuthContext, RequireOperator};
 use crate::ci;
 use crate::domain::TaskStatus;
 use crate::errors::{ApiError, ApiJson, ApiPath, ApiQuery};
