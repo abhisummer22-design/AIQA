@@ -181,6 +181,20 @@ mod pre_phase_8_tests;
 /// aggregate score, because the roadmap defines no weights or aggregation formula.
 pub mod test_quality;
 
+/// Phase 9: release readiness intelligence. A status plus its evidence; there is no numeric
+/// readiness score, because the roadmap forbids using one as the whole decision.
+pub mod release_readiness;
+
+/// Phase 9 tests: the four recommendation states, evidence problems, project/release
+/// isolation, and the roadmap's Output contract.
+#[cfg(test)]
+mod phase_9_readiness_tests;
+
+/// Phase 9.2A: focused test-fixture lifecycle tests. Every filesystem assertion counts
+/// directories directly, so a green exit code is never the evidence.
+#[cfg(test)]
+mod phase_9_2a_lifecycle_tests;
+
 /// Phase 8 tests: test-case quality dimensions, missing-evidence behaviour, infrastructure
 /// separation, project isolation, duplicate detection, and the no-aggregate-score contract.
 #[cfg(test)]

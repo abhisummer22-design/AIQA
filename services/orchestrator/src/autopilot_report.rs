@@ -1307,6 +1307,7 @@ mod tests {
         assert!(timeline(&f)
             .await
             .contains(&"Report written: 1 finding(s), 3 passed, 1 failed".to_string()));
+            f.close().await;
     }
 
     fn config_json() -> AutopilotConfig {
@@ -1327,5 +1328,6 @@ mod tests {
             failed(report(&f.ctx).await),
             "the requirements could not be read: boom"
         );
+        f.close().await;
     }
 }

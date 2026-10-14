@@ -384,6 +384,7 @@ async fn phase3_change_impact_endpoint_persists_records_and_refuses_guesses() {
         Some(0),
         "another project's impact history must be empty: {other_history}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -545,6 +546,7 @@ async fn phase1_trace_endpoint_returns_the_chain_actually_persisted() {
         leaked_reqs.is_empty(),
         "another project's trace must not resolve this case's edges: {leaked}"
     );
+    state.store.pool.close().await;
 }
 
 /// Phase 4 — same setup as `test_state()`, but with the real, unmodified
@@ -746,6 +748,7 @@ async fn be9_authentication_missing_credentials_returns_structured_envelope() {
     let (state, _dir) = test_state().await;
     let (status, body) = send(&state, req("GET", "/api/v1/projects", None, None)).await;
     assert_envelope(status, &body, StatusCode::UNAUTHORIZED, "UNAUTHENTICATED");
+    state.store.pool.close().await;
 }
 
 /// Category: Authentication — a syntactically present but unknown key.
@@ -758,6 +761,7 @@ async fn be9_authentication_invalid_credentials_returns_structured_envelope() {
     )
     .await;
     assert_envelope(status, &body, StatusCode::UNAUTHORIZED, "UNAUTHENTICATED");
+    state.store.pool.close().await;
 }
 
 // ----------------------------------------------------------- Authorization
@@ -778,6 +782,7 @@ async fn be9_authorization_insufficient_role_returns_structured_envelope() {
     )
     .await;
     assert_envelope(status, &body, StatusCode::FORBIDDEN, "FORBIDDEN");
+    state.store.pool.close().await;
 }
 
 /// Category: Authorization — a real, valid identity, correct role, but
@@ -810,6 +815,7 @@ async fn be9_authorization_cross_project_access_returns_structured_envelope() {
     )
     .await;
     assert_envelope(status, &body, StatusCode::FORBIDDEN, "FORBIDDEN");
+    state.store.pool.close().await;
 }
 
 // -------------------------------------------------------------- Validation
@@ -835,6 +841,7 @@ async fn be9_validation_blank_name_returns_structured_envelope() {
         body["error"]["message"].as_str().unwrap().contains("empty"),
         "message should explain what was wrong, not just that something was: {body}"
     );
+    state.store.pool.close().await;
 }
 
 // -------------------------------------------------------------- Not Found
@@ -858,6 +865,7 @@ async fn be9_not_found_returns_structured_envelope_with_contract_example_code() 
     // "RESOURCE_NOT_FOUND" is not a code this implementation invented — it
     // is the exact code the contract's own §2.5 example uses.
     assert_envelope(status, &body, StatusCode::NOT_FOUND, "RESOURCE_NOT_FOUND");
+    state.store.pool.close().await;
 }
 
 // ----------------------------------------------------- Persistence/Internal
@@ -919,6 +927,7 @@ async fn be9_persistence_failure_returns_sanitized_internal_envelope() {
             "response must not leak internal detail {leaked_detail:?}; full body={body}"
         );
     }
+    state.store.pool.close().await;
 }
 
 /// Category: Execution — a persistence failure surfaced through a
@@ -991,6 +1000,7 @@ async fn be9_execution_persistence_failure_returns_sanitized_internal_envelope()
         !body.to_string().contains("RAISE"),
         "approve_run's failure must also be sanitized, not just create_project's"
     );
+    state.store.pool.close().await;
 }
 
 // -------------------------------------------------------- success path guard
@@ -1020,6 +1030,7 @@ async fn be9_successful_response_is_not_wrapped_in_an_error_envelope() {
         body["name"], "Real Project",
         "successful response schema must be unchanged by BE-9"
     );
+    state.store.pool.close().await;
 }
 
 // -------------------------------------------------------- BE-8 regression
@@ -1090,6 +1101,7 @@ async fn be9_be8_regression_full_project_crud_lifecycle_through_router() {
         "an omitted field must survive the update, unchanged by BE-9"
     );
     assert_eq!(updated["description"], "d2");
+    state.store.pool.close().await;
 }
 
 // ============================================================ BE-10
@@ -1115,6 +1127,7 @@ async fn be10_malformed_json_body_returns_structured_envelope() {
     )
     .await;
     assert_envelope(status, &body, StatusCode::BAD_REQUEST, "VALIDATION_ERROR");
+    state.store.pool.close().await;
 }
 
 /// BE-10: an invalid path parameter (not a UUID) is rejected by Axum's
@@ -1129,6 +1142,7 @@ async fn be10_invalid_path_parameter_returns_structured_envelope() {
     )
     .await;
     assert_envelope(status, &body, StatusCode::BAD_REQUEST, "VALIDATION_ERROR");
+    state.store.pool.close().await;
 }
 
 /// BE-10: a JSON body sent with no (or the wrong) `Content-Type` is
@@ -1154,6 +1168,7 @@ async fn be10_missing_content_type_returns_structured_envelope() {
         StatusCode::UNSUPPORTED_MEDIA_TYPE,
         "VALIDATION_ERROR",
     );
+    state.store.pool.close().await;
 }
 
 /// BE-10: a query parameter that doesn't deserialize to its declared type
@@ -1176,6 +1191,7 @@ async fn be10_invalid_query_parameter_returns_structured_envelope() {
     )
     .await;
     assert_envelope(status, &body, StatusCode::BAD_REQUEST, "VALIDATION_ERROR");
+    state.store.pool.close().await;
 }
 
 /// BE-10 regression guard: a *valid* request through each converted
@@ -1220,6 +1236,7 @@ async fn be10_valid_requests_through_converted_extractors_are_unaffected() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert!(list.is_array());
+    state.store.pool.close().await;
 }
 
 // ==================================== Actual BE-9 — project-scoped routing
@@ -1346,6 +1363,7 @@ async fn actual_be9_scoped_execution_lifecycle_through_router() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(admin_list.as_array().unwrap().len(), 1);
+    state.store.pool.close().await;
 }
 
 /// Approve/reject specifically, using a plan whose executor the default
@@ -1420,6 +1438,7 @@ async fn actual_be9_scoped_approve_and_reject_through_router() {
     .await;
     assert_eq!(status, StatusCode::OK, "body={rejected}");
     assert_eq!(rejected["state"], "REJECTED");
+    state.store.pool.close().await;
 }
 
 /// Step 4 — cross-project isolation. Project A's key must not be able to
@@ -1536,6 +1555,7 @@ async fn actual_be9_cross_project_isolation_is_enforced_on_every_scoped_route() 
         StatusCode::FORBIDDEN,
         "A must not be able to mutate B's run under B's path either"
     );
+    state.store.pool.close().await;
 }
 
 /// The same isolation, but for evidence specifically addressed by its own
@@ -1658,6 +1678,7 @@ async fn actual_be9_cross_project_isolation_on_evidence_by_id() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+    state.store.pool.close().await;
 }
 
 /// Step 5 — tenant isolation must still hold exactly as Phase 1 (B3/B14)
@@ -1713,6 +1734,7 @@ async fn actual_be9_tenant_isolation_preserved_through_scoped_routes() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+    state.store.pool.close().await;
 }
 
 /// A URL naming a project id that was never created must 404, not silently
@@ -1748,6 +1770,7 @@ async fn actual_be9_nonexistent_project_returns_structured_not_found() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
+    state.store.pool.close().await;
 }
 
 // ============================================ BE-12 — Dashboard / KPI JSON
@@ -1837,6 +1860,7 @@ async fn be12_dashboard_and_kpis_reflect_real_run_and_task_data() {
         "1 passed / (1 passed + 1 failed)"
     );
     assert!(kpis["execution_efficiency_ms"].is_number(), "kpis={kpis}");
+    state.store.pool.close().await;
 }
 
 /// Category: empty/new project. No runs exist yet — counts must be real
@@ -1889,6 +1913,7 @@ async fn be12_dashboard_and_kpis_on_empty_project_show_honest_absence_not_fake_z
         kpis["execution_avg_run_duration_ms"].is_null(),
         "no completed run yet -> null, not a fake 0; kpis={kpis}"
     );
+    state.store.pool.close().await;
 }
 
 // ==================================================== BE-12b — average run duration
@@ -2053,6 +2078,7 @@ async fn be_retry_failed_only_retries_real_infra_classified_tasks_with_correctly
     // before Failed, and both retried tasks are real infra_error outcomes
     // again in this deterministic simulation.)
     poll_run_state(&state, project, &new_run_id.to_string(), &owner, "PARTIAL").await;
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -2086,6 +2112,7 @@ async fn be_retry_failed_rejects_a_run_with_no_real_infra_classified_failures() 
     )
     .await;
     assert_envelope(status, &body, StatusCode::BAD_REQUEST, "VALIDATION_ERROR");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -2122,6 +2149,7 @@ async fn be_retry_failed_rejects_a_run_that_has_not_finished_yet() {
     )
     .await;
     assert_envelope(status, &body, StatusCode::CONFLICT, "CONFLICT");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -2173,6 +2201,7 @@ async fn be_retry_failed_is_project_scoped_and_role_gated() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+    state.store.pool.close().await;
 }
 
 /// Test 1 — a real, deterministic average over 2 real terminal runs.
@@ -2246,6 +2275,7 @@ async fn be12b_avg_run_duration_is_exact_over_two_real_runs() {
         (avg - 20_000.0).abs() < 1.0,
         "expected exactly (10s+30s)/2 = 20000ms, got {avg}; kpis={kpis}"
     );
+    state.store.pool.close().await;
 }
 
 /// Test 3 — a run that has started but not finished contributes nothing.
@@ -2299,6 +2329,7 @@ async fn be12b_running_run_excluded_from_avg_run_duration() {
         ),
     )
     .await;
+    state.store.pool.close().await;
 }
 
 /// Test 4 — mixed real terminal states (COMPLETED/FAILED/PARTIAL/CANCELLED)
@@ -2482,6 +2513,7 @@ async fn be12b_mixed_terminal_states_all_counted_rejected_naturally_excluded() {
         (avg - 10_000.0).abs() < 1.0,
         "expected exactly 10000ms (rejected run correctly excluded), got {avg}; kpis={kpis}"
     );
+    state.store.pool.close().await;
 }
 
 /// Test 5 — project isolation: Project A's real run durations never
@@ -2597,6 +2629,7 @@ async fn be12b_avg_run_duration_is_project_isolated() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+    state.store.pool.close().await;
 }
 
 /// Category: no cross-project leakage. Two projects each get their own
@@ -2687,6 +2720,7 @@ async fn be12_dashboard_and_kpis_do_not_leak_across_projects() {
     )
     .await;
     assert_eq!(kpis_b["execution_reliability"], 0.0);
+    state.store.pool.close().await;
 }
 
 /// Category: project isolation / unauthorized access. A key scoped to
@@ -2736,6 +2770,7 @@ async fn be12_dashboard_and_kpis_reject_unauthorized_cross_project_access() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+    state.store.pool.close().await;
 }
 
 /// Category: nonexistent project -> structured 404, same as every other
@@ -2771,6 +2806,7 @@ async fn be12_dashboard_and_kpis_nonexistent_project_returns_structured_not_foun
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
     assert_eq!(body["error"]["code"], "RESOURCE_NOT_FOUND");
+    state.store.pool.close().await;
 }
 
 /// Category: malformed input. A non-UUID path segment must hit the same
@@ -2792,6 +2828,7 @@ async fn be12_dashboard_malformed_project_id_returns_structured_validation_error
     )
     .await;
     assert_envelope(status, &body, StatusCode::BAD_REQUEST, "VALIDATION_ERROR");
+    state.store.pool.close().await;
 }
 
 /// Category: unauthenticated request -> structured 401, matching every
@@ -2824,6 +2861,7 @@ async fn be12_dashboard_and_kpis_require_authentication() {
     )
     .await;
     assert_envelope(status, &body, StatusCode::UNAUTHORIZED, "UNAUTHENTICATED");
+    state.store.pool.close().await;
 }
 
 // ================================== BE-13 — Execution alignment + cancel
@@ -2956,6 +2994,7 @@ async fn be13_cancel_running_execution_succeeds_and_is_auditable() {
             && a.outcome == "ok"),
         "audit_log must contain a run.cancel entry for this run"
     );
+    state.store.pool.close().await;
 }
 
 /// Category: terminal/non-cancellable state behavior + no false cancel
@@ -2990,6 +3029,7 @@ async fn be13_cancel_rejects_already_terminal_run() {
     )
     .await;
     assert_envelope(status, &body, StatusCode::CONFLICT, "CONFLICT");
+    state.store.pool.close().await;
 }
 
 /// Category: undefined-vs-resolved cancel semantics. A PENDING_APPROVAL run
@@ -3039,6 +3079,7 @@ async fn be13_cancel_rejects_pending_approval_run_pointing_to_reject() {
             .contains("reject"),
         "body={body}"
     );
+    state.store.pool.close().await;
 }
 
 /// Category: cross-project cancel blocked + unauthorized cancel blocked.
@@ -3104,6 +3145,7 @@ async fn be13_cancel_rejects_cross_project_and_insufficient_role() {
         detail["state"], "RUNNING",
         "an unauthorized cancel attempt must not have changed the run's state"
     );
+    state.store.pool.close().await;
 }
 
 /// Category: nonexistent project/run.
@@ -3138,6 +3180,7 @@ async fn be13_cancel_nonexistent_run_and_project_return_structured_not_found() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
+    state.store.pool.close().await;
 }
 
 /// Category: §12.4/12.5 real data + response schema + cross-project
@@ -3229,6 +3272,7 @@ async fn be13_run_tasks_list_and_detail_endpoints() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+    state.store.pool.close().await;
 }
 
 // Phase B cleanup: `be13_legacy_create_response_shape_is_unchanged` was
@@ -3337,6 +3381,7 @@ async fn be15_findings_list_and_detail_reflect_real_recurring_failures() {
     // Contract §16.3: uncertain findings use NEEDS_REVIEW, never an
     // automatically-confirmed defect.
     assert_eq!(detail["review_state"], "NEEDS_REVIEW", "detail={detail}");
+    state.store.pool.close().await;
 }
 
 /// Category: "Failure analysis may correlate ... historical failures" —
@@ -3389,6 +3434,7 @@ async fn be15_finding_analysis_correlates_real_failure_cluster_and_is_audited() 
             && a.target.as_deref() == Some(finding_id.to_string().as_str())),
         "audit_log must record the analysis request"
     );
+    state.store.pool.close().await;
 }
 
 /// Category: review/promotion transitions + auditability, scoped path.
@@ -3477,6 +3523,7 @@ async fn be15_finding_review_scoped_confirms_and_dismisses() {
     )
     .await;
     assert_envelope(status, &body, StatusCode::BAD_REQUEST, "VALIDATION_ERROR");
+    state.store.pool.close().await;
 }
 
 /// Category: cross-project isolation on every findings route + unauthorized
@@ -3574,6 +3621,7 @@ async fn be15_findings_cross_project_isolation_and_role_check() {
     )
     .await;
     assert_eq!(detail["review_state"], "NEEDS_REVIEW", "detail={detail}");
+    state.store.pool.close().await;
 }
 
 /// Category: missing auth + nonexistent project/finding.
@@ -3620,6 +3668,7 @@ async fn be15_findings_require_authentication_and_reject_nonexistent_resources()
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
+    state.store.pool.close().await;
 }
 
 /// Category: §15.2 response-shape split. Detail is metadata (no raw
@@ -3672,6 +3721,7 @@ async fn be15_evidence_detail_is_metadata_not_raw_bytes() {
         detail.get("object_key").is_some(),
         "detail must be the real EvidenceRow metadata, not a raw byte string; detail={detail}"
     );
+    state.store.pool.close().await;
 }
 
 /// Category: project-scoped audit list, isolation, role bar (Operator, not
@@ -3776,6 +3826,7 @@ async fn be15_audit_log_scoped_to_project_and_isolated() {
     )
     .await;
     assert_envelope(status, &body, StatusCode::UNAUTHORIZED, "UNAUTHENTICATED");
+    state.store.pool.close().await;
 }
 
 /// Category: a global-scope key (the bootstrap admin key has no project) acting inside a project. Its audit
@@ -3867,6 +3918,7 @@ async fn be15_audit_trail_lists_a_global_keys_actions_under_the_project_they_hap
     assert_eq!(rows_b.len(), 1, "rows={rows_b:?}");
     assert_eq!(rows_b[0]["action"], "run.create");
     assert_eq!(rows_b[0]["project_id"], project_b.to_string());
+    state.store.pool.close().await;
 }
 
 /// Category: `project.create` has no project in its URL (the project did not exist until the request), so it
@@ -3903,6 +3955,7 @@ async fn be15_project_create_is_audited_under_the_new_project() {
     assert_eq!(rows.len(), 1, "rows={rows:?}");
     assert_eq!(rows[0]["action"], "project.create");
     assert_eq!(rows[0]["project_id"], id);
+    state.store.pool.close().await;
 }
 
 /// Category: which project a request URL names, which is what the attribution above is read from.
@@ -4043,6 +4096,7 @@ async fn be15_audit_log_offset_pages_through_real_rows_and_total_is_the_real_ful
         paged_rows, all_rows,
         "paged reconstruction must match the real unpaged order exactly"
     );
+    state.store.pool.close().await;
 }
 
 /// Category: admin-route regression — the platform-wide, Admin-only
@@ -4081,6 +4135,7 @@ async fn be15_legacy_admin_audit_log_still_works() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+    state.store.pool.close().await;
 }
 
 // ============================================ Phase 4 BE-10 — project-scoped
@@ -4228,6 +4283,7 @@ async fn phase4_be10_intelligence_scoped_to_authorized_project_with_real_fields(
         .collect::<std::collections::BTreeSet<_>>(),
         "response must be exactly the real TestIntelRow shape, no invented/extra fields; row={row}"
     );
+    state.store.pool.close().await;
 }
 
 /// Test 2 (multi-project isolation) + Test 13/security (distinct real risk
@@ -4320,6 +4376,7 @@ async fn phase4_be10_intelligence_isolated_across_projects() {
         arr_b.iter().all(|r| r["name"] != "task-a"),
         "project B must never see project A's task; rows={arr_b:?}"
     );
+    state.store.pool.close().await;
 }
 
 /// Test 3 (unauthorized project) + existing-project-check regression: a key
@@ -4375,6 +4432,7 @@ async fn phase4_be10_intelligence_unauthorized_and_missing_project_rejected() {
     )
     .await;
     assert_envelope(status, &body, StatusCode::UNAUTHORIZED, "UNAUTHENTICATED");
+    state.store.pool.close().await;
 }
 
 /// Test 4 (empty project): a real, authorized, existing project with zero
@@ -4398,6 +4456,7 @@ async fn phase4_be10_intelligence_empty_project_returns_truthful_empty_array() {
     .await;
     assert_eq!(status, StatusCode::OK, "body={rows}");
     assert_eq!(rows.as_array().unwrap().len(), 0, "a project with no completed runs must return a truthful empty array, not fabricated rows; body={rows}");
+    state.store.pool.close().await;
 }
 
 // Phase B cleanup: `phase4_be10_legacy_unscoped_intelligence_route_still_works`
@@ -4485,6 +4544,7 @@ async fn aud005_create_get_list_test_case_real_persistence() {
         arr.iter().any(|r| r["id"] == id),
         "list must contain the created case; rows={arr:?}"
     );
+    state.store.pool.close().await;
 }
 
 // ================================================== Phase 4 — requirement graph
@@ -4576,6 +4636,7 @@ async fn phase4_requirement_impact_reflects_real_test_cases_created_against_it()
         0,
         "a never-cited key must be a real, honest empty list, not an error: empty={empty}"
     );
+    state.store.pool.close().await;
 }
 
 /// A test case created with neither `requirement_reference` nor
@@ -4609,6 +4670,7 @@ async fn phase4_creating_a_test_case_with_no_requirement_data_still_succeeds() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
+    state.store.pool.close().await;
 }
 
 // ================================================ Phase 5 — plan/suite hierarchy
@@ -4716,6 +4778,7 @@ async fn phase5_test_plan_full_crud_round_trip() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+    state.store.pool.close().await;
 }
 
 /// A suite created inside a real plan, reassigned to a different real plan
@@ -4803,6 +4866,7 @@ async fn phase5_test_suite_plan_assignment_reassignment_and_clearing() {
     .await;
     assert_eq!(status, StatusCode::OK, "body={cleared}");
     assert!(cleared["plan_id"].is_null(), "cleared={cleared}");
+    state.store.pool.close().await;
 }
 
 /// A case's suite membership set via the dedicated
@@ -4893,6 +4957,7 @@ async fn phase5_test_case_suite_assignment_and_cross_project_rejection() {
         StatusCode::BAD_REQUEST,
         "a suite from a different project must be rejected, not silently linked: body={rejected}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -4925,6 +4990,7 @@ async fn phase5_test_plan_rbac_viewer_forbidden_operator_allowed() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
+    state.store.pool.close().await;
 }
 
 // ===================================================== Phase 6 — crawler
@@ -4973,6 +5039,7 @@ async fn phase6_crawler_start_rejects_an_ssrf_target_via_the_existing_real_guard
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -4992,6 +5059,7 @@ async fn phase6_crawler_start_rejects_an_empty_role_list() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    state.store.pool.close().await;
 }
 
 /// A well-formed crawl request must genuinely create a real run through the
@@ -5030,6 +5098,7 @@ async fn phase6_crawler_start_creates_a_real_run_through_the_existing_pipeline()
     .await;
     assert_eq!(status, StatusCode::OK, "body={run}");
     assert_eq!(run["tasks"].as_array().unwrap().len(), 1, "run={run}");
+    state.store.pool.close().await;
 }
 
 fn crawl_body_logging_in_with(username: &str, password: &str) -> Value {
@@ -5091,6 +5160,7 @@ async fn phase5a_crawl_start_stores_only_the_names_of_login_secrets_never_their_
         serde_json::json!(["AIQA_LOGIN_T5A_API_PW", "AIQA_LOGIN_T5A_API_USER"]),
         "stored={stored}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -5119,6 +5189,7 @@ async fn phase5a_crawl_start_refuses_a_login_whose_secret_is_not_set_and_names_o
             .contains("AIQA_LOGIN_T5A_API_MISSING is not set"),
         "body={body}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -5143,6 +5214,7 @@ async fn phase5a_crawl_start_refuses_a_reference_to_a_variable_outside_the_reser
         !body.to_string().contains("GROQ_API_KEY"),
         "the message must not repeat what was written: {body}"
     );
+    state.store.pool.close().await;
 }
 
 // ------------------------------------------------ Phase 5B — grounded compile
@@ -5331,6 +5403,7 @@ async fn phase5b_a_compile_grounded_in_a_crawl_has_the_login_first_and_reports_o
         body["grounding"]["secrets"],
         serde_json::json!(["AIQA_LOGIN_T5B_ONE_PASSWORD", "AIQA_LOGIN_T5B_ONE_USERNAME"])
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -5378,6 +5451,7 @@ async fn phase5b_a_selector_the_crawl_never_found_is_not_executable_through_the_
         "reasons={reasons}"
     );
     assert_eq!(body["grounding"]["role"], "admin");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -5418,6 +5492,7 @@ async fn phase5b_a_compile_with_no_crawl_is_exactly_what_it_was() {
             "no login was put in front: {response}"
         );
     }
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -5485,6 +5560,7 @@ async fn phase5b_the_compile_says_what_is_wrong_with_the_crawl_or_the_role() {
     if let Some(file) = file {
         std::fs::remove_file(file).ok();
     }
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -5531,6 +5607,7 @@ async fn phase5b_another_projects_crawl_cannot_ground_a_compile() {
         StatusCode::NOT_FOUND,
         "another project's crawl is not reachable: {body}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -5574,6 +5651,7 @@ async fn phase5b_a_handoff_whose_login_secrets_are_not_set_is_refused_before_a_r
             && body.to_string().contains("not set"),
         "body={body}"
     );
+    state.store.pool.close().await;
 }
 
 /// The core Phase 5 guarantee, at the API: a grounded handoff creates a real run whose stored task holds the *names* of
@@ -5661,6 +5739,7 @@ async fn phase5b_a_grounded_handoff_stores_a_spec_and_a_task_that_hold_no_creden
         spec.contains("AIQA_STEP"),
         "each step is logged as the run goes: {spec}"
     );
+    state.store.pool.close().await;
 }
 
 /// "playwright" has no registered executor in this test harness, so the
@@ -5696,6 +5775,7 @@ async fn phase6_crawler_result_is_a_real_404_when_no_result_was_ever_written() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -5731,6 +5811,7 @@ async fn phase6_crawler_result_cross_project_access_is_rejected() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -5763,6 +5844,7 @@ async fn phase6_crawler_rbac_viewer_forbidden_operator_allowed() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -5801,6 +5883,7 @@ async fn aud005_update_test_case_persists_and_ignores_status() {
     // A PATCH body has no `status` field at all in its contract — status
     // never moves through this route.
     assert_eq!(updated["status"], "GENERATED");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -5848,6 +5931,7 @@ async fn aud005_delete_test_case_removes_it_for_real() {
         StatusCode::NOT_FOUND,
         "deleted case must genuinely be gone; body={body}"
     );
+    state.store.pool.close().await;
 }
 
 /// The real lifecycle end to end: GENERATED -> VALIDATED -> APPROVED, each
@@ -5899,6 +5983,7 @@ async fn aud005_lifecycle_validate_then_approve_succeeds_in_order() {
     .await;
     assert_eq!(status, StatusCode::OK, "body={approved}");
     assert_eq!(approved["status"], "APPROVED", "approved={approved}");
+    state.store.pool.close().await;
 }
 
 /// FRD-EXE-11 enforcement: approval is not reachable by skipping validation
@@ -5948,6 +6033,7 @@ async fn aud005_approve_without_validate_first_is_rejected_with_409() {
         row["status"], "GENERATED",
         "a rejected approve attempt must not silently move the case forward; row={row}"
     );
+    state.store.pool.close().await;
 }
 
 // ============================================ Vector Store + RAG Retrieval v1
@@ -6015,6 +6101,7 @@ async fn approving_a_test_case_computes_and_stores_a_real_embedding_when_configu
         1,
         "a real embedding row must now exist for this project"
     );
+    state.store.pool.close().await;
 }
 
 /// Same "fails open" contract `find_similar_approved_test_cases`'s own doc
@@ -6067,6 +6154,7 @@ async fn approving_a_test_case_succeeds_even_when_no_embedder_is_configured() {
             .unwrap(),
         0
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -6149,6 +6237,7 @@ async fn editing_an_approved_test_case_recomputes_its_embedding() {
         1,
         "must still be exactly one row, not a second stale one"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -6197,6 +6286,7 @@ async fn editing_a_not_yet_approved_test_case_never_attempts_to_embed() {
             .unwrap(),
         0
     );
+    state.store.pool.close().await;
 }
 
 /// The other half of the real end-to-end loop (the approve-time half is
@@ -6280,6 +6370,7 @@ async fn generate_ai_retrieves_and_honestly_reports_a_real_similar_approved_case
         second["similar_cases_used"], 1,
         "the same project's own real, newly-approved case must now be retrieved: body={second}"
     );
+    state.store.pool.close().await;
 }
 
 /// Phase 2 gap-closing — document-level RAG. The other half of the real
@@ -6343,6 +6434,7 @@ async fn generate_ai_retrieves_and_honestly_reports_a_real_similar_document() {
         second["similar_documents_used"], 1,
         "the same project's own real, newly-uploaded document must now be retrieved: body={second}"
     );
+    state.store.pool.close().await;
 }
 
 /// Re-uploading a document whose extracted text is byte-for-byte identical
@@ -6391,6 +6483,7 @@ async fn document_re_upload_with_identical_content_deduplicates_not_a_second_ret
         body["similar_documents_used"], 1,
         "identical content re-uploaded under a different file name must dedupe to one real document, not two: body={body}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -6450,6 +6543,7 @@ async fn pipeline_reports_replanning_vector_and_rag_as_genuinely_available_with_
             "stage {stage}'s backing text must disclose document-level grounding too"
         );
     }
+    state.store.pool.close().await;
 }
 
 /// A structurally incomplete case (an empty step) fails real validation
@@ -6500,6 +6594,7 @@ async fn aud005_validate_rejects_structurally_incomplete_case() {
         row["status"], "GENERATED",
         "a failed validation must not advance the case; row={row}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -6578,6 +6673,7 @@ async fn aud005_reject_from_generated_and_validated_both_work() {
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+    state.store.pool.close().await;
 }
 
 /// Project isolation, enforced server-side: Project A's key can never see,
@@ -6662,6 +6758,7 @@ async fn aud005_project_isolation_enforced_both_directions() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+    state.store.pool.close().await;
 }
 
 /// RBAC: a Viewer key can read but not create/mutate. Not just a "did the
@@ -6723,6 +6820,7 @@ async fn aud005_rbac_viewer_cannot_mutate_but_can_read() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body={row}");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -6758,6 +6856,7 @@ async fn aud005_missing_project_and_missing_test_case_return_404() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
     assert_eq!(body["error"]["code"], "RESOURCE_NOT_FOUND");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -6794,6 +6893,7 @@ async fn aud005_invalid_input_rejected_with_validation_error() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    state.store.pool.close().await;
 }
 
 /// Handoff must refuse to fabricate an outcome: no `executor` and no
@@ -6848,6 +6948,7 @@ async fn aud005_handoff_without_executor_or_simulate_is_rejected() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
     assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+    state.store.pool.close().await;
 }
 
 /// Handoff must refuse a case that is not yet APPROVED.
@@ -6880,6 +6981,7 @@ async fn aud005_handoff_before_approval_is_rejected_with_409() {
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+    state.store.pool.close().await;
 }
 
 /// THE full real path, end to end, using the actual execution engine:
@@ -7023,6 +7125,7 @@ async fn aud005_full_generate_persist_validate_approve_handoff_execute_traceabil
         "matching_task={matching_task}"
     );
     assert_eq!(matching_task["name"], "E2E login rejection", "the real task's name must be the real test case's own title; matching_task={matching_task}");
+    state.store.pool.close().await;
 }
 
 /// Handoff creates a real, project-scoped run — visible through the
@@ -7093,6 +7196,7 @@ async fn aud005_handoff_run_is_a_real_execution_hub_run() {
         listed_runs.as_array().unwrap().iter().any(|r| r["run_id"] == run_id),
         "the handoff-created run must appear in the real Execution Hub's own list; rows={listed_runs:?}"
     );
+    state.store.pool.close().await;
 }
 
 // ============================================================ Execution Handoff — real executor routing
@@ -7255,6 +7359,7 @@ async fn phase2_handoff_with_a_real_executor_field_dispatches_to_that_specific_r
         task["reason"], "phase2-marker-executor-actually-ran",
         "task={task}"
     );
+    state.store.pool.close().await;
 }
 
 /// Phase 2.1 (brief §13) fix, superseding the Phase 2-era finding this test
@@ -7352,6 +7457,7 @@ async fn phase2_1_handoff_with_an_unregistered_executor_name_is_a_real_honest_in
             .contains("NO_COMPATIBLE_EXECUTOR"),
         "task={task}"
     );
+    state.store.pool.close().await;
 }
 
 // ============================================================ Phase 2 — AI generation
@@ -7398,6 +7504,7 @@ async fn phase2_generate_ai_returns_real_structured_cases_on_success() {
     // No `crawl_run_id` was supplied — the real, honest "zero real pages
     // used" value, not omitted from the response.
     assert_eq!(body["crawl_pages_used"], 0, "body={body}");
+    state.store.pool.close().await;
 }
 
 /// Phase 1 self-learning wiring — the endpoint now loads real feedback
@@ -7469,6 +7576,7 @@ async fn phase2_generate_ai_succeeds_with_real_seeded_risk_and_confirmed_defect_
     assert_eq!(body["generation_method"], "ai", "body={body}");
     let cases = body["test_cases"].as_array().unwrap();
     assert_eq!(cases.len(), 1, "body={body}");
+    state.store.pool.close().await;
 }
 
 // ---------------------------------------------------- crawl-grounded generation
@@ -7519,6 +7627,7 @@ async fn phase8_generate_ai_rejects_a_crawl_run_id_belonging_to_another_project(
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
+    state.store.pool.close().await;
 }
 
 /// A `crawl_run_id` for a crawl that never actually produced a result (the
@@ -7559,6 +7668,7 @@ async fn phase8_generate_ai_reports_a_real_error_when_the_crawl_has_no_result_ye
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
+    state.store.pool.close().await;
 }
 
 /// The core truthfulness requirement: a provider failure must be reported
@@ -7602,6 +7712,7 @@ async fn phase2_generate_ai_reports_truthful_fallback_on_provider_failure() {
         reason.contains("TIMEOUT"),
         "reason must be the real, specific failure, not generic; reason={reason}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -7629,6 +7740,7 @@ async fn phase2_generate_ai_reports_truthful_fallback_on_invalid_structured_outp
             .contains("invalid structured output"),
         "body={body}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -7649,6 +7761,7 @@ async fn phase2_generate_ai_rejects_empty_requirement_text() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
     assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -7683,6 +7796,7 @@ async fn phase2_generate_ai_rbac_viewer_forbidden_operator_allowed() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -7704,6 +7818,7 @@ async fn phase2_generate_ai_project_isolation_enforced() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
     assert_eq!(body["error"]["code"], "FORBIDDEN");
+    state.store.pool.close().await;
 }
 
 /// End-to-end proof that a generated draft can be saved for real via the
@@ -7750,6 +7865,7 @@ async fn phase2_ai_generated_draft_can_be_saved_via_existing_test_case_persisten
     .await;
     assert_eq!(status, StatusCode::CREATED, "an AI-generated draft must be persistable via the existing real test-case store; body={saved}");
     assert_eq!(saved["status"], "GENERATED");
+    state.store.pool.close().await;
 }
 
 // ============================================================ Phase 3 — Custom Testing
@@ -7820,6 +7936,7 @@ async fn phase3_custom_testing_returns_real_analysis_and_real_cases_on_success()
     let cases = body["test_cases"].as_array().unwrap();
     assert_eq!(cases.len(), 1, "body={body}");
     assert_eq!(cases[0]["title"], "Lockout after 5 invalid attempts");
+    state.store.pool.close().await;
 }
 
 /// The core truthfulness requirement, mirrored from Phase 1/2's own
@@ -7864,6 +7981,7 @@ async fn phase3_custom_testing_reports_truthful_unavailable_on_provider_failure(
         reason.contains("TIMEOUT"),
         "reason must be the real, specific failure, not generic; reason={reason}"
     );
+    state.store.pool.close().await;
 }
 
 /// A genuinely-produced analysis must survive even when the *subsequent*
@@ -7905,6 +8023,7 @@ async fn phase3_custom_testing_preserves_a_real_analysis_when_case_generation_su
             .contains("invalid structured output"),
         "body={body}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -7925,6 +8044,7 @@ async fn phase3_custom_testing_rejects_empty_requirement_text() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
     assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -7961,6 +8081,7 @@ async fn phase3_custom_testing_rbac_viewer_forbidden_operator_allowed() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -7982,6 +8103,7 @@ async fn phase3_custom_testing_project_isolation_enforced() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
     assert_eq!(body["error"]["code"], "FORBIDDEN");
+    state.store.pool.close().await;
 }
 
 /// End-to-end proof that a Custom-Testing-generated draft integrates with
@@ -8075,6 +8197,7 @@ async fn phase3_custom_testing_generated_draft_can_be_saved_via_existing_test_ca
     .await;
     assert_eq!(status, StatusCode::OK, "body={validated}");
     assert_eq!(validated["status"], "VALIDATED", "body={validated}");
+    state.store.pool.close().await;
 }
 
 /// Phase 1 gap-closing — Custom Testing's own generation endpoint now gets
@@ -8173,6 +8296,7 @@ async fn phase1_custom_testing_generation_is_grounded_by_a_real_similar_approved
             prompts[0]
         );
     }
+    state.store.pool.close().await;
 }
 
 // ============================================================ Phase 4 — API Testing
@@ -8466,6 +8590,7 @@ async fn phase4_api_test_executes_a_real_request_and_passes_a_real_status_assert
         body["response_body_preview"], "ok",
         "the real /health response body must be captured verbatim; body={body}"
     );
+    state.store.pool.close().await;
 }
 
 /// The core truthfulness requirement: an assertion that genuinely does not
@@ -8500,6 +8625,7 @@ async fn phase4_api_test_assertion_mismatch_genuinely_fails_not_a_fake_pass() {
     let assertions = body["result"]["assertions"].as_array().unwrap();
     assert_eq!(assertions[0]["passed"], false, "body={body}");
     assert_eq!(assertions[0]["actual"], "200 OK", "the real observed status (reqwest's own Display, incl. reason phrase) must be reported, not the expected one; body={body}");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -8527,6 +8653,7 @@ async fn phase4_api_test_rejects_an_invalid_url_before_any_execution() {
             .starts_with("INVALID_URL"),
         "body={body}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -8553,6 +8680,7 @@ async fn phase4_api_test_rejects_an_unsupported_http_method() {
             .starts_with("UNSUPPORTED_HTTP_METHOD"),
         "body={body}"
     );
+    state.store.pool.close().await;
 }
 
 /// Reuses the exact, pre-existing, real SSRF guard (`execution_plan::
@@ -8590,6 +8718,7 @@ async fn phase4_api_test_rejects_a_disallowed_ssrf_target_via_the_existing_real_
             .contains("disallowed"),
         "body={body}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -8623,6 +8752,7 @@ async fn phase4_api_test_query_parameters_and_headers_genuinely_reach_the_real_r
     .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(body["task_status"], "PASSED", "body={body}");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -8656,6 +8786,7 @@ async fn phase4_api_test_rbac_viewer_forbidden_operator_allowed() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -8677,6 +8808,7 @@ async fn phase4_api_test_project_isolation_enforced() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
     assert_eq!(body["error"]["code"], "FORBIDDEN");
+    state.store.pool.close().await;
 }
 
 // Note: a dedicated "real connection failure -> INFRA_ERROR" integration
@@ -8725,6 +8857,7 @@ async fn app_source_verify_a_real_reachable_target_reports_connected() {
         body["latency_ms"].as_u64().is_some(),
         "a real measured latency must be present; body={body}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -8752,6 +8885,7 @@ async fn app_source_verify_a_disallowed_target_reports_rejected_through_the_real
     assert_eq!(body["reachable"], false, "body={body}");
     assert!(body["http_status"].is_null());
     assert!(body["latency_ms"].is_null(), "a rejected target must show no real latency, since no request was ever attempted; body={body}");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -8772,6 +8906,7 @@ async fn app_source_verify_a_malformed_url_reports_invalid_url() {
     .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(body["status"], "INVALID_URL", "body={body}");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -8806,6 +8941,7 @@ async fn app_source_verify_rbac_viewer_forbidden_operator_allowed() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -8826,6 +8962,7 @@ async fn app_source_verify_project_isolation_enforced() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+    state.store.pool.close().await;
 }
 
 // ================================== Truthfulness Cleanup — real Product
@@ -8891,6 +9028,7 @@ async fn extract_document_text_reads_the_real_content_of_a_real_docx() {
     );
     assert_eq!(body["truncated"], false, "body={body}");
     assert!(body["char_count"].as_u64().unwrap() > 0, "body={body}");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -8914,6 +9052,7 @@ async fn extract_document_text_reads_plain_text_formats_verbatim() {
         body["text"], "# Real Spec\n\nDo the real thing.",
         "body={body}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -8942,6 +9081,7 @@ async fn extract_document_text_reports_a_real_specific_error_for_legacy_doc_not_
         message.contains(".doc"),
         "expected the real error to name the .doc limitation; body={body}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -8961,6 +9101,7 @@ async fn extract_document_text_rejects_invalid_base64_with_a_real_validation_err
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -8994,6 +9135,7 @@ async fn extract_document_text_rbac_viewer_forbidden_operator_allowed() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -9014,6 +9156,7 @@ async fn extract_document_text_project_isolation_enforced() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+    state.store.pool.close().await;
 }
 
 // ============================================ Phase 3 — requirements read out of documents
@@ -9168,6 +9311,7 @@ async fn an_uploaded_document_is_also_read_for_its_requirements_and_the_old_resp
         "The system shall export any report as a CSV file."
     );
     assert_eq!(reqs[0]["document_id"], summary["document_id"]);
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -9230,6 +9374,7 @@ async fn nothing_past_the_old_20000_character_mark_is_lost() {
         last["text"],
         "The system shall still read this last requirement."
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -9278,6 +9423,7 @@ async fn a_docx_keeps_its_headings_so_requirements_know_their_section() {
         body["text"],
         "3. Authentication\n3.2 Login\nUsers shall sign in with an email address and a password.\nA session shall expire after 30 minutes of inactivity."
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -9302,6 +9448,7 @@ async fn a_text_pdf_is_read_and_split_into_requirements() {
         body["requirements_document"]["requirements_count"], 2,
         "body={body}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -9339,6 +9486,7 @@ async fn the_document_type_prefixes_generated_ids_and_the_file_name_does_when_it
         .map(|r| r["key"].as_str().unwrap())
         .collect();
     assert_eq!(keys, ["SRD-S0-01", "CHECKO-S0-01"]);
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -9409,6 +9557,7 @@ async fn uploading_the_same_content_again_reuses_the_document_and_a_different_ve
         "not doubled by the second upload"
     );
     assert_eq!(listed["requirements"].as_array().unwrap().len(), 7);
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -9448,6 +9597,7 @@ async fn two_versions_that_differ_only_after_the_first_20000_characters_are_two_
         .clone();
     assert_eq!(last["text"], "The new last requirement, edited later.");
     assert_eq!(listed["documents"].as_array().unwrap().len(), 1);
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -9482,6 +9632,7 @@ async fn a_file_that_cannot_be_read_stores_no_requirements() {
     .await;
     assert!(listed["documents"].as_array().unwrap().is_empty());
     assert!(listed["requirements"].as_array().unwrap().is_empty());
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -9510,6 +9661,7 @@ async fn a_failure_to_store_the_requirements_never_fails_the_upload() {
         body.get("requirements_document").is_none(),
         "nothing was stored, so nothing is claimed: {body}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -9609,6 +9761,7 @@ async fn listing_requirements_is_project_scoped_readable_by_a_viewer_and_validat
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -9638,6 +9791,7 @@ async fn deleting_a_project_removes_its_documents_and_requirements() {
         .unwrap();
     assert_eq!(documents, 0);
     assert_eq!(requirements, 0);
+    state.store.pool.close().await;
 }
 
 // ============================= Phase 3 — generation from the requirements of documents
@@ -9766,6 +9920,7 @@ async fn a_documents_requirements_can_be_used_without_pasting_its_text_back_in()
             .unwrap_or(true),
         "cases must come from the document's requirements: {body}"
     );
+    state.store.pool.close().await;
 }
 
 /// And the other half: with no documents named, empty text is still refused. The
@@ -9796,6 +9951,7 @@ async fn naming_no_document_still_requires_something_to_generate_from() {
             "the refusal should say how to supply requirements instead: {response}"
         );
     }
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -9860,6 +10016,7 @@ async fn generating_from_a_documents_requirements_shows_the_model_them_and_ties_
         !prompts[0].contains("## 2 Passwords"),
         "the raw document must not be pasted in"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -9887,6 +10044,7 @@ async fn a_request_that_names_no_documents_is_generated_exactly_as_before() {
         "body={body}"
     );
     assert!(body["waves"][0].get("batch").is_none(), "body={body}");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -9929,6 +10087,7 @@ async fn documents_with_no_requirements_or_of_another_project_are_refused() {
             "body={body}"
         );
     }
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -9977,6 +10136,7 @@ async fn when_the_model_cannot_answer_the_response_says_so_and_still_reports_wha
         body["requirements"]["uncovered_keys"],
         serde_json::json!(["FRD-2-01", "FRD-2-02"])
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -10037,6 +10197,7 @@ async fn a_smaller_batch_budget_makes_more_calls_each_carrying_its_own_requireme
             "{id}"
         );
     }
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -10082,6 +10243,7 @@ async fn a_request_that_would_make_too_many_calls_is_refused_before_any_is_made(
         executor.prompts.lock().unwrap().is_empty(),
         "no model may be called"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -10152,6 +10314,7 @@ async fn the_plan_says_what_a_generation_would_do_without_calling_a_model() {
         executor.prompts.lock().unwrap().is_empty(),
         "planning must never call a model"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -10193,6 +10356,7 @@ async fn the_plan_says_when_a_request_is_over_the_call_limit() {
         ),
         (Some(2), Some(1), Some(false))
     );
+    state.store.pool.close().await;
 }
 
 #[test]
@@ -10279,6 +10443,7 @@ async fn the_plan_is_operator_only_project_scoped_and_needs_documents() {
         .as_str()
         .unwrap()
         .contains("requirement_document_ids"));
+    state.store.pool.close().await;
 }
 
 // ================================== Phase 6 ERROR-fix — run-level supervision
@@ -10417,6 +10582,7 @@ async fn phase6_error_a_genuine_internal_failure_is_detected_persisted_and_visib
     assert_eq!(body["metrics"]["total_requests"], 40, "body={body}");
     assert_eq!(body["metrics"]["successful"], 40, "body={body}");
     assert_eq!(body["sample_count"], 40, "body={body}");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -10487,6 +10653,7 @@ async fn phase6_error_persists_and_reloads_correctly_once_the_live_handle_is_gon
         "a terminal ERROR row's metrics must not change between reads"
     );
     assert_eq!(body2["finished_at"], body["finished_at"]);
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -10550,6 +10717,7 @@ async fn phase6_error_cannot_later_be_overwritten_back_to_completed_terminal_ide
         still.error_reason.as_deref(),
         after_error.error_reason.as_deref()
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -10616,6 +10784,7 @@ async fn phase6_error_normal_completion_regression_still_reaches_completed_not_e
     }
     assert_eq!(final_status["status"], "COMPLETED", "body={final_status}");
     assert_ne!(final_status["status"], "ERROR");
+    state.store.pool.close().await;
 }
 
 // ============================= Build order item 4 — AI-assisted BugAnalysis
@@ -10720,6 +10889,7 @@ async fn be18_finding_ai_hypothesis_returns_real_outcome_and_never_overwrites_de
             && a.outcome == "ok"),
         "audit_log must record the AI hypothesis request"
     );
+    state.store.pool.close().await;
 }
 
 /// ACC-018 Failure Behavior: "Model/provider failure must result in:
@@ -10796,6 +10966,7 @@ async fn be18_finding_ai_hypothesis_reports_truthful_fallback_on_provider_timeou
             .any(|a| a.action == "finding.ai_hypothesis" && a.outcome == "fallback"),
         "a fallback outcome must still be audited, honestly labeled"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -10830,6 +11001,7 @@ async fn be18_finding_ai_hypothesis_rbac_viewer_forbidden_operator_allowed() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -10854,6 +11026,7 @@ async fn be18_finding_ai_hypothesis_project_isolation_enforced() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
     assert_eq!(body["error"]["code"], "FORBIDDEN");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -10876,6 +11049,7 @@ async fn be18_finding_ai_hypothesis_missing_finding_returns_structured_not_found
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
     assert_eq!(body["error"]["code"], "RESOURCE_NOT_FOUND");
+    state.store.pool.close().await;
 }
 
 // ================================================ AI Intelligence Layer (settings/status)
@@ -10893,6 +11067,7 @@ async fn ai_status_returns_real_provider_snapshot_and_settings() {
     assert_eq!(providers[0]["id"], "mock");
     assert_eq!(body["settings"]["mode"], "AUTO", "body={body}");
     assert_eq!(body["settings"]["fallback_enabled"], true, "body={body}");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -10963,6 +11138,7 @@ async fn ai_status_routing_preview_follows_the_test_generation_chain() {
     )
     .await;
     assert!(body["routing_preview"].is_null(), "body={body}");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -10999,6 +11175,7 @@ async fn ai_settings_put_persists_for_real_and_changes_routing_behavior() {
     // not just the settings row.
     let live_settings = state.ai_infra.settings().await;
     assert_eq!(live_settings.mode, crate::ai_router::RoutingMode::Manual);
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -11035,6 +11212,8 @@ async fn ai_settings_survive_a_fresh_store_reload_real_durable_persistence() {
         task_overrides, None,
         "a settings row saved with no task_overrides must persist NULL, not a fabricated empty object"
     );
+    reloaded.pool.close().await;
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -11087,6 +11266,8 @@ async fn ai_settings_task_overrides_survive_a_fresh_store_reload_real_durable_pe
         .expect("the saved override must be readable back through the real AiSettings type");
     assert_eq!(entry.provider.as_deref(), Some("gemini"));
     assert_eq!(entry.model.as_deref(), Some("gemini-2.5-pro"));
+    reloaded.pool.close().await;
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -11147,6 +11328,8 @@ async fn ai_settings_task_chain_is_persisted_read_back_and_live_in_the_router() 
         .get(&crate::ai_router::AiTask::TestCaseGeneration)
         .expect("the chain must be live in the in-memory router");
     assert_eq!(entry.chain.len(), 2);
+    reloaded.pool.close().await;
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -11182,6 +11365,7 @@ async fn ai_settings_put_rejects_a_task_chain_that_is_malformed_or_too_long() {
 
     // Nothing was saved by either rejected request.
     assert!(state.ai_infra.settings().await.task_overrides.is_empty());
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -11207,6 +11391,7 @@ async fn ai_settings_rbac_viewer_cannot_mutate_but_can_read() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+    state.store.pool.close().await;
 }
 
 // -------------------------------------------- custom AI providers (Settings UI)
@@ -11245,6 +11430,7 @@ async fn custom_ai_provider_create_is_live_on_the_very_next_discovery_no_restart
         providers.iter().any(|p| p.id == id),
         "the new custom provider must be discoverable immediately: providers={providers:?}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -11283,6 +11469,7 @@ async fn custom_ai_provider_list_never_includes_the_raw_api_key() {
         !raw.contains("sk-real-secret-value"),
         "the raw key must not appear anywhere in the response body at all: body={raw}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -11318,6 +11505,8 @@ async fn custom_ai_providers_survive_a_fresh_store_reload_real_durable_persisten
         rows[0].api_key, "sk-real-secret-value",
         "the real key must round-trip exactly — it has to be usable for real outbound auth"
     );
+    reloaded.pool.close().await;
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -11373,6 +11562,7 @@ async fn custom_ai_provider_delete_removes_it_and_it_stops_being_discovered() {
         StatusCode::NOT_FOUND,
         "deleting an already-deleted (or never-existed) id must be a real 404, never a false ok"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -11434,6 +11624,7 @@ async fn custom_ai_provider_rbac_viewer_can_list_but_cannot_create_or_delete() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+    state.store.pool.close().await;
 }
 
 fn custom_provider_body(extra: serde_json::Value) -> serde_json::Value {
@@ -11494,6 +11685,8 @@ async fn custom_ai_provider_price_is_saved_shown_and_makes_the_provider_metered(
             output_usd_per_1k: 1.5
         }
     );
+    reloaded.pool.close().await;
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -11522,6 +11715,7 @@ async fn custom_ai_provider_without_a_price_shows_none_and_stays_unmetered() {
         provider.pricing,
         crate::ai_router::ProviderPricing::Unmetered
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -11569,6 +11763,7 @@ async fn custom_ai_provider_rejects_a_half_or_negative_price() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -11629,6 +11824,8 @@ async fn custom_ai_provider_key_can_be_an_env_reference_and_the_secret_is_never_
         format!("env:{VAR}"),
         "only the variable's name is stored, never its value"
     );
+    reloaded.pool.close().await;
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -11647,6 +11844,7 @@ async fn a_key_stored_as_itself_has_no_env_fields() {
     .await;
     assert!(body["api_key_env"].is_null(), "body={body}");
     assert!(body["api_key_env_set"].is_null(), "body={body}");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -11683,6 +11881,7 @@ async fn custom_ai_provider_rejects_a_malformed_env_reference() {
         .await;
         assert_eq!(status, StatusCode::CREATED, "key={good} body={body}");
     }
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -11737,6 +11936,7 @@ async fn custom_ai_provider_rejects_a_real_validation_failure_never_silently_acc
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -11761,6 +11961,7 @@ async fn ai_refresh_requires_operator_and_returns_real_providers() {
     let providers = body.as_array().unwrap();
     assert_eq!(providers.len(), 1);
     assert_eq!(providers[0]["id"], "mock");
+    state.store.pool.close().await;
 }
 
 /// Security (brief §22/§25): the real HTTP response for AI status/settings
@@ -11794,6 +11995,7 @@ async fn ai_status_response_never_exposes_a_credential_shaped_value() {
         !raw.contains("should_never_leak"),
         "the real credential value must never appear in this response; body={body}"
     );
+    state.store.pool.close().await;
 }
 
 // ======================================================== B12 — CORS allow-list
@@ -11810,7 +12012,7 @@ async fn ai_status_response_never_exposes_a_credential_shaped_value() {
 #[tokio::test]
 async fn cors_rejects_a_disallowed_origin() {
     let (state, _dir) = test_state().await;
-    let app = router(state).layer(crate::api::cors_layer_for_origins(&[
+    let app = router(state.clone()).layer(crate::api::cors_layer_for_origins(&[
         "http://localhost:3000".to_string(),
     ]));
 
@@ -11828,12 +12030,13 @@ async fn cors_rejects_a_disallowed_origin() {
         cors_header.is_none() || cors_header.unwrap() != "http://evil.example",
         "a disallowed origin must never be echoed back in Access-Control-Allow-Origin, got: {cors_header:?}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
 async fn cors_allows_the_configured_origin() {
     let (state, _dir) = test_state().await;
-    let app = router(state).layer(crate::api::cors_layer_for_origins(&[
+    let app = router(state.clone()).layer(crate::api::cors_layer_for_origins(&[
         "http://localhost:3000".to_string(),
     ]));
 
@@ -11851,6 +12054,7 @@ async fn cors_allows_the_configured_origin() {
         .get("access-control-allow-origin")
         .expect("an allowed origin must receive the CORS header");
     assert_eq!(cors_header, "http://localhost:3000");
+    state.store.pool.close().await;
 }
 
 // ================================================ B11/L4 — approval durability
@@ -11945,6 +12149,7 @@ async fn approval_survives_a_process_restart_and_can_still_be_approved() {
         assert_eq!(status, StatusCode::CREATED, "body={created}");
         assert_eq!(created["status"], "PENDING_APPROVAL");
         run_id = created["run_id"].as_str().unwrap().to_string();
+        state.store.pool.close().await;
         // `state` (and its in-memory `state.runs`) is dropped here — the
         // run now exists only in the sqlite file, same as after a real
         // process exit.
@@ -11968,6 +12173,7 @@ async fn approval_survives_a_process_restart_and_can_still_be_approved() {
             RunState::PendingApproval,
             "startup recovery must not touch a run that is genuinely still awaiting approval"
         );
+        store.pool.close().await;
     }
 
     {
@@ -11999,6 +12205,7 @@ async fn approval_survives_a_process_restart_and_can_still_be_approved() {
             "a pending approval must survive a restart and remain approvable; body={approved}"
         );
         assert_eq!(approved["state"], "RUNNING");
+        state.store.pool.close().await;
     }
 }
 
@@ -12027,6 +12234,7 @@ async fn rejection_survives_a_process_restart_and_can_still_be_rejected() {
         .await;
         assert_eq!(status, StatusCode::CREATED, "body={created}");
         run_id = created["run_id"].as_str().unwrap().to_string();
+        state.store.pool.close().await;
     }
 
     {
@@ -12048,6 +12256,7 @@ async fn rejection_survives_a_process_restart_and_can_still_be_rejected() {
             "a pending approval must survive a restart and remain rejectable; body={rejected}"
         );
         assert_eq!(rejected["state"], "REJECTED");
+        state.store.pool.close().await;
     }
 }
 
@@ -12110,6 +12319,7 @@ async fn delete_project_admin_success_with_cascading_cleanup() {
         delete_entry.is_some(),
         "audit log must record project.delete"
     );
+    state.store.pool.close().await;
 }
 
 /// Phase 2 gap-closing. `delete_project_admin_success_with_cascading_
@@ -12222,6 +12432,7 @@ async fn delete_project_also_cleans_up_test_case_embeddings_and_documents() {
         0,
         "deleting a project must not leave an orphaned documents row behind"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -12254,6 +12465,7 @@ async fn delete_project_forbidden_for_non_admin_roles() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -12273,6 +12485,7 @@ async fn delete_project_returns_404_for_unknown_project() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -12294,6 +12507,7 @@ async fn delete_project_scoped_admin_cannot_delete_different_project() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -12372,6 +12586,7 @@ async fn list_logs_returns_recent_history_and_respects_project_scoping() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(proj_logs.as_array().unwrap().len(), 2);
+    state.store.pool.close().await;
 }
 
 /// A storage failure must not be answered with a plausible risk score.
@@ -12412,6 +12627,7 @@ async fn a_storage_failure_is_reported_rather_than_a_risk_answer() {
     );
     assert_eq!(body["risk_level"], "INSUFFICIENT_DATA");
 
+    state.store.pool.close().await;
 
     let (status, body) = send(&state, req("GET", &url, Some(&admin), None)).await;
     assert_ne!(
@@ -12482,6 +12698,7 @@ async fn a_healthy_risk_read_is_unaffected_by_removing_the_silent_fallback() {
         proj_id.to_string(),
         "and the answer must still name the project it is about"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -12549,6 +12766,7 @@ async fn test_project_risk_intelligence_endpoint() {
     assert_ne!(body2["risk_level"], "INSUFFICIENT_DATA");
     assert!(body2["risk_score"].as_f64().unwrap() > 0.0);
     assert_eq!(body2["factors"]["failure_rate"], 1.0);
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -12658,6 +12876,7 @@ async fn test_phase8_investigations_and_drilldown_endpoints() {
     .await;
     assert_eq!(status_time, StatusCode::OK);
     assert!(!timeline.as_array().unwrap().is_empty());
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -12715,6 +12934,7 @@ async fn test_phase8_retention_endpoints_and_rbac() {
     assert_eq!(status_prune, StatusCode::OK);
     assert_eq!(prune_report["dry_run"], false);
     assert_eq!(prune_report["retention_days"], 30);
+    state.store.pool.close().await;
 }
 
 // ========================= Planning endpoint — schema_file_path containment
@@ -12779,6 +12999,7 @@ async fn planning_test_plan_refuses_a_schema_file_path_outside_the_schema_root()
         !message.contains("host-only-spec") && !message.contains(&*dir.path().to_string_lossy()),
         "the error must not echo the requested or resolved path: {message}"
     );
+    state.store.pool.close().await;
 }
 
 /// The inline path (`schema_content`) is untouched by the containment: no
@@ -12813,6 +13034,7 @@ async fn planning_test_plan_still_accepts_an_inline_schema() {
             .any(|a| a == "/widgets"),
         "the plan must be built from the inline schema: {plan}"
     );
+    state.store.pool.close().await;
 }
 
 /// ## R1b: a failed grounding read must not return a plan
@@ -12860,6 +13082,7 @@ async fn a_storage_failure_is_not_reported_as_a_grounded_test_plan() {
         "a healthy store must still produce a plan: {plan}"
     );
 
+    state.store.pool.close().await;
 
     let (status, failed) = send(&state, req("POST", &url, Some(&operator), Some(body))).await;
     assert_ne!(
@@ -12963,6 +13186,7 @@ async fn planning_confine_refuses_every_bad_path_with_one_uniform_message() {
         messages.windows(2).all(|w| w[0] == w[1]),
         "every refusal must read the same: {messages:?}"
     );
+    _state.store.pool.close().await;
 }
 
 /// The accepted path is rewritten to the canonical file that was checked,
@@ -12992,6 +13216,7 @@ async fn planning_confine_hands_the_tool_the_canonical_file_it_checked() {
         plan.api_areas_considered.iter().any(|a| a == "/widgets"),
         "the plan must come from the file inside the root: {plan:?}"
     );
+    state.store.pool.close().await;
 }
 
 // ============================= Phase 4 — the coverage engine on top of requirement generation
@@ -13112,6 +13337,7 @@ async fn naming_a_depth_adds_the_coverage_matrix_and_a_request_without_one_has_n
         without["requirements"].get("matrix").is_none(),
         "no depth, no matrix: {without}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -13149,6 +13375,7 @@ async fn an_unknown_depth_or_a_top_up_with_no_depth_is_refused_before_any_call()
         executor.prompts.lock().unwrap().is_empty(),
         "no model may be called"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -13172,6 +13399,7 @@ async fn a_depth_on_a_request_that_names_no_documents_changes_nothing() {
         body["test_cases"][0].get("technique").is_none(),
         "the original path labels nothing: {body}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -13248,6 +13476,7 @@ async fn a_top_up_makes_the_extra_call_and_the_response_says_what_it_did() {
         (Some("top_up"), Some("edge"), Some("1/1"))
     );
     assert_eq!(response["test_cases"].as_array().unwrap().len(), 6);
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -13317,6 +13546,7 @@ async fn the_plan_says_which_techniques_a_depth_covers_and_what_a_top_up_may_add
         executor.prompts.lock().unwrap().is_empty(),
         "planning must never call a model"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -13564,6 +13794,7 @@ async fn phase6a_the_gap_check_lines_the_requirements_up_with_the_crawl_and_the_
         "FR-005 has a case and no sign in the crawl: {body}"
     );
     assert_eq!(summary["pages"], 4);
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -13644,6 +13875,7 @@ async fn phase6a_a_role_can_be_chosen_and_an_unknown_one_lists_the_roles() {
         default_unknown.to_string().contains("standard, admin"),
         "body={default_unknown}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -13681,6 +13913,7 @@ async fn phase6a_an_older_crawl_with_only_a_result_is_read_and_says_so() {
     );
     // The login button is there; the cart page was never crawled, only linked to.
     assert_eq!(finding_of(&body, "FR-001")["status"], "WEAK", "body={body}");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -13738,6 +13971,7 @@ async fn phase6a_with_no_crawl_named_the_latest_one_is_used_and_no_crawl_is_a_40
     assert_eq!(finding_of(&body, "FR-001")["status"], "FOUND");
     assert_eq!(named_status, StatusCode::OK, "body={named}");
     assert_eq!(named["crawl"]["run_id"], run_id);
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -13792,6 +14026,7 @@ async fn phase6a_the_gap_check_says_what_is_missing_to_run_it() {
         body.to_string().contains("recorded no crawl"),
         "body={body}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -13824,6 +14059,7 @@ async fn phase6a_a_crawl_that_reached_no_page_is_refused_rather_than_reported_as
     std::fs::remove_file(file).ok();
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
     assert!(body.to_string().contains("reached no page"), "body={body}");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -13885,6 +14121,7 @@ async fn phase6a_the_check_is_project_scoped_and_a_viewer_may_read_it() {
     assert_eq!(viewer_status, StatusCode::OK, "body={viewer_body}");
     assert_eq!(borrowed, StatusCode::NOT_FOUND);
     assert_eq!(foreign, StatusCode::FORBIDDEN);
+    state.store.pool.close().await;
 }
 
 // ----------------------------------------- Phase 6B — the embedder and the AI, on request
@@ -14006,6 +14243,7 @@ async fn phase6b_with_no_option_no_step_runs_and_the_response_says_so() {
     );
     assert!(finding_of(&body, "FR-004").get("verification").is_none());
     assert_eq!(finding_of(&body, "FR-004")["status"], "WEAK");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -14099,6 +14337,7 @@ async fn phase6b_asking_the_ai_to_check_confirms_or_rejects_and_says_who_said_so
     assert_eq!(body["summary"]["found"], 4);
     assert_eq!(body["summary"]["weak"], 0);
     assert_eq!(body["summary"]["missing"], 1);
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -14143,6 +14382,7 @@ async fn phase6b_a_limit_on_the_questions_is_kept_and_a_provider_that_refuses_fa
         finding_of(&body, "FR-005").get("verification").is_none(),
         "FR-005 was not asked"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -14193,6 +14433,7 @@ async fn phase6b_the_options_that_call_a_provider_need_the_operator_role_and_the
         executor.prompts.lock().unwrap().is_empty(),
         "a refused request calls no provider"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -14233,6 +14474,7 @@ async fn phase6b_an_embedder_that_is_not_set_up_is_reported_and_changes_nothing(
         body["requirements"], free["requirements"],
         "nothing changed"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -14311,6 +14553,7 @@ async fn phase6b_an_embedder_names_the_page_closest_in_meaning_for_a_requirement
     assert_eq!(e["texts"], 7);
     assert_eq!(e["failed"], 0);
     assert_eq!(body["summary"]["weak"], 1);
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -14359,6 +14602,7 @@ async fn phase6b_asking_the_ai_to_check_is_audited_and_the_free_check_is_not() {
             && a.outcome == "ok"),
         "asking the AI is an audited action: {after_verify:?}"
     );
+    state.store.pool.close().await;
 }
 
 // ------------------------------------------------- Phase 6C — look for the pages the requirements mention first
@@ -14453,6 +14697,7 @@ async fn phase6c_a_crawl_can_ask_to_visit_the_pages_the_requirements_mention_fir
     // The plan is otherwise the plan that was sent.
     assert_eq!(plan["baseUrl"], "http://127.0.0.1:8080/app");
     assert_eq!(plan["roles"].as_array().unwrap().len(), 2);
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -14491,6 +14736,7 @@ async fn phase6c_without_the_option_a_crawl_is_exactly_what_it_was() {
         !a.contains("focusTerms") && !b.contains("focusTerms"),
         "{a}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -14524,6 +14770,7 @@ async fn phase6c_asking_for_the_focus_of_a_project_with_no_requirements_says_wha
     )
     .await;
     assert_eq!(runs.as_array().unwrap().len(), 0, "{runs}");
+    state.store.pool.close().await;
 }
 
 // ------------------------------------------------- Phase 7A — a role's login steps, suggested from a crawl
@@ -14637,6 +14884,7 @@ async fn phase7a_a_crawl_with_a_login_page_gives_the_steps_and_the_variables_sti
         body["ai"],
         serde_json::json!({"requested": false, "used": false, "note": null})
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -14698,6 +14946,7 @@ async fn phase7a_with_no_crawl_named_the_newest_crawl_that_has_a_login_page_is_u
             .contains("no page of the crawl has a password field"),
         "body={named}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -14725,6 +14974,7 @@ async fn phase7a_crawls_that_never_reached_a_login_page_say_so() {
         text.contains("crawl the application again as `anonymous`"),
         "body={body}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -14760,6 +15010,7 @@ async fn phase7a_when_no_crawl_has_a_login_page_the_newest_crawls_problem_is_the
         text.contains("(1 page seen") && !text.contains("2 pages seen"),
         "body={body}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -14851,6 +15102,7 @@ async fn phase7a_the_role_the_crawl_and_the_project_are_checked() {
         "a key of another project"
     );
     assert!(missing_status.is_client_error(), "the role is required");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -14887,6 +15139,7 @@ async fn phase7a_a_viewer_may_ask_for_the_rules_but_not_for_the_ai() {
     assert_eq!(ai_status, StatusCode::FORBIDDEN, "body={ai}");
     // The default test router has no provider; the operator's request is a normal 200 and the rules were sure anyway.
     assert_eq!(operator_status, StatusCode::OK);
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -14992,6 +15245,7 @@ async fn phase7a_the_ai_is_asked_only_when_the_rules_are_unsure_and_its_answer_i
         .iter()
         .all(|a| a.detail.as_deref() == Some("mock/mock-model")));
     assert_eq!(executor.prompts.lock().unwrap().len(), 3);
+    state.store.pool.close().await;
 }
 
 // ------------------------------------------------- Phase 7B — what an autopilot run would cost
@@ -15140,6 +15394,7 @@ async fn phase7b_the_estimate_says_calls_tokens_time_and_what_they_rest_on() {
         .unwrap()
         .iter()
         .all(|t| t["task"] != "TRACEABILITY"));
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -15240,6 +15495,7 @@ async fn phase7b_a_generation_is_remembered_and_the_estimate_after_enough_of_the
         seconds["min"].as_u64().unwrap() > 30 && seconds["max"].as_u64().unwrap() > 90,
         "body={second}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -15295,6 +15551,7 @@ async fn phase7b_a_provider_that_charges_makes_the_estimate_a_paid_one_and_says_
             .all(|t| t["task"] != "TEST_CASE_COMPILATION"),
         "body={e}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -15334,6 +15591,7 @@ async fn phase7b_with_no_provider_the_estimate_gives_no_cost_and_a_warning_not_a
             .contains("No provider can serve generating the cases")),
         "body={e}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -15422,6 +15680,7 @@ async fn phase7b_the_documents_chosen_and_the_skills_selected_decide_what_is_cou
         serde_json::json!({"min": 0, "max": 2}),
         "body={verify}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -15453,6 +15712,7 @@ async fn phase7b_a_project_with_no_requirements_gets_an_estimate_that_says_so() 
         .unwrap()
         .iter()
         .all(|t| t["task"] != "TEST_CASE_GENERATION"));
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -15576,6 +15836,7 @@ async fn phase7b_what_is_left_out_of_the_request_takes_its_defaults_and_the_figu
         thorough["cases"]["max"], 30,
         "twice what a standard run asks of each: body={thorough}"
     );
+    state.store.pool.close().await;
 }
 
 /// Two providers, `alpha` (local, unmetered) and `beta` (charges, of the kind given), to tell which task goes where.
@@ -15779,6 +16040,7 @@ async fn phase7b_each_task_is_estimated_for_the_provider_it_goes_to_with_the_mea
     );
     assert!(compile["cost_usd"]["max"].as_f64().unwrap() > 0.0);
     assert_eq!(e["totals"]["paid"], true);
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -15815,6 +16077,7 @@ async fn phase7b_another_endpoint_is_assumed_slower_than_a_hosted_service_and_fa
         task_of(&e, "TEST_CASE_COMPILATION")["provider"]["kind"],
         "OTHER"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -15846,6 +16109,7 @@ async fn phase7b_the_tokens_a_call_reports_are_remembered_with_its_time() {
         (120, 30),
         "{stats:?}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -15897,6 +16161,7 @@ async fn phase7b_the_request_is_checked_and_needs_an_operator_of_the_project() {
         autopilot_estimate(&state, project, &stranger, serde_json::json!({})).await;
     assert_eq!(viewer_status, StatusCode::FORBIDDEN);
     assert_eq!(stranger_status, StatusCode::FORBIDDEN);
+    state.store.pool.close().await;
 }
 
 // ------------------------------------------------- Phase 7C — an autopilot run: made, accepted, started, watched
@@ -16204,6 +16469,7 @@ async fn phase7c_a_run_is_made_with_its_estimate_and_nothing_starts() {
     assert_eq!(created.len(), 1, "{audit_rows:?}");
     assert_eq!(created[0].target.as_deref(), run["id"].as_str());
     assert_eq!(created[0].detail.as_deref(), Some("Release 4"));
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -16233,6 +16499,7 @@ async fn phase7c_the_estimate_a_run_is_made_with_is_the_one_the_estimate_route_g
         made["run"]["estimate"], from_route,
         "the same estimate, whichever way it was asked for"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -16344,6 +16611,7 @@ async fn phase7c_a_run_that_could_only_fail_is_refused_when_it_is_made() {
     // Not one of them made a run.
     let (_, list) = autopilot(&state, "GET", &path, &owner, None).await;
     assert_eq!(list["runs"], serde_json::json!([]));
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -16399,6 +16667,7 @@ async fn phase7c_a_project_has_one_run_that_has_not_ended() {
     )
     .await;
     assert_eq!(other_status, StatusCode::CREATED);
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -16531,6 +16800,7 @@ async fn phase7c_starting_needs_the_estimate_accepted_and_a_paid_one_the_cost_ac
         "only the start that worked: {audit_rows:?}"
     );
     assert_eq!(starts[0].detail.as_deref(), Some("paid"));
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -16566,6 +16836,7 @@ async fn phase7c_a_free_run_needs_only_the_estimate_accepted() {
     wait_for_step(&state, project, &owner, &run_id, "GAP_CHECK", &["DONE"]).await;
     stop_run(&state, project, &owner, &run_id).await;
     drop(file);
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -16640,6 +16911,7 @@ async fn phase7c_a_started_run_reads_the_requirements_uses_the_crawl_and_checks_
         kinds.iter().filter(|k| **k == "step.started").count() >= 3,
         "{kinds:?}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -16720,6 +16992,7 @@ async fn phase7c_a_run_that_fails_says_which_step_and_why_and_the_project_may_st
         StatusCode::CREATED,
         "a failed run does not hold the project: body={another}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -16783,6 +17056,7 @@ async fn phase7c_cancelling_a_run_that_awaits_approval_ends_it_and_an_ended_run_
         .collect();
     assert_eq!(cancels.len(), 1, "{audit_rows:?}");
     assert_eq!(cancels[0].detail.as_deref(), Some("cancelled"));
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -16941,6 +17215,7 @@ async fn phase7c_only_an_operator_of_the_project_may_make_start_or_cancel_a_run_
     // Nothing above changed the run.
     let (_, still) = autopilot(&state, "GET", &format!("{path}/{run_id}"), &owner, None).await;
     assert_eq!(still["run"]["state"], "AWAITING_APPROVAL");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -17030,6 +17305,7 @@ async fn phase7c_the_timeline_can_be_read_from_where_a_watcher_was() {
     )
     .await;
     assert_eq!(none["events"], serde_json::json!([]));
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -17090,6 +17366,7 @@ async fn phase7c_a_key_that_has_been_revoked_stops_the_runs_it_made() {
         steps_of(&failed)[0],
         ("REQUIREMENTS".to_string(), "FAILED".to_string())
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -17191,6 +17468,7 @@ async fn phase7c_a_run_that_was_going_when_the_service_stopped_carries_on_after_
         )
         .await;
         awaiting_id = Uuid::parse_str(awaiting["run"]["id"].as_str().unwrap()).unwrap();
+        state.store.pool.close().await;
     }
 
     // A new process: the same database, an empty registry.
@@ -17256,6 +17534,7 @@ async fn phase7c_a_run_that_was_going_when_the_service_stopped_carries_on_after_
         crate::autopilot_runner::resume_runs(&state).await.unwrap(),
         0
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -17294,6 +17573,7 @@ async fn phase7c_a_run_something_is_already_working_on_is_not_picked_up_again_an
         1
     );
     stop_run(&state, project, &owner, &run_id.to_string()).await;
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -17329,6 +17609,7 @@ async fn phase7c_the_internal_routes_are_not_reachable_without_a_key_and_the_pub
         "{}",
         reply.problem()
     );
+    state.store.pool.close().await;
 }
 
 // ------------------------------------------------- Phase 7D — generating a few of the requirements at a time
@@ -17377,6 +17658,7 @@ async fn phase7d_generation_can_be_narrowed_to_some_of_the_requirements_of_the_d
     let (status, body) = post_generate(&state, &owner, project, all).await;
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(body["requirements"]["total"], 2);
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -17440,6 +17722,7 @@ async fn phase7d_a_requirement_id_that_no_selected_document_has_is_refused_and_s
         0,
         "no model was asked"
     );
+    state.store.pool.close().await;
 }
 
 // ------------------------------------------------- Phase 7D — generating, validating and the gate
@@ -17835,6 +18118,7 @@ async fn phase7d_a_run_writes_the_cases_checks_them_and_waits_for_a_person_to_ap
         .collect();
     assert_eq!(continues.len(), 1);
     assert_eq!(continues[0].actor.as_deref(), Some("checker"));
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -17906,6 +18190,7 @@ async fn phase7d_cases_left_undecided_when_the_person_lets_the_run_go_are_not_pa
         "body={gate}"
     );
     assert_eq!(gate["released"], true);
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -17954,6 +18239,7 @@ async fn phase7d_a_run_made_with_automatic_approval_approves_what_passed_validat
         ),
         "{lines:?}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -18076,6 +18362,7 @@ async fn phase7d_a_run_whose_ai_failed_is_taken_over_and_goes_on_from_that_step_
         .collect();
     assert_eq!(resumes.len(), 1);
     assert_eq!(resumes[0].actor.as_deref(), Some("second"));
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -18116,6 +18403,7 @@ async fn phase7d_a_failed_run_may_not_start_again_beside_another_run_of_the_proj
     );
     let (_, still) = autopilot(&state, "GET", &format!("{path}/{run_id}"), &owner, None).await;
     assert_eq!(still["run"]["state"], "FAILED");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -18203,6 +18491,7 @@ async fn phase7d_only_an_operator_may_let_a_run_go_on_or_approve_its_cases_and_o
             "a run is found only under its own project: {tail}"
         );
     }
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -18267,6 +18556,7 @@ async fn phase7d_a_run_at_a_gate_survives_a_restart_and_goes_on_when_a_person_le
     let done = wait_for_autopilot(&state, project, &owner, &run_id, &["COMPLETED", "FAILED"]).await;
     drop(file);
     assert_eq!(done["run"]["state"], "COMPLETED", "body={done}");
+    state.store.pool.close().await;
 }
 
 // ------------------------------------------------- Phase 7E — running the approved cases, and the report
@@ -18620,6 +18910,7 @@ async fn phase7e_a_run_runs_the_approved_cases_runs_an_infrastructure_failure_ag
         handoffs.iter().all(|a| a.actor.as_deref() == Some("maker")),
         "{handoffs:?}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -18669,6 +18960,7 @@ async fn phase7e_the_report_of_a_run_at_its_gate_is_worked_out_now_and_says_it_i
         .unwrap()
         .iter()
         .any(|n| n == "The run has not ended: this is what it has found so far."));
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -18728,6 +19020,7 @@ async fn phase7e_a_run_made_with_execution_off_skips_the_step_and_the_report_say
             .all(|r| !r["name"].as_str().unwrap().starts_with("Test Case: ")),
         "no case was run: {runs}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -18788,6 +19081,7 @@ async fn phase7e_a_viewer_reads_the_report_in_either_format_and_only_within_its_
     assert_eq!(elsewhere_status, StatusCode::NOT_FOUND);
     assert_eq!(unknown_status, StatusCode::NOT_FOUND);
     assert_eq!(anonymous_status, StatusCode::UNAUTHORIZED);
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -18825,6 +19119,7 @@ async fn phase7e_the_role_the_cases_run_as_has_to_be_one_of_the_runs_roles() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
     assert_eq!(body["run"]["config"]["execution_role"], "anonymous");
+    state.store.pool.close().await;
 }
 
 // ------------------------------------------------- Phase 8A: what the AI calls came to
@@ -18978,6 +19273,7 @@ async fn phase8a_every_ai_call_is_counted_under_the_project_it_was_made_for() {
         (serde_json::json!(2), serde_json::json!(3.5))
     );
     assert!(scoped.get("by_project").is_none());
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -19064,6 +19360,7 @@ async fn phase8a_who_may_see_the_usage_is_the_project_for_its_own_and_an_admin_f
     )
     .await;
     assert_envelope(status, &body, StatusCode::UNAUTHORIZED, "UNAUTHENTICATED");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -19095,6 +19392,7 @@ async fn phase8a_the_window_of_days_and_the_askers_clock_are_kept_to_what_makes_
         let (status, body) = usage(&state, &format!("/api/v1/ai/usage?{query}"), &admin).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{query}: body={body}");
     }
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -19155,6 +19453,7 @@ async fn phase8a_a_call_that_failed_is_counted_as_failed_and_costs_nothing() {
         ["1 call did not answer; nothing is counted as its cost."],
         "{body}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -19201,6 +19500,7 @@ async fn phase8a_a_provider_with_no_price_is_used_and_counted_but_never_given_a_
         ["3 calls went to models with no price (a local model, or a hosted one whose price is not entered in Settings), so no cost is counted for them."],
         "{body}"
     );
+    state.store.pool.close().await;
 }
 
 // ------------------------------------------------- Phase 8B: API tests made from an OpenAPI document
@@ -19394,6 +19694,7 @@ async fn phase8b_the_plan_shows_the_cases_that_would_be_made_and_runs_nothing() 
         plan["missing_secrets"],
         serde_json::json!(["AIQA_SECRET_T8B_PLAN"])
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -19434,6 +19735,7 @@ async fn phase8b_a_document_in_yaml_and_the_kinds_and_operations_asked_for_are_h
         .map(|c| c["id"].as_str().unwrap())
         .collect();
     assert_eq!(ids, ["GET /pets/{petId}#NOT_FOUND:petId"]);
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -19684,6 +19986,7 @@ async fn phase8b_the_cases_run_as_one_execution_and_the_report_says_what_each_op
         (serde_json::json!(12), serde_json::json!(8))
     );
     assert_eq!(list["runs"][0]["title"], "Fixture Pets");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -19760,6 +20063,7 @@ async fn phase8b_the_requests_that_change_data_are_run_only_when_asked_for() {
         .unwrap()
         .to_string();
     assert!(detail.contains("unsafe methods allowed"), "{detail}");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -19815,6 +20119,7 @@ async fn phase8b_a_relative_server_is_worked_out_from_the_address_the_document_w
         message(&body).contains("give `base_url`") && message(&body).contains("`spec_url`"),
         "{body}"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -19934,6 +20239,7 @@ async fn phase8b_a_run_is_refused_in_words_before_anything_starts() {
     )
     .await;
     assert_eq!(executions.as_array().map(Vec::len), Some(0), "{executions}");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -19984,6 +20290,7 @@ async fn phase8b_deleting_a_project_removes_its_openapi_runs_and_only_its_own() 
         1,
         "another project's are not touched"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -20095,6 +20402,7 @@ async fn phase8b_who_may_plan_run_and_read_is_the_projects_operator_and_its_view
     let (status, body) = send(&state, req("GET", &format!("{base}/runs"), None, None)).await;
     assert_envelope(status, &body, StatusCode::UNAUTHORIZED, "UNAUTHENTICATED");
     openapi_report_when_done(&state, project, id, &owner).await;
+    state.store.pool.close().await;
 }
 
 // ------------------------------------------------- Phase 8C: scheduled regression
@@ -20703,6 +21011,7 @@ async fn phase8c_schedules_are_made_changed_and_removed_by_an_operator_and_read_
         .as_str()
         .unwrap()
         .contains("at most 20"));
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -20818,6 +21127,7 @@ async fn phase8c_the_scope_shows_what_can_be_repeated_and_why_a_case_cannot() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -21056,6 +21366,7 @@ async fn phase8c_a_run_repeats_the_tasks_and_says_what_changed_since_the_last_ti
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{out}");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -21140,6 +21451,7 @@ async fn phase8c_a_run_is_not_piled_on_a_run_that_has_not_ended_and_a_schedule_w
     let (status, next) = run_schedule_call(&state, project, &sid, &owner).await;
     assert_eq!(status, StatusCode::CREATED, "body={next}");
     regression_report_when_done(&state, project, next["id"].as_str().unwrap(), &owner).await;
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -21295,6 +21607,7 @@ async fn phase8c_the_loop_runs_what_is_due_moves_on_and_pauses_what_nobody_can_r
             .is_empty(),
         "a paused schedule is never due"
     );
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -21375,6 +21688,7 @@ async fn phase8c_deleting_a_project_removes_its_schedules_and_runs_and_only_its_
         (1, 1),
         "another project's are not touched"
     );
+    state.store.pool.close().await;
 }
 
 // ------------------------------------------------- Phase 8D: CI integration (JUnit, waiting for a run, the verdict in the headers)
@@ -21535,6 +21849,7 @@ async fn phase8d_a_regression_report_is_read_as_junit_and_waited_for_and_says_ho
         text_and_headers(&state, &report_path(&third_id, "?format=pdf"), &owner).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert!(body.contains("json, markdown or junit"), "{body}");
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -21630,6 +21945,7 @@ async fn phase8d_an_openapi_report_is_waited_for_and_read_as_junit_and_says_how_
     let (status, body, _) = text_and_headers(&state, &path(&id, "?format=pdf"), &owner).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert!(body.contains("json, markdown or junit"), "{body}");
+    state.store.pool.close().await;
 }
 
 /// The skill viewer asks the orchestrator what a skill instructs
@@ -21661,6 +21977,7 @@ async fn the_skill_viewer_shows_the_detailed_built_in_instruction_and_a_custom_s
         "{edge}"
     );
     assert_eq!(body[1]["instruction"], "PIN codes have exactly 6 digits.");
+    state.store.pool.close().await;
 }
 
 // -------------------------------------------------------- execution settings
@@ -21717,6 +22034,7 @@ async fn execution_settings_default_to_headless_and_a_put_changes_the_real_live_
     .await;
     assert_eq!(status, StatusCode::OK, "body={refetched}");
     assert_eq!(refetched["show_browser_window"], true);
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -21744,6 +22062,8 @@ async fn execution_settings_survive_a_fresh_store_reload_real_durable_persistenc
         reloaded.get_show_browser_window().await.expect("query"),
         Some(true)
     );
+    reloaded.pool.close().await;
+    state.store.pool.close().await;
 }
 
 #[tokio::test]
@@ -21768,4 +22088,5 @@ async fn execution_settings_put_requires_operator_a_viewer_is_refused_and_change
             .load(std::sync::atomic::Ordering::Relaxed),
         "a refused request must never change the real live flag"
     );
+    state.store.pool.close().await;
 }

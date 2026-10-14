@@ -772,6 +772,7 @@ mod tests {
         assert!(skipped);
         assert_eq!(detail, json!({"execute": false}));
         assert!(f.api.seen().is_empty());
+        f.close().await;
     }
 
     #[tokio::test]
@@ -862,6 +863,7 @@ mod tests {
             "{lines:?}"
         );
         assert!(!lines.iter().any(|l| l.starts_with("Case a")), "{lines:?}");
+        f.close().await;
     }
 
     #[tokio::test]
@@ -922,6 +924,8 @@ mod tests {
             g.api.body_of("POST", &g.p("test-cases/a/handoff")).unwrap()["role"],
             "standard"
         );
+        g.close().await;
+        f.close().await;
     }
 
     #[tokio::test]
@@ -1017,6 +1021,8 @@ mod tests {
             position(&seen, "test-cases/c/handoff") > position(&seen, "executions/run-a"),
             "{seen:?}"
         );
+        two.close().await;
+        one.close().await;
     }
 
     #[tokio::test]
@@ -1112,6 +1118,7 @@ mod tests {
             ),
             "{lines:?}"
         );
+        f.close().await;
     }
 
     #[tokio::test]
@@ -1256,6 +1263,7 @@ mod tests {
         assert!(timeline(&f)
             .await
             .contains(&"Case a: INFRA_ERROR on the first run, run again once".to_string()));
+            f.close().await;
     }
 
     #[tokio::test]
@@ -1309,6 +1317,7 @@ mod tests {
             detail["cases"][1]["reason"],
             "the run could not be read: run not found"
         );
+        f.close().await;
     }
 
     #[tokio::test]
@@ -1379,6 +1388,7 @@ mod tests {
             1,
             "one case was left to run"
         );
+        f.close().await;
     }
 
     #[tokio::test]
@@ -1402,6 +1412,7 @@ mod tests {
             .await
             .contains(&"No case was approved, so nothing was run".to_string()));
         assert_eq!(f.api.seen().len(), 1, "only the listing was asked for");
+        f.close().await;
     }
 
     #[tokio::test]
@@ -1433,6 +1444,7 @@ mod tests {
             !seen.iter().any(|s| s.contains("/handoff")),
             "nothing new is started: {seen:?}"
         );
+        f.close().await;
     }
 
     #[tokio::test]
@@ -1440,6 +1452,7 @@ mod tests {
         let f = fixture(Step::Execute, config(json!({})), |_| ScriptedApi::new()).await;
         assert!(failed(execute(&f.ctx).await).contains("the generate step did not record one"));
 
+f.close().await;
         let mut f = fixture(Step::Execute, config(json!({"run_concurrency": 8})), |_| {
             ScriptedApi::new()
         })
@@ -1478,6 +1491,7 @@ mod tests {
             progress[0], "Ran 12 of 12 case(s)",
             "the step reports when ten more have finished since it last said"
         );
+        f.close().await;
     }
 
     #[tokio::test]
@@ -1524,6 +1538,7 @@ mod tests {
             } else {
                 assert!(progress.is_empty(), "{count} cases: {lines:?}");
             }
+            f.close().await;
         }
     }
 }

@@ -6011,6 +6011,8 @@ mod history_tenant_tests {
             5,
             "an unscoped caller is a global key and still sees every tenant"
         );
+
+        store.pool.close().await;
     }
 
     /// The `?2 = 'default'` arm is a literal comparison against a bind value, so
@@ -6030,5 +6032,7 @@ mod history_tenant_tests {
             .expect("beta history");
         assert_eq!(beta.len(), 1, "beta ran it once");
         assert_eq!(beta[0].status, TaskStatus::Passed);
+
+        store.pool.close().await;
     }
 }

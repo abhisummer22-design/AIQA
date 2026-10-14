@@ -358,6 +358,7 @@ mod tests {
             [format!("GET {}", f.p("requirements"))],
             "no filter when no document is chosen"
         );
+        f.close().await;
     }
 
     #[tokio::test]
@@ -381,6 +382,7 @@ mod tests {
         let (detail, _) = detail_of_done(requirements(&f.ctx).await);
         assert_eq!(detail["documents"], 2);
         assert_eq!(f.api.seen().len(), 1);
+        f.close().await;
     }
 
     #[tokio::test]
@@ -396,6 +398,7 @@ mod tests {
         let why = failed(requirements(&f.ctx).await);
         assert!(why.contains("there are no requirements to test"), "{why}");
         assert!(why.contains("upload a requirements document"), "{why}");
+        f.close().await;
     }
 
     #[tokio::test]
@@ -422,6 +425,7 @@ mod tests {
             "{why}"
         );
 
+f.close().await;
         let f = fixture(Step::Requirements, config(json!({})), |p| {
             ScriptedApi::new().on(
                 "GET",
@@ -435,6 +439,7 @@ mod tests {
             why,
             "the requirements could not be read: the database is locked"
         );
+        f.close().await;
     }
 
     // ------------------------------------------------------------------------------ crawl
@@ -467,6 +472,7 @@ mod tests {
             json!({"crawl_run_id": run.to_string(), "reused": true})
         );
         assert_eq!(f.api.seen().len(), 1, "no crawl was started");
+        f.close().await;
     }
 
     #[tokio::test]
@@ -486,6 +492,7 @@ mod tests {
             "{why}"
         );
 
+f.close().await;
         let f = fixture(Step::Crawl, config(json!({"crawl_run_id": run})), |p| {
             ScriptedApi::new().on(
                 "GET",
@@ -510,7 +517,9 @@ mod tests {
             .await;
             let why = failed(crawl(&f.ctx).await);
             assert!(why.contains(&format!("it is {state}")), "{why}");
+            f.close().await;
         }
+        f.close().await;
     }
 
     #[tokio::test]
@@ -587,6 +596,7 @@ mod tests {
             .await
             .iter()
             .any(|m| m == "Crawl started as run crawl-1"));
+            f.close().await;
     }
 
     #[tokio::test]
@@ -615,6 +625,7 @@ mod tests {
             "{:?}",
             f.api.seen()
         );
+        f.close().await;
     }
 
     #[tokio::test]
@@ -633,11 +644,13 @@ mod tests {
         .await;
         let why = failed(crawl(&f.ctx).await);
         assert_eq!(why, "the crawl could not be started: environment variable AIQA_LOGIN_ADMIN_PASSWORD is not set");
+        f.close().await;
         let f = fixture(Step::Crawl, config(json!({})), |p| {
             ScriptedApi::new().on("POST", &p("crawl"), vec![Reply::new(202, json!({}))])
         })
         .await;
         assert!(failed(crawl(&f.ctx).await).contains("did not say which run"));
+        f.close().await;
     }
 
     #[tokio::test]
@@ -662,6 +675,7 @@ mod tests {
                 why,
                 format!("the crawl (run c) ended {state}: the page never loaded")
             );
+            f.close().await;
         }
         // No reason recorded: none is invented.
         let f = fixture(Step::Crawl, config(json!({})), |p| {
@@ -684,6 +698,7 @@ mod tests {
             failed(crawl(&f.ctx).await),
             "the crawl (run c) ended FAILED"
         );
+        f.close().await;
     }
 
     #[tokio::test]
@@ -705,6 +720,7 @@ mod tests {
         assert!(failed(crawl(&f.ctx).await)
             .contains("the crawl (run c) could not be read: run not found"));
 
+f.close().await;
         let f = fixture(Step::Crawl, config(json!({})), |p| {
             ScriptedApi::new()
                 .on(
@@ -729,6 +745,7 @@ mod tests {
             why.contains("left no result to read: crawl result not found"),
             "{why}"
         );
+        f.close().await;
     }
 
     #[tokio::test]
@@ -751,6 +768,7 @@ mod tests {
             .iter()
             .any(|m| m == "The crawl could not log in as admin: wrong password"));
 
+f.close().await;
         let f = fixture(Step::Crawl, config(json!({})), |p| {
             ScriptedApi::new()
                 .on(
@@ -780,6 +798,7 @@ mod tests {
             .await
             .iter()
             .any(|m| m == "The crawl could not log in as admin: no reason was recorded"));
+            f.close().await;
     }
 
     #[tokio::test]
@@ -812,6 +831,7 @@ mod tests {
             "{:?}",
             f.api.seen()
         );
+        f.close().await;
     }
 
     #[tokio::test]
@@ -842,6 +862,7 @@ mod tests {
             .await
             .iter()
             .any(|m| m == "The crawl could not log in as anonymous: no reason was recorded"));
+            f.close().await;
     }
 
     #[tokio::test]
@@ -867,6 +888,7 @@ mod tests {
             "{why}"
         );
         assert!(why.contains("Executions"), "{why}");
+        f.close().await;
     }
 
     #[tokio::test]
@@ -903,6 +925,7 @@ mod tests {
             .filter(|m| m.contains("held for approval"))
             .count();
         assert_eq!(held, 1);
+        f.close().await;
     }
 
     // ------------------------------------------------------------------------------ gap check
@@ -953,6 +976,7 @@ mod tests {
                 .all(|m| !m.contains("show no sign")),
             "nothing to warn about"
         );
+        f.close().await;
     }
 
     #[tokio::test]
@@ -966,6 +990,7 @@ mod tests {
         let sent = f.api.body_of("POST", &f.p("gap-check")).unwrap();
         assert_eq!(sent["verify"], true);
         assert_eq!(sent["max_verifications"], 12);
+        f.close().await;
     }
 
     #[tokio::test]
@@ -982,6 +1007,7 @@ mod tests {
             .iter()
             .any(|m| m == "3 requirement(s) show no sign in the crawl and 2 only a weak one: cases for them may not be able to run"));
 
+f.close().await;
         let f = fixture(Step::GapCheck, config(json!({})), |p| {
             ScriptedApi::new().on(
                 "POST",
@@ -997,9 +1023,11 @@ mod tests {
         );
 
         // No crawl recorded (the crawl step did not finish): nothing is guessed.
+        f.close().await;
         let f = fixture(Step::GapCheck, config(json!({})), |_| ScriptedApi::new()).await;
         assert!(failed(gap_check(&f.ctx).await).contains("the crawl step did not record one"));
         assert!(f.api.seen().is_empty());
+        f.close().await;
     }
 
     #[tokio::test]
@@ -1015,6 +1043,7 @@ mod tests {
             with_crawl_recorded(&f).await;
             detail_of_done(gap_check(&f.ctx).await);
             assert!(timeline(&f).await.iter().any(|m| m == note), "{missing} missing, {weak} weak");
+            f.close().await;
         }
         // A summary that says neither: no warning, and no count made up.
         let f = fixture(Step::GapCheck, config(json!({})), |p| {
@@ -1033,6 +1062,7 @@ mod tests {
             .await
             .iter()
             .all(|m| !m.contains("show no sign")));
+            f.close().await;
     }
 
     #[tokio::test]
@@ -1049,9 +1079,11 @@ mod tests {
         .await;
         let why = failed(ApiSteps.run(Step::Requirements, &f.ctx).await);
         assert!(why.contains("there are no requirements"), "{why}");
+        f.close().await;
         let f = fixture(Step::GapCheck, config(json!({})), |_| ScriptedApi::new()).await;
         let why = failed(ApiSteps.run(Step::GapCheck, &f.ctx).await);
         assert!(why.contains("no crawl to check against"), "{why}");
+        f.close().await;
         let f = fixture(Step::Crawl, config(json!({})), |p| {
             ScriptedApi::new().on(
                 "POST",
@@ -1062,5 +1094,6 @@ mod tests {
         .await;
         let why = failed(ApiSteps.run(Step::Crawl, &f.ctx).await);
         assert!(why.starts_with("the crawl could not be started"), "{why}");
+        f.close().await;
     }
 }

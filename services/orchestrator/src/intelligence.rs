@@ -1241,6 +1241,8 @@ RESPONSE 404 Not Found
             .await
             .expect("a never-linked key must return a real, empty answer, not an error");
         assert!(unrelated.is_empty());
+
+        store.pool.close().await;
     }
 
     // --------------------------------------------------- feedback context loader
@@ -1392,6 +1394,8 @@ RESPONSE 404 Not Found
             vec!["Recurring checkout crash".to_string()],
             "only the CONFIRMED draft may appear, never NEEDS_REVIEW or DISMISSED"
         );
+
+        store.pool.close().await;
     }
 
     // ------------------------------------------------- AI-assisted root cause

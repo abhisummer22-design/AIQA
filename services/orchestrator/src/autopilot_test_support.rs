@@ -33,6 +33,16 @@ impl Fixture {
     pub fn p(&self, tail: &str) -> String {
         self.ctx.path(tail)
     }
+
+    /// Teardown. This fixture owns both handles that matter: the SQLite pool (inside
+    /// `ctx.store`) and the temp directory it lives in (`_dir`). Dropping the last
+    /// `Pool` handle is not enough on Windows -- the connection files can still be
+    /// held, and `TempDir`'s own `Drop` swallows the resulting failure, so the
+    /// directory silently survives the test. Closing the pool first, awaited, is what
+    /// lets `_dir` go away. Safe to call more than once.
+    pub async fn close(&self) {
+        self.ctx.store.pool.close().await;
+    }
 }
 
 /// A running run in a real (temporary) database, with a step context whose API is scripted by `script`.

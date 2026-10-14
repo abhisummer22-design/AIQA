@@ -548,6 +548,14 @@ mod tests {
                 .map(|e| (e.kind, e.step))
                 .collect()
         }
+
+        /// Teardown. `World` owns the SQLite pool and the temp directory it lives
+        /// in, so the pool is closed here and `_dir` becomes removable. The fields
+        /// stay private: tests reach the pool through this method rather than by
+        /// reaching into the struct. Safe to call more than once.
+        async fn close(&self) {
+            self.store.pool.close().await;
+        }
     }
 
     /// `first` for the steps it names, then `rest` for every step after them.
@@ -630,6 +638,7 @@ mod tests {
         }
         expected.push("run.completed");
         assert_eq!(kinds, expected);
+        w.close().await;
     }
 
     #[tokio::test]
@@ -651,6 +660,7 @@ mod tests {
             .events()
             .await
             .contains(&("step.skipped".to_string(), Some("CRAWL".to_string()))));
+            w.close().await;
     }
 
     #[tokio::test]
@@ -685,6 +695,7 @@ mod tests {
         assert_eq!(crawl.error.as_deref(), Some("the crawl reached no page"));
         let kinds: Vec<String> = w.events().await.into_iter().map(|(k, _)| k).collect();
         assert_eq!(&kinds[kinds.len() - 2..], ["step.failed", "run.failed"]);
+        w.close().await;
     }
 
     #[tokio::test]
@@ -722,6 +733,7 @@ mod tests {
         drive(&w.worker(steps.clone()), w.run).await.unwrap();
         assert_eq!(steps.ran().len(), 2);
         assert_eq!(w.run_row().await.state, "WAITING");
+        w.close().await;
     }
 
     #[tokio::test]
@@ -743,6 +755,7 @@ mod tests {
             .await
             .unwrap();
         assert!(steps.ran().is_empty());
+        w.close().await;
     }
 
     #[tokio::test]
@@ -760,6 +773,7 @@ mod tests {
         assert!(run.finished_at.is_some() && run.error.is_none());
         assert!(w.step_states().await.iter().all(|(_, s)| s == "SKIPPED"));
         assert_eq!(w.events().await.last().unwrap().0, "run.cancelled");
+        w.close().await;
     }
 
     /// Asks for the run to be cancelled while its first step is working; every step finishes normally.
@@ -785,6 +799,7 @@ mod tests {
         assert_eq!(w.run_row().await.state, "CANCELLED");
         let found: Vec<String> = w.step_states().await.into_iter().map(|(_, s)| s).collect();
         assert_eq!(found, states(&["DONE"], "SKIPPED"));
+        w.close().await;
     }
 
     #[tokio::test]
@@ -799,6 +814,7 @@ mod tests {
         let found: Vec<String> = w.step_states().await.into_iter().map(|(_, s)| s).collect();
         assert_eq!(found, states(&["DONE"], "SKIPPED"));
         assert_eq!(w.events().await.last().unwrap().0, "run.cancelled");
+        w.close().await;
     }
 
     #[tokio::test]
@@ -875,6 +891,7 @@ mod tests {
             message,
             "Picked up again after the service was restarted, at crawling the application"
         );
+        w.close().await;
     }
 
     #[tokio::test]
@@ -882,6 +899,7 @@ mod tests {
         let w = world().await;
         drive(&w.worker(Scripted::new()), w.run).await.unwrap();
         assert!(w.events().await.iter().all(|(k, _)| k != "run.resumed"));
+        w.close().await;
     }
 
     #[tokio::test]
@@ -897,6 +915,7 @@ mod tests {
             .unwrap()
             .starts_with("the run's settings could not be read"));
 
+w.close().await;
         let w = world().await;
         sqlx::query(
             "UPDATE autopilot_steps SET name = 'TELEPORT' WHERE run_id = ? AND name = 'CRAWL'",
@@ -914,6 +933,7 @@ mod tests {
             run.error.as_deref(),
             Some("the run has a step this version does not know: TELEPORT")
         );
+        w.close().await;
     }
 
     struct Panics;
@@ -937,9 +957,11 @@ mod tests {
         );
         assert_eq!(w.events().await.last().unwrap().0, "run.failed");
         // A run that ends normally is left as the loop left it.
+        w.close().await;
         let w = world().await;
         drive_guarded(&w.worker(Scripted::new()), w.run).await;
         assert_eq!(w.run_row().await.state, "COMPLETED");
+        w.close().await;
     }
 
     #[tokio::test]
@@ -1036,6 +1058,7 @@ mod tests {
             ("note", Some("GAP_CHECK"), "hello")
         );
         assert_eq!(last.data, Some(json!({"k": "v"})));
+        w.close().await;
     }
 
     #[test]

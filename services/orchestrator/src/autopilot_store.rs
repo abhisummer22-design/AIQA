@@ -719,6 +719,7 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+        store.pool.close().await;
     }
 
     #[tokio::test]
@@ -768,6 +769,7 @@ mod tests {
             .await
             .unwrap());
         assert_eq!(store.list_autopilot_runs("p1", 10).await.unwrap().len(), 2);
+        store.pool.close().await;
     }
 
     #[tokio::test]
@@ -802,6 +804,7 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+        store.pool.close().await;
     }
 
     #[tokio::test]
@@ -841,6 +844,7 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
+        store.pool.close().await;
     }
 
     #[tokio::test]
@@ -874,6 +878,8 @@ mod tests {
                 .unwrap()
                 .approved_paid
         );
+        store.pool.close().await;
+        store2.pool.close().await;
     }
 
     #[tokio::test]
@@ -928,6 +934,8 @@ mod tests {
         let run = store2.get_autopilot_run(done).await.unwrap().unwrap();
         assert_eq!(run.state, "COMPLETED");
         assert!(run.error.is_none() && run.finished_at.is_some());
+        store.pool.close().await;
+        store2.pool.close().await;
     }
 
     async fn step_detail(store: &Store, run: Uuid, name: &str) -> Value {
@@ -1015,6 +1023,8 @@ mod tests {
             step_detail(&store2, other, "CRAWL").await,
             serde_json::json!({"released": true})
         );
+        store.pool.close().await;
+        store2.pool.close().await;
     }
 
     #[tokio::test]
@@ -1125,6 +1135,7 @@ mod tests {
                 .unwrap(),
             ResumeOutcome::NotFailed(RunState::Running)
         );
+        store.pool.close().await;
     }
 
     #[tokio::test]
@@ -1154,6 +1165,7 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
+        store.pool.close().await;
     }
 
     #[tokio::test]
@@ -1208,6 +1220,8 @@ mod tests {
             .map(|s| s.state)
             .collect();
         assert_eq!(states, ["DONE", "SKIPPED", "SKIPPED"]);
+        store.pool.close().await;
+        store2.pool.close().await;
     }
 
     #[tokio::test]
@@ -1234,6 +1248,7 @@ mod tests {
             store.cancel_autopilot_run(Uuid::new_v4()).await.unwrap(),
             CancelOutcome::NotFound
         );
+        store.pool.close().await;
     }
 
     /// A person cancels a run while its own writers are busy: another connection holds SQLite's write lock. A cancel that reads
@@ -1263,6 +1278,10 @@ mod tests {
         assert_eq!(cancelling.await.unwrap().unwrap(), CancelOutcome::Requested);
         let run = store.get_autopilot_run(id).await.unwrap().unwrap();
         assert!(run.cancel_requested);
+        // Teardown: the writer transaction committed above and the spawned cancel task was
+        // awaited above, so every connection is back in the pool and this close cannot block.
+        // The 200 ms sleep is the lock-holding condition under test, not a wait for the task.
+        store.pool.close().await;
     }
 
     #[tokio::test]
@@ -1359,6 +1378,7 @@ mod tests {
             .map(|s| s.state)
             .collect();
         assert_eq!(others, ["PENDING", "PENDING"]);
+        store.pool.close().await;
     }
 
     #[tokio::test]
@@ -1393,6 +1413,7 @@ mod tests {
             .unwrap()
             .iter()
             .all(|s| s.state == "PENDING"));
+        store.pool.close().await;
     }
 
     #[tokio::test]
@@ -1437,6 +1458,7 @@ mod tests {
             steps[1].finished_at.is_some(),
             "the run's end finishes a step that waited"
         );
+        store.pool.close().await;
     }
 
     #[tokio::test]
@@ -1495,6 +1517,7 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
+        store.pool.close().await;
     }
 
     #[tokio::test]
@@ -1530,5 +1553,6 @@ mod tests {
                 .len(),
             1
         );
+        store.pool.close().await;
     }
 }

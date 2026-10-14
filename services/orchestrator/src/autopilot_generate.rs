@@ -876,6 +876,7 @@ mod tests {
                 .any(|l| l == "Generated group 2/2: 1 case(s) via ollama/qwen"),
             "{lines:?}"
         );
+        f.close().await;
     }
 
     #[tokio::test]
@@ -923,6 +924,7 @@ mod tests {
             "no crawl recorded, none sent"
         );
         assert_eq!(asked[0]["coverage_top_up"], false);
+        f.close().await;
     }
 
     #[tokio::test]
@@ -984,6 +986,7 @@ mod tests {
             2,
             "each case saved once"
         );
+        again.close().await;
     }
 
     #[tokio::test]
@@ -1007,6 +1010,7 @@ mod tests {
             failed(generate(&f.ctx).await),
             "generating group 1/1 failed: this would take 200 AI calls"
         );
+        f.close().await;
     }
 
     #[tokio::test]
@@ -1048,6 +1052,7 @@ mod tests {
         assert_eq!(saved[0]["requirement_reference"], "FR-002");
         let kept = saved_detail(&f).await;
         assert_eq!(kept["groups"][0]["cases"], json!(["already", "c2"]));
+        f.close().await;
     }
 
     #[tokio::test]
@@ -1100,6 +1105,7 @@ mod tests {
             lines.iter().any(|l| l == "2 case(s) of group 1/1 could not be saved, the first because: title must not be empty"),
             "{lines:?}"
         );
+        f.close().await;
     }
 
     #[tokio::test]
@@ -1123,6 +1129,7 @@ mod tests {
         let why = failed(generate(&f.ctx).await);
         assert!(why.starts_with("no test case was generated"), "{why}");
         assert!(why.contains("skill that tests their kind"), "{why}");
+        f.close().await;
     }
 
     #[tokio::test]
@@ -1169,6 +1176,7 @@ mod tests {
             lines.iter().any(|l| l == "In group 1/1 a wave of the AI failed and its cases are missing: timed out after 300 s"),
             "{lines:?}"
         );
+        f.close().await;
     }
 
     #[tokio::test]
@@ -1192,6 +1200,7 @@ mod tests {
             f.api.seen()
         );
 
+f.close().await;
         let f = fixture(Step::Generate, config(json!({})), |p| {
             ScriptedApi::new().on("GET", &p("requirements"), vec![requirements_reply(0)])
         })
@@ -1201,6 +1210,7 @@ mod tests {
             "there are no requirements to generate test cases for"
         );
 
+f.close().await;
         let f = fixture(Step::Generate, config(json!({})), |p| {
             ScriptedApi::new()
                 .on("GET", &p("requirements"), vec![requirements_reply(1)])
@@ -1215,6 +1225,7 @@ mod tests {
             failed(generate(&f.ctx).await),
             "the suite for the run's test cases could not be made: not allowed"
         );
+        f.close().await;
         let f = fixture(Step::Generate, config(json!({})), |p| {
             ScriptedApi::new()
                 .on("GET", &p("requirements"), vec![requirements_reply(1)])
@@ -1222,6 +1233,7 @@ mod tests {
         })
         .await;
         assert!(failed(generate(&f.ctx).await).contains("did not say which it is"));
+        f.close().await;
         let f = fixture(Step::Generate, config(json!({})), |p| {
             ScriptedApi::new().on(
                 "GET",
@@ -1234,6 +1246,7 @@ mod tests {
             failed(generate(&f.ctx).await),
             "the requirements could not be read: database locked"
         );
+        f.close().await;
     }
 
     // ------------------------------------------------------------------------------ validate
@@ -1308,6 +1321,7 @@ mod tests {
             lines.iter().any(|l| l == "1 case(s) failed the structural check and stay as they are for a person to fix, the first because: structural validation failed: no steps defined"),
             "{lines:?}"
         );
+        f.close().await;
     }
 
     #[tokio::test]
@@ -1315,6 +1329,7 @@ mod tests {
         let f = fixture(Step::Validate, config(json!({})), |_| ScriptedApi::new()).await;
         assert!(failed(validate(&f.ctx).await).contains("the generate step did not record one"));
 
+f.close().await;
         let f = fixture(Step::Validate, config(json!({})), |p| {
             ScriptedApi::new().on(
                 "GET",
@@ -1329,6 +1344,7 @@ mod tests {
             "there are no test cases to validate"
         );
 
+f.close().await;
         let f = fixture(Step::Validate, config(json!({})), |p| {
             ScriptedApi::new().on(
                 "GET",
@@ -1343,6 +1359,7 @@ mod tests {
             "the run's test cases could not be listed: boom"
         );
 
+f.close().await;
         let f = fixture(Step::Validate, config(json!({})), |p| {
             ScriptedApi::new().on(
                 "GET",
@@ -1363,6 +1380,7 @@ mod tests {
             "{:?}",
             f.api.seen()
         );
+        f.close().await;
     }
 
     // ------------------------------------------------------------------------------ approve
@@ -1423,6 +1441,7 @@ mod tests {
             "nothing is approved on a person's behalf: {:?}",
             f.api.seen()
         );
+        f.close().await;
     }
 
     #[tokio::test]
@@ -1445,6 +1464,7 @@ mod tests {
             }
             other => panic!("expected the gate to wait, got {other:?}"),
         }
+        f.close().await;
     }
 
     #[tokio::test]
@@ -1483,6 +1503,8 @@ mod tests {
         assert_eq!(detail["released"], true);
         assert_eq!(detail["approved"], 1);
         assert_eq!(detail["pending"], 1, "left undecided: {detail}");
+        released.close().await;
+        decided.close().await;
     }
 
     #[tokio::test]
@@ -1549,6 +1571,7 @@ mod tests {
             lines.iter().any(|l| l == "Approved 1 validated case(s), because the run was made with automatic approval"),
             "{lines:?}"
         );
+        f.close().await;
     }
 
     #[tokio::test]
@@ -1579,6 +1602,7 @@ mod tests {
         );
         let lines = timeline(&f).await;
         assert!(lines.iter().all(|l| !l.contains("Approved")), "{lines:?}");
+        f.close().await;
     }
 
     #[tokio::test]
@@ -1586,6 +1610,7 @@ mod tests {
         let f = fixture(Step::Approve, config(json!({})), |_| ScriptedApi::new()).await;
         assert!(failed(approve(&f.ctx).await).contains("the generate step did not record one"));
 
+f.close().await;
         let f = fixture(
             Step::Approve,
             config(json!({"approval": "auto_validated"})),
@@ -1610,6 +1635,7 @@ mod tests {
             "{:?}",
             f.api.seen()
         );
+        f.close().await;
     }
 
     #[tokio::test]
@@ -1628,6 +1654,7 @@ mod tests {
                 .await
         )
         .contains("the generate step did not record one"));
+        f.close().await;
         let f = fixture(Step::Generate, config(json!({})), |p| {
             ScriptedApi::new().on("GET", &p("requirements"), vec![requirements_reply(0)])
         })
@@ -1638,5 +1665,6 @@ mod tests {
                 .await
         )
         .contains("no requirements to generate"));
+        f.close().await;
     }
 }
