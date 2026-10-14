@@ -1337,6 +1337,10 @@ const PROVIDER_MESSAGE_MAX_CHARS: usize = 400;
 /// is reported with Groq's own words instead, so a request never sits for minutes.
 const GROQ_MAX_RETRY_WAIT: Duration = Duration::from_secs(30);
 
+/// Maximum number of wait-and-retry attempts for transient failures (HTTP 429, 502, 503, 504).
+/// Allows at most 3 total requests (initial + 2 retries).
+const GROQ_MAX_TRANSIENT_RETRIES: u32 = 2;
+
 /// A completion budget below this cannot hold a useful test-case answer, so a shrink that would go below it is
 /// not tried.
 const MIN_COMPLETION_TOKENS: u64 = 1024;
@@ -1376,37 +1380,138 @@ fn is_daily_limit(message: &str) -> bool {
     m.contains("per day") || m.contains("(tpd)") || m.contains("(rpd)")
 }
 
-/// How long Groq says to wait: its `retry-after` header (seconds), else the "try again in 6.5s / 250ms /
-/// 1m7.2s" wording of the message.
-fn groq_retry_delay(retry_after: Option<&str>, message: &str) -> Option<Duration> {
-    if let Some(secs) = retry_after.and_then(|h| h.trim().parse::<f64>().ok()) {
-        return Duration::try_from_secs_f64(secs).ok();
+/// Parses a duration string from HTTP headers (Retry-After, x-ratelimit-reset-*) or error bodies.
+/// Supports plain numeric seconds (e.g. "3", "0.05", "2.5") as well as compound unit strings
+/// (e.g. "50ms", "1m7.2s", "1h2m3s").
+/// Rejects negative, non-finite (NaN, inf), empty, or malformed values safely without panicking.
+pub(crate) fn parse_duration_string(s: &str) -> Option<Duration> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
     }
+    // 1. Direct f64 numeric seconds
+    if let Ok(secs) = s.parse::<f64>() {
+        if secs >= 0.0 && secs.is_finite() {
+            return Duration::try_from_secs_f64(secs).ok();
+        }
+        return None;
+    }
+
+    // 2. Unit pieces: (\d+(?:\.\d+)?)(ms|h|m|s)
     static UNIT: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let unit =
         UNIT.get_or_init(|| regex::Regex::new(r"(\d+(?:\.\d+)?)(ms|h|m|s)").expect("valid regex"));
+
+    let mut total_secs = 0.0_f64;
+    let mut found = false;
+    for piece in unit.captures_iter(s) {
+        let n: f64 = piece[1].parse().ok()?;
+        if n < 0.0 || !n.is_finite() {
+            return None;
+        }
+        total_secs += match &piece[2] {
+            "h" => n * 3600.0,
+            "m" => n * 60.0,
+            "s" => n,
+            "ms" => n / 1000.0,
+            _ => return None,
+        };
+        found = true;
+    }
+
+    if found && total_secs >= 0.0 && total_secs.is_finite() {
+        Duration::try_from_secs_f64(total_secs).ok()
+    } else {
+        None
+    }
+}
+
+/// Extracts a duration from "try again in ..." wording in an error message body.
+fn extract_delay_from_message(message: &str) -> Option<Duration> {
     let wording = message.split("try again in ").nth(1)?;
-    // "1m7.2s." — only the leading run of number-and-unit pieces belongs to the wait
     let span: String = wording
         .chars()
         .take_while(|c| c.is_ascii_digit() || matches!(c, '.' | 'h' | 'm' | 's'))
         .collect();
-    let mut total = 0.0_f64;
-    let mut found = false;
-    for piece in unit.captures_iter(&span) {
-        let n: f64 = piece[1].parse().ok()?;
-        total += match &piece[2] {
-            "h" => n * 3600.0,
-            "m" => n * 60.0,
-            "s" => n,
-            _ => n / 1000.0,
-        };
-        found = true;
+    parse_duration_string(&span)
+}
+
+/// How long Groq says to wait: its `retry-after` header (seconds), else the "try again in 6.5s / 250ms /
+/// 1m7.2s" wording of the message. Preserved for backward compatibility with existing tests and callers.
+fn groq_retry_delay(retry_after: Option<&str>, message: &str) -> Option<Duration> {
+    if let Some(h) = retry_after {
+        if let Some(d) = parse_duration_string(h) {
+            return Some(d);
+        }
     }
-    if found {
-        Duration::try_from_secs_f64(total).ok()
-    } else {
-        None
+    extract_delay_from_message(message)
+}
+
+/// Determines the retry delay for a Groq response using the required signal precedence:
+/// 1. Numeric Retry-After header, in seconds.
+/// 2. Valid x-ratelimit-reset-tokens header.
+/// 3. Valid x-ratelimit-reset-requests header.
+/// 4. Supported retry-duration text in the error body ("try again in ...").
+/// 5. For eligible 502/503/504 responses only, bounded default backoff (~1s attempt 1, ~2s attempt 2).
+fn extract_groq_retry_delay(
+    status: u16,
+    headers: &reqwest::header::HeaderMap,
+    message: &str,
+    attempt: u32,
+) -> Option<Duration> {
+    // 1. Numeric Retry-After header
+    if let Some(h) = headers.get(reqwest::header::RETRY_AFTER).and_then(|v| v.to_str().ok()) {
+        if let Some(d) = parse_duration_string(h) {
+            return Some(d);
+        }
+    }
+
+    // 2. Valid x-ratelimit-reset-tokens header
+    if let Some(h) = headers.get("x-ratelimit-reset-tokens").and_then(|v| v.to_str().ok()) {
+        if let Some(d) = parse_duration_string(h) {
+            return Some(d);
+        }
+    }
+
+    // 3. Valid x-ratelimit-reset-requests header
+    if let Some(h) = headers.get("x-ratelimit-reset-requests").and_then(|v| v.to_str().ok()) {
+        if let Some(d) = parse_duration_string(h) {
+            return Some(d);
+        }
+    }
+
+    // 4. Supported retry-duration text in the error body
+    if let Some(d) = extract_delay_from_message(message) {
+        return Some(d);
+    }
+
+    // 5. For eligible 502/503/504 responses only: bounded default backoff
+    if matches!(status, 502 | 503 | 504) {
+        let secs = match attempt {
+            0 => 1,
+            _ => 2,
+        };
+        return Some(Duration::from_secs(secs));
+    }
+
+    None
+}
+
+/// Bounded jitter, approximately 100–400 ms, to reduce synchronized retries under concurrency.
+/// In unit tests, returns a fixed 100 ms to ensure tests are deterministic, non-flaky, and fast.
+fn groq_jitter() -> Duration {
+    #[cfg(test)]
+    {
+        Duration::from_millis(100)
+    }
+    #[cfg(not(test))]
+    {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos();
+        let ms = 100 + (nanos % 301) as u64; // [100, 400] ms
+        Duration::from_millis(ms)
     }
 }
 
@@ -1559,7 +1664,9 @@ impl AiExecutor for GroqExecutor {
         // request it refuses as too large is retried once with a budget that fits (`shrunk_max_tokens`), and a
         // limit that clears within seconds is waited out once. Anything else is reported with Groq's own words.
         let mut max_tokens = self.max_tokens;
-        let (mut shrank, mut waited) = (false, false);
+        let mut shrank = false;
+        let mut wait_attempts: u32 = 0;
+        let mut total_slept = Duration::ZERO;
         loop {
             let mut body = serde_json::json!({
                 "model": model_id,
@@ -1595,39 +1702,49 @@ impl AiExecutor for GroqExecutor {
                 })?;
             let status = resp.status();
             if !status.is_success() {
-                let retry_after = resp
-                    .headers()
-                    .get(reqwest::header::RETRY_AFTER)
-                    .and_then(|v| v.to_str().ok())
-                    .map(str::to_string);
-                let message = provider_error_message(&resp.text().await.unwrap_or_default());
                 let code = status.as_u16();
-                // 413: the request alone is bigger than the tokens-per-minute limit. 429: a limit was reached,
-                // and some of those clear within seconds.
-                if code == 413 || (code == 429 && !is_daily_limit(&message)) {
-                    if !shrank {
-                        if let Some(smaller) = shrunk_max_tokens(&message, max_tokens) {
-                            tracing::warn!(
-                                "Groq refused a {max_tokens}-token budget for '{model_id}' ({message}); retrying with {smaller}"
-                            );
-                            max_tokens = smaller;
-                            shrank = true;
-                            continue;
-                        }
+                let headers = resp.headers().clone();
+                let message = provider_error_message(&resp.text().await.unwrap_or_default());
+
+                // Token shrinking: 413 or 429 token limit exceeded (independent of wait retries)
+                if (code == 413 || code == 429) && !shrank {
+                    if let Some(smaller) = shrunk_max_tokens(&message, max_tokens) {
+                        tracing::warn!(
+                            "Groq refused a {max_tokens}-token budget for '{model_id}' ({message}); retrying with {smaller}"
+                        );
+                        max_tokens = smaller;
+                        shrank = true;
+                        continue;
                     }
-                    if code == 429 && !waited {
-                        if let Some(delay) = groq_retry_delay(retry_after.as_deref(), &message)
-                            .filter(|d| *d <= GROQ_MAX_RETRY_WAIT)
-                        {
+                }
+
+                // Transient retries: HTTP 429 (non-daily), 502, 503, 504 (up to 2 retries / 3 total attempts)
+                let is_daily = is_daily_limit(&message);
+                let is_transient = (code == 429 && !is_daily) || matches!(code, 502 | 503 | 504);
+
+                if is_transient && wait_attempts < GROQ_MAX_TRANSIENT_RETRIES {
+                    if let Some(base_delay) = extract_groq_retry_delay(code, &headers, &message, wait_attempts) {
+                        let jitter = groq_jitter();
+                        let planned_sleep = base_delay.saturating_add(jitter);
+                        let remaining_budget = GROQ_MAX_RETRY_WAIT.saturating_sub(total_slept);
+
+                        if planned_sleep <= remaining_budget && planned_sleep <= GROQ_MAX_RETRY_WAIT {
                             tracing::warn!(
-                                "Groq rate-limited '{model_id}' ({message}); waiting {delay:?} and retrying once"
+                                "Groq transient refusal (HTTP {code}) for '{model_id}' ({message}); waiting {planned_sleep:?} (attempt {}/{GROQ_MAX_TRANSIENT_RETRIES})",
+                                wait_attempts + 1
                             );
-                            tokio::time::sleep(delay + Duration::from_millis(250)).await;
-                            waited = true;
+                            tokio::time::sleep(planned_sleep).await;
+                            total_slept = total_slept.saturating_add(planned_sleep);
+                            wait_attempts += 1;
                             continue;
+                        } else {
+                            tracing::warn!(
+                                "Groq transient refusal delay {planned_sleep:?} exceeds remaining retry budget {remaining_budget:?}; aborting retry"
+                            );
                         }
                     }
                 }
+
                 return Err(ExecutionError::ProviderRejected {
                     status: code,
                     message,
@@ -4887,13 +5004,22 @@ mod tests {
     struct Scripted {
         status: u16,
         retry_after: Option<&'static str>,
+        headers: Vec<(&'static str, &'static str)>,
         body: String,
+    }
+
+    impl Scripted {
+        fn with_header(mut self, k: &'static str, v: &'static str) -> Self {
+            self.headers.push((k, v));
+            self
+        }
     }
 
     fn groq_ok(content: &str, finish_reason: &str) -> Scripted {
         Scripted {
             status: 200,
             retry_after: None,
+            headers: Vec::new(),
             body: serde_json::json!({
                 "choices": [{
                     "message": {"role": "assistant", "content": content},
@@ -4909,6 +5035,7 @@ mod tests {
         Scripted {
             status,
             retry_after: None,
+            headers: Vec::new(),
             body: serde_json::json!({
                 "error": {"message": message, "type": "tokens", "code": "rate_limit_exceeded"}
             })
@@ -4955,6 +5082,11 @@ mod tests {
                 response
                     .headers_mut()
                     .insert("retry-after", seconds.parse().unwrap());
+            }
+            for (k, v) in answer.headers {
+                response
+                    .headers_mut()
+                    .insert(axum::http::HeaderName::try_from(k).unwrap(), v.parse().unwrap());
             }
             response
         }
@@ -5065,9 +5197,12 @@ mod tests {
     #[tokio::test]
     async fn groq_waits_only_once_and_then_reports_the_second_rate_limit() {
         let message = "Rate limit reached on tokens per minute (TPM): Limit 8000, Used 7900, Requested 900. Please try again in 50ms.";
-        let (base_url, seen) =
-            spawn_scripted_groq_chat(vec![groq_refusal(429, message), groq_refusal(429, message)])
-                .await;
+        let (base_url, seen) = spawn_scripted_groq_chat(vec![
+            groq_refusal(429, message),
+            groq_refusal(429, message),
+            groq_refusal(429, message),
+        ])
+        .await;
         let err = groq_generate(base_url).await.expect_err("still limited");
         assert!(matches!(
             err,
@@ -5075,8 +5210,8 @@ mod tests {
         ));
         assert_eq!(
             seen.lock().unwrap().len(),
-            2,
-            "one wait, one retry, no more"
+            3,
+            "two retries (3 total attempts), then exhausted"
         );
     }
 
@@ -5109,17 +5244,33 @@ mod tests {
 
     #[tokio::test]
     async fn groq_reports_an_error_body_that_is_not_json_in_its_own_words() {
-        let (base_url, _seen) = spawn_scripted_groq_chat(vec![Scripted {
-            status: 502,
-            retry_after: None,
-            body: "<html>  Bad   gateway </html>".to_string(),
-        }])
+        let (base_url, seen) = spawn_scripted_groq_chat(vec![
+            Scripted {
+                status: 502,
+                retry_after: Some("0.01"),
+                headers: Vec::new(),
+                body: "<html>  Bad   gateway </html>".to_string(),
+            },
+            Scripted {
+                status: 502,
+                retry_after: Some("0.01"),
+                headers: Vec::new(),
+                body: "<html>  Bad   gateway </html>".to_string(),
+            },
+            Scripted {
+                status: 502,
+                retry_after: Some("0.01"),
+                headers: Vec::new(),
+                body: "<html>  Bad   gateway </html>".to_string(),
+            },
+        ])
         .await;
         let err = groq_generate(base_url).await.expect_err("a gateway error");
         assert_eq!(
             err.to_string(),
             "PROVIDER_ERROR: HTTP 502: <html> Bad gateway </html>"
         );
+        assert_eq!(seen.lock().unwrap().len(), 3, "two retries then reported");
     }
 
     #[tokio::test]
@@ -5135,6 +5286,7 @@ mod tests {
         let (base_url, _seen) = spawn_scripted_groq_chat(vec![Scripted {
             status: 200,
             retry_after: None,
+            headers: Vec::new(),
             body: serde_json::json!({
                 "choices": [{
                     "message": {"role": "assistant", "content": "", "reasoning": "let me think about the login flow..."},
@@ -5166,6 +5318,143 @@ mod tests {
             err.to_string(),
             "INVALID_RESPONSE: empty response (finish_reason=stop)"
         );
+    }
+
+    #[tokio::test]
+    async fn groq_retries_transient_503_and_succeeds() {
+        let mut refusal = groq_refusal(503, "Service Unavailable");
+        refusal.retry_after = Some("0.01");
+        let (base_url, seen) = spawn_scripted_groq_chat(vec![
+            refusal,
+            groq_ok("recovered after 503", "stop"),
+        ])
+        .await;
+        let out = groq_generate(base_url)
+            .await
+            .expect("retry after 503 succeeds");
+        assert_eq!(out.text, "recovered after 503");
+        assert_eq!(seen.lock().unwrap().len(), 2, "one 503 failure then successful retry");
+    }
+
+    #[tokio::test]
+    async fn groq_fails_after_transient_503_exhaustion() {
+        let (base_url, seen) = spawn_scripted_groq_chat(vec![
+            groq_refusal(503, "Service Unavailable").with_header("retry-after", "0.01"),
+            groq_refusal(503, "Service Unavailable").with_header("retry-after", "0.01"),
+            groq_refusal(503, "Service Unavailable").with_header("retry-after", "0.01"),
+        ])
+        .await;
+        let err = groq_generate(base_url)
+            .await
+            .expect_err("exhausted 503 retries");
+        match &err {
+            ExecutionError::ProviderRejected { status, message } => {
+                assert_eq!(*status, 503);
+                assert_eq!(message, "Service Unavailable");
+            }
+            other => panic!("expected ProviderRejected, got {other:?}"),
+        }
+        assert_eq!(seen.lock().unwrap().len(), 3, "initial + 2 retries = 3 total attempts");
+    }
+
+    #[tokio::test]
+    async fn groq_waits_for_x_ratelimit_reset_tokens_header() {
+        let refusal = groq_refusal(429, "rate limited").with_header("x-ratelimit-reset-tokens", "20ms");
+        let (base_url, seen) = spawn_scripted_groq_chat(vec![
+            refusal,
+            groq_ok("success after token reset", "stop"),
+        ])
+        .await;
+        let out = groq_generate(base_url).await.expect("success after reset-tokens");
+        assert_eq!(out.text, "success after token reset");
+        assert_eq!(seen.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn groq_waits_for_x_ratelimit_reset_requests_header() {
+        let refusal = groq_refusal(429, "rate limited").with_header("x-ratelimit-reset-requests", "0.02");
+        let (base_url, seen) = spawn_scripted_groq_chat(vec![
+            refusal,
+            groq_ok("success after request reset", "stop"),
+        ])
+        .await;
+        let out = groq_generate(base_url).await.expect("success after reset-requests");
+        assert_eq!(out.text, "success after request reset");
+        assert_eq!(seen.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn groq_retries_second_short_rate_limit_and_succeeds() {
+        let message = "Rate limit reached. Please try again in 20ms.";
+        let (base_url, seen) = spawn_scripted_groq_chat(vec![
+            groq_refusal(429, message),
+            groq_refusal(429, message),
+            groq_ok("third attempt worked", "stop"),
+        ])
+        .await;
+        let out = groq_generate(base_url).await.expect("succeeds on 3rd attempt");
+        assert_eq!(out.text, "third attempt worked");
+        assert_eq!(seen.lock().unwrap().len(), 3, "initial + 2 retries = 3 requests");
+    }
+
+    #[tokio::test]
+    async fn groq_never_retries_permanent_client_errors() {
+        let (base_url, seen) = spawn_scripted_groq_chat(vec![
+            groq_refusal(401, "Invalid API Key"),
+        ])
+        .await;
+        let err = groq_generate(base_url).await.expect_err("permanent 401");
+        assert!(matches!(err, ExecutionError::ProviderRejected { status: 401, .. }));
+        assert_eq!(seen.lock().unwrap().len(), 1, "exactly 1 attempt, never retried");
+    }
+
+    #[tokio::test]
+    async fn groq_preserves_413_token_shrinking_independently_of_transient_retries() {
+        let mut refusal_503 = groq_refusal(503, "Service Overloaded");
+        refusal_503.retry_after = Some("0.01");
+        let (base_url, seen) = spawn_scripted_groq_chat(vec![
+            groq_refusal(413, TPM_TOO_LARGE),
+            refusal_503,
+            groq_ok("{\"test_cases\":[]}", "stop"),
+        ])
+        .await;
+        let out = groq_generate(base_url).await.expect("succeeds after shrink and retry");
+        assert_eq!(out.text, "{\"test_cases\":[]}");
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 3);
+        assert_eq!(seen[0]["max_tokens"], 8192);
+        assert_eq!(seen[1]["max_tokens"], 5591);
+        assert_eq!(seen[2]["max_tokens"], 5591);
+    }
+
+    #[tokio::test]
+    async fn groq_retry_wait_budget_caps_cumulative_sleep() {
+        let refusal = groq_refusal(429, "Rate limit reached").with_header("retry-after", "35");
+        let (base_url, seen) = spawn_scripted_groq_chat(vec![refusal]).await;
+        let start = std::time::Instant::now();
+        let err = groq_generate(base_url).await.expect_err("exceeds 30s budget");
+        let elapsed = start.elapsed();
+        assert!(matches!(err, ExecutionError::ProviderRejected { status: 429, .. }));
+        assert_eq!(seen.lock().unwrap().len(), 1, "aborted retry immediately without sleep");
+        assert!(elapsed < Duration::from_secs(1), "did not sleep for 35 seconds");
+    }
+
+    #[test]
+    fn parse_duration_string_handles_valid_and_invalid_inputs() {
+        assert_eq!(parse_duration_string("3"), Some(Duration::from_secs(3)));
+        assert_eq!(parse_duration_string("0.05"), Some(Duration::from_millis(50)));
+        assert_eq!(parse_duration_string("50ms"), Some(Duration::from_millis(50)));
+        assert_eq!(parse_duration_string("1m7.2s"), Some(Duration::from_millis(67_200)));
+        assert_eq!(parse_duration_string("1h2m3s"), Some(Duration::from_secs(3723)));
+
+        // Invalid, negative, infinite, NaN, empty
+        assert_eq!(parse_duration_string(""), None);
+        assert_eq!(parse_duration_string("   "), None);
+        assert_eq!(parse_duration_string("-5"), None);
+        assert_eq!(parse_duration_string("nan"), None);
+        assert_eq!(parse_duration_string("inf"), None);
+        assert_eq!(parse_duration_string("-inf"), None);
+        assert_eq!(parse_duration_string("abc"), None);
     }
 
     #[test]
