@@ -172,6 +172,26 @@ mod phase_7_3_decision_tests;
 #[cfg(test)]
 mod phase_7_4_decision_tests;
 
+/// Pre-Phase-8 follow-up: `failure_severity` / `INFRA_ERROR` semantics, and one-name-one-unit
+/// consistency for `completed_failure_rate`.
+#[cfg(test)]
+mod pre_phase_8_tests;
+
+/// Phase 8: test-case quality intelligence. Per-dimension assessment with evidence; no
+/// aggregate score, because the roadmap defines no weights or aggregation formula.
+pub mod test_quality;
+
+/// Phase 8 tests: test-case quality dimensions, missing-evidence behaviour, infrastructure
+/// separation, project isolation, duplicate detection, and the no-aggregate-score contract.
+#[cfg(test)]
+mod phase_8_quality_tests;
+
+/// Phase 6.1 remediation contracts for R2, R3 and L4: what `change_frequency` is and is not,
+/// that the two unsourced risk signals stay unmeasured, and that AIQA's three different
+/// "risk" calculations stay distinct.
+#[cfg(test)]
+mod risk_semantics_tests;
+
 /// Risk Signal Correctness Review / Remediation — a later finding against Phase 4, not part of
 /// it. Proves that a measured zero is distinguishable from an unmeasured signal, that an
 /// unavailable signal no longer becomes 0.0, and that the score is no longer understated.
