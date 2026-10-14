@@ -958,12 +958,22 @@ pub async fn generate_ai_hypothesis(
         GenerationOutcome2::Failed { reason } => return AiHypothesisOutcome::Failed { reason },
     };
 
-    let parsed: AiHypothesisResponse = match serde_json::from_str(&result.text) {
+    let payload = match crate::ai_generation::extract_json_payload(&result.text) {
+        Some(p) => p,
+        None => {
+            return AiHypothesisOutcome::Failed {
+                reason: "invalid structured output: no JSON object found in AI response"
+                    .to_string(),
+            };
+        }
+    };
+
+    let parsed: AiHypothesisResponse = match serde_json::from_str(&payload) {
         Ok(v) => v,
         Err(e) => {
             return AiHypothesisOutcome::Failed {
                 reason: format!("invalid structured output: {e}"),
-            }
+            };
         }
     };
     if parsed.hypothesis.trim().is_empty() {
@@ -1562,6 +1572,93 @@ RESPONSE 404 Not Found
         )
         .await;
         assert!(matches!(outcome, AiHypothesisOutcome::Failed { .. }));
+    }
+
+    #[tokio::test]
+    async fn integration_plain_valid_json_produces_ai_hypothesis() {
+        let infra = infra_with_executor_response(
+            r#"{"hypothesis":"Connection timed out waiting for database pool"}"#,
+        );
+        let outcome = generate_ai_hypothesis(
+            &infra,
+            "connect econnrefused #.#.#.#:#",
+            "Target service was unreachable",
+            2,
+        )
+        .await;
+        match outcome {
+            AiHypothesisOutcome::Ai { hypothesis, .. } => {
+                assert_eq!(
+                    hypothesis,
+                    "Connection timed out waiting for database pool"
+                );
+            }
+            other => panic!("expected Ai outcome, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn integration_markdown_fenced_json_produces_ai_hypothesis() {
+        let infra = infra_with_executor_response(
+            "```json\n{\"hypothesis\":\"Target container restarted unexpectedly\"}\n```",
+        );
+        let outcome = generate_ai_hypothesis(
+            &infra,
+            "connect econnrefused #.#.#.#:#",
+            "Target service was unreachable",
+            2,
+        )
+        .await;
+        match outcome {
+            AiHypothesisOutcome::Ai { hypothesis, .. } => {
+                assert_eq!(hypothesis, "Target container restarted unexpectedly");
+            }
+            other => panic!("expected Ai outcome, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn integration_think_tagged_markdown_json_produces_ai_hypothesis() {
+        let response = "<think>Analyzing root cause of econnrefused...\nContainer may have failed healthcheck.</think>\
+                        ```json\n{\"hypothesis\":\"Target container failed healthcheck and stopped listening\"}\n```";
+        let infra = infra_with_executor_response(response);
+        let outcome = generate_ai_hypothesis(
+            &infra,
+            "connect econnrefused #.#.#.#:#",
+            "Target service was unreachable",
+            2,
+        )
+        .await;
+        match outcome {
+            AiHypothesisOutcome::Ai { hypothesis, .. } => {
+                assert_eq!(
+                    hypothesis,
+                    "Target container failed healthcheck and stopped listening"
+                );
+            }
+            other => panic!("expected Ai outcome, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn integration_malformed_bracketed_json_reports_truthful_failure() {
+        let infra = infra_with_executor_response(r#"{"hypothesis": incomplete json"#);
+        let outcome = generate_ai_hypothesis(
+            &infra,
+            "connect econnrefused #.#.#.#:#",
+            "Target service was unreachable",
+            2,
+        )
+        .await;
+        match outcome {
+            AiHypothesisOutcome::Failed { reason } => {
+                assert!(
+                    reason.contains("invalid structured output"),
+                    "reason must report invalid structured output: {reason}"
+                );
+            }
+            other => panic!("expected Failed outcome, got {other:?}"),
+        }
     }
 
     #[tokio::test]

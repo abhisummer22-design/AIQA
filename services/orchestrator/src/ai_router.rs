@@ -1573,7 +1573,9 @@ impl AiExecutor for GroqExecutor {
             // path (untouched here), which was never verified to support it.
             if matches!(
                 task,
-                AiTask::TestCaseGeneration | AiTask::TestCaseCompilation
+                AiTask::TestCaseGeneration
+                    | AiTask::TestCaseCompilation
+                    | AiTask::BugAnalysis
             ) {
                 body["response_format"] = serde_json::json!({ "type": "json_object" });
             }
@@ -5364,6 +5366,32 @@ mod tests {
         assert_eq!(
             output.text, "real groq reply (structured)",
             "TestCaseGeneration must send response_format so the mock's own check can see it"
+        );
+        assert_eq!(output.usage.prompt_tokens, Some(20));
+        assert_eq!(output.usage.completion_tokens, Some(7));
+    }
+
+    #[tokio::test]
+    async fn groq_executor_returns_real_content_and_sends_response_format_for_bug_analysis() {
+        let base_url = spawn_mock_groq().await;
+        let executor = GroqExecutor {
+            base_url,
+            api_key: Some("groq_test_ok".to_string()),
+            timeout: Duration::from_secs(2),
+            max_tokens: 4096,
+        };
+        let output = executor
+            .execute_task(
+                GroqDiscovery::PROVIDER_ID,
+                "gpt-oss-20b",
+                "hello",
+                AiTask::BugAnalysis,
+            )
+            .await
+            .expect("execute_task");
+        assert_eq!(
+            output.text, "real groq reply (structured)",
+            "BugAnalysis must send response_format so the mock's own check can see it"
         );
         assert_eq!(output.usage.prompt_tokens, Some(20));
         assert_eq!(output.usage.completion_tokens, Some(7));
