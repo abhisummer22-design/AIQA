@@ -15,12 +15,38 @@ use crate::ai_router::{
 use crate::store::Store;
 use anyhow::Result;
 use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, Timelike, Utc};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::sqlite::SqliteRow;
 use sqlx::Row;
 use std::collections::BTreeMap;
 
 // ------------------------------------------------------------------- one call
+
+/// Bounded classification of error outcomes from an AI provider execution attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AiErrorCategory {
+    ProviderRejected,
+    NonSuccessStatus,
+    Timeout,
+    ProviderUnavailable,
+    ModelUnavailable,
+    InvalidResponse,
+}
+
+impl AiErrorCategory {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ProviderRejected => "provider_rejected",
+            Self::NonSuccessStatus => "non_success_status",
+            Self::Timeout => "timeout",
+            Self::ProviderUnavailable => "provider_unavailable",
+            Self::ModelUnavailable => "model_unavailable",
+            Self::InvalidResponse => "invalid_response",
+        }
+    }
+}
 
 /// One call the router made to a provider, as the router saw it.
 #[derive(Debug, Clone, PartialEq)]
@@ -36,6 +62,10 @@ pub struct AiCallEvent {
     /// What the provider charged when the call was made: `Unmetered` for a local model, and for a hosted one whose price
     /// nobody entered.
     pub pricing: ProviderPricing,
+    /// HTTP status code from the provider, if genuinely available from the execution result.
+    pub http_status: Option<u16>,
+    /// Bounded category of error, if the call was not successful.
+    pub error_category: Option<AiErrorCategory>,
 }
 
 impl AiCallEvent {
@@ -51,6 +81,25 @@ impl AiCallEvent {
             .as_ref()
             .map(|output| output.usage)
             .unwrap_or_default();
+        let (http_status, error_category) = match result {
+            Ok(_) => (Some(200), None),
+            Err(ExecutionError::ProviderRejected { status, .. }) => {
+                (Some(*status), Some(AiErrorCategory::ProviderRejected))
+            }
+            Err(ExecutionError::NonSuccessStatus(status)) => {
+                (Some(*status), Some(AiErrorCategory::NonSuccessStatus))
+            }
+            Err(ExecutionError::Timeout) => (None, Some(AiErrorCategory::Timeout)),
+            Err(ExecutionError::ProviderUnavailable(_)) => {
+                (None, Some(AiErrorCategory::ProviderUnavailable))
+            }
+            Err(ExecutionError::ModelUnavailable(_)) => {
+                (None, Some(AiErrorCategory::ModelUnavailable))
+            }
+            Err(ExecutionError::InvalidResponse(_)) => {
+                (None, Some(AiErrorCategory::InvalidResponse))
+            }
+        };
         Self {
             provider: provider.to_string(),
             model: model.to_string(),
@@ -60,6 +109,8 @@ impl AiCallEvent {
             prompt_tokens: usage.prompt_tokens,
             completion_tokens: usage.completion_tokens,
             pricing,
+            http_status,
+            error_category,
         }
     }
 
@@ -563,8 +614,85 @@ mod tests {
                 prompt_tokens: Some(2000),
                 completion_tokens: Some(500),
                 pricing: priced(),
+                http_status: Some(200),
+                error_category: None,
             }
         );
+    }
+
+    #[test]
+    fn call_event_classifies_successful_call() {
+        let e = event(&answered(Some(100), Some(50)), priced());
+        assert!(e.answered);
+        assert_eq!(e.http_status, Some(200));
+        assert_eq!(e.error_category, None);
+    }
+
+    #[test]
+    fn call_event_classifies_http_429_and_502_rejections_truthfully() {
+        let e_429 = event(
+            &Err(ExecutionError::ProviderRejected {
+                status: 429,
+                message: "rate limit".into(),
+            }),
+            priced(),
+        );
+        assert!(!e_429.answered);
+        assert_eq!(e_429.http_status, Some(429));
+        assert_eq!(
+            e_429.error_category,
+            Some(AiErrorCategory::ProviderRejected)
+        );
+
+        let e_502 = event(
+            &Err(ExecutionError::ProviderRejected {
+                status: 502,
+                message: "bad gateway".into(),
+            }),
+            priced(),
+        );
+        assert!(!e_502.answered);
+        assert_eq!(e_502.http_status, Some(502));
+        assert_eq!(
+            e_502.error_category,
+            Some(AiErrorCategory::ProviderRejected)
+        );
+    }
+
+    #[test]
+    fn call_event_classifies_timeout_with_no_http_status() {
+        let e = event(&Err(ExecutionError::Timeout), priced());
+        assert!(!e.answered);
+        assert_eq!(e.http_status, None);
+        assert_eq!(e.error_category, Some(AiErrorCategory::Timeout));
+    }
+
+    #[test]
+    fn call_event_classifies_provider_unavailable_with_no_http_status() {
+        let e = event(
+            &Err(ExecutionError::ProviderUnavailable("connect failed".into())),
+            priced(),
+        );
+        assert!(!e.answered);
+        assert_eq!(e.http_status, None);
+        assert_eq!(
+            e.error_category,
+            Some(AiErrorCategory::ProviderUnavailable)
+        );
+    }
+
+    #[test]
+    fn call_event_classifies_invalid_response_without_inventing_200() {
+        let e = event(
+            &Err(ExecutionError::InvalidResponse("empty response".into())),
+            priced(),
+        );
+        assert!(!e.answered);
+        assert_eq!(
+            e.http_status, None,
+            "must not invent 200 when execution result only reports logical failure"
+        );
+        assert_eq!(e.error_category, Some(AiErrorCategory::InvalidResponse));
     }
 
     #[test]

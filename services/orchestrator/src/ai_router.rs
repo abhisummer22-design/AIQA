@@ -2756,12 +2756,6 @@ impl AiInfrastructure {
         took: Duration,
         result: &Result<ExecutionOutput, ExecutionError>,
     ) {
-        let sink = self
-            .usage_sink
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
-        let Some(sink) = sink else { return };
         let pricing = self
             .providers
             .read()
@@ -2770,15 +2764,24 @@ impl AiInfrastructure {
             .find(|p| p.id == provider_id)
             .map(|p| p.pricing)
             .unwrap_or_default();
-        sink.record(AiCallEvent::of_call(
+        let event = AiCallEvent::of_call(
             provider_id,
             model_id,
             task,
             took,
             result,
             pricing,
-        ))
-        .await;
+        );
+
+        crate::metrics::observe_ai_provider_call(&event);
+
+        let sink = self
+            .usage_sink
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let Some(sink) = sink else { return };
+        sink.record(event).await;
     }
 
     #[cfg(test)]

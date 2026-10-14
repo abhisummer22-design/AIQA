@@ -477,3 +477,49 @@ async fn the_latency_buckets_are_cumulative_and_non_decreasing() {
         previous = Some(value);
     }
 }
+
+#[tokio::test]
+async fn ai_provider_execution_is_recorded_in_metrics_and_ledger_compatibly() {
+    let (store, _dir) = setup().await;
+    let infra = inert_ai_router();
+    let ledger = std::sync::Arc::new(crate::ai_usage::UsageLedger::new(store.clone()));
+    infra.set_usage_sink(ledger);
+
+    // Execute through router
+    let outcome = infra
+        .generate(crate::ai_router::AiRequest {
+            task: crate::ai_router::AiTask::GeneralAi,
+            prompt: "hello".to_string(),
+            preferred_provider: Some("mock".to_string()),
+            preferred_model: Some("mock-model".to_string()),
+        })
+        .await;
+    match outcome {
+        crate::ai_router::GenerationOutcome2::Ok(res) => {
+            assert_eq!(res.text, "{}");
+        }
+        other => panic!("expected Ok, got {other:?}"),
+    }
+
+    // Render metrics
+    let body = crate::metrics::render(&store.pool).await;
+
+    // Verify AI duration histogram was populated
+    assert!(
+        body.contains("ai_provider_execution_duration_seconds_count{provider=\"mock\",task=\"general_ai\"} 1"),
+        "metrics must record provider execution count:\n{body}"
+    );
+    assert!(
+        body.contains("ai_provider_calls_total{provider=\"mock\",task=\"general_ai\",outcome=\"success\"} 1"),
+        "metrics must record provider call outcome counter:\n{body}"
+    );
+
+    // Verify 15-minute slot compatibility in database
+    let slot = crate::ai_usage::slot_of(chrono::Utc::now());
+    let rows = store.ai_usage_since(&slot, None).await.unwrap();
+    assert_eq!(rows.len(), 1, "ledger must record exactly 1 15-minute slot row");
+    assert_eq!(rows[0].provider, "mock");
+    assert_eq!(rows[0].model, "mock-model");
+    assert_eq!(rows[0].calls, 1);
+    assert_eq!(rows[0].failed_calls, 0);
+}
