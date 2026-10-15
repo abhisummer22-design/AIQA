@@ -1508,6 +1508,57 @@ fn extract_groq_retry_delay(
     None
 }
 
+/// Safely parses an integer header value (e.g. "14400").
+/// Rejects negative, malformed, empty, or overflowing values.
+/// Accepts zero ("0") as a valid reading.
+pub(crate) fn parse_u64_header(headers: &reqwest::header::HeaderMap, name: &str) -> Option<u64> {
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                trimmed.parse::<u64>().ok()
+            }
+        })
+}
+
+/// Observes rate-limit telemetry headers from Groq HTTP responses (both 200 and errors).
+/// Captures:
+/// - `x-ratelimit-remaining-requests` (RPD)
+/// - `x-ratelimit-remaining-tokens` (TPM)
+/// - `x-ratelimit-limit-requests` (RPD)
+/// - `x-ratelimit-limit-tokens` (TPM)
+/// - `x-ratelimit-reset-requests` (duration to reset)
+/// - `x-ratelimit-reset-tokens` (duration to reset)
+pub(crate) fn observe_groq_ratelimits(model_id: &str, headers: &reqwest::header::HeaderMap) {
+    let rem_req = parse_u64_header(headers, "x-ratelimit-remaining-requests");
+    let rem_tok = parse_u64_header(headers, "x-ratelimit-remaining-tokens");
+    let lim_req = parse_u64_header(headers, "x-ratelimit-limit-requests");
+    let lim_tok = parse_u64_header(headers, "x-ratelimit-limit-tokens");
+
+    let rst_req = headers
+        .get("x-ratelimit-reset-requests")
+        .and_then(|v| v.to_str().ok())
+        .and_then(parse_duration_string);
+    let rst_tok = headers
+        .get("x-ratelimit-reset-tokens")
+        .and_then(|v| v.to_str().ok())
+        .and_then(parse_duration_string);
+
+    crate::metrics::observe_groq_ratelimit(
+        model_id,
+        rem_req,
+        rem_tok,
+        lim_req,
+        lim_tok,
+        rst_req,
+        rst_tok,
+    );
+}
+
 /// Bounded jitter, approximately 100–400 ms, to reduce synchronized retries under concurrency.
 /// In unit tests, returns a fixed 100 ms to ensure tests are deterministic, non-flaky, and fast.
 fn groq_jitter() -> Duration {
@@ -1730,6 +1781,7 @@ impl AiExecutor for GroqExecutor {
                         ExecutionError::ProviderUnavailable(e.to_string())
                     }
                 })?;
+            observe_groq_ratelimits(&model_id, resp.headers());
             let status = resp.status();
             if !status.is_success() {
                 let code = status.as_u16();
@@ -5568,6 +5620,108 @@ mod tests {
         assert_eq!(parse_duration_string("inf"), None);
         assert_eq!(parse_duration_string("-inf"), None);
         assert_eq!(parse_duration_string("abc"), None);
+    }
+
+    #[test]
+    fn parse_u64_header_handles_valid_and_invalid_inputs() {
+        use reqwest::header::{HeaderMap, HeaderValue};
+        let mut headers = HeaderMap::new();
+        headers.insert("valid_normal", HeaderValue::from_static("14400"));
+        headers.insert("valid_zero", HeaderValue::from_static("0"));
+        headers.insert("valid_padded", HeaderValue::from_static("  42  "));
+        headers.insert("invalid_negative", HeaderValue::from_static("-10"));
+        headers.insert("invalid_empty", HeaderValue::from_static(""));
+        headers.insert("invalid_text", HeaderValue::from_static("abc"));
+        headers.insert(
+            "invalid_overflow",
+            HeaderValue::from_static("999999999999999999999999999999999999999999999999999999999999"),
+        );
+
+        assert_eq!(parse_u64_header(&headers, "valid_normal"), Some(14400));
+        assert_eq!(parse_u64_header(&headers, "valid_zero"), Some(0));
+        assert_eq!(parse_u64_header(&headers, "valid_padded"), Some(42));
+        assert_eq!(parse_u64_header(&headers, "invalid_negative"), None);
+        assert_eq!(parse_u64_header(&headers, "invalid_empty"), None);
+        assert_eq!(parse_u64_header(&headers, "invalid_text"), None);
+        assert_eq!(parse_u64_header(&headers, "invalid_overflow"), None);
+        assert_eq!(parse_u64_header(&headers, "nonexistent"), None);
+    }
+
+    #[tokio::test]
+    async fn groq_execution_updates_ratelimit_gauges_on_200_ok() {
+        let ok_resp = groq_ok("{\"ok\":true}", "stop")
+            .with_header("x-ratelimit-remaining-requests", "14350")
+            .with_header("x-ratelimit-remaining-tokens", "28500")
+            .with_header("x-ratelimit-limit-requests", "14400")
+            .with_header("x-ratelimit-limit-tokens", "30000")
+            .with_header("x-ratelimit-reset-requests", "10ms")
+            .with_header("x-ratelimit-reset-tokens", "25ms");
+
+        let (base_url, _seen) = spawn_scripted_groq_chat(vec![ok_resp]).await;
+        let res = groq_generate(base_url).await;
+        assert!(res.is_ok(), "execution must succeed");
+
+        let mut out = String::new();
+        crate::metrics::push_ai_metrics(&mut out);
+
+        assert!(out.contains("ai_ratelimit_remaining_requests{provider=\"groq\",model=\"qwen/qwen3.8-27b\"} 14350"));
+        assert!(out.contains("ai_ratelimit_remaining_tokens{provider=\"groq\",model=\"qwen/qwen3.8-27b\"} 28500"));
+        assert!(out.contains("ai_ratelimit_limit_requests{provider=\"groq\",model=\"qwen/qwen3.8-27b\"} 14400"));
+        assert!(out.contains("ai_ratelimit_limit_tokens{provider=\"groq\",model=\"qwen/qwen3.8-27b\"} 30000"));
+        assert!(out.contains("ai_ratelimit_reset_requests_timestamp_seconds{provider=\"groq\",model=\"qwen/qwen3.8-27b\"}"));
+        assert!(out.contains("ai_ratelimit_reset_tokens_timestamp_seconds{provider=\"groq\",model=\"qwen/qwen3.8-27b\"}"));
+    }
+
+    #[tokio::test]
+    async fn groq_execution_records_zero_remaining_on_429() {
+        let model = "llama3-8b-8192";
+        let refusal = groq_refusal(429, "Rate limit reached on requests per day (RPD). Please try again in 50ms.")
+            .with_header("x-ratelimit-remaining-requests", "0")
+            .with_header("x-ratelimit-remaining-tokens", "15000")
+            .with_header("x-ratelimit-limit-requests", "14400")
+            .with_header("x-ratelimit-limit-tokens", "30000");
+
+        let (base_url, _seen) = spawn_scripted_groq_chat(vec![refusal]).await;
+        let err = groq_executor(base_url)
+            .execute_task(
+                GroqDiscovery::PROVIDER_ID,
+                model,
+                "prompt",
+                AiTask::TestCaseGeneration,
+            )
+            .await
+            .expect_err("must be rejected as day limit");
+        assert!(err.to_string().contains("429"));
+
+        let mut out = String::new();
+        crate::metrics::push_ai_metrics(&mut out);
+
+        // 0 remaining requests must be explicitly recorded and rendered as 0
+        assert!(out.contains(&format!("ai_ratelimit_remaining_requests{{provider=\"groq\",model=\"{model}\"}} 0")));
+        assert!(out.contains(&format!("ai_ratelimit_remaining_tokens{{provider=\"groq\",model=\"{model}\"}} 15000")));
+    }
+
+    #[tokio::test]
+    async fn groq_execution_gracefully_ignores_missing_ratelimit_headers() {
+        let model = "llama3-70b-8192";
+        // Plain 200 with no x-ratelimit headers
+        let plain_ok = groq_ok("{\"ok\":true}", "stop");
+        let (base_url, _seen) = spawn_scripted_groq_chat(vec![plain_ok]).await;
+        let res = groq_executor(base_url)
+            .execute_task(
+                GroqDiscovery::PROVIDER_ID,
+                model,
+                "prompt",
+                AiTask::TestCaseGeneration,
+            )
+            .await;
+        assert!(res.is_ok(), "execution must succeed");
+
+        let mut out = String::new();
+        crate::metrics::push_ai_metrics(&mut out);
+
+        // No ai_ratelimit gauges emitted for this model
+        assert!(!out.contains(&format!("model=\"{model}\"")));
     }
 
     #[test]

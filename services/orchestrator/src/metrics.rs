@@ -20,8 +20,9 @@
 //! recovery: None implemented" gap.
 
 use sqlx::{Row, SqlitePool};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::LazyLock;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Upper bounds, in seconds, of the latency histogram. The standard Prometheus
 /// `http_request_duration_seconds` set: dense where a local API spends most of
@@ -418,7 +419,295 @@ pub fn observe_ai_provider_call(event: &crate::ai_usage::AiCallEvent) {
     observe_ai_execution(&event.provider, event.task.name(), outcome, duration_secs);
 }
 
+// ------------------------------------------------------------- Rate limit gauges
+
+pub const KNOWN_GROQ_MODELS: &[&str] = &[
+    "llama-3.3-70b-versatile",
+    "llama-3.1-70b-versatile",
+    "llama-3.1-8b-instant",
+    "llama3-70b-8192",
+    "llama3-8b-8192",
+    "mixtral-8x7b-32768",
+    "gemma2-9b-it",
+    "qwen/qwen3.8-27b",
+    "qwen-2.5-32b",
+    "deepseek-r1-distill-llama-70b",
+];
+
+pub fn canonical_groq_model_label(model: &str) -> &'static str {
+    let clean = model.trim();
+    for &known in KNOWN_GROQ_MODELS {
+        if clean.eq_ignore_ascii_case(known) {
+            return known;
+        }
+    }
+    "other"
+}
+
+pub const MAX_TOKEN_OBSERVATION_AGE_MICROS: u64 = 120 * 1_000_000;
+pub const MAX_REQUEST_OBSERVATION_AGE_MICROS: u64 = 86_400 * 1_000_000;
+
+#[derive(Default)]
+pub struct AiRateLimitGauges {
+    pub remaining_requests: AtomicI64, // -1 means unobserved
+    pub remaining_tokens: AtomicI64,   // -1 means unobserved
+    pub limit_requests: AtomicI64,     // -1 means unobserved
+    pub limit_tokens: AtomicI64,       // -1 means unobserved
+    pub reset_requests_timestamp_micros: AtomicU64, // 0 means unobserved
+    pub reset_tokens_timestamp_micros: AtomicU64,   // 0 means unobserved
+    pub last_observed_requests_micros: AtomicU64,   // 0 means unobserved
+    pub last_observed_tokens_micros: AtomicU64,     // 0 means unobserved
+    pub low_requests_warned: AtomicBool,
+    pub low_tokens_warned: AtomicBool,
+}
+
+impl AiRateLimitGauges {
+    pub fn new() -> Self {
+        Self {
+            remaining_requests: AtomicI64::new(-1),
+            remaining_tokens: AtomicI64::new(-1),
+            limit_requests: AtomicI64::new(-1),
+            limit_tokens: AtomicI64::new(-1),
+            reset_requests_timestamp_micros: AtomicU64::new(0),
+            reset_tokens_timestamp_micros: AtomicU64::new(0),
+            last_observed_requests_micros: AtomicU64::new(0),
+            last_observed_tokens_micros: AtomicU64::new(0),
+            low_requests_warned: AtomicBool::new(false),
+            low_tokens_warned: AtomicBool::new(false),
+        }
+    }
+}
+
+type AiRateLimitKey = (String, String); // (provider, model)
+
+static AI_RATELIMITS: LazyLock<
+    std::sync::RwLock<std::collections::BTreeMap<AiRateLimitKey, std::sync::Arc<AiRateLimitGauges>>>,
+> = LazyLock::new(|| std::sync::RwLock::new(std::collections::BTreeMap::new()));
+
+/// Clears rate limit gauges for isolated unit tests.
+#[cfg(test)]
+pub fn reset_ai_ratelimits_for_test() {
+    let mut write = AI_RATELIMITS.write().unwrap();
+    write.clear();
+}
+
+/// Records observed AI provider rate-limit capacities and resets.
+/// Strictly bounded cardinality: Groq models are verified against `KNOWN_GROQ_MODELS`
+/// and mapped to `"other"` if unknown. No arbitrary strings, trace IDs, prompts, or
+/// secrets are ever used in labels.
+pub fn observe_ai_ratelimit(
+    provider: &str,
+    model: &str,
+    remaining_requests: Option<u64>,
+    remaining_tokens: Option<u64>,
+    limit_requests: Option<u64>,
+    limit_tokens: Option<u64>,
+    reset_requests: Option<Duration>,
+    reset_tokens: Option<Duration>,
+) {
+    let now_micros = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros() as u64;
+    observe_ai_ratelimit_with_time(
+        provider,
+        model,
+        remaining_requests,
+        remaining_tokens,
+        limit_requests,
+        limit_tokens,
+        reset_requests,
+        reset_tokens,
+        now_micros,
+    );
+}
+
+pub fn observe_ai_ratelimit_with_time(
+    provider: &str,
+    model: &str,
+    remaining_requests: Option<u64>,
+    remaining_tokens: Option<u64>,
+    limit_requests: Option<u64>,
+    limit_tokens: Option<u64>,
+    reset_requests: Option<Duration>,
+    reset_tokens: Option<Duration>,
+    now_micros: u64,
+) {
+    if remaining_requests.is_none()
+        && remaining_tokens.is_none()
+        && limit_requests.is_none()
+        && limit_tokens.is_none()
+        && reset_requests.is_none()
+        && reset_tokens.is_none()
+    {
+        return;
+    }
+
+    let provider_label = sanitize_metric_label(provider);
+    let model_label = if provider_label == "groq" {
+        canonical_groq_model_label(model).to_string()
+    } else {
+        sanitize_metric_label(model)
+    };
+
+    let key = (provider_label, model_label);
+    let gauges = {
+        let read = AI_RATELIMITS.read().unwrap();
+        read.get(&key).cloned()
+    };
+    let gauges = match gauges {
+        Some(g) => g,
+        None => {
+            let mut write = AI_RATELIMITS.write().unwrap();
+            write
+                .entry(key.clone())
+                .or_insert_with(|| std::sync::Arc::new(AiRateLimitGauges::new()))
+                .clone()
+        }
+    };
+
+    if let Some(r) = remaining_requests {
+        let r_val = (r as i64).max(0);
+        gauges.remaining_requests.store(r_val, Ordering::Relaxed);
+        gauges
+            .last_observed_requests_micros
+            .store(now_micros, Ordering::Relaxed);
+
+        if r < 10 {
+            if !gauges.low_requests_warned.swap(true, Ordering::Relaxed) {
+                tracing::warn!(
+                    provider = %key.0,
+                    model = %key.1,
+                    remaining_requests = r,
+                    "Groq remaining requests quota is low (< 10)"
+                );
+            }
+        } else {
+            gauges.low_requests_warned.store(false, Ordering::Relaxed);
+        }
+    }
+
+    if let Some(lim) = limit_requests {
+        gauges.limit_requests.store((lim as i64).max(0), Ordering::Relaxed);
+    }
+
+    if let Some(lim) = limit_tokens {
+        gauges.limit_tokens.store((lim as i64).max(0), Ordering::Relaxed);
+    }
+
+    if let Some(t) = remaining_tokens {
+        let t_val = (t as i64).max(0);
+        gauges.remaining_tokens.store(t_val, Ordering::Relaxed);
+        gauges
+            .last_observed_tokens_micros
+            .store(now_micros, Ordering::Relaxed);
+
+        let lim_tok = limit_tokens.or_else(|| {
+            let v = gauges.limit_tokens.load(Ordering::Relaxed);
+            if v > 0 {
+                Some(v as u64)
+            } else {
+                None
+            }
+        });
+        if let Some(lim) = lim_tok {
+            if lim > 0 {
+                if t * 10 < lim {
+                    if !gauges.low_tokens_warned.swap(true, Ordering::Relaxed) {
+                        tracing::warn!(
+                            provider = %key.0,
+                            model = %key.1,
+                            remaining_tokens = t,
+                            limit_tokens = lim,
+                            "Groq remaining tokens quota is below 10%"
+                        );
+                    }
+                } else {
+                    gauges.low_tokens_warned.store(false, Ordering::Relaxed);
+                }
+            }
+        }
+    }
+
+    if let Some(d) = reset_requests {
+        let rst_micros = now_micros.saturating_add(d.as_micros() as u64);
+        gauges
+            .reset_requests_timestamp_micros
+            .store(rst_micros, Ordering::Relaxed);
+    } else if remaining_requests.is_some() {
+        let prev_rst = gauges.reset_requests_timestamp_micros.load(Ordering::Relaxed);
+        if prev_rst > 0 && prev_rst <= now_micros {
+            gauges.reset_requests_timestamp_micros.store(0, Ordering::Relaxed);
+        }
+    }
+
+    if let Some(d) = reset_tokens {
+        let rst_micros = now_micros.saturating_add(d.as_micros() as u64);
+        gauges
+            .reset_tokens_timestamp_micros
+            .store(rst_micros, Ordering::Relaxed);
+    } else if remaining_tokens.is_some() {
+        let prev_rst = gauges.reset_tokens_timestamp_micros.load(Ordering::Relaxed);
+        if prev_rst > 0 && prev_rst <= now_micros {
+            gauges.reset_tokens_timestamp_micros.store(0, Ordering::Relaxed);
+        }
+    }
+}
+
+pub fn observe_groq_ratelimit(
+    model: &str,
+    remaining_requests: Option<u64>,
+    remaining_tokens: Option<u64>,
+    limit_requests: Option<u64>,
+    limit_tokens: Option<u64>,
+    reset_requests: Option<Duration>,
+    reset_tokens: Option<Duration>,
+) {
+    observe_ai_ratelimit(
+        "groq",
+        model,
+        remaining_requests,
+        remaining_tokens,
+        limit_requests,
+        limit_tokens,
+        reset_requests,
+        reset_tokens,
+    );
+}
+
+#[cfg(test)]
+pub fn observe_groq_ratelimit_with_time(
+    model: &str,
+    remaining_requests: Option<u64>,
+    remaining_tokens: Option<u64>,
+    limit_requests: Option<u64>,
+    limit_tokens: Option<u64>,
+    reset_requests: Option<Duration>,
+    reset_tokens: Option<Duration>,
+    now_micros: u64,
+) {
+    observe_ai_ratelimit_with_time(
+        "groq",
+        model,
+        remaining_requests,
+        remaining_tokens,
+        limit_requests,
+        limit_tokens,
+        reset_requests,
+        reset_tokens,
+        now_micros,
+    );
+}
+
 pub(crate) fn push_ai_metrics(out: &mut String) {
+    let now_micros = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros() as u64;
+    push_ai_metrics_with_time(out, now_micros);
+}
+
+pub(crate) fn push_ai_metrics_with_time(out: &mut String, now_micros: u64) {
     let hists = AI_HISTOGRAMS.read().unwrap();
     if !hists.is_empty() {
         out.push_str(
@@ -457,6 +746,163 @@ pub(crate) fn push_ai_metrics(out: &mut String) {
                 "ai_provider_calls_total{{provider=\"{provider}\",task=\"{task}\",outcome=\"{outcome}\"}} {}\n",
                 counter.load(Ordering::Relaxed)
             ));
+        }
+    }
+
+    let ratelimits = AI_RATELIMITS.read().unwrap();
+    if !ratelimits.is_empty() {
+        let mut wrote_rem_req = false;
+        for ((provider, model), g) in ratelimits.iter() {
+            let val = g.remaining_requests.load(Ordering::Relaxed);
+            if val >= 0 {
+                let rst = g.reset_requests_timestamp_micros.load(Ordering::Relaxed);
+                let last = g.last_observed_requests_micros.load(Ordering::Relaxed);
+                let is_stale = if rst > 0 {
+                    now_micros >= rst
+                } else {
+                    now_micros.saturating_sub(last) > MAX_REQUEST_OBSERVATION_AGE_MICROS
+                };
+                if !is_stale {
+                    if !wrote_rem_req {
+                        out.push_str(
+                            "# HELP ai_ratelimit_remaining_requests Remaining Groq requests in current time window (RPD)\n\
+                             # TYPE ai_ratelimit_remaining_requests gauge\n",
+                        );
+                        wrote_rem_req = true;
+                    }
+                    out.push_str(&format!(
+                        "ai_ratelimit_remaining_requests{{provider=\"{provider}\",model=\"{model}\"}} {val}\n"
+                    ));
+                }
+            }
+        }
+
+        let mut wrote_rem_tok = false;
+        for ((provider, model), g) in ratelimits.iter() {
+            let val = g.remaining_tokens.load(Ordering::Relaxed);
+            if val >= 0 {
+                let rst = g.reset_tokens_timestamp_micros.load(Ordering::Relaxed);
+                let last = g.last_observed_tokens_micros.load(Ordering::Relaxed);
+                let is_stale = if rst > 0 {
+                    now_micros >= rst
+                } else {
+                    now_micros.saturating_sub(last) > MAX_TOKEN_OBSERVATION_AGE_MICROS
+                };
+                if !is_stale {
+                    if !wrote_rem_tok {
+                        out.push_str(
+                            "# HELP ai_ratelimit_remaining_tokens Remaining Groq tokens in current time window (TPM)\n\
+                             # TYPE ai_ratelimit_remaining_tokens gauge\n",
+                        );
+                        wrote_rem_tok = true;
+                    }
+                    out.push_str(&format!(
+                        "ai_ratelimit_remaining_tokens{{provider=\"{provider}\",model=\"{model}\"}} {val}\n"
+                    ));
+                }
+            }
+        }
+
+        let mut wrote_lim_req = false;
+        for ((provider, model), g) in ratelimits.iter() {
+            let val = g.limit_requests.load(Ordering::Relaxed);
+            if val >= 0 {
+                if !wrote_lim_req {
+                    out.push_str(
+                        "# HELP ai_ratelimit_limit_requests Total Groq request limit in time window (RPD)\n\
+                         # TYPE ai_ratelimit_limit_requests gauge\n",
+                    );
+                    wrote_lim_req = true;
+                }
+                out.push_str(&format!(
+                    "ai_ratelimit_limit_requests{{provider=\"{provider}\",model=\"{model}\"}} {val}\n"
+                ));
+            }
+        }
+
+        let mut wrote_lim_tok = false;
+        for ((provider, model), g) in ratelimits.iter() {
+            let val = g.limit_tokens.load(Ordering::Relaxed);
+            if val >= 0 {
+                if !wrote_lim_tok {
+                    out.push_str(
+                        "# HELP ai_ratelimit_limit_tokens Total Groq token limit in time window (TPM)\n\
+                         # TYPE ai_ratelimit_limit_tokens gauge\n",
+                    );
+                    wrote_lim_tok = true;
+                }
+                out.push_str(&format!(
+                    "ai_ratelimit_limit_tokens{{provider=\"{provider}\",model=\"{model}\"}} {val}\n"
+                ));
+            }
+        }
+
+        let mut wrote_rst_req = false;
+        for ((provider, model), g) in ratelimits.iter() {
+            let val = g.reset_requests_timestamp_micros.load(Ordering::Relaxed);
+            if val > 0 && now_micros < val {
+                if !wrote_rst_req {
+                    out.push_str(
+                        "# HELP ai_ratelimit_reset_requests_timestamp_seconds Expected unix timestamp when request limit counter resets\n\
+                         # TYPE ai_ratelimit_reset_requests_timestamp_seconds gauge\n",
+                    );
+                    wrote_rst_req = true;
+                }
+                let secs = val as f64 / 1_000_000.0;
+                out.push_str(&format!(
+                    "ai_ratelimit_reset_requests_timestamp_seconds{{provider=\"{provider}\",model=\"{model}\"}} {secs:.3}\n"
+                ));
+            }
+        }
+
+        let mut wrote_rst_tok = false;
+        for ((provider, model), g) in ratelimits.iter() {
+            let val = g.reset_tokens_timestamp_micros.load(Ordering::Relaxed);
+            if val > 0 && now_micros < val {
+                if !wrote_rst_tok {
+                    out.push_str(
+                        "# HELP ai_ratelimit_reset_tokens_timestamp_seconds Expected unix timestamp when token limit counter resets\n\
+                         # TYPE ai_ratelimit_reset_tokens_timestamp_seconds gauge\n",
+                    );
+                    wrote_rst_tok = true;
+                }
+                let secs = val as f64 / 1_000_000.0;
+                out.push_str(&format!(
+                    "ai_ratelimit_reset_tokens_timestamp_seconds{{provider=\"{provider}\",model=\"{model}\"}} {secs:.3}\n"
+                ));
+            }
+        }
+
+        let mut wrote_last_obs = false;
+        for ((provider, model), g) in ratelimits.iter() {
+            let last_req = g.last_observed_requests_micros.load(Ordering::Relaxed);
+            if last_req > 0 {
+                if !wrote_last_obs {
+                    out.push_str(
+                        "# HELP ai_ratelimit_last_observed_timestamp_seconds Unix timestamp when rate limit capacity was last observed\n\
+                         # TYPE ai_ratelimit_last_observed_timestamp_seconds gauge\n",
+                    );
+                    wrote_last_obs = true;
+                }
+                let secs = last_req as f64 / 1_000_000.0;
+                out.push_str(&format!(
+                    "ai_ratelimit_last_observed_timestamp_seconds{{provider=\"{provider}\",model=\"{model}\",dimension=\"requests\"}} {secs:.3}\n"
+                ));
+            }
+            let last_tok = g.last_observed_tokens_micros.load(Ordering::Relaxed);
+            if last_tok > 0 {
+                if !wrote_last_obs {
+                    out.push_str(
+                        "# HELP ai_ratelimit_last_observed_timestamp_seconds Unix timestamp when rate limit capacity was last observed\n\
+                         # TYPE ai_ratelimit_last_observed_timestamp_seconds gauge\n",
+                    );
+                    wrote_last_obs = true;
+                }
+                let secs = last_tok as f64 / 1_000_000.0;
+                out.push_str(&format!(
+                    "ai_ratelimit_last_observed_timestamp_seconds{{provider=\"{provider}\",model=\"{model}\",dimension=\"tokens\"}} {secs:.3}\n"
+                ));
+            }
         }
     }
 }
@@ -531,5 +977,388 @@ mod tests {
         assert!(!out.contains("arbitrary_error_leak_xyz"));
         // Mapped to safe error
         assert!(out.contains("outcome=\"error\""));
+    }
+
+    #[test]
+    fn groq_ratelimit_gauges_render_valid_exposition_and_bounded_cardinality() {
+        // 1. Valid known model
+        observe_groq_ratelimit(
+            "llama-3.3-70b-versatile",
+            Some(14399),
+            Some(29841),
+            Some(14400),
+            Some(30000),
+            Some(Duration::from_secs(300)),
+            Some(Duration::from_secs(600)),
+        );
+
+        let mut out = String::new();
+        push_ai_metrics(&mut out);
+
+        assert!(out.contains("ai_ratelimit_remaining_requests{provider=\"groq\",model=\"llama-3.3-70b-versatile\"} 14399"));
+        assert!(out.contains("ai_ratelimit_remaining_tokens{provider=\"groq\",model=\"llama-3.3-70b-versatile\"} 29841"));
+        assert!(out.contains("ai_ratelimit_limit_requests{provider=\"groq\",model=\"llama-3.3-70b-versatile\"} 14400"));
+        assert!(out.contains("ai_ratelimit_limit_tokens{provider=\"groq\",model=\"llama-3.3-70b-versatile\"} 30000"));
+        assert!(out.contains("ai_ratelimit_reset_requests_timestamp_seconds{provider=\"groq\",model=\"llama-3.3-70b-versatile\"}"));
+        assert!(out.contains("ai_ratelimit_reset_tokens_timestamp_seconds{provider=\"groq\",model=\"llama-3.3-70b-versatile\"}"));
+        assert!(out.contains("ai_ratelimit_last_observed_timestamp_seconds{provider=\"groq\",model=\"llama-3.3-70b-versatile\",dimension=\"requests\"}"));
+        assert!(out.contains("ai_ratelimit_last_observed_timestamp_seconds{provider=\"groq\",model=\"llama-3.3-70b-versatile\",dimension=\"tokens\"}"));
+
+        // 2. Unknown model must map to "other" to enforce strictly bounded cardinality
+        observe_groq_ratelimit(
+            "arbitrary_unknown_model_attempting_cardinality_explosion_12345",
+            Some(500),
+            Some(2000),
+            Some(1000),
+            Some(5000),
+            None,
+            None,
+        );
+
+        let mut out2 = String::new();
+        push_ai_metrics(&mut out2);
+
+        assert!(!out2.contains("arbitrary_unknown_model_attempting_cardinality_explosion_12345"));
+        assert!(out2.contains("model=\"other\""));
+        assert!(out2.contains("ai_ratelimit_remaining_requests{provider=\"groq\",model=\"other\"} 500"));
+    }
+
+    #[test]
+    fn groq_ratelimit_missing_headers_and_zero_values_handled_safely() {
+        let model = "deepseek-r1-distill-llama-70b";
+
+        // 429 response with 0 remaining requests must record 0, not missing or unobserved
+        observe_groq_ratelimit(
+            model,
+            Some(0),
+            Some(120),
+            None, // Missing limits
+            None,
+            None,
+            None,
+        );
+
+        let mut out = String::new();
+        push_ai_metrics(&mut out);
+
+        let rem_req_needle = format!("ai_ratelimit_remaining_requests{{provider=\"groq\",model=\"{model}\"}} 0");
+        let rem_tok_needle = format!("ai_ratelimit_remaining_tokens{{provider=\"groq\",model=\"{model}\"}} 120");
+        let lim_req_needle = format!("ai_ratelimit_limit_requests{{provider=\"groq\",model=\"{model}\"}}");
+
+        assert!(out.contains(&rem_req_needle));
+        assert!(out.contains(&rem_tok_needle));
+        // Limits were None, so no limit metric emitted for this model
+        assert!(!out.contains(&lim_req_needle));
+
+        // Follow-up observation with only limits should preserve existing remaining counts
+        observe_groq_ratelimit(
+            model,
+            None,
+            None,
+            Some(1000),
+            Some(8000),
+            None,
+            None,
+        );
+
+        let mut out2 = String::new();
+        push_ai_metrics(&mut out2);
+        assert!(out2.contains(&rem_req_needle));
+        assert!(out2.contains(&format!("ai_ratelimit_limit_requests{{provider=\"groq\",model=\"{model}\"}} 1000")));
+        assert!(out2.contains(&format!("ai_ratelimit_limit_tokens{{provider=\"groq\",model=\"{model}\"}} 8000")));
+    }
+
+    #[test]
+    fn groq_ratelimit_resets_produce_absolute_timestamps_not_frozen_durations() {
+        let model = "llama-3.1-8b-instant";
+        let before = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+
+        observe_groq_ratelimit(
+            model,
+            None,
+            None,
+            None,
+            None,
+            Some(Duration::from_secs(5)),
+            Some(Duration::from_secs(10)),
+        );
+
+        let mut out = String::new();
+        push_ai_metrics(&mut out);
+
+        let req_needle = format!("ai_ratelimit_reset_requests_timestamp_seconds{{provider=\"groq\",model=\"{model}\"}} ");
+        let req_line = out
+            .lines()
+            .find(|l| l.starts_with(&req_needle))
+            .expect("request reset timestamp exists");
+        let req_ts: f64 = req_line.rsplit(' ').next().unwrap().parse().unwrap();
+
+        let tok_needle = format!("ai_ratelimit_reset_tokens_timestamp_seconds{{provider=\"groq\",model=\"{model}\"}} ");
+        let tok_line = out
+            .lines()
+            .find(|l| l.starts_with(&tok_needle))
+            .expect("token reset timestamp exists");
+        let tok_ts: f64 = tok_line.rsplit(' ').next().unwrap().parse().unwrap();
+
+        // Absolute timestamps should be roughly before + 5s and before + 10s
+        assert!(req_ts >= before + 4.9 && req_ts <= before + 6.5);
+        assert!(tok_ts >= before + 9.9 && tok_ts <= before + 11.5);
+        assert!(tok_ts > req_ts);
+    }
+
+    #[test]
+    fn groq_ratelimit_low_capacity_warnings_deduplicate_correctly() {
+        let model = "gemma2-9b-it";
+        let key = ("groq".to_string(), model.to_string());
+
+        // Transition: remaining drops below 10 -> low_requests_warned becomes true
+        observe_groq_ratelimit(model, Some(5), Some(5000), Some(100), Some(10000), None, None);
+
+        {
+            let read = AI_RATELIMITS.read().unwrap();
+            let g = read.get(&key).expect("model gauges must exist");
+            assert!(g.low_requests_warned.load(Ordering::Relaxed));
+            assert!(!g.low_tokens_warned.load(Ordering::Relaxed)); // 5000 / 10000 is 50%, not < 10%
+        }
+
+        // Subsequent observation below 10 should keep warning flag true (avoiding repeated spam)
+        observe_groq_ratelimit(model, Some(4), Some(500), Some(100), Some(10000), None, None);
+        {
+            let read = AI_RATELIMITS.read().unwrap();
+            let g = read.get(&key).expect("model gauges must exist");
+            assert!(g.low_requests_warned.load(Ordering::Relaxed));
+            assert!(g.low_tokens_warned.load(Ordering::Relaxed)); // 500 / 10000 is 5%, < 10%
+        }
+
+        // Recovery: remaining returns above 10 and 10% -> flags reset
+        observe_groq_ratelimit(model, Some(50), Some(9000), Some(100), Some(10000), None, None);
+        {
+            let read = AI_RATELIMITS.read().unwrap();
+            let g = read.get(&key).expect("model gauges must exist");
+            assert!(!g.low_requests_warned.load(Ordering::Relaxed));
+            assert!(!g.low_tokens_warned.load(Ordering::Relaxed));
+        }
+    }
+
+    #[test]
+    fn groq_ratelimit_concurrent_observations_are_thread_safe() {
+        let model = "llama-3.1-70b-versatile";
+        use std::thread;
+
+        let handles: Vec<_> = (0..16)
+            .map(|i| {
+                thread::spawn(move || {
+                    observe_groq_ratelimit(
+                        model,
+                        Some(100 + i),
+                        Some(5000 + i * 10),
+                        Some(1000),
+                        Some(10000),
+                        Some(Duration::from_secs(i + 1)),
+                        Some(Duration::from_secs(i + 2)),
+                    );
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let mut out = String::new();
+        push_ai_metrics(&mut out);
+        assert!(out.contains(&format!("ai_ratelimit_remaining_requests{{provider=\"groq\",model=\"{model}\"}}")));
+        assert!(out.contains(&format!("ai_ratelimit_remaining_tokens{{provider=\"groq\",model=\"{model}\"}}")));
+    }
+
+    #[test]
+    fn groq_ratelimit_token_freshness_suppression_and_resurgence() {
+        let model = "qwen/qwen3.8-27b";
+        let base_micros: u64 = 1_700_000_000_000_000;
+
+        // 1. Observation with reset duration of 10 seconds
+        observe_groq_ratelimit_with_time(
+            model,
+            None,
+            Some(5000),
+            None,
+            Some(10000),
+            None,
+            Some(Duration::from_secs(10)),
+            base_micros,
+        );
+
+        // Render at base + 5s (fresh)
+        let mut out_fresh = String::new();
+        push_ai_metrics_with_time(&mut out_fresh, base_micros + 5_000_000);
+        assert!(out_fresh.contains(&format!("ai_ratelimit_remaining_tokens{{provider=\"groq\",model=\"{model}\"}} 5000")));
+        assert!(out_fresh.contains(&format!("ai_ratelimit_reset_tokens_timestamp_seconds{{provider=\"groq\",model=\"{model}\"}}")));
+        assert!(out_fresh.contains(&format!("ai_ratelimit_last_observed_timestamp_seconds{{provider=\"groq\",model=\"{model}\",dimension=\"tokens\"}}")));
+
+        // Render at base + 10s (now >= reset timestamp -> STALE suppression)
+        let mut out_stale = String::new();
+        push_ai_metrics_with_time(&mut out_stale, base_micros + 10_000_000);
+        assert!(!out_stale.contains(&format!("ai_ratelimit_remaining_tokens{{provider=\"groq\",model=\"{model}\"}}")));
+        assert!(!out_stale.contains(&format!("ai_ratelimit_reset_tokens_timestamp_seconds{{provider=\"groq\",model=\"{model}\"}}")));
+        // Last observed timestamp should still be present
+        assert!(out_stale.contains(&format!("ai_ratelimit_last_observed_timestamp_seconds{{provider=\"groq\",model=\"{model}\",dimension=\"tokens\"}}")));
+
+        // 2. Resurgence: fresh observation arrives at base + 15s
+        observe_groq_ratelimit_with_time(
+            model,
+            None,
+            Some(9500),
+            None,
+            Some(10000),
+            None,
+            Some(Duration::from_secs(30)),
+            base_micros + 15_000_000,
+        );
+
+        let mut out_resurge = String::new();
+        push_ai_metrics_with_time(&mut out_resurge, base_micros + 16_000_000);
+        assert!(out_resurge.contains(&format!("ai_ratelimit_remaining_tokens{{provider=\"groq\",model=\"{model}\"}} 9500")));
+
+        // 3. Fallback when reset header is missing: expires after 120s
+        let fallback_base = base_micros + 100_000_000;
+        observe_groq_ratelimit_with_time(
+            model,
+            None,
+            Some(7500),
+            None,
+            None,
+            None,
+            None,
+            fallback_base,
+        );
+
+        // At +60s: not stale yet (<= 120s)
+        let mut out_mid = String::new();
+        push_ai_metrics_with_time(&mut out_mid, fallback_base + 60_000_000);
+        assert!(out_mid.contains(&format!("ai_ratelimit_remaining_tokens{{provider=\"groq\",model=\"{model}\"}} 7500")));
+
+        // At +121s: stale (> 120s) -> suppressed
+        let mut out_exp = String::new();
+        push_ai_metrics_with_time(&mut out_exp, fallback_base + 121_000_000);
+        assert!(!out_exp.contains(&format!("ai_ratelimit_remaining_tokens{{provider=\"groq\",model=\"{model}\"}}")));
+    }
+
+    #[test]
+    fn groq_ratelimit_request_freshness_suppression_and_resurgence() {
+        let model = "qwen-2.5-32b";
+        let base_micros: u64 = 1_700_000_000_000_000;
+
+        // 1. Observation with reset duration of 60 seconds
+        observe_groq_ratelimit_with_time(
+            model,
+            Some(14000),
+            None,
+            Some(14400),
+            None,
+            Some(Duration::from_secs(60)),
+            None,
+            base_micros,
+        );
+
+        // Render at base + 30s (fresh)
+        let mut out_fresh = String::new();
+        push_ai_metrics_with_time(&mut out_fresh, base_micros + 30_000_000);
+        assert!(out_fresh.contains(&format!("ai_ratelimit_remaining_requests{{provider=\"groq\",model=\"{model}\"}} 14000")));
+        assert!(out_fresh.contains(&format!("ai_ratelimit_reset_requests_timestamp_seconds{{provider=\"groq\",model=\"{model}\"}}")));
+        assert!(out_fresh.contains(&format!("ai_ratelimit_last_observed_timestamp_seconds{{provider=\"groq\",model=\"{model}\",dimension=\"requests\"}}")));
+
+        // Render at base + 60s (now >= reset timestamp -> STALE suppression)
+        let mut out_stale = String::new();
+        push_ai_metrics_with_time(&mut out_stale, base_micros + 60_000_000);
+        assert!(!out_stale.contains(&format!("ai_ratelimit_remaining_requests{{provider=\"groq\",model=\"{model}\"}}")));
+        assert!(!out_stale.contains(&format!("ai_ratelimit_reset_requests_timestamp_seconds{{provider=\"groq\",model=\"{model}\"}}")));
+        assert!(out_stale.contains(&format!("ai_ratelimit_last_observed_timestamp_seconds{{provider=\"groq\",model=\"{model}\",dimension=\"requests\"}}")));
+
+        // 2. Resurgence: fresh observation arrives at base + 70s
+        observe_groq_ratelimit_with_time(
+            model,
+            Some(14399),
+            None,
+            Some(14400),
+            None,
+            Some(Duration::from_secs(10)),
+            None,
+            base_micros + 70_000_000,
+        );
+
+        let mut out_resurge = String::new();
+        push_ai_metrics_with_time(&mut out_resurge, base_micros + 71_000_000);
+        assert!(out_resurge.contains(&format!("ai_ratelimit_remaining_requests{{provider=\"groq\",model=\"{model}\"}} 14399")));
+
+        // 3. Fallback when reset header is missing: expires after 86,400s (24h)
+        let fallback_base = base_micros + 100_000_000;
+        observe_groq_ratelimit_with_time(
+            model,
+            Some(12000),
+            None,
+            None,
+            None,
+            None,
+            None,
+            fallback_base,
+        );
+
+        // At +43,200s (12h): not stale yet (<= 86400s)
+        let mut out_mid = String::new();
+        push_ai_metrics_with_time(&mut out_mid, fallback_base + 43_200 * 1_000_000);
+        assert!(out_mid.contains(&format!("ai_ratelimit_remaining_requests{{provider=\"groq\",model=\"{model}\"}} 12000")));
+
+        // At +86,401s: stale (> 86400s) -> suppressed
+        let mut out_exp = String::new();
+        push_ai_metrics_with_time(&mut out_exp, fallback_base + 86_401 * 1_000_000);
+        assert!(!out_exp.contains(&format!("ai_ratelimit_remaining_requests{{provider=\"groq\",model=\"{model}\"}}")));
+    }
+
+    #[test]
+    fn groq_ratelimit_asymmetric_dimension_observation_updates_only_observed_freshness() {
+        let model = "llama3-70b-8192";
+        let t1: u64 = 1_700_000_000_000_000;
+        let t2: u64 = t1 + 50_000_000;
+
+        // Observation 1: only tokens
+        observe_groq_ratelimit_with_time(
+            model,
+            None,
+            Some(4000),
+            None,
+            None,
+            None,
+            Some(Duration::from_secs(300)),
+            t1,
+        );
+
+        let mut out1 = String::new();
+        push_ai_metrics_with_time(&mut out1, t1 + 1_000_000);
+        assert!(out1.contains(&format!("ai_ratelimit_last_observed_timestamp_seconds{{provider=\"groq\",model=\"{model}\",dimension=\"tokens\"}}")));
+        assert!(!out1.contains(&format!("ai_ratelimit_last_observed_timestamp_seconds{{provider=\"groq\",model=\"{model}\",dimension=\"requests\"}}")));
+
+        // Observation 2: only requests at t2
+        observe_groq_ratelimit_with_time(
+            model,
+            Some(100),
+            None,
+            None,
+            None,
+            Some(Duration::from_secs(300)),
+            None,
+            t2,
+        );
+
+        let mut out2 = String::new();
+        push_ai_metrics_with_time(&mut out2, t2 + 1_000_000);
+
+        let tok_ts_str = format!("{:.3}", t1 as f64 / 1_000_000.0);
+        let req_ts_str = format!("{:.3}", t2 as f64 / 1_000_000.0);
+
+        assert!(out2.contains(&format!("ai_ratelimit_last_observed_timestamp_seconds{{provider=\"groq\",model=\"{model}\",dimension=\"tokens\"}} {tok_ts_str}")));
+        assert!(out2.contains(&format!("ai_ratelimit_last_observed_timestamp_seconds{{provider=\"groq\",model=\"{model}\",dimension=\"requests\"}} {req_ts_str}")));
     }
 }
