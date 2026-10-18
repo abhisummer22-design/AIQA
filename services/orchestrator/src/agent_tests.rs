@@ -5,7 +5,7 @@
 
 use crate::agent::{
     run_agent_loop, Agent, AgentContext, AgentError, AgentLimits, AgentOutcome, AgentStatus,
-    AgentTraceHook, TurnDecision, TurnRecord,
+    AgentTraceHook, OperationalTraceHook, TurnDecision, TurnRecord, OPERATIONAL_TRACE_TARGET,
 };
 use crate::agent_tools::{
     AgentTool, AgentToolRegistry, ToolDefinition, ToolError, ToolInvocation, ToolObservation,
@@ -794,4 +794,265 @@ async fn test_20_trace_hook_invocation() {
     assert_eq!(hook.tool_end_count.load(Ordering::SeqCst), 1);
     assert_eq!(hook.turn_end_count.load(Ordering::SeqCst), 2);
     assert!(hook.agent_end_called.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn test_21_operational_trace_hook_records_bounded_metadata() {
+    let mut registry = AgentToolRegistry::new();
+    registry
+        .register(Arc::new(MockEchoTool::new(
+            "echo",
+            ToolSafetyLevel::ReadOnly,
+        )))
+        .unwrap();
+
+    let agent = MockScriptedAgent {
+        id: "telemetry-agent".to_string(),
+        name: "Telemetry Agent".to_string(),
+        agent_type: "qa_telemetry".to_string(),
+        script: vec![
+            TurnDecision::CallTools {
+                invocations: vec![ToolInvocation {
+                    call_id: "call-1".to_string(),
+                    tool_name: "echo".to_string(),
+                    arguments: json!({ "ping": "pong" }),
+                }],
+            },
+            TurnDecision::Complete {
+                output: json!({ "success": true }),
+            },
+        ],
+    };
+
+    let hook = Arc::new(OperationalTraceHook::new(
+        "telemetry-agent",
+        "qa_telemetry",
+    ));
+    let mut context = AgentContext::new(
+        "task-trace-21",
+        Some("project-alpha".to_string()),
+        "sess-21",
+        AgentLimits::default(),
+        None,
+    );
+    let ai = AiInfrastructure::from_env();
+
+    let outcome = run_agent_loop(
+        &agent,
+        &mut context,
+        &registry,
+        &ai,
+        Some(hook.clone() as Arc<dyn AgentTraceHook>),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(outcome.status, AgentStatus::Completed);
+    let events = hook.events();
+    assert!(!events.is_empty());
+
+    let event_types: Vec<&'static str> = events.iter().map(|e| e.event_type).collect();
+    assert_eq!(
+        event_types,
+        vec![
+            "agent_start",
+            "turn_start",
+            "tool_start",
+            "tool_end",
+            "turn_end",
+            "turn_start",
+            "turn_end",
+            "agent_end"
+        ]
+    );
+
+    // Verify metadata on agent_start
+    let start_ev = &events[0];
+    assert_eq!(start_ev.agent_id, "telemetry-agent");
+    assert_eq!(start_ev.agent_type, "qa_telemetry");
+    assert_eq!(start_ev.task_id, "task-trace-21");
+    assert_eq!(start_ev.project_id.as_deref(), Some("project-alpha"));
+    assert_eq!(start_ev.trace_id, context.trace_id);
+
+    // Verify tool_start & tool_end metadata
+    let tool_start = events.iter().find(|e| e.event_type == "tool_start").unwrap();
+    assert_eq!(tool_start.tool_name.as_deref(), Some("echo"));
+
+    let tool_end = events.iter().find(|e| e.event_type == "tool_end").unwrap();
+    assert_eq!(tool_end.tool_name.as_deref(), Some("echo"));
+    assert_eq!(tool_end.tool_success, Some(true));
+    assert!(tool_end.duration_ms.is_some());
+
+    // Verify agent_end metadata
+    let end_ev = events.last().unwrap();
+    assert_eq!(end_ev.event_type, "agent_end");
+    assert_eq!(end_ev.status.as_deref(), Some("COMPLETED"));
+    assert_eq!(end_ev.turns_taken, Some(2));
+    assert_eq!(end_ev.total_tool_calls, Some(1));
+    assert!(end_ev.error_category.is_none());
+}
+
+#[tokio::test]
+async fn test_22_operational_trace_hook_excludes_sensitive_arguments_and_outputs() {
+    let mut registry = AgentToolRegistry::new();
+    registry
+        .register(Arc::new(MockEchoTool::new(
+            "echo",
+            ToolSafetyLevel::ReadOnly,
+        )))
+        .unwrap();
+
+    let secret_arg = "SUPER_SECRET_PASSWORD_123";
+    let agent = MockScriptedAgent {
+        id: "secret-agent".to_string(),
+        name: "Secret Agent".to_string(),
+        agent_type: "qa_security".to_string(),
+        script: vec![
+            TurnDecision::CallTools {
+                invocations: vec![ToolInvocation {
+                    call_id: "call-sec".to_string(),
+                    tool_name: "echo".to_string(),
+                    arguments: json!({ "password": secret_arg }),
+                }],
+            },
+            TurnDecision::Complete {
+                output: json!({ "secret_result": "HIGHLY_CONFIDENTIAL_OUTPUT_PAYLOAD" }),
+            },
+        ],
+    };
+
+    let hook = Arc::new(OperationalTraceHook::new("secret-agent", "qa_security"));
+    let mut context = AgentContext::new(
+        "task-sec",
+        Some("proj-sec".to_string()),
+        "sess-sec",
+        AgentLimits::default(),
+        None,
+    );
+    let ai = AiInfrastructure::from_env();
+
+    let outcome = run_agent_loop(
+        &agent,
+        &mut context,
+        &registry,
+        &ai,
+        Some(hook.clone() as Arc<dyn AgentTraceHook>),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(outcome.status, AgentStatus::Completed);
+    let events = hook.events();
+
+    // Serialize all events to JSON and ensure raw passwords/payloads never appear in trace records
+    let serialized = serde_json::to_string(&events).unwrap();
+    assert!(!serialized.contains(secret_arg));
+    assert!(!serialized.contains("HIGHLY_CONFIDENTIAL_OUTPUT_PAYLOAD"));
+}
+
+#[tokio::test]
+async fn test_23_operational_trace_hook_failure_path_sanitizes_error() {
+    let registry = AgentToolRegistry::new();
+    let raw_fail_reason = "database connect failed: password=super_secret_db_pass and aiqa_apikey_1234567890123456";
+    let agent = MockScriptedAgent {
+        id: "failing-agent".to_string(),
+        name: "Failing Agent".to_string(),
+        agent_type: "qa_failure".to_string(),
+        script: vec![TurnDecision::Fail {
+            reason: raw_fail_reason.to_string(),
+        }],
+    };
+
+    let hook = Arc::new(OperationalTraceHook::new(
+        "failing-agent",
+        "qa_failure",
+    ));
+    let mut context = AgentContext::new("task-fail", None, "sess-fail", AgentLimits::default(), None);
+    let ai = AiInfrastructure::from_env();
+
+    let outcome = run_agent_loop(
+        &agent,
+        &mut context,
+        &registry,
+        &ai,
+        Some(hook.clone() as Arc<dyn AgentTraceHook>),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(outcome.status, AgentStatus::Failed);
+    let events = hook.events();
+    let serialized = serde_json::to_string(&events).unwrap();
+
+    // Verify that secrets are masked via sanitize_log_message
+    assert!(!serialized.contains("super_secret_db_pass"));
+    assert!(!serialized.contains("aiqa_apikey_1234567890123456"));
+    assert!(serialized.contains("password=***"));
+    assert!(serialized.contains("aiqa_***"));
+
+    let end_ev = events.last().unwrap();
+    assert_eq!(end_ev.event_type, "agent_end");
+    assert_eq!(end_ev.status.as_deref(), Some("FAILED"));
+    assert!(end_ev.error_category.is_some());
+}
+
+#[tokio::test]
+async fn test_24_operational_trace_hook_buffer_bounded() {
+    let capacity = 3;
+    let hook = OperationalTraceHook::with_capacity("bounded-agent", "qa_bounded", capacity);
+    let context = AgentContext::new("t", None, "s", AgentLimits::default(), None);
+
+    hook.on_agent_start(&context);
+    hook.on_turn_start(&context, 1);
+    hook.on_turn_start(&context, 2);
+    hook.on_turn_start(&context, 3);
+    hook.on_turn_start(&context, 4);
+
+    let events = hook.events();
+    assert_eq!(events.len(), capacity);
+    // Oldest events were evicted
+    let turns: Vec<Option<usize>> = events.iter().map(|e| e.turn).collect();
+    assert_eq!(turns, vec![Some(2), Some(3), Some(4)]);
+}
+
+#[test]
+fn test_25_default_env_filter_permits_agent_trace_target() {
+    let subscriber = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new(
+            "aiqa_orchestrator=info,tower_http=info",
+        ))
+        .finish();
+
+    tracing::subscriber::with_default(subscriber, || {
+        // Operational agent trace target at INFO level is enabled under default filter
+        assert!(tracing::enabled!(
+            target: OPERATIONAL_TRACE_TARGET,
+            tracing::Level::INFO
+        ));
+        // Operational agent trace target at WARN level is enabled
+        assert!(tracing::enabled!(
+            target: OPERATIONAL_TRACE_TARGET,
+            tracing::Level::WARN
+        ));
+        // Operational agent trace target at ERROR level is enabled
+        assert!(tracing::enabled!(
+            target: OPERATIONAL_TRACE_TARGET,
+            tracing::Level::ERROR
+        ));
+        // Operational agent trace target at DEBUG level is disabled under default info filter
+        assert!(!tracing::enabled!(
+            target: OPERATIONAL_TRACE_TARGET,
+            tracing::Level::DEBUG
+        ));
+        // Tower HTTP logging remains enabled under default filter
+        assert!(tracing::enabled!(
+            target: "tower_http",
+            tracing::Level::INFO
+        ));
+        // Unrelated crate logging remains disabled
+        assert!(!tracing::enabled!(
+            target: "unrelated_crate::foo",
+            tracing::Level::INFO
+        ));
+    });
 }

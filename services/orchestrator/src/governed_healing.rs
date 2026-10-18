@@ -15,7 +15,9 @@
 //! - Traceability to LocalEvidenceStore and audit logs
 //! - Zero private chain-of-thought leakage (concise operational rationale only)
 
-use crate::agent::{run_agent_loop, AgentContext, AgentLimits, AgentStatus};
+use crate::agent::{
+    run_agent_loop, AgentContext, AgentLimits, AgentStatus, AgentTraceHook, OperationalTraceHook,
+};
 use crate::agent_execution::{
     AgentExecutionBudget, AgentExecutionDispatcher, AgentExecutionRequest,
 };
@@ -1077,6 +1079,7 @@ pub struct GovernedHealingService {
     pub evidence: Arc<LocalEvidenceStore>,
     pub policy: Arc<PolicyConfig>,
     pub budget: AgentExecutionBudget,
+    pub trace_hook: Option<Arc<dyn AgentTraceHook>>,
 }
 
 impl GovernedHealingService {
@@ -1093,7 +1096,14 @@ impl GovernedHealingService {
             evidence,
             policy,
             budget: budget.unwrap_or_default(),
+            trace_hook: None,
         }
+    }
+
+    /// Attaches an operational or custom trace hook for diagnostic telemetry.
+    pub fn with_trace_hook(mut self, hook: Arc<dyn AgentTraceHook>) -> Self {
+        self.trace_hook = Some(hook);
+        self
     }
 
     /// Runs the real `SelfHealingAgent` (Phase 3) through `run_agent_loop`
@@ -1167,8 +1177,14 @@ impl GovernedHealingService {
         // equivalent here, not a stand-in for a real call that got skipped.
         let ai = AiInfrastructure::new(vec![], std::collections::HashMap::new());
         let agent = SelfHealingAgent::new(evidence);
+        let trace_hook = self.trace_hook.clone().unwrap_or_else(|| {
+            Arc::new(OperationalTraceHook::new(
+                "self_healing_agent",
+                "qa_self_healing",
+            ))
+        });
 
-        let outcome = run_agent_loop(&agent, &mut context, &registry, &ai, None)
+        let outcome = run_agent_loop(&agent, &mut context, &registry, &ai, Some(trace_hook))
             .await
             .map_err(|e| {
                 GovernedHealingError::Internal(format!("self-healing diagnosis failed: {e}"))

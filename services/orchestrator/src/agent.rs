@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
@@ -366,6 +366,355 @@ impl AgentTraceHook for NoopTraceHook {
     fn on_tool_end(&self, _context: &AgentContext, _observation: &ToolObservation) {}
     fn on_turn_end(&self, _context: &AgentContext, _record: &TurnRecord) {}
     fn on_agent_end(&self, _context: &AgentContext, _outcome: &AgentOutcome) {}
+}
+
+/// Sanitized, bounded operational telemetry record for agent execution steps.
+///
+/// Architectural Guarantees:
+/// - Never includes user prompts, model completion bodies, or private CoT.
+/// - Never includes raw tool arguments or tool observation payloads.
+/// - Credentials, tokens, and secrets are masked via `crate::log_bus::sanitize_log_message`.
+/// - Trace ID is preserved for correlation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentTraceEvent {
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    pub event_type: &'static str,
+    pub agent_id: String,
+    pub agent_type: String,
+    pub task_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    pub trace_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_safety_level: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_success: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decision_type: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turns_taken: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_tool_calls: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_category: Option<String>,
+}
+
+pub const DEFAULT_HOOK_EVENT_BUFFER_CAPACITY: usize = 128;
+pub const OPERATIONAL_TRACE_TARGET: &str = "aiqa_orchestrator::agent::trace";
+
+/// Production-grade operational telemetry hook for agent loops.
+///
+/// Emits structured `tracing` events and maintains a bounded in-memory event buffer.
+/// Strictly non-blocking, secret-sanitizing, and free of arbitrary payloads or prompts.
+#[derive(Debug, Clone)]
+pub struct OperationalTraceHook {
+    agent_id: String,
+    agent_type: String,
+    buffer_capacity: usize,
+    events: Arc<Mutex<Vec<AgentTraceEvent>>>,
+}
+
+impl OperationalTraceHook {
+    pub fn new(agent_id: impl Into<String>, agent_type: impl Into<String>) -> Self {
+        Self::with_capacity(agent_id, agent_type, DEFAULT_HOOK_EVENT_BUFFER_CAPACITY)
+    }
+
+    pub fn with_capacity(
+        agent_id: impl Into<String>,
+        agent_type: impl Into<String>,
+        capacity: usize,
+    ) -> Self {
+        Self {
+            agent_id: agent_id.into(),
+            agent_type: agent_type.into(),
+            buffer_capacity: capacity.max(1),
+            events: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    pub fn agent_id(&self) -> &str {
+        &self.agent_id
+    }
+
+    pub fn agent_type(&self) -> &str {
+        &self.agent_type
+    }
+
+    /// Returns a snapshot of events captured by this hook.
+    pub fn events(&self) -> Vec<AgentTraceEvent> {
+        self.events.lock().map(|g| g.clone()).unwrap_or_default()
+    }
+
+    /// Clears recorded events.
+    pub fn clear(&self) {
+        if let Ok(mut g) = self.events.lock() {
+            g.clear();
+        }
+    }
+
+    fn record_event(&self, event: AgentTraceEvent) {
+        if let Ok(mut g) = self.events.lock() {
+            if g.len() >= self.buffer_capacity {
+                g.remove(0);
+            }
+            g.push(event);
+        }
+    }
+}
+
+impl Default for OperationalTraceHook {
+    fn default() -> Self {
+        Self::new("unknown_agent", "general")
+    }
+}
+
+impl AgentTraceHook for OperationalTraceHook {
+    fn on_agent_start(&self, context: &AgentContext) {
+        tracing::info!(
+            target: OPERATIONAL_TRACE_TARGET,
+            agent_id = %self.agent_id,
+            agent_type = %self.agent_type,
+            task_id = %context.task_id,
+            project_id = ?context.project_id,
+            trace_id = %context.trace_id,
+            "Agent execution started"
+        );
+
+        let event = AgentTraceEvent {
+            timestamp: chrono::Utc::now(),
+            event_type: "agent_start",
+            agent_id: self.agent_id.clone(),
+            agent_type: self.agent_type.clone(),
+            task_id: context.task_id.clone(),
+            project_id: context.project_id.clone(),
+            trace_id: context.trace_id.clone(),
+            turn: None,
+            duration_ms: None,
+            tool_name: None,
+            tool_safety_level: None,
+            tool_success: None,
+            decision_type: None,
+            status: None,
+            turns_taken: None,
+            total_tool_calls: None,
+            error_category: None,
+        };
+        self.record_event(event);
+    }
+
+    fn on_turn_start(&self, context: &AgentContext, turn: usize) {
+        tracing::debug!(
+            target: OPERATIONAL_TRACE_TARGET,
+            agent_id = %self.agent_id,
+            turn = turn,
+            trace_id = %context.trace_id,
+            "Agent turn started"
+        );
+
+        let event = AgentTraceEvent {
+            timestamp: chrono::Utc::now(),
+            event_type: "turn_start",
+            agent_id: self.agent_id.clone(),
+            agent_type: self.agent_type.clone(),
+            task_id: context.task_id.clone(),
+            project_id: context.project_id.clone(),
+            trace_id: context.trace_id.clone(),
+            turn: Some(turn),
+            duration_ms: None,
+            tool_name: None,
+            tool_safety_level: None,
+            tool_success: None,
+            decision_type: None,
+            status: None,
+            turns_taken: None,
+            total_tool_calls: None,
+            error_category: None,
+        };
+        self.record_event(event);
+    }
+
+    fn on_tool_start(&self, context: &AgentContext, invocation: &ToolInvocation) {
+        tracing::info!(
+            target: OPERATIONAL_TRACE_TARGET,
+            agent_id = %self.agent_id,
+            tool_name = %invocation.tool_name,
+            call_id = %invocation.call_id,
+            trace_id = %context.trace_id,
+            "Agent tool started"
+        );
+
+        let event = AgentTraceEvent {
+            timestamp: chrono::Utc::now(),
+            event_type: "tool_start",
+            agent_id: self.agent_id.clone(),
+            agent_type: self.agent_type.clone(),
+            task_id: context.task_id.clone(),
+            project_id: context.project_id.clone(),
+            trace_id: context.trace_id.clone(),
+            turn: Some(context.current_turn + 1),
+            duration_ms: None,
+            tool_name: Some(invocation.tool_name.clone()),
+            tool_safety_level: None,
+            tool_success: None,
+            decision_type: None,
+            status: None,
+            turns_taken: None,
+            total_tool_calls: None,
+            error_category: None,
+        };
+        self.record_event(event);
+    }
+
+    fn on_tool_end(&self, context: &AgentContext, observation: &ToolObservation) {
+        let is_success = observation.output.is_ok();
+        let safety_str = format!("{:?}", observation.safety_level);
+        tracing::info!(
+            target: OPERATIONAL_TRACE_TARGET,
+            agent_id = %self.agent_id,
+            tool_name = %observation.tool_name,
+            duration_ms = observation.duration_ms,
+            is_success = is_success,
+            is_truncated = observation.is_truncated,
+            trace_id = %context.trace_id,
+            "Agent tool completed"
+        );
+
+        let event = AgentTraceEvent {
+            timestamp: chrono::Utc::now(),
+            event_type: "tool_end",
+            agent_id: self.agent_id.clone(),
+            agent_type: self.agent_type.clone(),
+            task_id: context.task_id.clone(),
+            project_id: context.project_id.clone(),
+            trace_id: context.trace_id.clone(),
+            turn: Some(context.current_turn + 1),
+            duration_ms: Some(observation.duration_ms),
+            tool_name: Some(observation.tool_name.clone()),
+            tool_safety_level: Some(safety_str),
+            tool_success: Some(is_success),
+            decision_type: None,
+            status: None,
+            turns_taken: None,
+            total_tool_calls: None,
+            error_category: None,
+        };
+        self.record_event(event);
+    }
+
+    fn on_turn_end(&self, context: &AgentContext, record: &TurnRecord) {
+        let decision_type = match &record.decision {
+            TurnDecision::Continue => "CONTINUE",
+            TurnDecision::CallTools { .. } => "CALL_TOOLS",
+            TurnDecision::Complete { .. } => "COMPLETE",
+            TurnDecision::Fail { .. } => "FAIL",
+        };
+        tracing::info!(
+            target: OPERATIONAL_TRACE_TARGET,
+            agent_id = %self.agent_id,
+            turn = record.turn_number,
+            duration_ms = record.duration_ms,
+            tool_calls = record.tool_invocations.len(),
+            decision_type = decision_type,
+            trace_id = %context.trace_id,
+            "Agent turn completed"
+        );
+
+        let event = AgentTraceEvent {
+            timestamp: chrono::Utc::now(),
+            event_type: "turn_end",
+            agent_id: self.agent_id.clone(),
+            agent_type: self.agent_type.clone(),
+            task_id: context.task_id.clone(),
+            project_id: context.project_id.clone(),
+            trace_id: context.trace_id.clone(),
+            turn: Some(record.turn_number),
+            duration_ms: Some(record.duration_ms),
+            tool_name: None,
+            tool_safety_level: None,
+            tool_success: None,
+            decision_type: Some(decision_type),
+            status: None,
+            turns_taken: None,
+            total_tool_calls: Some(record.tool_invocations.len()),
+            error_category: match &record.decision {
+                TurnDecision::Fail { reason } => {
+                    let sanitized = crate::log_bus::sanitize_log_message(reason);
+                    let bounded = sanitized.chars().take(200).collect::<String>();
+                    Some(bounded)
+                }
+                _ => None,
+            },
+        };
+        self.record_event(event);
+    }
+
+    fn on_agent_end(&self, context: &AgentContext, outcome: &AgentOutcome) {
+        let status_str = match outcome.status {
+            AgentStatus::Completed => "COMPLETED",
+            AgentStatus::MaxTurnsReached => "MAX_TURNS_REACHED",
+            AgentStatus::TimedOut => "TIMED_OUT",
+            AgentStatus::Cancelled => "CANCELLED",
+            AgentStatus::Failed => "FAILED",
+        };
+        let sanitized_error = outcome.error.as_ref().map(|err| {
+            let s = crate::log_bus::sanitize_log_message(err);
+            s.chars().take(200).collect::<String>()
+        });
+
+        if outcome.status == AgentStatus::Completed {
+            tracing::info!(
+                target: OPERATIONAL_TRACE_TARGET,
+                agent_id = %self.agent_id,
+                status = status_str,
+                turns_taken = outcome.turns_taken,
+                total_duration_ms = outcome.total_duration_ms,
+                total_tool_calls = outcome.total_tool_calls,
+                trace_id = %context.trace_id,
+                "Agent execution completed"
+            );
+        } else {
+            tracing::warn!(
+                target: OPERATIONAL_TRACE_TARGET,
+                agent_id = %self.agent_id,
+                status = status_str,
+                turns_taken = outcome.turns_taken,
+                total_duration_ms = outcome.total_duration_ms,
+                total_tool_calls = outcome.total_tool_calls,
+                error = ?sanitized_error,
+                trace_id = %context.trace_id,
+                "Agent execution ended with non-completed status"
+            );
+        }
+
+        let event = AgentTraceEvent {
+            timestamp: chrono::Utc::now(),
+            event_type: "agent_end",
+            agent_id: self.agent_id.clone(),
+            agent_type: self.agent_type.clone(),
+            task_id: context.task_id.clone(),
+            project_id: context.project_id.clone(),
+            trace_id: context.trace_id.clone(),
+            turn: None,
+            duration_ms: Some(outcome.total_duration_ms),
+            tool_name: None,
+            tool_safety_level: None,
+            tool_success: None,
+            decision_type: None,
+            status: Some(status_str.to_string()),
+            turns_taken: Some(outcome.turns_taken),
+            total_tool_calls: Some(outcome.total_tool_calls),
+            error_category: sanitized_error,
+        };
+        self.record_event(event);
+    }
 }
 
 /// Core native Rust Agent abstraction.

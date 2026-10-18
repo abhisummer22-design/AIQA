@@ -13,7 +13,8 @@
 
 use crate::adaptive_intelligence::QaIntelligenceFeedback;
 use crate::agent::{
-    run_agent_loop, Agent, AgentContext, AgentError, AgentLimits, AgentStatus, TurnDecision,
+    run_agent_loop, Agent, AgentContext, AgentError, AgentLimits, AgentStatus, AgentTraceHook,
+    OperationalTraceHook, TurnDecision,
 };
 use crate::agent_tools::{AgentToolRegistry, ToolInvocation};
 use crate::ai_router::AiInfrastructure;
@@ -23,6 +24,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 const AGENT_ID: &str = "test_planning_agent";
 const AGENT_NAME: &str = "Test Planning Agent";
@@ -570,15 +572,24 @@ fn synthesize_test_plan(
 }
 
 /// Runs the real `TestPlanningAgent` (Phase 3) through `run_agent_loop`
-/// (Phase 1) with the `requirement_lookup`/`schema_inspector` diagnostic
-/// tools registered (Phase 2) — the concrete wiring point that makes this
-/// agent reachable from a live request instead of only from its own tests.
+/// (Phase 1) with operational telemetry enabled via `OperationalTraceHook`.
 /// `project_id` overwrites whatever `req.project_id` already held, exactly
 /// like the healing proposal endpoint overwrites it from the URL path.
 pub async fn generate_test_plan(
     store: Store,
     project_id: &str,
+    req: PlanningRequest,
+) -> Result<TestPlanOutput, String> {
+    generate_test_plan_with_trace_hook(store, project_id, req, None).await
+}
+
+/// Runs the real `TestPlanningAgent` with an optional custom trace hook.
+/// When `custom_hook` is None, defaults to `OperationalTraceHook`.
+pub async fn generate_test_plan_with_trace_hook(
+    store: Store,
+    project_id: &str,
     mut req: PlanningRequest,
+    custom_hook: Option<Arc<dyn AgentTraceHook>>,
 ) -> Result<TestPlanOutput, String> {
     req.project_id = project_id.to_string();
 
@@ -601,8 +612,14 @@ pub async fn generate_test_plan(
     // real call that got skipped.
     let ai = AiInfrastructure::new(vec![], std::collections::HashMap::new());
     let agent = TestPlanningAgent::new(req);
+    let trace_hook = custom_hook.unwrap_or_else(|| {
+        Arc::new(OperationalTraceHook::new(
+            "test_planning_agent",
+            "qa_planning",
+        ))
+    });
 
-    let outcome = run_agent_loop(&agent, &mut context, &registry, &ai, None)
+    let outcome = run_agent_loop(&agent, &mut context, &registry, &ai, Some(trace_hook))
         .await
         .map_err(|e| format!("test planning failed: {e}"))?;
 

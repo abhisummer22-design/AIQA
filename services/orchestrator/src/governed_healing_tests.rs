@@ -44,7 +44,7 @@
 //! 41. No Python dependency
 //! 42. Existing Phase 4 execution remains functional
 
-use crate::agent::{Agent, AgentContext, AgentLimits};
+use crate::agent::{Agent, AgentContext, AgentLimits, AgentTraceHook, OperationalTraceHook};
 use crate::agent_execution::AgentExecutionDispatcher;
 use crate::agent_tools::AgentToolRegistry;
 use crate::agents::healing::{FailureEvidence, SelfHealingAgent};
@@ -2070,4 +2070,44 @@ async fn p92b4_teardown_failure_is_observable() {
         !path.exists(),
         "and the directory must really be gone, not merely reported as closed"
     );
+}
+
+#[tokio::test]
+async fn test_48_auto_diagnose_emits_operational_trace_events() {
+    let (_store, _reg, _ev, service, _dir) = setup_healing_harness().await;
+    let hook = Arc::new(OperationalTraceHook::new(
+        "self_healing_agent",
+        "qa_self_healing",
+    ));
+    let service = service.with_trace_hook(hook.clone() as Arc<dyn AgentTraceHook>);
+
+    let ctx = make_auth_ctx(Role::Operator, Some("proj-web"));
+    let req = auto_diagnose_request("proj-web", Uuid::new_v4(), "task-delete");
+
+    let proposal = service
+        .propose_healing(&ctx, req)
+        .await
+        .expect("auto-diagnosed proposal created");
+
+    assert_eq!(proposal.diagnosis_category, "SelectorRenamedOrRelocated");
+    let events = hook.events();
+    assert!(!events.is_empty(), "trace hook must capture events");
+
+    assert_eq!(events.first().unwrap().event_type, "agent_start");
+    assert_eq!(events.last().unwrap().event_type, "agent_end");
+
+    for ev in &events {
+        assert_eq!(ev.agent_id, "self_healing_agent");
+        assert_eq!(ev.agent_type, "qa_self_healing");
+        assert_eq!(ev.project_id.as_deref(), Some("proj-web"));
+        assert!(!ev.trace_id.is_empty());
+    }
+
+    let tool_end = events
+        .iter()
+        .find(|e| e.event_type == "tool_end" && e.tool_name.as_deref() == Some("dom_prober"));
+    assert!(tool_end.is_some(), "must record dom_prober tool_end");
+
+    let end_ev = events.last().unwrap();
+    assert_eq!(end_ev.status.as_deref(), Some("COMPLETED"));
 }

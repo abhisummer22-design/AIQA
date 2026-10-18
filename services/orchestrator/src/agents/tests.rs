@@ -12,7 +12,11 @@
 
 use super::healing::{FailureEvidence, SelfHealingAgent};
 use super::planning::{PlanningRequest, TestPlanningAgent};
-use crate::agent::{run_agent_loop, Agent, AgentContext, AgentLimits, AgentStatus};
+use crate::agent::{
+    run_agent_loop, Agent, AgentContext, AgentLimits, AgentStatus, AgentTraceHook,
+    OperationalTraceHook,
+};
+use std::sync::Arc;
 use crate::agent_tools::AgentToolRegistry;
 use crate::ai_router::AiInfrastructure;
 use crate::crawler::{
@@ -689,4 +693,102 @@ async fn test_12_generate_test_plan_incorporates_qa_intelligence_feedback() {
         .recommended_next_actions
         .iter()
         .any(|a| a.contains("Stabilize #promo-code-input")));
+}
+
+#[tokio::test]
+async fn test_13_generate_test_plan_emits_operational_trace_events() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("plan_trace_test.sqlite3");
+    let store = crate::store::Store::connect(&path).await.expect("connect");
+
+    let request = super::planning::PlanningRequest {
+        project_id: "proj-trace-plan".to_string(),
+        requirement_query: None,
+        requirement_ids: vec![],
+        schema_content: Some(sample_openapi_spec()),
+        schema_file_path: None,
+        schema_url: None,
+        path_filter: None,
+        priority_hints: vec![],
+        max_planned_tests: Some(5),
+        healing_feedback: vec![],
+        qa_feedback: None,
+    };
+
+    let hook = Arc::new(OperationalTraceHook::new(
+        "test_planning_agent",
+        "qa_planning",
+    ));
+
+    let plan = super::planning::generate_test_plan_with_trace_hook(
+        store,
+        "proj-trace-plan",
+        request,
+        Some(hook.clone() as Arc<dyn AgentTraceHook>),
+    )
+    .await
+    .expect("test plan generated");
+
+    assert_eq!(plan.project_id, "proj-trace-plan");
+    assert!(plan.total_planned_tests > 0);
+
+    let events = hook.events();
+    assert!(!events.is_empty(), "hook must capture events");
+
+    // Must start with agent_start and end with agent_end
+    assert_eq!(events.first().unwrap().event_type, "agent_start");
+    assert_eq!(events.last().unwrap().event_type, "agent_end");
+
+    // Check agent identification and task scoping
+    for ev in &events {
+        assert_eq!(ev.agent_id, "test_planning_agent");
+        assert_eq!(ev.agent_type, "qa_planning");
+        assert_eq!(ev.task_id, "plan-proj-trace-plan");
+        assert_eq!(ev.project_id.as_deref(), Some("proj-trace-plan"));
+        assert!(!ev.trace_id.is_empty());
+    }
+
+    // Must have tool_start and tool_end for schema_inspector
+    let schema_tool_end = events
+        .iter()
+        .find(|e| e.event_type == "tool_end" && e.tool_name.as_deref() == Some("schema_inspector"));
+    assert!(schema_tool_end.is_some(), "must record schema_inspector tool_end");
+    let tool_ev = schema_tool_end.unwrap();
+    assert_eq!(tool_ev.tool_success, Some(true));
+    assert!(tool_ev.duration_ms.is_some());
+
+    // Completed status on agent_end
+    let end_ev = events.last().unwrap();
+    assert_eq!(end_ev.status.as_deref(), Some("COMPLETED"));
+    assert!(end_ev.turns_taken.unwrap_or(0) >= 1);
+}
+
+#[tokio::test]
+async fn test_14_generate_test_plan_default_preserves_compatibility_without_custom_hook() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("plan_default_hook_test.sqlite3");
+    let store = crate::store::Store::connect(&path).await.expect("connect");
+
+    let request = super::planning::PlanningRequest {
+        project_id: "proj-compat".to_string(),
+        requirement_query: None,
+        requirement_ids: vec![],
+        schema_content: Some(sample_openapi_spec()),
+        schema_file_path: None,
+        schema_url: None,
+        path_filter: None,
+        priority_hints: vec![],
+        max_planned_tests: Some(5),
+        healing_feedback: vec![],
+        qa_feedback: None,
+    };
+
+    // Calling standard generate_test_plan without passing any hook executes with OperationalTraceHook by default
+    let plan = super::planning::generate_test_plan(store, "proj-compat", request)
+        .await
+        .expect("test plan generated");
+
+    assert_eq!(plan.project_id, "proj-compat");
+    assert!(plan.total_planned_tests > 0);
+    assert!(!plan.prioritized_test_suites.is_empty());
 }

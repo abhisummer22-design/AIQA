@@ -67,7 +67,8 @@
 
 use crate::adaptive_intelligence::canonical_failure_fingerprint;
 use crate::agent::{
-    run_agent_loop, Agent, AgentContext, AgentError, AgentLimits, AgentStatus, TurnDecision,
+    run_agent_loop, Agent, AgentContext, AgentError, AgentLimits, AgentStatus, AgentTraceHook,
+    OperationalTraceHook, TurnDecision,
 };
 use crate::agent_tools::{
     AgentTool, AgentToolRegistry, ToolDefinition, ToolError, ToolInvocation, ToolObservation,
@@ -1920,6 +1921,7 @@ pub struct ExplorationService {
     pub policy: Arc<PolicyConfig>,
     pub evidence: Arc<LocalEvidenceStore>,
     pub counters: SharedCounters,
+    pub trace_hook: Option<Arc<dyn AgentTraceHook>>,
 }
 
 impl ExplorationService {
@@ -1929,7 +1931,14 @@ impl ExplorationService {
             policy,
             evidence,
             counters: SharedCounters::default(),
+            trace_hook: None,
         }
+    }
+
+    /// Attaches an operational or custom trace hook for exploratory telemetry.
+    pub fn with_trace_hook(mut self, hook: Arc<dyn AgentTraceHook>) -> Self {
+        self.trace_hook = Some(hook);
+        self
     }
 
     /// The counter handle an agent or tool needs. Cheap to clone; shares one state.
@@ -2015,7 +2024,14 @@ impl ExplorationService {
             );
         }
 
-        let outcome = run_agent_loop(&agent, &mut context, &registry, &ai, None).await;
+        let trace_hook = self.trace_hook.clone().unwrap_or_else(|| {
+            Arc::new(OperationalTraceHook::new(
+                "exploratory_agent",
+                "exploratory_testing",
+            ))
+        });
+
+        let outcome = run_agent_loop(&agent, &mut context, &registry, &ai, Some(trace_hook)).await;
 
         let counters = self.counters.snapshot().await;
         let (stop, error) = match &outcome {
